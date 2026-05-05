@@ -53,10 +53,18 @@ describe('durationToYears', () => {
 });
 
 describe('computeRequestedStartDate', () => {
-  it('subtracts the right number of years and anchors to month-1', () => {
-    expect(computeRequestedStartDate('1Y', TODAY)).toBe('2025-04-01');
-    expect(computeRequestedStartDate('3Y', TODAY)).toBe('2023-04-01');
-    expect(computeRequestedStartDate('5Y', TODAY)).toBe('2021-04-01');
+  it('anchors the first installment to (today − N years + 1 month) so the window has exactly N×12 buys', () => {
+    // TODAY is 2026-04-15 → today's month is April → first installment is May of (today − N years)
+    expect(computeRequestedStartDate('1Y', TODAY)).toBe('2025-05-01');
+    expect(computeRequestedStartDate('3Y', TODAY)).toBe('2023-05-01');
+    expect(computeRequestedStartDate('5Y', TODAY)).toBe('2021-05-01');
+  });
+
+  it('rolls month over December correctly', () => {
+    const dec = new Date('2026-12-15T00:00:00Z');
+    // Dec + 1 month rolls to Jan of (year - N + 1)
+    expect(computeRequestedStartDate('1Y', dec)).toBe('2026-01-01');
+    expect(computeRequestedStartDate('3Y', dec)).toBe('2024-01-01');
   });
 
   it('returns null for "All"', () => {
@@ -86,11 +94,11 @@ describe('simulatePastSip — empty / invalid input', () => {
 });
 
 describe('simulatePastSip — happy path', () => {
-  it('produces the right number of monthly installments for a 1Y window', () => {
-    // 13 months of NAV ending in Apr 2026 covers the whole 1Y window
+  it('produces exactly 12 installments for a 1Y window (one buy per completed month)', () => {
+    // NAV series spans May 2025 (first buy) through Apr 2026 (last buy)
     const series = buildNavSeries({
-      startDate: '2025-04-02',
-      monthsCount: 13,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -99,18 +107,34 @@ describe('simulatePastSip — happy path', () => {
       duration: '1Y',
       today: TODAY,
     });
-    // Expect 13 installments — one per month, Apr 2025 through Apr 2026.
-    expect(r.installments).toHaveLength(13);
-    expect(r.totalInvested).toBe(13 * 10_000);
+    expect(r.installments).toHaveLength(12);
+    expect(r.totalInvested).toBe(12 * 10_000);
     expect(r.hasEnoughData).toBe(true);
     expect(r.shortHistory).toBe(false);
   });
 
+  it('produces exactly 36 installments for a 3Y window', () => {
+    const series = buildNavSeries({
+      startDate: '2023-05-02',
+      monthsCount: 36,
+      monthlyRate: 0.005,
+    });
+    const r = simulatePastSip({
+      navSeries: series,
+      monthlyAmount: 10_000,
+      duration: '3Y',
+      today: TODAY,
+    });
+    expect(r.installments).toHaveLength(36);
+    expect(r.totalInvested).toBe(36 * 10_000);
+  });
+
   it('uses NAV on or after the 1st of the month (skips weekends/holidays)', () => {
     // First NAV intentionally lands on day 5 — ensures the lookup is "on or after"
+    // 1Y window with today=2026-04-15 → first installment intended date = 2025-05-01
     const series: NavPoint[] = [
-      { date: '2025-04-05', value: 100 },
-      { date: '2025-05-05', value: 110 },
+      { date: '2025-05-05', value: 100 },
+      { date: '2025-06-05', value: 110 },
       { date: '2026-04-05', value: 200 },
     ];
     const r = simulatePastSip({
@@ -120,13 +144,13 @@ describe('simulatePastSip — happy path', () => {
       today: TODAY,
     });
     expect(r.installments[0].nav).toBe(100);
-    expect(r.installments[0].navDate).toBe('2025-04-05');
+    expect(r.installments[0].navDate).toBe('2025-05-05');
   });
 
   it('current value, gain, and gainPct are consistent', () => {
     const series = buildNavSeries({
-      startDate: '2025-04-02',
-      monthsCount: 13,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -141,9 +165,10 @@ describe('simulatePastSip — happy path', () => {
   });
 
   it('xirr is positive when NAV is rising (and finite)', () => {
+    // 3Y SIP needs at least 36 installments + a buffer for the lookup
     const series = buildNavSeries({
-      startDate: '2024-04-02',
-      monthsCount: 25,
+      startDate: '2023-05-02',
+      monthsCount: 38,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -161,8 +186,8 @@ describe('simulatePastSip — happy path', () => {
 
   it('xirr is zero / NaN when NAV is flat', () => {
     const series = buildNavSeries({
-      startDate: '2024-04-02',
-      monthsCount: 25,
+      startDate: '2025-05-02',
+      monthsCount: 14,
       monthlyRate: 0,
     });
     const r = simulatePastSip({
@@ -180,10 +205,10 @@ describe('simulatePastSip — happy path', () => {
 
 describe('simulatePastSip — short history', () => {
   it('flips shortHistory true when fund NAV starts after the requested window', () => {
-    // User asks for 5Y but fund only has 1Y of data
+    // User asks for 5Y but fund only has ~1Y of data
     const series = buildNavSeries({
-      startDate: '2025-04-02',
-      monthsCount: 13,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -194,7 +219,7 @@ describe('simulatePastSip — short history', () => {
     });
     expect(r.shortHistory).toBe(true);
     expect(r.installments.length).toBeGreaterThan(0);
-    expect(r.startDate).toBe('2025-04-02');
+    expect(r.startDate).toBe('2025-05-02');
   });
 
   it('keeps shortHistory false when fund history exceeds the requested window', () => {
@@ -210,15 +235,14 @@ describe('simulatePastSip — short history', () => {
       today: TODAY,
     });
     expect(r.shortHistory).toBe(false);
-    // The first installment NAV date should be on or near the requested start
-    expect(r.requestedStartDate).toBe('2023-04-01');
-    expect(r.startDate!.startsWith('2023-04')).toBe(true);
+    expect(r.requestedStartDate).toBe('2023-05-01');
+    expect(r.startDate!.startsWith('2023-05')).toBe(true);
   });
 
   it('"All" duration always reports shortHistory false', () => {
     const series = buildNavSeries({
-      startDate: '2024-04-02',
-      monthsCount: 25,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -267,8 +291,8 @@ describe('simulatePastSip — minimum installments', () => {
 describe('simulatePastSip — extreme amounts', () => {
   it('handles very small SIP (1 rupee)', () => {
     const series = buildNavSeries({
-      startDate: '2025-04-02',
-      monthsCount: 13,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -277,15 +301,15 @@ describe('simulatePastSip — extreme amounts', () => {
       duration: '1Y',
       today: TODAY,
     });
-    expect(r.totalInvested).toBe(13);
+    expect(r.totalInvested).toBe(12);
     expect(r.totalUnits).toBeGreaterThan(0);
     expect(Number.isFinite(r.currentValue)).toBe(true);
   });
 
   it('handles very large SIP (10 lakh per month)', () => {
     const series = buildNavSeries({
-      startDate: '2025-04-02',
-      monthsCount: 13,
+      startDate: '2025-05-02',
+      monthsCount: 12,
       monthlyRate: 0.01,
     });
     const r = simulatePastSip({
@@ -294,7 +318,7 @@ describe('simulatePastSip — extreme amounts', () => {
       duration: '1Y',
       today: TODAY,
     });
-    expect(r.totalInvested).toBe(13 * 10_00_000);
+    expect(r.totalInvested).toBe(12 * 10_00_000);
     expect(Number.isFinite(r.currentValue)).toBe(true);
   });
 });

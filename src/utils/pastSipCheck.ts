@@ -107,6 +107,11 @@ function firstOfMonthStr(year: number, month: number): string {
 /**
  * Returns the requested SIP start date for the given duration relative to today.
  * For 'All', returns null — caller falls back to the first NAV date.
+ *
+ * The window is a whole number of completed months: a 3Y SIP is exactly 36
+ * monthly buys, 1Y is 12, 5Y is 60. We anchor the first installment to
+ * `(today's month − N years + 1 month)` so today's month is the LAST buy and
+ * we don't double-count the boundary month.
  */
 export function computeRequestedStartDate(
   duration: PastSipDuration,
@@ -114,8 +119,8 @@ export function computeRequestedStartDate(
 ): string | null {
   const years = durationToYears(duration);
   if (years === null) return null;
-  // Anchor to the 1st of the month so the SIP window is whole months
-  const start = new Date(Date.UTC(today.getUTCFullYear() - years, today.getUTCMonth(), 1));
+  // Start one month after today-minus-N-years so the loop produces exactly N×12 buys.
+  const start = new Date(Date.UTC(today.getUTCFullYear() - years, today.getUTCMonth() + 1, 1));
   return toDateStr(start);
 }
 
