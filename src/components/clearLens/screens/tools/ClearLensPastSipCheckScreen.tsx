@@ -596,12 +596,15 @@ function PastSipChart({
 
       {points.map((p, i) => {
         if (i % labelEvery !== 0 && i !== points.length - 1) return null;
+        const isLast = i === points.length - 1;
+        const isFirst = i === 0;
+        const anchor = isLast ? 'end' : isFirst ? 'start' : 'middle';
         return (
           <SvgText
             key={`xlabel-${i}`}
             x={xFor(i)}
             y={chartHeight - 6}
-            textAnchor="middle"
+            textAnchor={anchor}
             fontSize={9}
             fill={tokens.colors.textTertiary}
           >
