@@ -151,7 +151,9 @@ export function ClearLensPastSipCheckScreen() {
     [fundResult, benchmarkResult],
   );
 
-  const chartWidth = windowWidth - ClearLensSpacing.md * 2;
+  // ClearLensScreen caps content at 760px on desktop; clamp the chart so the SVG
+  // doesn't overflow the card on wide viewports.
+  const chartWidth = Math.min(windowWidth, 760) - ClearLensSpacing.md * 2;
 
   // -------------------------------------------------------------------------
   // Empty / loading states
@@ -387,7 +389,7 @@ function ResultSection({
         />
         <RowDivider />
         <Row
-          label="XIRR (annualised)"
+          label="Return per year"
           value={Number.isFinite(fundResult.xirr) ? formatXirr(fundResult.xirr) : '—'}
           tone={Number.isFinite(fundResult.xirr) && fundResult.xirr >= 0 ? 'positive' : 'negative'}
         />
@@ -398,25 +400,33 @@ function ResultSection({
       {benchmarkResult ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>vs {benchmarkLabel}</Text>
-          <Row
-            label="Benchmark XIRR"
-            value={Number.isFinite(benchmarkResult.xirr) ? formatXirr(benchmarkResult.xirr) : '—'}
-          />
-          <RowDivider />
-          <Row
-            label="Benchmark current value"
-            value={formatCurrency(benchmarkResult.currentValue)}
-          />
-          <RowDivider />
+          <View style={styles.compareRow}>
+            <View style={styles.compareCol}>
+              <Text style={styles.compareLabel}>Your fund</Text>
+              <Text style={styles.compareValueFund}>
+                {Number.isFinite(fundResult.xirr) ? formatXirr(fundResult.xirr) : '—'}
+              </Text>
+              <Text style={styles.compareSub}>per year</Text>
+            </View>
+            <View style={styles.compareCol}>
+              <Text style={styles.compareLabel}>{benchmarkLabel}</Text>
+              <Text style={styles.compareValueBench}>
+                {Number.isFinite(benchmarkResult.xirr) ? formatXirr(benchmarkResult.xirr) : '—'}
+              </Text>
+              <Text style={styles.compareSub}>per year</Text>
+            </View>
+          </View>
           {xirrDeltaPp != null ? (
-            <Row
-              label={isAhead ? 'Ahead of benchmark' : 'Behind benchmark'}
-              value={`${xirrDeltaPp.toFixed(1)}% pp`}
-              tone={isAhead ? 'positive' : 'negative'}
-            />
-          ) : (
-            <Row label="Benchmark comparison" value="—" />
-          )}
+            <Text style={[styles.compareSummary, isAhead ? styles.compareSummaryUp : styles.compareSummaryDown]}>
+              {isAhead
+                ? `Your fund earned ${xirrDeltaPp.toFixed(1)}% more per year`
+                : `${benchmarkLabel} earned ${xirrDeltaPp.toFixed(1)}% more per year`}
+            </Text>
+          ) : null}
+          <Text style={styles.compareNote}>
+            Index returns shown are price-only — Nifty/Sensex SIP funds (TRI) reinvest dividends and
+            typically run ~1.5–2% higher per year. Compare like-for-like with that in mind.
+          </Text>
         </View>
       ) : null}
 
@@ -891,6 +901,53 @@ function makeStyles(tokens: ClearLensTokens) {
       marginHorizontal: ClearLensSpacing.md,
     },
 
+    compareRow: {
+      flexDirection: 'row',
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingVertical: ClearLensSpacing.sm,
+      gap: ClearLensSpacing.sm,
+    },
+    compareCol: {
+      flex: 1,
+      gap: 2,
+    },
+    compareLabel: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+    },
+    compareValueFund: {
+      ...ClearLensTypography.h2,
+      color: cl.emerald,
+    },
+    compareValueBench: {
+      ...ClearLensTypography.h2,
+      color: cl.slate,
+    },
+    compareSub: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+    },
+    compareSummary: {
+      ...ClearLensTypography.bodySmall,
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingVertical: ClearLensSpacing.xs,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    compareSummaryUp: {
+      color: cl.positive,
+    },
+    compareSummaryDown: {
+      color: cl.negative,
+    },
+    compareNote: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.sm,
+      lineHeight: 16,
+    },
     chartLegend: {
       flexDirection: 'row',
       flexWrap: 'wrap',
