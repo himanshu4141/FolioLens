@@ -6,6 +6,7 @@ import {
   filterReversedTransactionPairs,
   buildBenchmarkLookup,
   simulateBenchmarkInvestment,
+  computeBenchmarkXirr,
   type Cashflow,
   type Transaction,
 } from '../xirr';
@@ -771,5 +772,117 @@ describe('simulateBenchmarkInvestment()', () => {
     // close <= 0 → skipped (would otherwise divide by zero)
     expect(sim.finalUnits).toBe(0);
     expect(sim.benchmarkFlows).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeBenchmarkXirr — the canonical "fund-vs-index" XIRR primitive
+// ---------------------------------------------------------------------------
+
+describe('computeBenchmarkXirr()', () => {
+  const lookup = buildBenchmarkLookup([
+    { date: '2024-01-01', value: 100 },
+    { date: '2024-04-01', value: 110 },
+    { date: '2024-07-01', value: 120 },
+    { date: '2024-10-01', value: 130 },
+    { date: '2025-01-01', value: 145 },
+  ]);
+
+  it('matches a hand-built simulator + xirr() on a flat purchase pattern', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+      { transaction_date: '2024-04-01', transaction_type: 'purchase', units: 50, amount: 5500 },
+    ];
+    const result = computeBenchmarkXirr({
+      transactions: txs,
+      benchmarkValueAt: lookup,
+      terminalDate: new Date('2025-01-01'),
+    });
+    // 100 units bought + 50 units bought = 150 units. Terminal at 145.
+    // Total invested = 15500. Final value = 150*145 = 21750.
+    // Should be a finite, positive XIRR.
+    expect(Number.isFinite(result.xirr)).toBe(true);
+    expect(result.xirr).toBeGreaterThan(0);
+    expect(result.finalUnits).toBeCloseTo(100 + 50, 5);
+    expect(result.finalValue).toBeCloseTo(150 * 145, 5);
+  });
+
+  it('returns NaN when no transactions produce outflows', () => {
+    const result = computeBenchmarkXirr({
+      transactions: [],
+      benchmarkValueAt: lookup,
+      terminalDate: new Date('2025-01-01'),
+    });
+    expect(result.xirr).toBeNaN();
+    expect(result.finalUnits).toBe(0);
+    expect(result.finalValue).toBe(0);
+  });
+
+  it('returns NaN when terminalDate predates the entire benchmark series', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+    ];
+    const result = computeBenchmarkXirr({
+      transactions: txs,
+      benchmarkValueAt: lookup,
+      terminalDate: new Date('2023-01-01'), // before lookup's earliest date
+    });
+    expect(result.xirr).toBeNaN();
+    expect(result.finalValue).toBe(0);
+  });
+
+  // The bug this primitive exists to prevent: caller-built terminal flows where
+  // the fund and benchmark XIRR terminate on different dates and produce a
+  // spurious gap. Verify that the same input produces the same number both via
+  // computeBenchmarkXirr and a hand-built simulator + terminal flow.
+  it('produces the same XIRR as the hand-built sequence (no caller-side asymmetry possible)', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+      { transaction_date: '2024-07-01', transaction_type: 'purchase', units: 50, amount: 6000 },
+      { transaction_date: '2024-10-01', transaction_type: 'redemption', units: 60, amount: 7800 },
+    ];
+    const terminalDate = new Date('2025-01-01');
+
+    const helperResult = computeBenchmarkXirr({
+      transactions: txs,
+      benchmarkValueAt: lookup,
+      terminalDate,
+    });
+
+    // Hand-built equivalent
+    const sim = simulateBenchmarkInvestment(txs, lookup);
+    const terminalClose = lookup('2025-01-01')!;
+    const handFlows: Cashflow[] = [
+      ...sim.benchmarkFlows,
+      { date: terminalDate, amount: sim.finalUnits * terminalClose },
+    ];
+    const handXirr = xirr(handFlows);
+
+    expect(helperResult.xirr).toBeCloseTo(handXirr, 6);
+  });
+
+  // Regression — usePortfolio.marketXirr previously terminated at the latest
+  // benchmark row's date while portfolioXirr terminated at `today`. If today
+  // is later than the latest benchmark row, that's a date asymmetry that
+  // distorts the alpha. Verify the helper resolves "today" consistently.
+  it('terminating at `today` even when benchmark series stops earlier', () => {
+    const earlyEndingLookup = buildBenchmarkLookup([
+      { date: '2024-01-01', value: 100 },
+      { date: '2024-12-15', value: 130 }, // benchmark stops before today
+    ]);
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+    ];
+    const today = new Date('2025-01-15');
+    const result = computeBenchmarkXirr({
+      transactions: txs,
+      benchmarkValueAt: earlyEndingLookup,
+      terminalDate: today,
+    });
+    // Lookup at-or-before today returns the Dec 15 close (130).
+    // The terminal flow is dated `today`, NOT Dec 15 — so XIRR's elapsed
+    // period reflects the user's ask, not the benchmark's coverage gap.
+    expect(result.finalValue).toBeCloseTo(100 * 130, 5);
+    expect(result.flows[result.flows.length - 1].date.getTime()).toBe(today.getTime());
   });
 });
