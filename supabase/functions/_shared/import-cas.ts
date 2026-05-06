@@ -1,6 +1,7 @@
 /**
- * Shared CAS import logic — used by both cas-webhook (inbound email)
- * and parse-cas-pdf (direct upload) edge functions.
+ * Shared CAS import logic — used by both cas-webhook-resend (inbound email
+ * via Resend Inbound + Vercel router) and parse-cas-pdf (direct upload)
+ * edge functions.
  *
  * CASParser /v4/smart/parse response shape (relevant fields):
  *

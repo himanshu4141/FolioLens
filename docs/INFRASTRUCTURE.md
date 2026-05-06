@@ -222,7 +222,6 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 |--------|-----|------|
 | `APP_BASE_URL` | `https://foliolens-dev.vercel.app` | `https://app.foliolens.in` |
 | `CAS_PARSER_SHARED_SECRET` | shared with the Vercel Python parser | same |
-| `CASPARSER_API_KEY` | (deprecated, kept until M2.6) | (deprecated, kept until M2.6) |
 | `EODHD_API_KEY` | only set if EOD-style index data needed | same |
 | `RESEND_INBOUND_SECRET` | M2: same Resend Svix secret used by the Vercel router | same |
 | `RESEND_API_KEY` | M2: fetches received email bodies / attachment download URLs from Resend and sends inbound-import status emails | same |
