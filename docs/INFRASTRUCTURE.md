@@ -223,11 +223,12 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `APP_BASE_URL` | `https://foliolens-dev.vercel.app` | `https://app.foliolens.in` |
 | `CAS_PARSER_SHARED_SECRET` | shared with the Vercel Python parser | same |
 | `EODHD_API_KEY` | only set if EOD-style index data needed | same |
-| `RESEND_INBOUND_SECRET` | M2: same Resend Svix secret used by the Vercel router | same |
-| `RESEND_API_KEY` | M2: fetches received email bodies / attachment download URLs from Resend and sends inbound-import status emails | same |
-| `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID` | Published DEV Resend Template id / alias for CAS import status emails | Published PROD Resend Template id / alias for CAS import status emails |
-| `RESEND_NOTIFICATION_FROM` | `FolioLens Dev <noreply-dev@foliolens.in>` | `FolioLens <noreply@foliolens.in>` |
+| `FOLIOLENS_INBOUND_ROUTER_SECRET` | Issue #107: HMAC shared with the Vercel router for inbound CAS handoff + outbound notification callback | same |
+| `ROUTER_NOTIFY_URL` | (optional) Vercel cas-import-notify endpoint, defaults to `https://app.foliolens.in/api/cas-import-notify` | same |
+| `NOTIFY_ENVIRONMENT` | `dev` — picks the dev Resend template + dev From address at the router | `prod` — picks the prod Resend template + prod From address |
 | `VERCEL_PROTECTION_BYPASS_TOKEN` | only when Vercel protection is enabled | same |
+
+**Removed in Issue #107**: `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`, `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, and `RESEND_NOTIFICATION_FROM` no longer live on Supabase. After deploying this PR, delete those four secrets from both DEV and PROD Supabase project dashboards. They moved to the Vercel project (see "Inbound router" section below).
 
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-provided by Supabase to every Edge Function — never set them manually.
@@ -238,12 +239,17 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 
 | Variable | Purpose |
 |----------|---------|
-| `RESEND_API_KEY` | Reads received email content / attachments and sends forwarded human-alias mail |
+| `RESEND_API_KEY` | Reads received email content / attachments, sends forwarded human-alias mail, sends CAS import status emails (post-#107 — Supabase no longer holds this secret) |
 | `RESEND_INBOUND_ROUTER_SECRET` | Resend Svix webhook signing secret for `email.received` |
+| `FOLIOLENS_INBOUND_ROUTER_SECRET` | HMAC shared with both Supabase webhooks for inbound CAS handoff + outbound notification callback (see Issue #107) |
 | `MAIL_FORWARD_TO` | Owner Gmail destination for `hello@`, `support@`, `privacy@`, and `security@` |
 | `MAIL_FORWARD_FROM` | Verified Resend sender used when forwarding aliases, e.g. `FolioLens Mail <noreply@foliolens.in>` |
 | `SUPABASE_DEV_FUNCTION_URL` | DEV `cas-webhook-resend` endpoint |
 | `SUPABASE_PROD_FUNCTION_URL` | PROD `cas-webhook-resend` endpoint |
+| `RESEND_NOTIFICATION_FROM_DEV` | DEV From address for CAS import status emails, e.g. `FolioLens Dev <noreply-dev@foliolens.in>` |
+| `RESEND_NOTIFICATION_FROM_PROD` | PROD From address for CAS import status emails, e.g. `FolioLens <noreply@foliolens.in>` |
+| `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_DEV` | Published DEV Resend Template id/alias for CAS import status emails |
+| `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_PROD` | Published PROD Resend Template id/alias for CAS import status emails |
 
 
 ## Branching, merging, releasing
