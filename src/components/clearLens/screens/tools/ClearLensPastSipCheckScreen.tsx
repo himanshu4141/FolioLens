@@ -48,6 +48,7 @@ import {
 } from '@/src/utils/pastSipCheck';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
+import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 
 const DURATION_OPTIONS: { value: PastSipDuration; label: string }[] = [
   { value: '1Y', label: '1Y' },
@@ -423,10 +424,7 @@ function ResultSection({
                 : `${benchmarkLabel} earned ${xirrDeltaPp.toFixed(1)}% more per year`}
             </Text>
           ) : null}
-          <Text style={styles.compareNote}>
-            Index returns shown are price-only — Nifty/Sensex SIP funds (TRI) reinvest dividends and
-            typically run ~1.5–2% higher per year. Compare like-for-like with that in mind.
-          </Text>
+          <Text style={styles.compareNote}>{BENCHMARK_DISCLOSURE}</Text>
         </View>
       ) : null}
 
