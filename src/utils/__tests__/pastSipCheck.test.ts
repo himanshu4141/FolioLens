@@ -529,3 +529,166 @@ describe('simulatePastSip — duration coverage', () => {
     expect(Number.isFinite(r.currentValue)).toBe(true);
   });
 });
+
+// Regression — the SIP-check tool reported DSP Nifty 50 Index Fund (a TRI
+// tracker, 0.18% TER) underperforming Nifty 50 TRI by 1.0% p.a. over 3Y.
+// A direct plan index fund mechanically can't lag its benchmark by that
+// much. Root cause: simulatePastSip ran each series independently, so fund
+// and benchmark terminated on different days. The benchmark also occasionally
+// trades when funds don't (Diwali muhurat, Budget Saturday), creating a
+// small installment-date drift on top. Both effects compounded into a
+// spurious ~1% p.a. gap. The alignToFund mode locks both to the fund's
+// calendar.
+describe('simulatePastSip — alignToFund eliminates terminal-date asymmetry', () => {
+  it('benchmark sim reuses the fund\'s installment dates exactly', () => {
+    const fundSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 100 },
+      { date: '2024-02-01', value: 102 },
+      { date: '2024-03-01', value: 105 },
+      { date: '2024-04-01', value: 108 },
+    ];
+    const benchSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 1000 },
+      { date: '2024-02-01', value: 1020 },
+      { date: '2024-03-01', value: 1050 },
+      { date: '2024-04-01', value: 1080 },
+    ];
+    const fundR = simulatePastSip({
+      navSeries: fundSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-04-15'),
+    });
+    const benchR = simulatePastSip({
+      navSeries: benchSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-04-15'),
+      alignToFund: fundR,
+    });
+    expect(benchR.installments.length).toBe(fundR.installments.length);
+    benchR.installments.forEach((inst, idx) => {
+      expect(inst.intendedDate).toBe(fundR.installments[idx].intendedDate);
+      expect(inst.navDate).toBe(fundR.installments[idx].navDate);
+    });
+    expect(benchR.endDate).toBe(fundR.endDate);
+  });
+
+  it('benchmark with extra trailing dates terminates at fund\'s endDate, not its own latest', () => {
+    const fundSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 100 },
+      { date: '2024-02-01', value: 100 },
+      { date: '2024-03-01', value: 100 },
+    ];
+    const benchSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 1000 },
+      { date: '2024-02-01', value: 1000 },
+      { date: '2024-03-01', value: 1000 },
+      // Two extra trading days the fund didn't have, with a sharp move up
+      { date: '2024-03-04', value: 1020 },
+      { date: '2024-03-05', value: 1050 },
+    ];
+    const fundR = simulatePastSip({
+      navSeries: fundSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-03-15'),
+    });
+    const benchR = simulatePastSip({
+      navSeries: benchSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-03-15'),
+      alignToFund: fundR,
+    });
+    // Without alignToFund the benchmark would terminate on Mar 5 at 1050,
+    // showing a +5% phantom gain. With alignToFund it terminates flat on
+    // Mar 1 — same as the fund.
+    expect(benchR.endDate).toBe('2024-03-01');
+    expect(benchR.finalNav).toBe(1000);
+    expect(benchR.currentValue).toBe(benchR.totalInvested);
+  });
+
+  it('on-or-before lookup catches an installment when benchmark didn\'t trade that exact day', () => {
+    const fundSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 100 },
+      { date: '2024-02-05', value: 102 },
+    ];
+    const benchSeries: NavPoint[] = [
+      { date: '2024-01-02', value: 1000 },
+      { date: '2024-02-02', value: 1020 },
+    ];
+    const fundR = simulatePastSip({
+      navSeries: fundSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-02-15'),
+    });
+    const benchR = simulatePastSip({
+      navSeries: benchSeries, monthlyAmount: 10_000, duration: 'All',
+      today: new Date('2024-02-15'),
+      alignToFund: fundR,
+    });
+    expect(benchR.installments).toHaveLength(2);
+    expect(benchR.installments[1].navDate).toBe('2024-02-02');
+    expect(benchR.installments[1].nav).toBe(1020);
+  });
+
+  // Numerical anchor — the exact 36-month series the user ran in the app.
+  // Standalone mode reproduces the ~1% spurious gap; aligned mode collapses
+  // it to ~0.2% (TER + tracking error of a direct-plan index fund).
+  it('user-reported scenario: 36-month SIP gap collapses from ~1% to ~0.2%', () => {
+    type Row = [string, number, string, number];
+    const rows: Row[] = [
+      ['2023-06-01',17.6660,'2023-06-01',26989.35],
+      ['2023-07-03',18.4883,'2023-07-03',28254.90],
+      ['2023-08-01',18.9006,'2023-08-01',28880.78],
+      ['2023-09-01',18.6551,'2023-09-01',28509.94],
+      ['2023-10-03',18.7419,'2023-10-03',28647.04],
+      ['2023-11-01',18.2408,'2023-11-01',27886.24],
+      ['2023-12-01',19.4756,'2023-12-01',29783.34],
+      ['2024-01-01',20.8882,'2024-01-01',31949.36],
+      ['2024-02-01',20.8505,'2024-02-01',31898.06],
+      ['2024-03-01',21.4903,'2024-03-01',32884.29],
+      ['2024-04-01',21.6060,'2024-04-01',33066.13],
+      ['2024-05-02',21.7819,'2024-05-02',33340.20],
+      ['2024-06-03',22.4464,'2024-06-03',34369.13],
+      ['2024-07-01',23.3286,'2024-07-01',35733.58],
+      ['2024-08-01',24.1811,'2024-08-01',37049.70],
+      ['2024-09-02',24.4863,'2024-09-02',37525.28],
+      ['2024-10-01',24.9833,'2024-10-01',38294.54],
+      ['2024-11-04',23.2615,'2024-11-01',36118.25],
+      ['2024-12-02',23.5409,'2024-12-02',36094.39],
+      ['2025-01-01',23.0191,'2025-01-01',35301.63],
+      ['2025-02-03',22.6738,'2025-02-01',34958.89],
+      ['2025-03-03',21.4904,'2025-03-03',32965.25],
+      ['2025-04-01',22.5036,'2025-04-01',34527.01],
+      ['2025-05-02',23.6508,'2025-05-02',36293.51],
+      ['2025-06-02',24.0568,'2025-06-02',36921.62],
+      ['2025-07-01',24.9176,'2025-07-01',38254.39],
+      ['2025-08-01',24.0110,'2025-08-01',36863.40],
+      ['2025-09-01',24.1009,'2025-09-01',37006.87],
+      ['2025-10-01',24.3086,'2025-10-01',37331.20],
+      ['2025-11-03',25.2373,'2025-11-03',38762.65],
+      ['2025-12-01',25.6474,'2025-12-01',39403.02],
+      ['2026-01-01',25.6218,'2026-01-01',39359.02],
+      ['2026-02-02',24.5971,'2026-02-01',37392.92],
+      ['2026-03-02',24.3854,'2026-03-02',37472.06],
+      ['2026-04-01',22.2434,'2026-04-01',34179.90],
+      ['2026-05-04',23.6564,'2026-05-04',36358.33],
+    ];
+    const fundSeries: NavPoint[] = rows.map(([d, v]) => ({ date: d, value: v }));
+    fundSeries.push({ date: '2026-05-05', value: 23.5716 }); // fund's last NAV — a -0.36% down day
+    const benchSeries: NavPoint[] = rows.map(([, , d, v]) => ({ date: d, value: v }));
+    benchSeries.push({ date: '2026-05-05', value: 36227.97 });
+    benchSeries.push({ date: '2026-05-06', value: 36677.36 }); // benchmark trades one extra day, +1.24% up
+
+    const today = new Date('2026-05-06T00:00:00Z');
+    const fundR = simulatePastSip({
+      navSeries: fundSeries, monthlyAmount: 10_000, duration: '3Y', today,
+    });
+    const standaloneBench = simulatePastSip({
+      navSeries: benchSeries, monthlyAmount: 10_000, duration: '3Y', today,
+    });
+    const alignedBench = simulatePastSip({
+      navSeries: benchSeries, monthlyAmount: 10_000, duration: '3Y', today,
+      alignToFund: fundR,
+    });
+
+    const standaloneGap = (standaloneBench.xirr - fundR.xirr) * 100;
+    const alignedGap = (alignedBench.xirr - fundR.xirr) * 100;
+    expect(standaloneGap).toBeGreaterThan(0.85); // bug reproduced
+    expect(alignedGap).toBeLessThan(0.30);       // bug fixed
+    expect(Number.isFinite(alignedGap)).toBe(true);
+  });
+});

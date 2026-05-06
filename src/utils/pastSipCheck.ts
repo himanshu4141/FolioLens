@@ -31,6 +31,21 @@ export interface PastSipInput {
   duration: PastSipDuration;
   /** Override "today" — only used in tests. */
   today?: Date;
+  /**
+   * Optional fund result to align this simulation to. When set, the simulator
+   * skips its own installment-generation loop and instead "buys" on each of
+   * the fund result's intended dates, looking up navSeries at-or-before each
+   * date. The terminal valuation also moves to the fund's terminal date with
+   * at-or-before lookup.
+   *
+   * This makes a benchmark simulation directly comparable to the fund's —
+   * same calendar, same terminal date — so the XIRR gap reflects only
+   * underlying performance, not timing artefacts. Indian markets occasionally
+   * publish on days mutual fund NAVs don't (Diwali muhurat, Budget Saturday)
+   * and series-end dates often differ by 1-2 days; both effects compound into
+   * a spurious 0.5–1% gap per year if each series chooses its own dates.
+   */
+  alignToFund?: PastSipResult;
 }
 
 export interface PastSipInstallment {
@@ -140,8 +155,35 @@ function findNavOnOrAfter(
   return null;
 }
 
+/**
+ * Find the latest NAV row on or before the given date string.
+ * Used for aligning a benchmark sim to the fund's calendar — if the fund
+ * bought on Mon Jan 2 we want the benchmark value AT Mon Jan 2, falling back
+ * to the closest prior trading day if the benchmark didn't trade then.
+ * (You can't "buy" the benchmark at a future date, so on-or-after is wrong
+ *  for this case.)
+ */
+function findNavOnOrBefore(
+  series: NavPoint[],
+  date: string,
+): NavPoint | null {
+  let lo = 0;
+  let hi = series.length - 1;
+  let found: NavPoint | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (series[mid].date <= date) {
+      found = series[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
 export function simulatePastSip(input: PastSipInput): PastSipResult {
-  const { navSeries, monthlyAmount, duration } = input;
+  const { navSeries, monthlyAmount, duration, alignToFund } = input;
   const today = input.today ?? new Date();
 
   if (navSeries.length === 0 || monthlyAmount <= 0) {
@@ -149,56 +191,92 @@ export function simulatePastSip(input: PastSipInput): PastSipResult {
   }
 
   const requestedStart = computeRequestedStartDate(duration, today);
-  const seriesFirstDate = navSeries[0].date;
-  const effectiveStartStr = requestedStart && requestedStart > seriesFirstDate
-    ? requestedStart
-    : seriesFirstDate;
 
-  // Anchor to the 1st of the month containing effectiveStartStr
-  const effectiveStartDate = parseDateStr(effectiveStartStr);
-  let installmentYear = effectiveStartDate.getUTCFullYear();
-  let installmentMonth = effectiveStartDate.getUTCMonth() + 1; // 1–12
-
-  // Latest NAV serves as today's valuation.
-  const finalNavRow = navSeries[navSeries.length - 1];
-  const finalNavDateStr = finalNavRow.date;
-  const finalNav = finalNavRow.value;
-  const todayStr = toDateStr(today);
-  // Cap installment loop at min(today, finalNavDate) so we don't try to "buy"
-  // in months past the latest NAV row.
-  const lastInstallmentDateStr = finalNavDateStr < todayStr ? finalNavDateStr : todayStr;
-
-  const installments: PastSipInstallment[] = [];
+  let installments: PastSipInstallment[] = [];
   let totalUnits = 0;
   let totalInvested = 0;
-  let cursor = 0;
+  let finalNav: number;
+  let finalNavDateStr: string;
 
-  while (true) {
-    const intended = firstOfMonthStr(installmentYear, installmentMonth);
-    if (intended > lastInstallmentDateStr) break;
-
-    const lookup = findNavOnOrAfter(navSeries, intended, cursor);
-    if (!lookup) break;
-    cursor = lookup.index;
-
-    const nav = lookup.point.value;
-    if (nav > 0) {
-      const units = monthlyAmount / nav;
+  if (alignToFund && alignToFund.installments.length > 0 && alignToFund.endDate) {
+    // ── Aligned benchmark mode ──────────────────────────────────────────────
+    // For each fund installment, value the benchmark at the SAME date the
+    // fund actually bought (its navDate, not its intendedDate). Use on-or-
+    // before lookup so a missing date in the benchmark series falls back to
+    // the closest prior trading day. Terminal valuation also moves to the
+    // fund's terminal date with the same lookup. This eliminates the
+    // ~1%/yr spurious gap that arose when each series independently chose
+    // its own end-of-window dates.
+    for (const fundInstallment of alignToFund.installments) {
+      const point = findNavOnOrBefore(navSeries, fundInstallment.navDate);
+      if (!point || point.value <= 0) continue;
+      const units = monthlyAmount / point.value;
       installments.push({
-        intendedDate: intended,
-        navDate: lookup.point.date,
-        nav,
+        intendedDate: fundInstallment.intendedDate,
+        navDate: point.date,
+        nav: point.value,
         units,
         amount: monthlyAmount,
       });
       totalUnits += units;
       totalInvested += monthlyAmount;
     }
+    const terminal = findNavOnOrBefore(navSeries, alignToFund.endDate);
+    if (!terminal) {
+      // benchmark series doesn't reach the fund's terminal — fall back to its
+      // own latest, which is the safest non-NaN behaviour.
+      const latest = navSeries[navSeries.length - 1];
+      finalNav = latest.value;
+      finalNavDateStr = latest.date;
+    } else {
+      finalNav = terminal.value;
+      finalNavDateStr = terminal.date;
+    }
+  } else {
+    // ── Standalone mode (unchanged behaviour) ───────────────────────────────
+    const seriesFirstDate = navSeries[0].date;
+    const effectiveStartStr = requestedStart && requestedStart > seriesFirstDate
+      ? requestedStart
+      : seriesFirstDate;
 
-    installmentMonth += 1;
-    if (installmentMonth > 12) {
-      installmentMonth = 1;
-      installmentYear += 1;
+    const effectiveStartDate = parseDateStr(effectiveStartStr);
+    let installmentYear = effectiveStartDate.getUTCFullYear();
+    let installmentMonth = effectiveStartDate.getUTCMonth() + 1;
+
+    const finalNavRow = navSeries[navSeries.length - 1];
+    finalNavDateStr = finalNavRow.date;
+    finalNav = finalNavRow.value;
+    const todayStr = toDateStr(today);
+    const lastInstallmentDateStr = finalNavDateStr < todayStr ? finalNavDateStr : todayStr;
+
+    let cursor = 0;
+    while (true) {
+      const intended = firstOfMonthStr(installmentYear, installmentMonth);
+      if (intended > lastInstallmentDateStr) break;
+
+      const lookup = findNavOnOrAfter(navSeries, intended, cursor);
+      if (!lookup) break;
+      cursor = lookup.index;
+
+      const nav = lookup.point.value;
+      if (nav > 0) {
+        const units = monthlyAmount / nav;
+        installments.push({
+          intendedDate: intended,
+          navDate: lookup.point.date,
+          nav,
+          units,
+          amount: monthlyAmount,
+        });
+        totalUnits += units;
+        totalInvested += monthlyAmount;
+      }
+
+      installmentMonth += 1;
+      if (installmentMonth > 12) {
+        installmentMonth = 1;
+        installmentYear += 1;
+      }
     }
   }
 

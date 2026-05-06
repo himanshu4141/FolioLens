@@ -138,14 +138,19 @@ export function ClearLensPastSipCheckScreen() {
     });
   }, [fundEntry, monthlyAmount, duration]);
 
+  // Align the benchmark sim to the fund's installment dates and terminal date
+  // so the XIRR comparison reflects only underlying performance — without
+  // alignment, the fund and index choose their own end-of-window dates,
+  // creating a 0.5–1%/yr spurious gap from a 1–2 day terminal-date drift.
   const benchmarkResult = useMemo(() => {
-    if (!benchmarkEntry) return null;
+    if (!benchmarkEntry || !fundResult) return null;
     return simulatePastSip({
       navSeries: benchmarkEntry.history,
       monthlyAmount,
       duration,
+      alignToFund: fundResult,
     });
-  }, [benchmarkEntry, monthlyAmount, duration]);
+  }, [benchmarkEntry, monthlyAmount, duration, fundResult]);
 
   const chartPoints = useMemo(
     () => (fundResult ? buildPastSipChartSeries(fundResult, benchmarkResult) : []),
