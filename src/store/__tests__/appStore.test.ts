@@ -1,4 +1,9 @@
-import { BENCHMARK_OPTIONS, migratePersistedAppState } from '../appStore';
+import {
+  BENCHMARK_OPTIONS,
+  type AppStore,
+  mergePersistedAppState,
+  migratePersistedAppState,
+} from '../appStore';
 
 const DEFAULT_RETURN_ASSUMPTIONS = { cautious: 8, balanced: 12, growth: 12 };
 
@@ -385,5 +390,111 @@ describe('screen UI preferences migration', () => {
   it('does not migrate fundsSearchQuery — it is intentionally session-only', () => {
     const result = migratePersistedAppState({ fundsSearchQuery: 'leftover' });
     expect((result as { fundsSearchQuery?: string }).fundsSearchQuery).toBeUndefined();
+  });
+});
+
+describe('mergePersistedAppState', () => {
+  // Build a runtime store baseline matching the create() defaults — only the
+  // fields merge() actually reads/writes need to be realistic.
+  const baseRuntime = {
+    defaultBenchmarkSymbol: '^NSEITRI',
+    appColorScheme: 'system' as const,
+    wealthJourney: DEFAULT_WEALTH_JOURNEY,
+    returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
+    goals: [],
+    fundsSortBy: 'currentValue' as const,
+    fundsSearchQuery: '',
+    portfolioChartWindow: '1Y' as const,
+    moneyTrailSortBy: 'newest' as const,
+  } as unknown as AppStore;
+
+  it('returns runtime defaults when persisted state is null', () => {
+    const merged = mergePersistedAppState(null, baseRuntime);
+    expect(merged.defaultBenchmarkSymbol).toBe('^NSEITRI');
+    expect(merged.appColorScheme).toBe('system');
+    expect(merged.fundsSortBy).toBe('currentValue');
+    expect(merged.portfolioChartWindow).toBe('1Y');
+  });
+
+  it('returns runtime defaults when persisted state is a non-object', () => {
+    const merged = mergePersistedAppState('garbage', baseRuntime);
+    expect(merged.defaultBenchmarkSymbol).toBe('^NSEITRI');
+    expect(merged.appColorScheme).toBe('system');
+  });
+
+  it('overlays valid persisted fields onto the runtime baseline', () => {
+    const merged = mergePersistedAppState(
+      {
+        defaultBenchmarkSymbol: '^NIFTY100TRI',
+        appColorScheme: 'dark',
+        fundsSortBy: 'xirr',
+        portfolioChartWindow: '5Y',
+        moneyTrailSortBy: 'amount_desc',
+      },
+      baseRuntime,
+    );
+    expect(merged.defaultBenchmarkSymbol).toBe('^NIFTY100TRI');
+    expect(merged.appColorScheme).toBe('dark');
+    expect(merged.fundsSortBy).toBe('xirr');
+    expect(merged.portfolioChartWindow).toBe('5Y');
+    expect(merged.moneyTrailSortBy).toBe('amount_desc');
+  });
+
+  it('routes a legacy ^BSESN persisted benchmark to ^NSEITRI on merge', () => {
+    const merged = mergePersistedAppState(
+      { defaultBenchmarkSymbol: '^BSESN' },
+      baseRuntime,
+    );
+    expect(merged.defaultBenchmarkSymbol).toBe('^NSEITRI');
+  });
+
+  it('falls back to runtime values when persisted fields are missing', () => {
+    const customRuntime = {
+      ...baseRuntime,
+      fundsSortBy: 'invested' as const,
+      portfolioChartWindow: '3Y' as const,
+      moneyTrailSortBy: 'oldest' as const,
+    };
+    const merged = mergePersistedAppState({}, customRuntime as unknown as AppStore);
+    expect(merged.fundsSortBy).toBe('invested');
+    expect(merged.portfolioChartWindow).toBe('3Y');
+    expect(merged.moneyTrailSortBy).toBe('oldest');
+  });
+
+  it('sanitizes invalid persisted enum values back to safe defaults', () => {
+    const merged = mergePersistedAppState(
+      {
+        fundsSortBy: 'totally-invalid',
+        portfolioChartWindow: 'bogus',
+        moneyTrailSortBy: 'random',
+      },
+      baseRuntime,
+    );
+    expect(merged.fundsSortBy).toBe('currentValue');
+    expect(merged.portfolioChartWindow).toBe('1Y');
+    expect(merged.moneyTrailSortBy).toBe('newest');
+  });
+
+  it('drops fundsSearchQuery on merge — search input never crosses sessions', () => {
+    const merged = mergePersistedAppState(
+      { fundsSearchQuery: 'leftover query' } as Partial<AppStore>,
+      baseRuntime,
+    );
+    expect(merged.fundsSearchQuery).toBe('');
+  });
+
+  it('preserves a partial persisted wealthJourney patch over the default', () => {
+    const merged = mergePersistedAppState(
+      {
+        wealthJourney: {
+          ...DEFAULT_WEALTH_JOURNEY,
+          yearsToRetirement: 20,
+          withdrawalRate: 5,
+        },
+      },
+      baseRuntime,
+    );
+    expect(merged.wealthJourney.yearsToRetirement).toBe(20);
+    expect(merged.wealthJourney.withdrawalRate).toBe(5);
   });
 });
