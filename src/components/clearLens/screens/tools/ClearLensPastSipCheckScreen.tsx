@@ -49,7 +49,6 @@ import {
   type PastSipChartPoint,
 } from '@/src/utils/pastSipCheck';
 import { formatCurrency } from '@/src/utils/formatting';
-import { formatXirr } from '@/src/utils/xirr';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 
 // String-only key the segmented control accepts (it's generic over T extends
@@ -443,66 +442,57 @@ function ResultSection({
         </View>
       ) : null}
 
+      {/* Hero — leads with the answer. The number that matters most is the
+          terminal value; the supporting line carries the rest of the math
+          (invested, SIP count, gain) so the user doesn't have to scan a
+          separate stats card to get the same facts. */}
       <View style={styles.banner}>
         <Text style={styles.bannerLabel}>Worth today</Text>
         <Text style={styles.bannerValue}>{formatCurrency(fundResult.currentValue)}</Text>
         <Text style={styles.bannerSubtitle}>
-          on {formatCurrency(fundResult.totalInvested)} invested in {fundName}
+          {formatCurrency(fundResult.totalInvested)} invested across{' '}
+          {fundResult.installments.length} monthly SIPs ·{' '}
+          <Text style={fundResult.gain >= 0 ? styles.bannerGainUp : styles.bannerGainDown}>
+            {fundResult.gain >= 0 ? '+' : ''}
+            {formatCurrency(fundResult.gain)} ({fundResult.gainPct >= 0 ? '+' : ''}
+            {fundResult.gainPct.toFixed(1)}%) gain
+          </Text>
         </Text>
+        <Text style={styles.bannerFund}>{fundName}</Text>
       </View>
 
-      {/* Stats card — kept lean to avoid duplicating "Current value" and
-          "Return per year" with the "Your fund" column of the vs-benchmark
-          card below. Those two values appear there with the benchmark side-
-          by-side, which is the more useful framing. This card holds the
-          numbers that don't appear in the comparison: how much went in, the
-          ₹+% gain, and how many SIP installments were simulated. */}
-      <View style={styles.card}>
-        <Row label="Total invested" value={formatCurrency(fundResult.totalInvested)} />
-        <RowDivider />
-        <Row
-          label="Gain"
-          value={`${formatCurrency(fundResult.gain)} (${fundResult.gainPct >= 0 ? '+' : ''}${fundResult.gainPct.toFixed(1)}%)`}
-          tone={fundResult.gain >= 0 ? 'positive' : 'negative'}
-        />
-        <RowDivider />
-        <Row label="Installments" value={String(fundResult.installments.length)} />
-      </View>
-
+      {/* vs-card — single prose paragraph, brand-faithful (lead with the
+          answer, no label/value grid). Headline sentence pairs both rupee
+          values; conclusion sentence carries the delta and the %p.a.
+          context. */}
       {benchmarkResult ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>vs {benchmarkLabel}</Text>
-          <View style={styles.compareRow}>
-            <View style={styles.compareCol}>
-              <Text style={styles.compareLabel}>Your fund</Text>
-              <Text style={styles.compareValueFund}>
-                {Number.isFinite(fundResult.currentValue)
-                  ? formatCurrency(fundResult.currentValue)
-                  : '—'}
-              </Text>
-              <Text style={styles.compareSub}>
-                {Number.isFinite(fundResult.xirr) ? `${formatXirr(fundResult.xirr)} p.a.` : '—'}
-              </Text>
-            </View>
-            <View style={styles.compareCol}>
-              <Text style={styles.compareLabel}>{benchmarkLabel}</Text>
-              <Text style={styles.compareValueBench}>
-                {Number.isFinite(benchmarkResult.currentValue)
-                  ? formatCurrency(benchmarkResult.currentValue)
-                  : '—'}
-              </Text>
-              <Text style={styles.compareSub}>
-                {Number.isFinite(benchmarkResult.xirr)
-                  ? `${formatXirr(benchmarkResult.xirr)} p.a.`
-                  : '—'}
-              </Text>
-            </View>
-          </View>
-          {valueDelta != null && xirrDeltaPp != null ? (
-            <Text style={[styles.compareSummary, isAhead ? styles.compareSummaryUp : styles.compareSummaryDown]}>
+          <Text style={styles.versusBody}>
+            <Text style={styles.versusValueFund}>
+              {Number.isFinite(fundResult.currentValue)
+                ? formatCurrency(fundResult.currentValue)
+                : '—'}
+            </Text>{' '}
+            in your fund vs.{' '}
+            <Text style={styles.versusValueBench}>
+              {Number.isFinite(benchmarkResult.currentValue)
+                ? formatCurrency(benchmarkResult.currentValue)
+                : '—'}
+            </Text>{' '}
+            in {benchmarkLabel}.
+          </Text>
+          {valueDelta != null ? (
+            <Text
+              style={[
+                styles.versusVerdict,
+                isAhead ? styles.versusVerdictUp : styles.versusVerdictDown,
+              ]}
+            >
               {isAhead
-                ? `Your fund is ${formatCurrency(valueDelta)} ahead (${xirrDeltaPp.toFixed(1)}% p.a. extra)`
-                : `${benchmarkLabel} is ${formatCurrency(valueDelta)} ahead (${xirrDeltaPp.toFixed(1)}% p.a. extra)`}
+                ? `You're ${formatCurrency(valueDelta)} ahead`
+                : `${benchmarkLabel} is ${formatCurrency(valueDelta)} ahead`}
+              {xirrDeltaPp != null ? ` — ${xirrDeltaPp.toFixed(1)}% extra per year.` : '.'}
             </Text>
           ) : null}
           <Text style={styles.compareNote}>{BENCHMARK_DISCLOSURE}</Text>
@@ -847,41 +837,6 @@ function PastSipChart({
 // Helpers / sub-components
 // ---------------------------------------------------------------------------
 
-function Row({
-  label,
-  value,
-  highlight,
-  tone,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-  tone?: 'positive' | 'negative';
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const cl = tokens.colors;
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={[
-        styles.rowValue,
-        highlight && styles.rowValueHighlight,
-        tone === 'positive' && { color: cl.positive },
-        tone === 'negative' && { color: cl.negative },
-      ]}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function RowDivider() {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  return <View style={styles.rowDivider} />;
-}
-
 function Separator() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -1058,6 +1013,21 @@ function makeStyles(tokens: ClearLensTokens) {
     bannerSubtitle: {
       ...ClearLensTypography.bodySmall,
       color: cl.textOnDarkMuted,
+      paddingTop: ClearLensSpacing.xs,
+      lineHeight: 19,
+    },
+    bannerFund: {
+      ...ClearLensTypography.caption,
+      color: cl.textOnDarkMuted,
+      paddingTop: 2,
+    },
+    bannerGainUp: {
+      color: cl.positive,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    bannerGainDown: {
+      color: cl.negative,
+      fontFamily: ClearLensFonts.semiBold,
     },
 
     shortHistoryNotice: {
@@ -1090,72 +1060,33 @@ function makeStyles(tokens: ClearLensTokens) {
       lineHeight: 18,
     },
 
-    row: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: 12,
-    },
-    rowLabel: {
+
+    versusBody: {
       ...ClearLensTypography.body,
       color: cl.textSecondary,
-      flex: 1,
-    },
-    rowValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 14,
-      color: cl.navy,
-      textAlign: 'right',
-    },
-    rowValueHighlight: {
-      fontSize: 16,
-      color: cl.emerald,
-    },
-    rowDivider: {
-      height: 1,
-      backgroundColor: cl.borderLight,
-      marginHorizontal: ClearLensSpacing.md,
-    },
-
-    compareRow: {
-      flexDirection: 'row',
       paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: ClearLensSpacing.sm,
-      gap: ClearLensSpacing.sm,
+      paddingTop: ClearLensSpacing.xs,
+      paddingBottom: ClearLensSpacing.xs,
+      lineHeight: 22,
     },
-    compareCol: {
-      flex: 1,
-      gap: 2,
-    },
-    compareLabel: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.4,
-    },
-    compareValueFund: {
-      ...ClearLensTypography.h2,
+    versusValueFund: {
       color: cl.emerald,
+      fontFamily: ClearLensFonts.semiBold,
     },
-    compareValueBench: {
-      ...ClearLensTypography.h2,
-      color: cl.slate,
+    versusValueBench: {
+      color: cl.navy,
+      fontFamily: ClearLensFonts.semiBold,
     },
-    compareSub: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-    },
-    compareSummary: {
-      ...ClearLensTypography.bodySmall,
+    versusVerdict: {
+      ...ClearLensTypography.body,
       paddingHorizontal: ClearLensSpacing.md,
       paddingVertical: ClearLensSpacing.xs,
       fontFamily: ClearLensFonts.semiBold,
     },
-    compareSummaryUp: {
+    versusVerdictUp: {
       color: cl.positive,
     },
-    compareSummaryDown: {
+    versusVerdictDown: {
       color: cl.negative,
     },
     compareNote: {
