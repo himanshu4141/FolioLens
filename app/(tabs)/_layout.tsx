@@ -85,7 +85,7 @@ export default function TabLayout() {
             }}
           />
           <Tabs.Screen
-            name="leaderboard"
+            name="funds"
             options={{
               title: 'Funds',
               tabBarIcon: ({ color, size }) => (
@@ -106,14 +106,6 @@ export default function TabLayout() {
           {/* Settings hidden from tab bar — accessible via the shared overflow menu */}
           <Tabs.Screen
             name="settings"
-            options={{
-              tabBarButton: () => null,
-              tabBarItemStyle: { display: 'none' },
-            }}
-          />
-          {/* Compare deprecated — route kept to avoid broken deep-links during transition */}
-          <Tabs.Screen
-            name="compare"
             options={{
               tabBarButton: () => null,
               tabBarItemStyle: { display: 'none' },

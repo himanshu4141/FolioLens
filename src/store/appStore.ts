@@ -351,13 +351,6 @@ export interface AppStore {
   setMoneyTrailSortBy: (sort: MoneyTrailSortKey) => void;
 }
 
-type PersistedAppStore = Partial<AppStore> & {
-  designVariant?: 'v1' | 'v2';
-  // Removed in v5; the field is read here only to detect legacy persisted state
-  // that was migrated to the always-on Clear Lens design.
-  appDesignMode?: 'classic' | 'clearLens';
-};
-
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
 // to their TRI counterparts so the user's saved benchmark choice still
 // resolves to a valid option after the cutover. BSE Sensex maps to Nifty 50
@@ -389,7 +382,7 @@ export function migratePersistedAppState(persistedState: unknown): Partial<AppSt
     };
   }
 
-  const state = persistedState as PersistedAppStore;
+  const state = persistedState as Partial<AppStore>;
 
   return {
     defaultBenchmarkSymbol: migrateBenchmarkSymbol(state.defaultBenchmarkSymbol),
@@ -465,7 +458,7 @@ export const useAppStore = create<AppStore>()(
       merge: (persistedState, currentState) => {
         const state =
           persistedState && typeof persistedState === 'object'
-            ? (persistedState as PersistedAppStore)
+            ? (persistedState as Partial<AppStore>)
             : {};
         return {
           ...currentState,

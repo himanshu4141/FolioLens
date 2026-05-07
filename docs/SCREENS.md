@@ -35,9 +35,7 @@ Stack routes (rendered inside the desktop sidebar shell via `ResponsiveRouteFram
 - `Portfolio Insights`, `Your Funds`, and `Fund Detail` are reached from Portfolio and fund rows.
 - `Tools Hub` is reached from the sidebar Quick Action, the Portfolio entry rows, and the Wealth Journey "Explore more tools" link.
 - `Money Trail` is reached from the sidebar Quick Action, Portfolio preview, Your Funds expanded rows, and Fund Detail.
-- `Leaderboard` is a hidden legacy route (Clear Lens keeps the screen implementation but the tab points to `Funds`).
 - `Onboarding / Import CAS` and `PDF Upload` are utility flows used for first-run import and later portfolio maintenance. Onboarding renders inside the sidebar shell on desktop via `DesktopFormFrame`.
-- `Compare` remains a hidden legacy route for transition and deep-link safety.
 
 Screen families:
 
@@ -127,19 +125,7 @@ Shows CAS-derived transaction history:
 Failed, reversed, stale zero-unit reversal rows, and confidently matched reversal pairs are hidden by default. Switches and reinvested dividends are shown as internal movement so they do not inflate Money Trail net invested.
 When Money Trail is opened for a specific fund, summary cards and yearly bars use the same fund-level cost-basis semantics as Fund Detail and Your Funds: switch-ins count as money moving into that fund, switch-outs count as money moving out, and the net figure is the remaining cost basis.
 
-### 6. Leaderboard
-
-The Leaderboard route ranks existing holdings against the selected benchmark. The screen implementation is kept for future iteration, but it's not on the bottom tabs — `Funds` takes its slot.
-
-Clear Lens includes:
-
-- benchmark selector
-- portfolio-vs-benchmark alpha card
-- leaders and laggards sections
-- ranked fund cards with current value, XIRR, alpha in percentage points, and daily delta
-- loading, empty, retry/error, and overflow-menu sync/import/settings states
-
-### 7. Wealth Journey
+### 6. Wealth Journey
 
 The Wealth Journey tab models future wealth and withdrawal-income scenarios from the real portfolio.
 
@@ -152,7 +138,7 @@ Clear Lens includes:
 - edit-SIP modal with detected and manual SIP paths
 - persisted Zustand `wealthJourney` state
 
-### 8. Settings
+### 7. Settings
 
 Settings is hidden from the bottom tabs on mobile (opened from the overflow menu) and reached on desktop by clicking the sidebar account row.
 
@@ -169,7 +155,7 @@ Includes:
 
 On desktop the hub caps content at 760 px so the cards don't stretch edge-to-edge of the sidebar shell's content area.
 
-### 9. Tools Hub
+### 8. Tools Hub
 
 Stack route (`/tools`). Clear Lens only — not a bottom tab in this phase.
 
@@ -191,7 +177,7 @@ Includes:
 
 Feature flags live in `appStore.toolsFlags`. All flags default to `false`. Each is flipped to `true` when the corresponding tool milestone ships.
 
-### 10. Onboarding / Import CAS
+### 9. Onboarding / Import CAS
 
 Reusable for first-run onboarding and later imports.
 
@@ -205,6 +191,6 @@ Clear Lens mode uses the same behavior with Clear Lens header, cards, status chi
 
 Desktop renders the wizard inside the sidebar shell using `DesktopFormFrame` (centered 720 px column) and suppresses the Stack header that would otherwise duplicate the body's hero ("Import your portfolio" / "Upload a CAS PDF").
 
-### 11. Auth (sign in + magic-link confirm)
+### 10. Auth (sign in + magic-link confirm)
 
 Pre-login screens (no sidebar). On mobile, hero gradient strip on top of the form panel inside a single column. On desktop, a 920 px wide rounded card centered on the navy background, hero on the left half (logo + headline + value props), form on the right half (email + magic link + Google + dev shortcut + security note), both vertically centered. Magic-link confirm renders the same envelope illustration centered in a ~460 px column on desktop.
