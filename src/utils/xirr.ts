@@ -440,3 +440,72 @@ export function simulateBenchmarkInvestment(
 
   return { benchmarkFlows, unitsHistory, finalUnits: units };
 }
+
+// ---------------------------------------------------------------------------
+// computeBenchmarkXirr — canonical primitive for "fund-vs-index" XIRR
+// ---------------------------------------------------------------------------
+
+export interface BenchmarkXirrInput {
+  /** The user's actual fund transactions (purchase / switch / redemption). */
+  transactions: Transaction[];
+  /** Latest-at-or-before benchmark lookup. Build via buildBenchmarkLookup(). */
+  benchmarkValueAt: (date: string) => number | null;
+  /**
+   * The date at which the simulated benchmark holding is valued for the
+   * terminal cashflow. The CALLER picks this — it MUST match the date used
+   * for the fund's portfolio terminal value, otherwise fund and benchmark
+   * XIRR aren't directly comparable. Use `today` (with at-or-before lookup)
+   * for headline alpha numbers; use the user's fund-NAV-asof date if you're
+   * pricing both on that snapshot.
+   */
+  terminalDate: Date;
+}
+
+export interface BenchmarkXirrResult {
+  /** XIRR of "the same investing pattern executed in the benchmark", or
+   * NaN if the inputs aren't sufficient (no usable terminal value, no
+   * outflows, etc.). */
+  xirr: number;
+  /** The full set of cashflows used for the XIRR. */
+  flows: Cashflow[];
+  /** Simulated benchmark units held at terminalDate. */
+  finalUnits: number;
+  /** finalUnits × benchmark close at-or-before terminalDate. */
+  finalValue: number;
+}
+
+/**
+ * Single-call "what return would I have got investing the same money in the
+ * index" computation. Bundles the simulator + terminal-flow construction +
+ * xirr() so callers can't accidentally mismatch terminal dates between fund
+ * XIRR and benchmark XIRR — that asymmetry is the source of past
+ * spurious-gap bugs.
+ *
+ * Returns NaN xirr (with finalValue = 0) when:
+ *  - no transactions produce a valid outflow into the benchmark, or
+ *  - the benchmark series doesn't reach terminalDate, or
+ *  - cashflows lack both signs (xirr requires at least one positive and one
+ *    negative).
+ */
+export function computeBenchmarkXirr(input: BenchmarkXirrInput): BenchmarkXirrResult {
+  const { transactions, benchmarkValueAt, terminalDate } = input;
+  const sim = simulateBenchmarkInvestment(transactions, benchmarkValueAt);
+  const terminalDateStr = terminalDate.toISOString().split('T')[0];
+  const terminalClose = benchmarkValueAt(terminalDateStr);
+
+  if (
+    sim.finalUnits <= 0 ||
+    sim.benchmarkFlows.length === 0 ||
+    terminalClose == null ||
+    terminalClose <= 0
+  ) {
+    return { xirr: NaN, flows: sim.benchmarkFlows, finalUnits: sim.finalUnits, finalValue: 0 };
+  }
+
+  const finalValue = sim.finalUnits * terminalClose;
+  const flows: Cashflow[] = [
+    ...sim.benchmarkFlows,
+    { date: terminalDate, amount: finalValue },
+  ];
+  return { xirr: xirr(flows), flows, finalUnits: sim.finalUnits, finalValue };
+}

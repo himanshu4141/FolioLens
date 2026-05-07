@@ -20,7 +20,7 @@ import {
   buildCashflowsFromTransactions,
   computeRealizedGains,
   buildBenchmarkLookup,
-  simulateBenchmarkInvestment,
+  computeBenchmarkXirr,
   type Cashflow,
 } from '@/src/utils/xirr';
 import { useSession } from '@/src/hooks/useSession';
@@ -282,41 +282,29 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
   ];
   const portfolioXirrRate = allCashflows.length > 0 ? xirr(portfolioXirrFlows) : NaN;
 
-  // Market XIRR: apple-to-apple comparison — simulate investing the SAME amounts
-  // on the SAME dates in the selected benchmark, then compute XIRR on those flows.
-  // Shares simulateBenchmarkInvestment with the chart so the headline alpha % and
-  // the chart's benchmark line agree on terminal value for the same inputs.
+  // Market XIRR — "what would I have got investing the same money in the
+  // benchmark." Terminate at `today` (same as portfolioXirr) using at-or-
+  // before benchmark lookup, so fund and benchmark XIRR are directly
+  // comparable. Previously this terminated at the latest benchmark date,
+  // which produced a 1–2-day asymmetry against portfolioXirr's `today`
+  // terminal — small per call, but that's exactly how 0.5–1%/yr spurious
+  // alpha sneaks in (cf. Past SIP Check fix in PR #99).
   let marketXirr = NaN;
   if (allCashflows.length > 0 && benchmarkRows?.length) {
-    const sortedBenchmark = [...(benchmarkRows ?? [])].sort((a, b) =>
-      (a.index_date as string).localeCompare(b.index_date as string),
-    );
-
     const benchmarkValueAt = buildBenchmarkLookup(
-      sortedBenchmark.map((row) => ({
+      benchmarkRows.map((row) => ({
         date: row.index_date as string,
         value: row.close_value as number,
       })),
     );
-
     const allTransactions = (allTxs ?? []).filter((tx) =>
       validFunds.some((f) => f.id === tx.fund_id),
     );
-
-    const { benchmarkFlows, finalUnits } = simulateBenchmarkInvestment(
-      allTransactions,
+    marketXirr = computeBenchmarkXirr({
+      transactions: allTransactions,
       benchmarkValueAt,
-    );
-
-    const latestBenchmarkEntry = sortedBenchmark[sortedBenchmark.length - 1];
-    if (finalUnits > 0 && latestBenchmarkEntry && benchmarkFlows.length > 0) {
-      const benchmarkTerminalValue = finalUnits * (latestBenchmarkEntry.close_value as number);
-      benchmarkFlows.push({
-        date: new Date(latestBenchmarkEntry.index_date as string),
-        amount: benchmarkTerminalValue,
-      });
-      marketXirr = xirr(benchmarkFlows);
-    }
+      terminalDate: today,
+    }).xirr;
   }
 
   const latestNavDate =
