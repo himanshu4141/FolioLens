@@ -122,17 +122,29 @@ export default function AboutScreen() {
   }
 
   async function handleSignOut() {
-    Alert.alert('Sign out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign out',
-        style: 'destructive',
-        onPress: async () => {
-          const { error } = await supabase.auth.signOut();
-          if (error) Alert.alert('Error', error.message);
-        },
-      },
-    ]);
+    // React Native's Alert.alert is a no-op on react-native-web, so on
+    // desktop the previous version of this handler appeared dead — the
+    // "Sign out" button did nothing because the confirmation dialog never
+    // rendered and signOut() was never called.
+    const confirmed =
+      Platform.OS === 'web'
+        ? typeof window !== 'undefined' && window.confirm('Are you sure you want to sign out?')
+        : await new Promise<boolean>((resolve) => {
+            Alert.alert('Sign out', 'Are you sure you want to sign out?', [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Sign out', style: 'destructive', onPress: () => resolve(true) },
+            ]);
+          });
+    if (!confirmed) return;
+
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        window.alert(`Error: ${error.message}`);
+      } else {
+        Alert.alert('Error', error.message);
+      }
+    }
   }
 
   return (
