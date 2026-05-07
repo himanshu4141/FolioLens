@@ -82,6 +82,10 @@ module.exports = ({ config }) => {
           imageWidth: 200,
           resizeMode: 'contain',
           backgroundColor: '#ffffff',
+          dark: {
+            image: './assets/images/splash-icon-dark.png',
+            backgroundColor: '#06101F',
+          },
         },
       ],
     ],
