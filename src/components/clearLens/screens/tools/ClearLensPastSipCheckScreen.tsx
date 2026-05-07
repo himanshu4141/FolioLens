@@ -353,11 +353,23 @@ function ResultSection({
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
+  // Comparison driven by terminal rupee value rather than XIRR — XIRR can move
+  // against the rupee delta on edge cases (very short history, partial period)
+  // and the user is ultimately reading "would I have ended up with more
+  // money?". XIRR stays in the card as a secondary signal, but the headline
+  // comparison reflects rupees.
   const isAhead =
     benchmarkResult &&
-    Number.isFinite(fundResult.xirr) &&
-    Number.isFinite(benchmarkResult.xirr) &&
-    fundResult.xirr > benchmarkResult.xirr;
+    Number.isFinite(fundResult.currentValue) &&
+    Number.isFinite(benchmarkResult.currentValue) &&
+    fundResult.currentValue > benchmarkResult.currentValue;
+
+  const valueDelta =
+    benchmarkResult &&
+    Number.isFinite(fundResult.currentValue) &&
+    Number.isFinite(benchmarkResult.currentValue)
+      ? Math.abs(fundResult.currentValue - benchmarkResult.currentValue)
+      : null;
 
   const xirrDeltaPp =
     benchmarkResult && Number.isFinite(fundResult.xirr) && Number.isFinite(benchmarkResult.xirr)
@@ -410,23 +422,33 @@ function ResultSection({
             <View style={styles.compareCol}>
               <Text style={styles.compareLabel}>Your fund</Text>
               <Text style={styles.compareValueFund}>
-                {Number.isFinite(fundResult.xirr) ? formatXirr(fundResult.xirr) : '—'}
+                {Number.isFinite(fundResult.currentValue)
+                  ? formatCurrency(fundResult.currentValue)
+                  : '—'}
               </Text>
-              <Text style={styles.compareSub}>per year</Text>
+              <Text style={styles.compareSub}>
+                {Number.isFinite(fundResult.xirr) ? `${formatXirr(fundResult.xirr)} p.a.` : '—'}
+              </Text>
             </View>
             <View style={styles.compareCol}>
               <Text style={styles.compareLabel}>{benchmarkLabel}</Text>
               <Text style={styles.compareValueBench}>
-                {Number.isFinite(benchmarkResult.xirr) ? formatXirr(benchmarkResult.xirr) : '—'}
+                {Number.isFinite(benchmarkResult.currentValue)
+                  ? formatCurrency(benchmarkResult.currentValue)
+                  : '—'}
               </Text>
-              <Text style={styles.compareSub}>per year</Text>
+              <Text style={styles.compareSub}>
+                {Number.isFinite(benchmarkResult.xirr)
+                  ? `${formatXirr(benchmarkResult.xirr)} p.a.`
+                  : '—'}
+              </Text>
             </View>
           </View>
-          {xirrDeltaPp != null ? (
+          {valueDelta != null && xirrDeltaPp != null ? (
             <Text style={[styles.compareSummary, isAhead ? styles.compareSummaryUp : styles.compareSummaryDown]}>
               {isAhead
-                ? `Your fund earned ${xirrDeltaPp.toFixed(1)}% more per year`
-                : `${benchmarkLabel} earned ${xirrDeltaPp.toFixed(1)}% more per year`}
+                ? `Your fund is ${formatCurrency(valueDelta)} ahead (${xirrDeltaPp.toFixed(1)}% p.a. extra)`
+                : `${benchmarkLabel} is ${formatCurrency(valueDelta)} ahead (${xirrDeltaPp.toFixed(1)}% p.a. extra)`}
             </Text>
           ) : null}
           <Text style={styles.compareNote}>{BENCHMARK_DISCLOSURE}</Text>
