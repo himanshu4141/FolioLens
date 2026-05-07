@@ -43,6 +43,8 @@ import { fetchPerformanceTimeline } from '@/src/hooks/usePerformanceTimeline';
 import {
   buildPastSipChartSeries,
   simulatePastSip,
+  CUSTOM_DURATION_MIN_MONTHS,
+  CUSTOM_DURATION_MAX_MONTHS,
   type PastSipDuration,
   type PastSipChartPoint,
 } from '@/src/utils/pastSipCheck';
@@ -50,12 +52,22 @@ import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 
-const DURATION_OPTIONS: { value: PastSipDuration; label: string }[] = [
-  { value: '1Y', label: '1Y' },
-  { value: '3Y', label: '3Y' },
-  { value: '5Y', label: '5Y' },
-  { value: 'All', label: 'All' },
-];
+// String-only key the segmented control accepts (it's generic over T extends
+// string). The actual simulator-bound duration is held separately and can be
+// the object-form { months: N } for the Custom case.
+type DurationKey = '1Y' | '3Y' | '5Y' | 'All' | 'Custom';
+
+function durationToKey(d: PastSipDuration): DurationKey {
+  return typeof d === 'object' ? 'Custom' : d;
+}
+
+function formatCustomLabel(months: number): string {
+  const y = Math.floor(months / 12);
+  const m = months % 12;
+  if (y === 0) return `${m}m`;
+  if (m === 0) return `${y}y`;
+  return `${y}y ${m}m`;
+}
 
 interface UserFund {
   id: string;
@@ -94,6 +106,43 @@ export function ClearLensPastSipCheckScreen() {
   const [duration, setDuration] = useState<PastSipDuration>('3Y');
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string>(defaultBenchmarkSymbol);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+
+  // The segmented control needs a string key — derive it from the (richer)
+  // PastSipDuration. For the Custom case the pill label flips from "Custom"
+  // to a compact summary like "2y 6m" once the user has picked a value.
+  const selectedDurationKey: DurationKey = durationToKey(duration);
+  const durationOptions = useMemo<{ value: DurationKey; label: string }[]>(
+    () => [
+      { value: '1Y', label: '1Y' },
+      { value: '3Y', label: '3Y' },
+      { value: '5Y', label: '5Y' },
+      { value: 'All', label: 'All' },
+      {
+        value: 'Custom',
+        label:
+          typeof duration === 'object' ? formatCustomLabel(duration.months) : 'Custom',
+      },
+    ],
+    [duration],
+  );
+
+  const handleDurationKeyChange = (next: DurationKey) => {
+    if (next === 'Custom') {
+      setCustomOpen(true);
+      return;
+    }
+    setDuration(next);
+  };
+
+  const applyCustomDuration = (months: number) => {
+    const clamped = Math.min(
+      CUSTOM_DURATION_MAX_MONTHS,
+      Math.max(CUSTOM_DURATION_MIN_MONTHS, Math.floor(months)),
+    );
+    setDuration({ months: clamped });
+    setCustomOpen(false);
+  };
 
   const holdings = useQuery({
     queryKey: ['past-sip-check-holdings', userId],
@@ -263,9 +312,9 @@ export function ClearLensPastSipCheckScreen() {
             <View style={styles.inputRow}>
               <Text style={styles.inputLabel}>Duration</Text>
               <ClearLensSegmentedControl
-                options={DURATION_OPTIONS}
-                selected={duration}
-                onChange={setDuration}
+                options={durationOptions}
+                selected={selectedDurationKey}
+                onChange={handleDurationKeyChange}
               />
             </View>
 
@@ -326,6 +375,13 @@ export function ClearLensPastSipCheckScreen() {
           setPickerOpen(false);
         }}
         onClose={() => setPickerOpen(false)}
+      />
+
+      <CustomDurationPicker
+        visible={customOpen}
+        initialMonths={typeof duration === 'object' ? duration.months : 36}
+        onApply={applyCustomDuration}
+        onClose={() => setCustomOpen(false)}
       />
     </ClearLensScreen>
   );
@@ -521,6 +577,144 @@ function FundPicker({
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Custom-duration picker (years + months steppers)
+// ---------------------------------------------------------------------------
+
+function CustomDurationPicker({
+  visible,
+  initialMonths,
+  onApply,
+  onClose,
+}: {
+  visible: boolean;
+  initialMonths: number;
+  onApply: (months: number) => void;
+  onClose: () => void;
+}) {
+  const tokens = useClearLensTokens();
+  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+
+  const initialYears = Math.floor(initialMonths / 12);
+  const initialRemMonths = initialMonths % 12;
+  const [years, setYears] = useState<number>(initialYears);
+  const [months, setMonths] = useState<number>(initialRemMonths);
+
+  // Reset internal state when the modal reopens with a different initial value
+  // (e.g. user picked 2y, closed, then reopened — we shouldn't show stale state).
+  useEffect(() => {
+    if (visible) {
+      setYears(initialYears);
+      setMonths(initialRemMonths);
+    }
+  }, [visible, initialYears, initialRemMonths]);
+
+  const total = years * 12 + months;
+  const tooShort = total < CUSTOM_DURATION_MIN_MONTHS;
+  const tooLong = total > CUSTOM_DURATION_MAX_MONTHS;
+  const valid = !tooShort && !tooLong;
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={(event) => event.stopPropagation()}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>Custom duration</Text>
+
+          <View style={styles.customRow}>
+            <Stepper
+              label="Years"
+              value={years}
+              min={0}
+              max={Math.floor(CUSTOM_DURATION_MAX_MONTHS / 12)}
+              onChange={setYears}
+              styles={styles}
+            />
+            <Stepper
+              label="Months"
+              value={months}
+              min={0}
+              max={11}
+              onChange={setMonths}
+              styles={styles}
+            />
+          </View>
+
+          <Text style={styles.customSummary}>
+            {tooShort
+              ? `Pick at least ${CUSTOM_DURATION_MIN_MONTHS} months — fewer SIPs than that won't produce a meaningful XIRR.`
+              : `${total} monthly buys (${formatCustomLabel(total)})`}
+          </Text>
+
+          <View style={styles.customActions}>
+            <TouchableOpacity
+              onPress={onClose}
+              style={[styles.customBtn, styles.customBtnCancel]}
+              activeOpacity={0.76}
+            >
+              <Text style={styles.customBtnTextCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => valid && onApply(total)}
+              disabled={!valid}
+              style={[
+                styles.customBtn,
+                valid ? styles.customBtnApply : styles.customBtnApplyDisabled,
+              ]}
+              activeOpacity={valid ? 0.76 : 1}
+            >
+              <Text style={styles.customBtnTextApply}>Apply</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function Stepper({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  styles,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const dec = () => onChange(Math.max(min, value - 1));
+  const inc = () => onChange(Math.min(max, value + 1));
+  return (
+    <View style={styles.stepperCol}>
+      <Text style={styles.stepperLabel}>{label}</Text>
+      <View style={styles.stepperRow}>
+        <TouchableOpacity
+          onPress={dec}
+          disabled={value <= min}
+          style={[styles.stepperBtn, value <= min && styles.stepperBtnDisabled]}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.stepperBtnText}>−</Text>
+        </TouchableOpacity>
+        <Text style={styles.stepperValue}>{value}</Text>
+        <TouchableOpacity
+          onPress={inc}
+          disabled={value >= max}
+          style={[styles.stepperBtn, value >= max && styles.stepperBtnDisabled]}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.stepperBtnText}>+</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
@@ -1075,6 +1269,88 @@ function makeStyles(tokens: ClearLensTokens) {
       height: 10,
       borderRadius: 5,
       backgroundColor: cl.emerald,
+    },
+    customRow: {
+      flexDirection: 'row',
+      gap: ClearLensSpacing.lg,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.sm,
+    },
+    stepperCol: {
+      flex: 1,
+      gap: ClearLensSpacing.xs,
+      alignItems: 'center',
+    },
+    stepperLabel: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+    },
+    stepperRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: ClearLensSpacing.md,
+    },
+    stepperBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: cl.borderLight,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    stepperBtnDisabled: {
+      opacity: 0.35,
+    },
+    stepperBtnText: {
+      ...ClearLensTypography.h3,
+      color: cl.navy,
+    },
+    stepperValue: {
+      ...ClearLensTypography.h2,
+      color: cl.navy,
+      minWidth: 48,
+      textAlign: 'center',
+    },
+    customSummary: {
+      ...ClearLensTypography.bodySmall,
+      color: cl.textSecondary,
+      paddingVertical: ClearLensSpacing.sm,
+      textAlign: 'center',
+    },
+    customActions: {
+      flexDirection: 'row',
+      gap: ClearLensSpacing.sm,
+      paddingTop: ClearLensSpacing.sm,
+    },
+    customBtn: {
+      flex: 1,
+      paddingVertical: ClearLensSpacing.sm,
+      borderRadius: ClearLensRadii.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    customBtnCancel: {
+      borderWidth: 1,
+      borderColor: cl.borderLight,
+    },
+    customBtnApply: {
+      backgroundColor: cl.emerald,
+    },
+    customBtnApplyDisabled: {
+      backgroundColor: cl.borderLight,
+    },
+    customBtnTextCancel: {
+      ...ClearLensTypography.bodySmall,
+      color: cl.textSecondary,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    customBtnTextApply: {
+      ...ClearLensTypography.bodySmall,
+      color: cl.textOnDark,
+      fontFamily: ClearLensFonts.semiBold,
     },
   });
 }

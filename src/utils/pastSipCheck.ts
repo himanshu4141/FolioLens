@@ -23,7 +23,19 @@
 import { xirr, type Cashflow } from './xirr';
 import type { NavPoint } from './navUtils';
 
-export type PastSipDuration = '1Y' | '3Y' | '5Y' | 'All';
+/**
+ * Window sizing for a past-SIP simulation.
+ *
+ * The string presets ('1Y', '3Y', '5Y') resolve to whole-year windows. 'All'
+ * means "use every NAV row available". The object form takes a custom
+ * months count for arbitrary windows the user picks via the Custom modal —
+ * minimum 3 (the simulator needs at least MIN_INSTALLMENTS rows to be
+ * meaningful, see hasEnoughData below).
+ */
+export type PastSipDuration = '1Y' | '3Y' | '5Y' | 'All' | { months: number };
+
+export const CUSTOM_DURATION_MIN_MONTHS = 3;
+export const CUSTOM_DURATION_MAX_MONTHS = 30 * 12;
 
 export interface PastSipInput {
   navSeries: NavPoint[];     // sorted ascending by date
@@ -94,7 +106,28 @@ const EMPTY_RESULT: PastSipResult = {
   hasEnoughData: false,
 };
 
+/**
+ * Returns the duration in months, or null for 'All' (= all available history).
+ * Handles every variant of PastSipDuration uniformly so callers don't have
+ * to special-case the object form.
+ */
+export function durationToMonths(duration: PastSipDuration): number | null {
+  if (typeof duration === 'object') return Math.max(1, Math.floor(duration.months));
+  switch (duration) {
+    case '1Y': return 12;
+    case '3Y': return 36;
+    case '5Y': return 60;
+    case 'All': return null;
+  }
+}
+
+/**
+ * Backwards-compat wrapper. Years are coarser than months; only meaningful
+ * for the whole-year presets. Returns null for 'All' and for any custom
+ * object duration so callers fall back to month-precise math.
+ */
 export function durationToYears(duration: PastSipDuration): number | null {
+  if (typeof duration === 'object') return null;
   switch (duration) {
     case '1Y': return 1;
     case '3Y': return 3;
@@ -132,10 +165,15 @@ export function computeRequestedStartDate(
   duration: PastSipDuration,
   today: Date,
 ): string | null {
-  const years = durationToYears(duration);
-  if (years === null) return null;
-  // Start one month after today-minus-N-years so the loop produces exactly N×12 buys.
-  const start = new Date(Date.UTC(today.getUTCFullYear() - years, today.getUTCMonth() + 1, 1));
+  const months = durationToMonths(duration);
+  if (months === null) return null;
+  // Start one month after today-minus-N-months so the loop produces exactly N
+  // installments (today's month is the LAST buy, so we don't double-count it).
+  // Subtracting from getUTCMonth() with months > 12 lets Date normalise the
+  // year correctly — e.g. month index −18 wraps to "18 months before today" by
+  // decrementing the year and adjusting the month within 0–11.
+  const targetMonthIndex = today.getUTCMonth() - months + 1;
+  const start = new Date(Date.UTC(today.getUTCFullYear(), targetMonthIndex, 1));
   return toDateStr(start);
 }
 

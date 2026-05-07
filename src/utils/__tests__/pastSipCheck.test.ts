@@ -1,6 +1,7 @@
 import {
   buildPastSipChartSeries,
   computeRequestedStartDate,
+  durationToMonths,
   durationToYears,
   simulatePastSip,
   type PastSipDuration,
@@ -50,6 +51,34 @@ describe('durationToYears', () => {
     expect(durationToYears('5Y')).toBe(5);
     expect(durationToYears('All')).toBeNull();
   });
+
+  it('returns null for the custom object form (custom is month-precise)', () => {
+    expect(durationToYears({ months: 18 })).toBeNull();
+  });
+});
+
+describe('durationToMonths', () => {
+  it('maps known string presets to whole-year month counts', () => {
+    expect(durationToMonths('1Y')).toBe(12);
+    expect(durationToMonths('3Y')).toBe(36);
+    expect(durationToMonths('5Y')).toBe(60);
+    expect(durationToMonths('All')).toBeNull();
+  });
+
+  it('passes the object form through directly', () => {
+    expect(durationToMonths({ months: 18 })).toBe(18);
+    expect(durationToMonths({ months: 7 })).toBe(7);
+    expect(durationToMonths({ months: 240 })).toBe(240);
+  });
+
+  it('rounds non-integer custom months down to a whole month', () => {
+    expect(durationToMonths({ months: 18.7 })).toBe(18);
+  });
+
+  it('clamps non-positive custom months up to 1 (the simulator still requires hasEnoughData ≥ 3 elsewhere)', () => {
+    expect(durationToMonths({ months: 0 })).toBe(1);
+    expect(durationToMonths({ months: -5 })).toBe(1);
+  });
 });
 
 describe('computeRequestedStartDate', () => {
@@ -69,6 +98,69 @@ describe('computeRequestedStartDate', () => {
 
   it('returns null for "All"', () => {
     expect(computeRequestedStartDate('All', TODAY)).toBeNull();
+  });
+
+  it('produces the same start date for a custom 12-month duration as for the 1Y preset', () => {
+    expect(computeRequestedStartDate({ months: 12 }, TODAY)).toBe(
+      computeRequestedStartDate('1Y', TODAY),
+    );
+    expect(computeRequestedStartDate({ months: 36 }, TODAY)).toBe(
+      computeRequestedStartDate('3Y', TODAY),
+    );
+    expect(computeRequestedStartDate({ months: 60 }, TODAY)).toBe(
+      computeRequestedStartDate('5Y', TODAY),
+    );
+  });
+
+  it('handles non-whole-year custom durations and crosses year boundaries cleanly', () => {
+    // TODAY = 2026-04-15. Anchor: today's month (April) is the LAST buy, so a
+    // window of N months starts (N − 1) months before April.
+    // 18 months → start = April 2026 − 17 months = Nov 2024.
+    expect(computeRequestedStartDate({ months: 18 }, TODAY)).toBe('2024-11-01');
+    // 7 months → April 2026 − 6 = Oct 2025.
+    expect(computeRequestedStartDate({ months: 7 }, TODAY)).toBe('2025-10-01');
+    // Edge: 1-month custom = today's month is the only buy.
+    expect(computeRequestedStartDate({ months: 1 }, TODAY)).toBe('2026-04-01');
+  });
+
+  it('a custom duration of 240 months (20Y) goes back exactly 20 years on the same calendar boundary', () => {
+    // April 2026 → May 2006 (20 years before May 2026).
+    expect(computeRequestedStartDate({ months: 240 }, TODAY)).toBe('2006-05-01');
+  });
+});
+
+describe('simulatePastSip — custom duration', () => {
+  it('a custom 18-month SIP produces exactly 18 installments on a flat NAV series', () => {
+    const series = buildNavSeries({
+      startDate: '2024-10-02',
+      monthsCount: 24,
+      monthlyRate: 0,
+    });
+    const result = simulatePastSip({
+      navSeries: series,
+      monthlyAmount: 10_000,
+      duration: { months: 18 },
+      today: TODAY,
+    });
+    expect(result.installments).toHaveLength(18);
+    expect(result.totalInvested).toBe(180_000);
+  });
+
+  it('a custom 1-month duration short-circuits at hasEnoughData = false (under MIN_INSTALLMENTS)', () => {
+    const series = buildNavSeries({
+      startDate: '2026-01-02',
+      monthsCount: 6,
+      monthlyRate: 0.01,
+    });
+    const result = simulatePastSip({
+      navSeries: series,
+      monthlyAmount: 10_000,
+      duration: { months: 1 },
+      today: TODAY,
+    });
+    // Single installment is below MIN_INSTALLMENTS (3) so the UI shows
+    // "Not enough NAV history" rather than a meaningful XIRR.
+    expect(result.hasEnoughData).toBe(false);
   });
 });
 
