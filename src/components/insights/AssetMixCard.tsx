@@ -1,8 +1,12 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensRadii,
+  ClearLensSpacing,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { AssetMix, CompositionSource } from '@/src/types/app';
 
@@ -28,7 +32,7 @@ const ASSET_COLORS = {
 };
 
 export function AssetMixCard({ totalValue, assetMix, source, dataAsOf }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const rows: AssetRow[] = [
     { label: 'Equity', color: ASSET_COLORS.equity, pct: assetMix.equity, value: (assetMix.equity / 100) * totalValue },
     { label: 'Debt', color: ASSET_COLORS.debt, pct: assetMix.debt, value: (assetMix.debt / 100) * totalValue },
@@ -110,19 +114,19 @@ function formatDate(iso: string): string {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.sm,
+    marginBottom: ClearLensSpacing.sm,
   },
   totalLabel: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
   },
   totalValue: {
     fontSize: 20,
@@ -132,30 +136,30 @@ const styles = StyleSheet.create({
   stackedBar: {
     flexDirection: 'row',
     height: 12,
-    borderRadius: Radii.full,
+    borderRadius: ClearLensRadii.full,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   barSegment: {
     height: '100%',
   },
   divider: {
     height: 1,
-    marginBottom: Spacing.sm,
+    marginBottom: ClearLensSpacing.sm,
   },
   tableHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   colHeader: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
   },
   colHeaderRight: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
@@ -164,14 +168,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'transparent',
   },
   labelCell: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   colorBar: {
     width: 3,
@@ -179,32 +183,32 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   rowLabel: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '600',
   },
   rowAmount: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '700',
   },
   rowPct: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '500',
   },
   sourceBadge: {
-    ...Typography.caption,
-    marginTop: Spacing.sm,
+    ...ClearLensTypography.caption,
+    marginTop: ClearLensSpacing.sm,
     textAlign: 'right',
   },
   estimateFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: Spacing.sm,
-    borderRadius: Radii.sm,
-    padding: Spacing.sm,
+    marginTop: ClearLensSpacing.sm,
+    borderRadius: ClearLensRadii.sm,
+    padding: ClearLensSpacing.sm,
   },
   estimateFooterText: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     flex: 1,
   },
 });

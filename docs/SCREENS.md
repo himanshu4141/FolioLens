@@ -35,7 +35,7 @@ Stack routes (rendered inside the desktop sidebar shell via `ResponsiveRouteFram
 - `Portfolio Insights`, `Your Funds`, and `Fund Detail` are reached from Portfolio and fund rows.
 - `Tools Hub` is reached from the sidebar Quick Action, the Portfolio entry rows, and the Wealth Journey "Explore more tools" link.
 - `Money Trail` is reached from the sidebar Quick Action, Portfolio preview, Your Funds expanded rows, and Fund Detail.
-- `Leaderboard` is hidden legacy chrome in Clear Lens for now; classic keeps its tab.
+- `Leaderboard` is a hidden legacy route (Clear Lens keeps the screen implementation but the tab points to `Funds`).
 - `Onboarding / Import CAS` and `PDF Upload` are utility flows used for first-run import and later portfolio maintenance. Onboarding renders inside the sidebar shell on desktop via `DesktopFormFrame`.
 - `Compare` remains a hidden legacy route for transition and deep-link safety.
 
@@ -43,7 +43,6 @@ Screen families:
 
 - Clear Lens primary tabs use the FolioLens focus-ring header (mobile), the sidebar shell (desktop), restrained bottom tabs (mobile), Inter typography, and tokenized card surfaces.
 - Utility / out-of-tabs screens use a back-chip-only chrome header (the body always owns the title) and Clear Lens cards.
-- Classic screens remain behind the Settings design switch and are mobile-only — they should not inherit Clear Lens-only composition colors.
 
 ## Screen Map
 
@@ -108,8 +107,6 @@ Clear Lens Fund Detail includes:
 
 On desktop the screen renders inside the sidebar shell with `desktopMaxWidth={920}` (chart-heavy). All charts (Performance, NAV, Growth Consistency) read width from `useWindowDimensions` so they grow as the window does. The Growth Consistency bars use equal-slot positioning (`plotWidth / bars.length` per slot) so they span the full plot rather than clustering at the left edge.
 
-Classic Fund Detail remains available when the design switch is set to classic.
-
 ### 5. Money Trail
 
 Accessible from Portfolio preview, Quick Actions, expanded fund rows, and Fund Detail.
@@ -132,7 +129,7 @@ When Money Trail is opened for a specific fund, summary cards and yearly bars us
 
 ### 6. Leaderboard
 
-The classic Leaderboard tab ranks existing holdings against the selected benchmark. Clear Lens keeps the screen implementation available for future iteration, but the bottom tab currently points to `Funds`.
+The Leaderboard route ranks existing holdings against the selected benchmark. The screen implementation is kept for future iteration, but it's not on the bottom tabs — `Funds` takes its slot.
 
 Clear Lens includes:
 
@@ -153,7 +150,7 @@ Clear Lens includes:
 - `Adjust your plan` step for future SIP, top-up, saving period, return preset/custom return, withdrawal rate, and post-withdrawal return
 - results screen with growth chart, current-vs-adjusted path, milestones, present-value context, withdrawal snapshot, and drawdown view
 - edit-SIP modal with detected and manual SIP paths
-- persisted Zustand `wealthJourney` state shared with classic mode
+- persisted Zustand `wealthJourney` state
 
 ### 8. Settings
 

@@ -1,7 +1,11 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { InsightHolding } from '@/src/types/app';
 
@@ -11,7 +15,7 @@ interface Props {
 }
 
 export function TopHoldingsCard({ holdings, fundCount }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
 
   return (
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -51,39 +55,39 @@ export function TopHoldingsCard({ holdings, fundCount }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   cardTitle: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
     marginBottom: 2,
   },
   subtitle: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   divider: {
     height: 1,
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   tableHeader: {
     flexDirection: 'row',
-    paddingVertical: Spacing.xs,
-    gap: Spacing.sm,
+    paddingVertical: ClearLensSpacing.xs,
+    gap: ClearLensSpacing.sm,
   },
   colStock: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     flex: 1,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
   },
   colValue: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 80,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -91,7 +95,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   colPct: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 88,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -101,34 +105,34 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   stockCell: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   rankNum: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     marginTop: 2,
     minWidth: 18,
   },
   stockName: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
     flex: 1,
   },
   valueText: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     width: 80,
     textAlign: 'right',
     fontWeight: '600',
   },
   pctText: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
     width: 88,
     textAlign: 'right',

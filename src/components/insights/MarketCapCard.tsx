@@ -1,8 +1,12 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { PieChart } from 'react-native-gifted-charts';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { MarketCapMix } from '@/src/types/app';
 
@@ -20,7 +24,7 @@ const CAP_COLORS = {
 };
 
 export function MarketCapCard({ totalValue, equityPct, marketCapMix }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const equityValue = (equityPct / 100) * totalValue;
 
   const rows = [
@@ -93,30 +97,30 @@ export function MarketCapCard({ totalValue, equityPct, marketCapMix }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   cardTitle: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   chartRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.lg,
-    marginBottom: Spacing.md,
+    gap: ClearLensSpacing.lg,
+    marginBottom: ClearLensSpacing.md,
   },
   legend: {
     flex: 1,
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   legendDot: {
     width: 8,
@@ -124,33 +128,33 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   legendLabel: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     flex: 1,
     fontWeight: '600',
   },
   legendPct: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
   },
   divider: {
     height: 1,
-    marginBottom: Spacing.sm,
+    marginBottom: ClearLensSpacing.sm,
   },
   tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.xs,
-    gap: Spacing.sm,
+    marginBottom: ClearLensSpacing.xs,
+    gap: ClearLensSpacing.sm,
   },
   colHeader: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
     flex: 1,
   },
   colHeaderValue: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
@@ -158,7 +162,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   colHeaderPct: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
@@ -168,22 +172,22 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.sm + 2,
+    paddingVertical: ClearLensSpacing.sm + 2,
     borderTopWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   rowLabel: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '600',
   },
   rowValue: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '700',
     width: 92,
     textAlign: 'right',
   },
   rowPct: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '700',
     width: 78,
     textAlign: 'right',

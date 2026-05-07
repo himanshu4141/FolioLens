@@ -1,8 +1,12 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { PieChart } from 'react-native-gifted-charts';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { InsightFundAllocation } from '@/src/types/app';
 
@@ -12,7 +16,7 @@ interface Props {
 }
 
 export function FundAllocationCard({ fundAllocation }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
 
   const pieData = fundAllocation.map((f) => ({
     value: f.pct,
@@ -69,30 +73,30 @@ export function FundAllocationCard({ fundAllocation }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   cardTitle: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   chartRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.lg,
-    marginBottom: Spacing.md,
+    gap: ClearLensSpacing.lg,
+    marginBottom: ClearLensSpacing.md,
   },
   legend: {
     flex: 1,
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   legendDot: {
     width: 8,
@@ -101,24 +105,24 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   legendLabel: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     flex: 1,
     fontWeight: '600',
   },
   legendPct: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
   },
   divider: {
     height: 1,
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   dot: {
     width: 8,
@@ -127,18 +131,18 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   fundName: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     flex: 1,
     fontWeight: '600',
   },
   fundValue: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     minWidth: 60,
     textAlign: 'right',
     fontWeight: '600',
   },
   fundPct: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
     minWidth: 40,
     textAlign: 'right',

@@ -5,26 +5,20 @@ import {
   ClearLensLightTokens,
   type ClearLensColorScheme,
   type ClearLensTokens,
-  type ClearLensCompatibleTokens,
 } from '@/src/constants/clearLensTheme';
 import { useAppStore, type AppColorScheme } from '@/src/store/appStore';
 
-export type AppColors = ClearLensCompatibleTokens;
-
 interface ThemeContextValue {
-  /** Back-compat: the same shape the legacy `colors` prop always had. */
-  colors: AppColors;
-  /** Full Clear Lens token set for the active scheme. */
+  /** Active Clear Lens tokens for this render — read via {@link useClearLensTokens}. */
   clearLens: ClearLensTokens;
-  /** What the user selected (light/dark/system). */
+  /** What the user selected (light / dark / system). */
   colorScheme: AppColorScheme;
-  /** What we actually rendered with this turn (light/dark) — system resolved. */
+  /** What we actually rendered with this turn (light / dark) — system resolved. */
   resolvedScheme: ClearLensColorScheme;
   setColorScheme: (scheme: AppColorScheme) => void;
 }
 
 const defaultValue: ThemeContextValue = {
-  colors: ClearLensLightTokens.compatible,
   clearLens: ClearLensLightTokens,
   colorScheme: 'system',
   resolvedScheme: 'light',
@@ -45,7 +39,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ThemeContextValue>(
     () => ({
-      colors: clearLens.compatible,
       clearLens,
       colorScheme: appColorScheme,
       resolvedScheme,
@@ -57,11 +50,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
+/**
+ * Returns the colour-scheme controls (selected, resolved, setter). For tokens,
+ * use {@link useClearLensTokens} — that hook is the canonical entry point for
+ * any colour, spacing, or typography read.
+ */
 export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext);
 }
 
-/** Convenience hook returning the full Clear Lens token set for the active scheme. */
+/** Returns the full Clear Lens token set for the active scheme. */
 export function useClearLensTokens(): ClearLensTokens {
   return useContext(ThemeContext).clearLens;
 }

@@ -18,7 +18,7 @@ import {
 import { queryClient } from '@/src/lib/queryClient';
 import { useSession } from '@/src/hooks/useSession';
 import { supabase } from '@/src/lib/supabase';
-import { ThemeProvider, useTheme } from '@/src/context/ThemeContext';
+import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 
@@ -112,7 +112,8 @@ export default function RootLayout() {
 }
 
 function ThemedAppShell() {
-  const { resolvedScheme, clearLens } = useTheme();
+  const { resolvedScheme } = useTheme();
+  const clearLens = useClearLensTokens();
 
   useEffect(() => {
     // Sync the underlying system UI background so the splash transition and

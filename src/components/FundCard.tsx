@@ -5,12 +5,15 @@ import { formatCurrency } from '@/src/utils/formatting';
 import { parseFundName } from '@/src/utils/fundName';
 import { navStaleness } from '@/src/utils/navUtils';
 import { Sparkline } from '@/src/components/Sparkline';
-import { Spacing, Radii } from '@/src/constants/theme';
-import { useTheme } from '@/src/context/ThemeContext';
-import type { AppColors } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+} from '@/src/constants/clearLensTheme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import type { ClearLensCompatibleTokens } from '@/src/constants/clearLensTheme';
 import type { FundCardData } from '@/src/hooks/usePortfolio';
 
-export function categoryColor(colors: AppColors, category: string | null): string {
+export function categoryColor(colors: ClearLensCompatibleTokens, category: string | null): string {
   if (!category) return colors.primary;
   const cat = category.toLowerCase();
   if (cat.includes('mid cap')) return '#7c3aed';
@@ -31,7 +34,7 @@ export function FundCard({
   latestNavDate: string | null;
   onPress: () => void;
 }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const isPositiveDay = fund.dailyChangeAmount != null ? fund.dailyChangeAmount >= 0 : true;
   const accentColor = categoryColor(colors, fund.schemeCategory);
@@ -151,13 +154,13 @@ export function FundCard({
   );
 }
 
-function makeStyles(colors: AppColors) {
+function makeStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     fundCard: {
       backgroundColor: colors.surface,
-      marginHorizontal: Spacing.md,
+      marginHorizontal: ClearLensSpacing.md,
       marginBottom: 12,
-      borderRadius: Radii.lg,
+      borderRadius: ClearLensRadii.lg,
       flexDirection: 'row',
       overflow: 'hidden',
       borderWidth: 1,
@@ -165,7 +168,7 @@ function makeStyles(colors: AppColors) {
     },
     fundCardDisabled: { opacity: 0.92 },
     fundCardAccent: { width: 4 },
-    fundCardInner: { flex: 1, padding: Spacing.md, gap: 12 },
+    fundCardInner: { flex: 1, padding: ClearLensSpacing.md, gap: 12 },
     fundCardTop: { flexDirection: 'row', gap: 12 },
     fundNameBlock: { flex: 1, gap: 4 },
     fundName: { fontSize: 14, fontWeight: '700' as const, color: colors.textPrimary, lineHeight: 20 },

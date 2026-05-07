@@ -10,7 +10,7 @@
 
 import Svg, { Circle, Path, G } from 'react-native-svg';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '@/src/context/ThemeContext';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
 
 interface LogoProps {
   size?: number;
@@ -27,7 +27,7 @@ export default function Logo({
   light = false,
   color,
 }: LogoProps) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const iconColor = color ?? (light ? '#ffffff' : colors.primary);
   const textColor = light ? '#ffffff' : colors.textPrimary;
   const accentColor = light ? 'rgba(255,255,255,0.45)' : colors.primaryLight;

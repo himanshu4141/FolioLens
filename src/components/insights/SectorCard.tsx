@@ -1,8 +1,12 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { PieChart } from 'react-native-gifted-charts';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 
 interface SectorRow {
@@ -33,7 +37,7 @@ const SECTOR_COLORS = [
 ];
 
 export function SectorCard({ sectors }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
 
   const coloredSectors = sectors.map((s, i) => ({
     ...s,
@@ -101,21 +105,21 @@ export function SectorCard({ sectors }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   cardTitle: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   chartRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
+    gap: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   legendGrid: {
     flex: 1,
@@ -139,30 +143,30 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.xs,
-    gap: Spacing.xs,
+    paddingVertical: ClearLensSpacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   colNum: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 24,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
   },
   colSector: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     flex: 1,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
   },
   colWeight: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 64,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -170,7 +174,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   colExposure: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 84,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -180,12 +184,12 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   rowNum: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     width: 24,
     fontWeight: '600',
   },
@@ -206,13 +210,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   rowWeight: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
     width: 64,
     textAlign: 'right',
   },
   rowExposure: {
-    ...Typography.body,
+    ...ClearLensTypography.body,
     fontWeight: '700',
     width: 84,
     textAlign: 'right',
