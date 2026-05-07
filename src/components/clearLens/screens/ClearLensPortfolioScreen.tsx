@@ -34,6 +34,7 @@ import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 import { MoneyTrailPreviewCard } from '@/src/components/clearLens/MoneyTrailPreviewCard';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { parseFundName } from '@/src/utils/fundName';
@@ -979,6 +980,8 @@ function ClearLensPortfolioScreenMobile() {
             onFunds={() => router.push('/funds')}
             onTools={() => router.push('/tools' as never)}
           />
+
+          <PortfolioDisclaimer />
         </ScrollView>
       )}
     </ClearLensScreen>

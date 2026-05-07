@@ -26,6 +26,7 @@ import {
   ClearLensScreen,
   ClearLensSegmentedControl,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -1173,6 +1174,8 @@ export function ClearLensWealthJourneyScreen() {
               </TouchableOpacity>
             </>
           )}
+
+          <PortfolioDisclaimer />
           </ScrollView>
         </KeyboardAvoidingView>
       )}

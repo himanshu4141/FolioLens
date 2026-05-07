@@ -36,6 +36,7 @@ import {
   ClearLensScreen,
   ClearLensSegmentedControl,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -1942,6 +1943,8 @@ function ClearLensFundDetailScreen() {
             <PortfolioHealthDonut fundId={data.id} currentValue={data.currentValue} />
           </>
         )}
+
+        <PortfolioDisclaimer />
       </ScrollView>
     </ClearLensScreen>
   );

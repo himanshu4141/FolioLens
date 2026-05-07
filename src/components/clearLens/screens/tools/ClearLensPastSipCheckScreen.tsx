@@ -27,6 +27,7 @@ import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import {
   ClearLensFonts,
@@ -38,6 +39,7 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { fetchPerformanceTimeline } from '@/src/hooks/usePerformanceTimeline';
@@ -107,6 +109,7 @@ async function ensureNavCached(schemeCode: number): Promise<{ status: string }> 
 }
 
 export function ClearLensPastSipCheckScreen() {
+  useTrackInsightViewed('past_sip_check');
   const router = useRouter();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -376,6 +379,8 @@ export function ClearLensPastSipCheckScreen() {
             Results are estimates only. Simulated SIPs use the 1st of each month and the next
             available NAV. Past performance is not indicative of future returns.
           </Text>
+
+          <PortfolioDisclaimer />
         </ScrollView>
       </KeyboardAvoidingView>
 

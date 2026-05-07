@@ -7,6 +7,7 @@ import {
   ClearLensHeader,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useToolsFeatureFlags } from '@/src/hooks/useToolsFeatureFlags';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { useIsDesktop } from '@/src/components/responsive';
@@ -153,8 +154,10 @@ export function ClearLensToolsScreen() {
 
         <Text style={styles.disclaimer}>
           All results are estimates based on assumptions and historical data. Past performance is
-          not indicative of future returns. No recommendations or advice.
+          not indicative of future returns.
         </Text>
+
+        <PortfolioDisclaimer />
       </ScrollView>
 
     </ClearLensScreen>

@@ -18,6 +18,7 @@ import {
   ClearLensHeader,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { ResponsiveRouteFrame, useIsDesktop } from '@/src/components/responsive';
@@ -994,6 +995,8 @@ export default function MoneyTrailScreen() {
           ) : (
             <EmptyTransactions filtered={false} onPrimary={() => router.push('/onboarding')} />
           )}
+
+          <PortfolioDisclaimer />
         </ScrollView>
       )}
 
