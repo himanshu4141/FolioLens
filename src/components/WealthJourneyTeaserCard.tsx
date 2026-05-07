@@ -5,8 +5,12 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useSession } from '@/src/hooks/useSession';
 import { supabase } from '@/src/lib/supabase';
-import { Radii, Spacing, Typography } from '@/src/constants/theme';
-import { useTheme } from '@/src/context/ThemeContext';
+import {
+  ClearLensRadii,
+  ClearLensSpacing,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useAppStore } from '@/src/store/appStore';
 import { buildReturnProfile, buildWealthJourneyTeaser, estimateRecurringMonthlySip } from '@/src/utils/wealthJourney';
 
@@ -19,7 +23,7 @@ export function WealthJourneyTeaserCard({ currentCorpus, xirr }: Props) {
   const router = useRouter();
   const { session } = useSession();
   const userId = session?.user.id;
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { wealthJourney } = useAppStore();
 
@@ -84,13 +88,13 @@ export function WealthJourneyTeaserCard({ currentCorpus, xirr }: Props) {
   );
 }
 
-function makeStyles(colors: ReturnType<typeof useTheme>['colors']) {
+function makeStyles(colors: ReturnType<typeof useClearLensTokens>['compatible']) {
   return StyleSheet.create({
     wrapper: {
-      marginHorizontal: Spacing.md,
-      marginTop: Spacing.md,
-      padding: Spacing.md,
-      borderRadius: Radii.lg,
+      marginHorizontal: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.md,
+      padding: ClearLensSpacing.md,
+      borderRadius: ClearLensRadii.lg,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surface,
@@ -109,12 +113,12 @@ function makeStyles(colors: ReturnType<typeof useTheme>['colors']) {
       letterSpacing: 0.5,
     },
     title: {
-      ...Typography.h3,
+      ...ClearLensTypography.h3,
       color: colors.textPrimary,
       lineHeight: 24,
     },
     supportingText: {
-      ...Typography.bodySmall,
+      ...ClearLensTypography.bodySmall,
       color: colors.textSecondary,
       lineHeight: 19,
     },
@@ -125,7 +129,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['colors']) {
       gap: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
-      borderRadius: Radii.full,
+      borderRadius: ClearLensRadii.full,
       backgroundColor: colors.primaryLight,
       borderWidth: 1,
       borderColor: colors.border,

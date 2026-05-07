@@ -2,7 +2,7 @@ import { StyleSheet, View } from 'react-native';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useTheme } from '@/src/context/ThemeContext';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { ClearLensFonts } from '@/src/constants/clearLensTheme';
 import { DesktopSidebar, useResponsiveLayout } from '@/src/components/responsive';
 
@@ -14,8 +14,7 @@ import { DesktopSidebar, useResponsiveLayout } from '@/src/components/responsive
  * state when the user resizes the browser window.
  */
 export default function TabLayout() {
-  const { clearLens } = useTheme();
-  const cl = clearLens.colors;
+  const cl = useClearLensTokens().colors;
   const insets = useSafeAreaInsets();
   const { layout } = useResponsiveLayout();
   const isDesktop = layout === 'desktop';

@@ -28,8 +28,7 @@ import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { computeQuarterlyReturns } from '@/src/utils/quarterlyReturns';
 import { formatXirr } from '@/src/utils/xirr';
 import { formatCurrency } from '@/src/utils/formatting';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
-import { useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensCard,
   ClearLensHeader,
@@ -41,13 +40,13 @@ import {
   ClearLensRadii,
   ClearLensSpacing,
   ClearLensTypography,
+  type ClearLensCompatibleTokens,
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
-import type { AppColors } from '@/src/context/ThemeContext';
 import { supabase } from '@/src/lib/supabase';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import {
@@ -102,7 +101,7 @@ function TimeWindowSelector({
   selected: TimeWindow;
   onChange: (w: TimeWindow) => void;
 }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={s.windowRow}>
@@ -139,7 +138,7 @@ function PerformanceTab({
   fundRef?: FundRef;
   userId?: string;
 }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const tokens = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   // Live viewport width — module-scope CHART_WIDTH is captured once at JS
@@ -748,7 +747,7 @@ function PerformanceTab({
 }
 
 function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: number }[] }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   const { width: viewportWidth } = useWindowDimensions();
   const liveChartWidth = Math.min(viewportWidth, FUND_DETAIL_DESKTOP_MAX) - 32;
@@ -909,7 +908,7 @@ function TechnicalDetailsCard({
   schemeCode: number;
   isin: string | null;
 }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const ts = useMemo(() => makeTechStyles(colors), [colors]);
   const metaStatus = fundMetaSyncedAt
     ? `as of ${formatNavDate(fundMetaSyncedAt.split('T')[0] ?? fundMetaSyncedAt)}`
@@ -953,14 +952,14 @@ function TechnicalDetailsCard({
   );
 }
 
-function makeTechStyles(colors: AppColors) {
+function makeTechStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     card: {
       backgroundColor: colors.surface,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
-      marginHorizontal: Spacing.md,
-      marginTop: Spacing.md,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      marginHorizontal: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.md,
       borderWidth: 1,
       borderColor: colors.border,
     },
@@ -977,44 +976,44 @@ function makeTechStyles(colors: AppColors) {
       backgroundColor: colors.surface,
     },
     title: {
-      ...Typography.label,
+      ...ClearLensTypography.label,
       color: colors.textSecondary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
       marginBottom: 2,
     },
     metaStatus: {
-      ...Typography.caption,
+      ...ClearLensTypography.caption,
       color: colors.textTertiary,
-      marginBottom: Spacing.sm,
+      marginBottom: ClearLensSpacing.sm,
     },
     row: {
       flexDirection: 'row',
       justifyContent: 'space-between',
-      marginBottom: Spacing.xs,
+      marginBottom: ClearLensSpacing.xs,
     },
     cell: {
       flex: 1,
       alignItems: 'center',
     },
     label: {
-      ...Typography.caption,
+      ...ClearLensTypography.caption,
       color: colors.textSecondary,
       marginBottom: 2,
       textAlign: 'center',
     },
     value: {
-      ...Typography.body,
+      ...ClearLensTypography.body,
       color: colors.textPrimary,
       fontWeight: '600' as const,
       textAlign: 'center',
     },
     sidLink: {
-      marginTop: Spacing.xs,
+      marginTop: ClearLensSpacing.xs,
       alignItems: 'center',
     },
     sidLinkText: {
-      ...Typography.caption,
+      ...ClearLensTypography.caption,
       color: colors.primary,
       fontWeight: '600' as const,
     },
@@ -1026,7 +1025,7 @@ function makeTechStyles(colors: AppColors) {
 // ---------------------------------------------------------------------------
 
 function GrowthConsistencyChart({ navHistory }: { navHistory: { date: string; value: number }[] }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const gs = useMemo(() => makeGrowthStyles(colors), [colors]);
   // Use the live viewport width rather than the module-scope CHART_WIDTH.
   // The module-scope value is captured once when the JS bundle loads, so on
@@ -1149,30 +1148,30 @@ function GrowthConsistencyChart({ navHistory }: { navHistory: { date: string; va
   );
 }
 
-function makeGrowthStyles(colors: AppColors) {
+function makeGrowthStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     card: {
       backgroundColor: colors.surface,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
-      marginHorizontal: Spacing.md,
-      marginTop: Spacing.md,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      marginHorizontal: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.md,
       borderWidth: 1,
       borderColor: colors.border,
     },
     title: {
-      ...Typography.label,
+      ...ClearLensTypography.label,
       color: colors.textSecondary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
       marginBottom: 2,
     },
     subtitle: {
-      ...Typography.caption,
+      ...ClearLensTypography.caption,
       color: colors.textTertiary,
     },
     svgWrap: {
-      marginTop: Spacing.xs,
+      marginTop: ClearLensSpacing.xs,
       alignItems: 'center',
       overflow: 'hidden',
     },
@@ -1180,12 +1179,12 @@ function makeGrowthStyles(colors: AppColors) {
     barTopLabel: { fontSize: 9, color: colors.textSecondary },
     legend: {
       flexDirection: 'row',
-      gap: Spacing.md,
-      marginTop: Spacing.xs,
+      gap: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.xs,
     },
     legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     legendDot: { width: 8, height: 8, borderRadius: 4 },
-    legendText: { ...Typography.caption, color: colors.textTertiary },
+    legendText: { ...ClearLensTypography.caption, color: colors.textTertiary },
   });
 }
 
@@ -1207,7 +1206,7 @@ function PortfolioHealthDonut({
   fundId: string;
   currentValue: number | null;
 }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const ds = useMemo(() => makeDonutStyles(colors), [colors]);
   const { defaultBenchmarkSymbol } = useAppStore();
   const { data: portfolioData } = usePortfolio(defaultBenchmarkSymbol);
@@ -1273,14 +1272,14 @@ function PortfolioHealthDonut({
   );
 }
 
-function makeDonutStyles(colors: AppColors) {
+function makeDonutStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     card: {
       backgroundColor: colors.surface,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
-      marginHorizontal: Spacing.md,
-      marginTop: Spacing.md,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      marginHorizontal: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.md,
       borderWidth: 1,
       borderColor: colors.border,
       // The donut + info pair is compact; on desktop the parent frame is
@@ -1290,16 +1289,16 @@ function makeDonutStyles(colors: AppColors) {
       alignSelf: 'flex-start',
     },
     title: {
-      ...Typography.label,
+      ...ClearLensTypography.label,
       color: colors.textSecondary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
-      marginBottom: Spacing.sm,
+      marginBottom: ClearLensSpacing.sm,
     },
     content: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: Spacing.md,
+      gap: ClearLensSpacing.md,
     },
     centerLabel: {
       alignItems: 'center',
@@ -1321,28 +1320,28 @@ function makeDonutStyles(colors: AppColors) {
       lineHeight: 32,
     },
     infoLabel: {
-      ...Typography.bodySmall,
+      ...ClearLensTypography.bodySmall,
       color: colors.textTertiary,
     },
     rankLabel: {
-      ...Typography.body,
+      ...ClearLensTypography.body,
       color: colors.textSecondary,
       fontWeight: '600' as const,
       marginTop: 2,
     },
     totalLabel: {
-      ...Typography.caption,
+      ...ClearLensTypography.caption,
       color: colors.textTertiary,
       marginTop: 4,
     },
     legend: {
       flexDirection: 'row',
-      gap: Spacing.md,
-      marginTop: Spacing.sm,
+      gap: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.sm,
     },
     legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     legendDot: { width: 8, height: 8, borderRadius: 4 },
-    legendText: { ...Typography.caption, color: colors.textTertiary },
+    legendText: { ...ClearLensTypography.caption, color: colors.textTertiary },
   });
 }
 
@@ -1351,7 +1350,7 @@ function makeDonutStyles(colors: AppColors) {
 // ---------------------------------------------------------------------------
 
 function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const tokens = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   const cs = useMemo(() => makeCompStyles(colors), [colors]);
@@ -1403,7 +1402,7 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
   return (
     <View style={s.tabContent}>
       {/* Asset Mix */}
-      <View style={[s.chartCard, { gap: Spacing.sm }]}>
+      <View style={[s.chartCard, { gap: ClearLensSpacing.sm }]}>
         <Text style={cs.cardTitle}>Asset Mix</Text>
         <View style={cs.stackedBar}>
           {composition.equityPct > 0.5 && (
@@ -1453,7 +1452,7 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
 
       {/* Market Cap Mix */}
       {hasMarketCap && (
-        <View style={[s.chartCard, { gap: Spacing.sm }]}>
+        <View style={[s.chartCard, { gap: ClearLensSpacing.sm }]}>
           <Text style={cs.cardTitle}>Market Cap Mix</Text>
           <View style={cs.stackedBar}>
             {(composition.largeCapPct ?? 0) > 0.5 && (
@@ -1496,8 +1495,8 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
       )}
 
       {/* Sector Breakdown */}
-      <View style={[s.chartCard, { gap: Spacing.xs }]}>
-        <Text style={[cs.cardTitle, { marginBottom: Spacing.xs }]}>Sector Breakdown</Text>
+      <View style={[s.chartCard, { gap: ClearLensSpacing.xs }]}>
+        <Text style={[cs.cardTitle, { marginBottom: ClearLensSpacing.xs }]}>Sector Breakdown</Text>
         {sectors && sectors.length > 0 ? (
           sectors.map(([sector, pct]) => (
             <View key={sector} style={cs.sectorRow}>
@@ -1523,7 +1522,7 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
 
       {/* Top Holdings */}
       <View style={[s.chartCard, { gap: 0, overflow: 'hidden' }]}>
-        <Text style={[cs.cardTitle, { marginBottom: Spacing.xs }]}>Top Holdings</Text>
+        <Text style={[cs.cardTitle, { marginBottom: ClearLensSpacing.xs }]}>Top Holdings</Text>
         {holdings && holdings.length > 0 ? (
           holdings.map((h, i) => (
             <View
@@ -1554,7 +1553,7 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
   );
 }
 
-function makeCompStyles(colors: AppColors) {
+function makeCompStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     cardTitle: {
       fontSize: 11,
@@ -1566,11 +1565,11 @@ function makeCompStyles(colors: AppColors) {
     stackedBar: {
       flexDirection: 'row',
       height: 10,
-      borderRadius: Radii.full,
+      borderRadius: ClearLensRadii.full,
       overflow: 'hidden',
     },
     barSeg: { height: '100%' },
-    assetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+    assetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: ClearLensSpacing.sm },
     assetItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
     assetDot: { width: 8, height: 8, borderRadius: 4 },
     assetLabel: { fontSize: 12, color: colors.textTertiary, fontWeight: '600' as const },
@@ -1578,7 +1577,7 @@ function makeCompStyles(colors: AppColors) {
     sectorRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: Spacing.sm,
+      gap: ClearLensSpacing.sm,
       paddingVertical: 4,
     },
     sectorName: { flex: 1, fontSize: 13, color: colors.textPrimary, fontWeight: '600' as const },
@@ -1601,7 +1600,7 @@ function makeCompStyles(colors: AppColors) {
       flexDirection: 'row',
       alignItems: 'center',
       paddingVertical: 8,
-      gap: Spacing.sm,
+      gap: ClearLensSpacing.sm,
     },
     holdingRank: {
       fontSize: 12,
@@ -1620,14 +1619,14 @@ function makeCompStyles(colors: AppColors) {
       textAlign: 'right',
       color: colors.textPrimary,
     },
-    emptySlot: { alignItems: 'center', paddingVertical: Spacing.md, gap: 6 },
+    emptySlot: { alignItems: 'center', paddingVertical: ClearLensSpacing.md, gap: 6 },
     emptySlotText: { fontSize: 12, color: colors.textTertiary, textAlign: 'center' },
     footer: {
       fontSize: 11,
       color: colors.textTertiary,
       textAlign: 'center',
       fontStyle: 'italic',
-      paddingBottom: Spacing.sm,
+      paddingBottom: ClearLensSpacing.sm,
     },
   });
 }
@@ -2009,26 +2008,26 @@ function makeClearDetailStyles(tokens: ClearLensTokens) {
 });
 }
 
-function makeStyles(colors: AppColors) {
+function makeStyles(colors: ClearLensCompatibleTokens) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
 
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-    errorText: { ...Typography.body, color: colors.textSecondary },
+    errorText: { ...ClearLensTypography.body, color: colors.textSecondary },
     backLink: { color: colors.primary, fontSize: 14, fontWeight: '600' as const },
 
     // ── Fund header ──
     fundHeader: {
       backgroundColor: colors.surface,
-      margin: Spacing.md,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
+      margin: ClearLensSpacing.md,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
       gap: 10,
       borderWidth: 1,
       borderColor: colors.border,
     },
     fundName: { fontSize: 17, fontWeight: '700' as const, color: colors.textPrimary, lineHeight: 24 },
-    fundCategory: { ...Typography.bodySmall, color: colors.textTertiary, marginBottom: 6, fontWeight: '600' as const },
+    fundCategory: { ...ClearLensTypography.bodySmall, color: colors.textTertiary, marginBottom: 6, fontWeight: '600' as const },
 
     holdingRow: { flexDirection: 'row', marginTop: 2 },
     holdingStat: { flex: 1, alignItems: 'center', gap: 4 },
@@ -2046,17 +2045,17 @@ function makeStyles(colors: AppColors) {
     // ── Tab bar ──
     tabBar: {
       flexDirection: 'row',
-      marginHorizontal: Spacing.md,
+      marginHorizontal: ClearLensSpacing.md,
       backgroundColor: colors.borderLight,
-      borderRadius: Radii.md,
+      borderRadius: ClearLensRadii.md,
       padding: 4,
-      marginBottom: Spacing.xs,
+      marginBottom: ClearLensSpacing.xs,
     },
     tab: {
       flex: 1,
       paddingVertical: 9,
       alignItems: 'center',
-      borderRadius: Radii.sm,
+      borderRadius: ClearLensRadii.sm,
     },
     tabActive: {
       backgroundColor: colors.surface,
@@ -2067,15 +2066,15 @@ function makeStyles(colors: AppColors) {
     tabTextActive: { color: colors.textPrimary, fontWeight: '700' as const },
 
     // ── Tab content ──
-    tabContent: { paddingHorizontal: Spacing.md, gap: 14 },
+    tabContent: { paddingHorizontal: ClearLensSpacing.md, gap: 14 },
 
     // XIRR card
     xirrCard: {
       backgroundColor: colors.surface,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
-      gap: Spacing.md,
-      marginTop: Spacing.sm,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      gap: ClearLensSpacing.md,
+      marginTop: ClearLensSpacing.sm,
       borderWidth: 1,
       borderColor: colors.border,
     },
@@ -2100,8 +2099,8 @@ function makeStyles(colors: AppColors) {
     // Chart
     chartCard: {
       backgroundColor: colors.surface,
-      borderRadius: Radii.lg,
-      padding: Spacing.md,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
       gap: 10,
       overflow: 'hidden',
       borderWidth: 1,
@@ -2121,15 +2120,15 @@ function makeStyles(colors: AppColors) {
       flexDirection: 'row',
       alignItems: 'flex-start',
       justifyContent: 'space-between',
-      gap: Spacing.sm,
+      gap: ClearLensSpacing.sm,
     },
     chartHeaderCopy: { flex: 1, gap: 2, minWidth: 0 },
     chartHeaderTitle: { fontSize: 16, fontWeight: '700' as const, color: colors.textPrimary },
     chartHeaderSubtitle: { fontSize: 12, color: colors.textSecondary },
     chartHeaderBadge: {
-      paddingHorizontal: Spacing.sm,
+      paddingHorizontal: ClearLensSpacing.sm,
       paddingVertical: 4,
-      borderRadius: Radii.full,
+      borderRadius: ClearLensRadii.full,
       backgroundColor: colors.surfaceAlt,
       borderWidth: 1,
       borderColor: colors.border,
@@ -2146,7 +2145,7 @@ function makeStyles(colors: AppColors) {
     navStat: { flex: 1, alignItems: 'center', gap: 3 },
     navStatValue: { fontSize: 13, fontWeight: '700' as const, color: colors.textPrimary },
 
-    statLabel: { ...Typography.caption, color: colors.textTertiary, textTransform: 'uppercase' },
+    statLabel: { ...ClearLensTypography.caption, color: colors.textTertiary, textTransform: 'uppercase' },
 
     windowRow: { flexDirection: 'row', gap: 6 },
     // Inactive pill: subtle surface lift + hairline border so it reads as a
@@ -2156,7 +2155,7 @@ function makeStyles(colors: AppColors) {
     windowPill: {
       flex: 1,
       paddingVertical: 6,
-      borderRadius: Radii.full,
+      borderRadius: ClearLensRadii.full,
       alignItems: 'center',
       backgroundColor: colors.surface,
       borderWidth: 1,
@@ -2198,7 +2197,7 @@ function makeStyles(colors: AppColors) {
     benchmarkPill: {
       paddingVertical: 5,
       paddingHorizontal: 10,
-      borderRadius: Radii.full,
+      borderRadius: ClearLensRadii.full,
       backgroundColor: colors.borderLight,
     },
     benchmarkPillActive: { backgroundColor: colors.primaryLight, borderWidth: 1, borderColor: colors.primary },
@@ -2218,7 +2217,7 @@ function makeStyles(colors: AppColors) {
     pointerSeriesText: { fontSize: 11, color: colors.textSecondary },
 
     noData: { padding: 40, alignItems: 'center', gap: 10 },
-    noDataText: { ...Typography.body, color: colors.textTertiary, textAlign: 'center' },
+    noDataText: { ...ClearLensTypography.body, color: colors.textTertiary, textAlign: 'center' },
 
     bottomPad: { height: 32 },
   });

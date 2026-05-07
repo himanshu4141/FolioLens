@@ -1,7 +1,11 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { InsightDebtFund } from '@/src/types/app';
 
@@ -16,7 +20,7 @@ const DEBT_COLOR = '#3b82f6';
 const CASH_COLOR = '#f97316';
 
 export function DebtCard({ totalValue, debtPct, cashPct, debtFunds }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
 
   const debtValue = (debtPct / 100) * totalValue;
   const cashValue = (cashPct / 100) * totalValue;
@@ -91,31 +95,31 @@ export function DebtCard({ totalValue, debtPct, cashPct, debtFunds }: Props) {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   cardTitle: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   summaryRow: {
     flexDirection: 'row',
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   summaryItem: {
     flex: 1,
     alignItems: 'center',
     gap: 2,
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
   },
   summaryAccent: {
     width: 24,
     height: 3,
     borderRadius: 2,
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   summaryValue: {
     fontSize: 22,
@@ -123,36 +127,36 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   summaryLabel: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
   },
   summaryAmount: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
     marginTop: 2,
   },
   summaryDivider: {
     width: 1,
     alignSelf: 'stretch',
-    marginVertical: Spacing.sm,
+    marginVertical: ClearLensSpacing.sm,
   },
   divider: {
     height: 1,
-    marginVertical: Spacing.md,
+    marginVertical: ClearLensSpacing.md,
   },
   tableHeader: {
     flexDirection: 'row',
-    marginBottom: Spacing.xs,
+    marginBottom: ClearLensSpacing.xs,
   },
   colFund: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     flex: 1,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     fontWeight: '600',
   },
   colDebt: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 56,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -160,7 +164,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   colCash: {
-    ...Typography.caption,
+    ...ClearLensTypography.caption,
     width: 56,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -170,29 +174,29 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   fundName: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
     flex: 1,
   },
   debtCell: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
     width: 56,
     textAlign: 'right',
   },
   cashCell: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '700',
     width: 56,
     textAlign: 'right',
   },
   footnote: {
-    ...Typography.caption,
-    marginTop: Spacing.sm,
+    ...ClearLensTypography.caption,
+    marginTop: ClearLensSpacing.sm,
     lineHeight: 16,
   },
 });

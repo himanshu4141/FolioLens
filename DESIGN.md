@@ -133,7 +133,6 @@ Every Clear Lens screen should cover:
 - error/retry
 - syncing/requested
 - stale or missing composition data where relevant
-- classic fallback through Settings
 
 ## Accessibility
 

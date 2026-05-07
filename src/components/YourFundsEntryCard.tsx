@@ -1,8 +1,12 @@
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { InsightFundAllocation } from '@/src/types/app';
 
@@ -12,7 +16,7 @@ interface Props {
 }
 
 export function YourFundsEntryCard({ fundAllocation, fundCount }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const router = useRouter();
 
   const handlePress = () => {
@@ -75,26 +79,26 @@ export function YourFundsEntryCard({ fundAllocation, fundCount }: Props) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginHorizontal: Spacing.md,
-    marginTop: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginHorizontal: ClearLensSpacing.md,
+    marginTop: ClearLensSpacing.md,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   title: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   countText: {
     fontSize: 13,
@@ -103,9 +107,9 @@ const styles = StyleSheet.create({
   allocationBar: {
     flexDirection: 'row',
     height: 8,
-    borderRadius: Radii.full,
+    borderRadius: ClearLensRadii.full,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   barSeg: {
     height: '100%',
@@ -116,7 +120,7 @@ const styles = StyleSheet.create({
   fundRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   fundDot: {
     width: 8,
@@ -142,7 +146,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   moreText: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     marginTop: 4,
   },
 });

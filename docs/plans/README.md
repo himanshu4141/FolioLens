@@ -72,3 +72,16 @@ All shipped work is in `docs/plans/archive/`. These are read-only historical rec
 | Plan | What it covers |
 |---|---|
 | `1-portfolio-value-bug-fix.md` | CAS import REVERSAL/tax fix; Android PDF XHR; auth host guard; CI db push |
+
+---
+
+## Notes for agents reading archived plans
+
+Some past plans describe an architecture that has since been retired. Don't act on these references — they are historical context, not the current shape of the code:
+
+- **"Classic" design mode** is gone. Many phase-3 / phase-5 plans (M1-clear-lens-design-mode, M1-desktop-shell, M3-dark-mode) still mention "Classic" screens, an `appDesignMode` setting, or "the design switch in Settings". The Settings switch was removed when dark mode shipped (PR #97); Clear Lens is now the only design. The `appDesignMode` field exists only in `migratePersistedAppState` (`src/store/appStore.ts`) so legacy persisted state is dropped on load — it is not read at runtime.
+- **`src/constants/theme.ts`** is deleted. The legacy `Spacing`, `Radii`, `Typography`, and `AppColors` exports moved to `src/constants/clearLensTheme.ts` as `ClearLensSpacing`, `ClearLensRadii`, `ClearLensTypography`, and `ClearLensCompatibleTokens`. Anything in an archive plan that says `from '@/src/constants/theme'` is wrong now.
+- **`useTheme().colors`** is gone. The hook returns `{ colorScheme, resolvedScheme, setColorScheme, clearLens }` — no back-compat `colors` field. Read tokens via `useClearLensTokens()` (returns `{ colors, semantic, compatible, scheme }`).
+- **`useAppDesignMode`** hook is gone. Older plans reference `src/hooks/useAppDesignMode.ts` for the classic↔Clear-Lens switch. The hook and the screens it gated have been removed.
+
+If a current task seems to depend on any of the above, escalate before implementing — it is much more likely the plan is stale than that the architecture needs to revert.

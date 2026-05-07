@@ -1,11 +1,10 @@
 import { Stack } from 'expo-router';
-import { useTheme } from '@/src/context/ThemeContext';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensFonts } from '@/src/constants/clearLensTheme';
 
 export default function OnboardingLayout() {
-  const { clearLens } = useTheme();
-  const cl = clearLens.colors;
+  const cl = useClearLensTokens().colors;
   const { layout } = useResponsiveLayout();
   const isDesktop = layout === 'desktop';
 

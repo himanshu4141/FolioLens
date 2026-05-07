@@ -2,8 +2,12 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '@/src/context/ThemeContext';
-import { Spacing, Radii, Typography } from '@/src/constants/theme';
+import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  ClearLensSpacing,
+  ClearLensRadii,
+  ClearLensTypography,
+} from '@/src/constants/clearLensTheme';
 import type { PortfolioInsights } from '@/src/types/app';
 
 interface Props {
@@ -28,7 +32,7 @@ export function PortfolioInsightsEntryCard({
   isSyncing,
   onSyncPress,
 }: Props) {
-  const { colors } = useTheme();
+  const { compatible: colors } = useClearLensTokens();
   const router = useRouter();
 
   const handlePress = () => {
@@ -141,7 +145,7 @@ function StatBox({
   label: string;
   value: string;
   accentColor: string;
-  colors: ReturnType<typeof useTheme>['colors'];
+  colors: ReturnType<typeof useClearLensTokens>['compatible'];
 }) {
   return (
     <View style={[styles.statBox, { backgroundColor: colors.surfaceAlt, borderColor: colors.borderLight }]}>
@@ -162,26 +166,26 @@ function formatDate(iso: string): string {
 
 const styles = StyleSheet.create({
   wrapper: {
-    borderRadius: Radii.lg,
+    borderRadius: ClearLensRadii.lg,
     borderWidth: 1,
-    padding: Spacing.md,
-    marginHorizontal: Spacing.md,
-    marginTop: Spacing.md,
+    padding: ClearLensSpacing.md,
+    marginHorizontal: ClearLensSpacing.md,
+    marginTop: ClearLensSpacing.md,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   title: {
-    ...Typography.h3,
+    ...ClearLensTypography.h3,
     fontWeight: '700',
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: ClearLensSpacing.xs,
   },
   syncBtn: {
     padding: 2,
@@ -189,24 +193,24 @@ const styles = StyleSheet.create({
   stackedBar: {
     flexDirection: 'row',
     height: 10,
-    borderRadius: Radii.full,
+    borderRadius: ClearLensRadii.full,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+    marginBottom: ClearLensSpacing.md,
   },
   barSeg: {
     height: '100%',
   },
   statsGrid: {
     flexDirection: 'row',
-    gap: Spacing.xs,
-    marginBottom: Spacing.md,
+    gap: ClearLensSpacing.xs,
+    marginBottom: ClearLensSpacing.md,
   },
   statBox: {
     flex: 1,
-    borderRadius: Radii.sm,
+    borderRadius: ClearLensRadii.sm,
     borderWidth: 1,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.xs,
+    paddingVertical: ClearLensSpacing.sm,
+    paddingHorizontal: ClearLensSpacing.xs,
     alignItems: 'center',
     gap: 3,
   },
@@ -222,11 +226,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
   statLabel: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
   },
   sourceBadge: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
   },
   estimateChip: {
@@ -239,25 +243,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   estimateChipText: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
     fontWeight: '600',
   },
   skeleton: {
-    gap: Spacing.sm,
+    gap: ClearLensSpacing.sm,
   },
   skeletonBar: {
     height: 10,
-    borderRadius: Radii.full,
+    borderRadius: ClearLensRadii.full,
   },
   skeletonLine: {
     height: 14,
-    borderRadius: Radii.sm,
+    borderRadius: ClearLensRadii.sm,
     width: '60%',
   },
   emptyState: {
-    paddingVertical: Spacing.sm,
+    paddingVertical: ClearLensSpacing.sm,
   },
   emptyText: {
-    ...Typography.bodySmall,
+    ...ClearLensTypography.bodySmall,
   },
 });
