@@ -451,21 +451,19 @@ function ResultSection({
         </Text>
       </View>
 
+      {/* Stats card — kept lean to avoid duplicating "Current value" and
+          "Return per year" with the "Your fund" column of the vs-benchmark
+          card below. Those two values appear there with the benchmark side-
+          by-side, which is the more useful framing. This card holds the
+          numbers that don't appear in the comparison: how much went in, the
+          ₹+% gain, and how many SIP installments were simulated. */}
       <View style={styles.card}>
         <Row label="Total invested" value={formatCurrency(fundResult.totalInvested)} />
-        <RowDivider />
-        <Row label="Current value" value={formatCurrency(fundResult.currentValue)} highlight />
         <RowDivider />
         <Row
           label="Gain"
           value={`${formatCurrency(fundResult.gain)} (${fundResult.gainPct >= 0 ? '+' : ''}${fundResult.gainPct.toFixed(1)}%)`}
           tone={fundResult.gain >= 0 ? 'positive' : 'negative'}
-        />
-        <RowDivider />
-        <Row
-          label="Return per year"
-          value={Number.isFinite(fundResult.xirr) ? formatXirr(fundResult.xirr) : '—'}
-          tone={Number.isFinite(fundResult.xirr) && fundResult.xirr >= 0 ? 'positive' : 'negative'}
         />
         <RowDivider />
         <Row label="Installments" value={String(fundResult.installments.length)} />
