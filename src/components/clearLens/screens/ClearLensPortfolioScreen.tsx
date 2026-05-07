@@ -373,7 +373,10 @@ export function InvestmentVsBenchmarkChart({
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const [window, setWindow] = useState<TimeWindow>('1Y');
+  // Window selection lives in the store so it survives the desktop ↔ mobile
+  // screen swap (Portfolio has separate Mobile / Desktop component variants).
+  const window = useAppStore((s) => s.portfolioChartWindow);
+  const setWindow = useAppStore((s) => s.setPortfolioChartWindow);
   const [chartInnerWidth, setChartInnerWidth] = useState(CHART_WIDTH);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const { points, isLoading, error } = useInvestmentVsBenchmarkTimeline(

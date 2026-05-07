@@ -20,6 +20,7 @@ import {
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import { ResponsiveRouteFrame, useIsDesktop } from '@/src/components/responsive';
+import { useAppStore } from '@/src/store/appStore';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -808,7 +809,10 @@ export default function MoneyTrailScreen() {
   const scrollRef = useRef<ScrollView | null>(null);
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<MoneyTrailFilters>(DEFAULT_MONEY_TRAIL_FILTERS);
-  const [sortBy, setSortBy] = useState<MoneyTrailSortOption>('newest');
+  // Sort lives in the store so it survives navigating away and back, and so
+  // any future Money Trail desktop variant shares the same source of truth.
+  const sortBy = useAppStore((s) => s.moneyTrailSortBy);
+  const setSortBy = useAppStore((s) => s.setMoneyTrailSortBy);
   const [filterOpen, setFilterOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
