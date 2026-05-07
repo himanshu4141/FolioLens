@@ -173,6 +173,12 @@ def _request_json(
     headers = {
         "Authorization": f"Bearer {_resend_api_key()}",
         "Content-Type": "application/json",
+        # Cloudflare in front of api.resend.com returns "error code: 1010"
+        # ("banned based on browser signature") for the default
+        # `Python-urllib/3.x` user agent. Send a real UA so the request
+        # looks like normal traffic — Resend's API itself is fine with us.
+        "User-Agent": "FolioLens-Inbound-Router/1.0 (+https://app.foliolens.in)",
+        "Accept": "application/json",
     }
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
