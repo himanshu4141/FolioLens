@@ -91,13 +91,13 @@ sequenceDiagram
   else CAS email with PDF
     SB->>DB: INSERT cas_import (status='pending')
     DB-->>SB: import_id
-    SB-->>R: 200 accepted (in &lt;1s — sync handler returns)
+    SB-->>R: 200 accepted (sync handler returns under 1s)
     R-->>RS: 200 OK (no retry)
 
     Note over SB: EdgeRuntime.waitUntil(...)<br/>background processor takes over
 
     loop for each PDF attachment
-      SB->>RS: GET <presigned-attachment-url><br/>(no auth — Resend's signed URL)
+      SB->>RS: GET presigned attachment URL<br/>(no auth — Resend's signed URL)
       RS-->>SB: PDF bytes
       SB->>P: POST PDF + PAN + DOB password<br/>x-parser-secret
       P-->>SB: parsed schemes + transactions
