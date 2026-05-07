@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { TimeWindow } from '@/src/utils/navUtils';
+import type { MoneyTrailSortOption } from '@/src/utils/moneyTrail';
 
 export type WealthJourneyReturnPreset = 'cautious' | 'balanced' | 'growth' | 'custom';
 export type AppColorScheme = 'light' | 'dark' | 'system';
@@ -269,6 +271,57 @@ const DEFAULT_WEALTH_JOURNEY_STATE: WealthJourneyState = {
 };
 
 // ---------------------------------------------------------------------------
+// Screen UI preferences
+// ---------------------------------------------------------------------------
+// User-controlled UI choices (sort orders, time windows, search input) that
+// must survive a desktop ↔ mobile resize. Funds and Portfolio render via
+// separate desktop/mobile component variants — when the breakpoint flips,
+// the inner React component swaps wholesale, wiping any local useState. By
+// holding these values in the Zustand store both variants read/write the
+// same source of truth, and the user's selections survive every resize and
+// the next app launch (except searchQuery — see partialize below).
+
+export type FundsSortOption =
+  | 'currentValue'
+  | 'invested'
+  | 'xirr'
+  | 'benchmarkLead'
+  | 'dailyChange'
+  | 'alphabetical';
+
+export type PortfolioChartWindow = TimeWindow;
+
+export type MoneyTrailSortKey = MoneyTrailSortOption;
+
+const VALID_FUNDS_SORT: readonly FundsSortOption[] = [
+  'currentValue', 'invested', 'xirr', 'benchmarkLead', 'dailyChange', 'alphabetical',
+];
+const VALID_CHART_WINDOWS: readonly PortfolioChartWindow[] = [
+  '1M', '3M', '6M', '1Y', '3Y', '5Y', '10Y', '15Y', 'All',
+];
+const VALID_MONEY_TRAIL_SORT: readonly MoneyTrailSortKey[] = [
+  'newest', 'oldest', 'amount_desc', 'amount_asc', 'fund_asc', 'fund_desc',
+];
+
+function sanitizeFundsSort(raw: unknown): FundsSortOption {
+  return VALID_FUNDS_SORT.includes(raw as FundsSortOption)
+    ? (raw as FundsSortOption)
+    : 'currentValue';
+}
+
+function sanitizeChartWindow(raw: unknown): PortfolioChartWindow {
+  return VALID_CHART_WINDOWS.includes(raw as PortfolioChartWindow)
+    ? (raw as PortfolioChartWindow)
+    : '1Y';
+}
+
+function sanitizeMoneyTrailSort(raw: unknown): MoneyTrailSortKey {
+  return VALID_MONEY_TRAIL_SORT.includes(raw as MoneyTrailSortKey)
+    ? (raw as MoneyTrailSortKey)
+    : 'newest';
+}
+
+// ---------------------------------------------------------------------------
 // Store interface
 // ---------------------------------------------------------------------------
 
@@ -287,6 +340,15 @@ export interface AppStore {
   addGoal: (goal: Omit<SavedGoal, 'id' | 'createdAt'>) => void;
   updateGoal: (id: string, updates: Partial<Omit<SavedGoal, 'id' | 'createdAt'>>) => void;
   deleteGoal: (id: string) => void;
+  // Screen UI preferences — see comment block above.
+  fundsSortBy: FundsSortOption;
+  setFundsSortBy: (sort: FundsSortOption) => void;
+  fundsSearchQuery: string;
+  setFundsSearchQuery: (query: string) => void;
+  portfolioChartWindow: PortfolioChartWindow;
+  setPortfolioChartWindow: (window: PortfolioChartWindow) => void;
+  moneyTrailSortBy: MoneyTrailSortKey;
+  setMoneyTrailSortBy: (sort: MoneyTrailSortKey) => void;
 }
 
 type PersistedAppStore = Partial<AppStore> & {
@@ -321,6 +383,9 @@ export function migratePersistedAppState(persistedState: unknown): Partial<AppSt
       wealthJourney: DEFAULT_WEALTH_JOURNEY_STATE,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      fundsSortBy: 'currentValue',
+      portfolioChartWindow: '1Y',
+      moneyTrailSortBy: 'newest',
     };
   }
 
@@ -335,6 +400,11 @@ export function migratePersistedAppState(persistedState: unknown): Partial<AppSt
     }),
     returnAssumptions: sanitizeReturnAssumptions(state.returnAssumptions),
     goals: sanitizeGoals(state.goals),
+    fundsSortBy: sanitizeFundsSort(state.fundsSortBy),
+    portfolioChartWindow: sanitizeChartWindow(state.portfolioChartWindow),
+    moneyTrailSortBy: sanitizeMoneyTrailSort(state.moneyTrailSortBy),
+    // fundsSearchQuery deliberately not migrated — it's transient input,
+    // always start fresh on app launch (still survives resize via in-memory store).
   };
 }
 
@@ -375,11 +445,22 @@ export const useAppStore = create<AppStore>()(
         })),
       deleteGoal: (id) =>
         set((state) => ({ goals: state.goals.filter((g) => g.id !== id) })),
+      // Screen UI preferences (Funds, Portfolio chart, Money Trail).
+      fundsSortBy: 'currentValue' as FundsSortOption,
+      setFundsSortBy: (sort) => set({ fundsSortBy: sanitizeFundsSort(sort) }),
+      fundsSearchQuery: '',
+      setFundsSearchQuery: (query) => set({ fundsSearchQuery: query }),
+      portfolioChartWindow: '1Y' as PortfolioChartWindow,
+      setPortfolioChartWindow: (window) =>
+        set({ portfolioChartWindow: sanitizeChartWindow(window) }),
+      moneyTrailSortBy: 'newest' as MoneyTrailSortKey,
+      setMoneyTrailSortBy: (sort) =>
+        set({ moneyTrailSortBy: sanitizeMoneyTrailSort(sort) }),
     }),
     {
       name: 'foliolens-app-store',
       storage: createJSONStorage(() => AsyncStorage),
-      version: 6,
+      version: 7,
       migrate: migratePersistedAppState,
       merge: (persistedState, currentState) => {
         const state =
@@ -398,6 +479,14 @@ export const useAppStore = create<AppStore>()(
           }),
           returnAssumptions: sanitizeReturnAssumptions(state.returnAssumptions),
           goals: sanitizeGoals(state.goals),
+          fundsSortBy: sanitizeFundsSort(state.fundsSortBy ?? currentState.fundsSortBy),
+          portfolioChartWindow: sanitizeChartWindow(
+            state.portfolioChartWindow ?? currentState.portfolioChartWindow,
+          ),
+          moneyTrailSortBy: sanitizeMoneyTrailSort(
+            state.moneyTrailSortBy ?? currentState.moneyTrailSortBy,
+          ),
+          // fundsSearchQuery is intentionally not restored from disk — see partialize.
         };
       },
       partialize: (state) => ({
@@ -406,6 +495,12 @@ export const useAppStore = create<AppStore>()(
         wealthJourney: state.wealthJourney,
         returnAssumptions: state.returnAssumptions,
         goals: state.goals,
+        fundsSortBy: state.fundsSortBy,
+        portfolioChartWindow: state.portfolioChartWindow,
+        moneyTrailSortBy: state.moneyTrailSortBy,
+        // Deliberately NOT persisted: fundsSearchQuery — transient input
+        // shouldn't follow the user across sessions. It still survives resize
+        // via the in-memory store (partialize only affects AsyncStorage).
       }),
     },
   ),

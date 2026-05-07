@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -13,7 +13,7 @@ import { useRouter } from 'expo-router';
 import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
-import { useAppStore } from '@/src/store/appStore';
+import { useAppStore, type FundsSortOption } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { parseFundName } from '@/src/utils/fundName';
@@ -32,7 +32,7 @@ import {
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
 
-type SortOption = 'currentValue' | 'invested' | 'xirr' | 'benchmarkLead' | 'dailyChange' | 'alphabetical';
+type SortOption = FundsSortOption;
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'currentValue', label: 'Current value' },
@@ -53,9 +53,13 @@ export function ClearLensFundsScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
-  const { defaultBenchmarkSymbol } = useAppStore();
-  const [sortBy, setSortBy] = useState<SortOption>('currentValue');
-  const [searchQuery, setSearchQuery] = useState('');
+  const {
+    defaultBenchmarkSymbol,
+    fundsSortBy: sortBy,
+    setFundsSortBy: setSortBy,
+    fundsSearchQuery: searchQuery,
+    setFundsSearchQuery: setSearchQuery,
+  } = useAppStore();
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);

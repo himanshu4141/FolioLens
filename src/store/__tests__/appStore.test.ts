@@ -17,6 +17,14 @@ const DEFAULT_WEALTH_JOURNEY = {
   postRetirementReturn: null,
 };
 
+// Defaults seeded by the migration for screen UI preferences (PR #112). Spread
+// into each expected migration shape so `toEqual` remains strict.
+const SCREEN_UI_DEFAULTS = {
+  fundsSortBy: 'currentValue' as const,
+  portfolioChartWindow: '1Y' as const,
+  moneyTrailSortBy: 'newest' as const,
+};
+
 describe('BENCHMARK_OPTIONS', () => {
   it('contains exactly 3 TRI entries — Nifty 50, Nifty 100, Nifty 500', () => {
     expect(BENCHMARK_OPTIONS).toHaveLength(3);
@@ -85,6 +93,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -95,6 +104,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -105,6 +115,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -115,6 +126,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -125,6 +137,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
     expect(migratePersistedAppState({ appDesignMode: 'classic' })).toEqual({
       defaultBenchmarkSymbol: '^NSEITRI',
@@ -132,6 +145,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -142,6 +156,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
     expect(migratePersistedAppState({ designVariant: 'v2' })).toEqual({
       defaultBenchmarkSymbol: '^NSEITRI',
@@ -149,6 +164,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -159,6 +175,7 @@ describe('appColorScheme persistence migration', () => {
       wealthJourney: DEFAULT_WEALTH_JOURNEY,
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -185,6 +202,7 @@ describe('appColorScheme persistence migration', () => {
       },
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -225,6 +243,7 @@ describe('appColorScheme persistence migration', () => {
       },
       returnAssumptions: DEFAULT_RETURN_ASSUMPTIONS,
       goals: [],
+      ...SCREEN_UI_DEFAULTS,
     });
   });
 
@@ -316,5 +335,55 @@ describe('headline delta formula', () => {
 
   it('delta is 0.0 when portfolio exactly matches the benchmark', () => {
     expect(computeHeadlineDelta(0.15, 0.15)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Screen UI preferences (Funds sort/search, Portfolio chart window, Money
+// Trail sort) — added in PR #112 to survive desktop ↔ mobile resize where
+// the screen component itself swaps wholesale.
+// ---------------------------------------------------------------------------
+
+describe('screen UI preferences migration', () => {
+  it('preserves a stored fundsSortBy value when valid', () => {
+    const result = migratePersistedAppState({ fundsSortBy: 'xirr' });
+    expect(result.fundsSortBy).toBe('xirr');
+  });
+
+  it('falls back to currentValue for an unknown fundsSortBy value', () => {
+    expect(migratePersistedAppState({ fundsSortBy: 'bogus' }).fundsSortBy)
+      .toBe('currentValue');
+  });
+
+  it('preserves a stored portfolioChartWindow value when valid', () => {
+    expect(migratePersistedAppState({ portfolioChartWindow: '5Y' }).portfolioChartWindow)
+      .toBe('5Y');
+  });
+
+  it('falls back to 1Y for an unknown portfolioChartWindow', () => {
+    expect(migratePersistedAppState({ portfolioChartWindow: '7Y' }).portfolioChartWindow)
+      .toBe('1Y');
+  });
+
+  it('preserves a stored moneyTrailSortBy value when valid', () => {
+    expect(migratePersistedAppState({ moneyTrailSortBy: 'amount_desc' }).moneyTrailSortBy)
+      .toBe('amount_desc');
+  });
+
+  it('falls back to newest for an unknown moneyTrailSortBy', () => {
+    expect(migratePersistedAppState({ moneyTrailSortBy: 'random' }).moneyTrailSortBy)
+      .toBe('newest');
+  });
+
+  it('seeds defaults when fields are missing from persisted state', () => {
+    const result = migratePersistedAppState({});
+    expect(result.fundsSortBy).toBe('currentValue');
+    expect(result.portfolioChartWindow).toBe('1Y');
+    expect(result.moneyTrailSortBy).toBe('newest');
+  });
+
+  it('does not migrate fundsSearchQuery — it is intentionally session-only', () => {
+    const result = migratePersistedAppState({ fundsSearchQuery: 'leftover' });
+    expect((result as { fundsSearchQuery?: string }).fundsSearchQuery).toBeUndefined();
   });
 });

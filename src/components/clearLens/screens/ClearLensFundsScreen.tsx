@@ -44,8 +44,10 @@ import {
 } from '@/src/utils/clearLensFormat';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensFundsScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensFundsScreenDesktop';
+import type { FundsSortOption } from '@/src/store/appStore';
 
-type SortOption = 'currentValue' | 'invested' | 'xirr' | 'benchmarkLead' | 'dailyChange' | 'alphabetical';
+// Re-export the canonical type so consumers can keep using the local name.
+type SortOption = FundsSortOption;
 type AllocationSegment = { id: string; pct: number; color: string };
 type FundsBottomNavRoute = 'portfolio' | 'funds' | 'wealth';
 
@@ -440,13 +442,17 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const { session } = useSession();
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
-  const { defaultBenchmarkSymbol } = useAppStore();
-  const [sortBy, setSortBy] = useState<SortOption>('currentValue');
+  const {
+    defaultBenchmarkSymbol,
+    fundsSortBy: sortBy,
+    setFundsSortBy: setSortBy,
+    fundsSearchQuery: searchQuery,
+    setFundsSearchQuery: setSearchQuery,
+  } = useAppStore();
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [expandedFundId, setExpandedFundId] = useState<string | null>(null);
   const didAutoExpand = useRef(false);
-  const [searchQuery, setSearchQuery] = useState('');
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
