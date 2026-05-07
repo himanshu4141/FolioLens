@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -46,6 +46,13 @@ export default function OAuthCallbackScreen() {
   const [errorState, setErrorState] = useState<ErrorState | null>(null);
   const [wasAutoLinked, setWasAutoLinked] = useState(false);
   const incomingUrl = Linking.useURL();
+  // Guard against re-entry: useEffect's deps include code/callbackUrl/incomingUrl,
+  // any of which can update from undefined → defined as expo-router parses the
+  // route URL. Without this ref the effect fires twice — once before params
+  // populate (showing the "authorization code missing" error) and once after
+  // (succeeding). User sees a brief failure flash then a successful navigate,
+  // which is what the prod-mobile bug was.
+  const exchangeAttemptedRef = useRef(false);
 
   useEffect(() => {
     // ── Web path ──────────────────────────────────────────────────────────────
@@ -85,6 +92,17 @@ export default function OAuthCallbackScreen() {
       return;
     }
 
+    // Wait for at least one input to populate before deciding anything. On
+    // first render, expo-router may not have parsed the search params yet
+    // (code, callbackUrl) and Linking.useURL() may not have the deep link.
+    // Without this guard we'd briefly show an error and then succeed.
+    if (!code && !callbackUrl && !incomingUrl) return;
+
+    // Single-attempt guard. Code is single-use at the OAuth server, so a
+    // second exchange attempt with the same code returns `invalid_grant`.
+    if (exchangeAttemptedRef.current) return;
+    exchangeAttemptedRef.current = true;
+
     async function exchange() {
       try {
         if (!code) {
@@ -100,6 +118,7 @@ export default function OAuthCallbackScreen() {
             });
 
             if (error) {
+              console.error('[auth/callback] setSession failed: %s', error.message);
               setErrorState({
                 message: `Sign-in failed: ${error.message}`,
                 isDuplicate: false,
@@ -129,6 +148,14 @@ export default function OAuthCallbackScreen() {
         const { data, error } = await supabase.auth.exchangeCodeForSession(callbackHref);
 
         if (error) {
+          // Surface the verbatim Supabase error to logs so production crashes
+          // can be diagnosed via adb logcat / device console without rebuilding.
+          console.error(
+            '[auth/callback] exchangeCodeForSession failed: %s (status=%s, code=%s)',
+            error.message,
+            (error as { status?: number }).status ?? 'n/a',
+            (error as { code?: string }).code ?? 'n/a',
+          );
           const isDuplicate = error.message.toLowerCase().includes('already');
           setErrorState({
             message: isDuplicate
@@ -150,7 +177,11 @@ export default function OAuthCallbackScreen() {
 
         setState('linked');
         router.replace('/(tabs)');
-      } catch {
+      } catch (err) {
+        console.error(
+          '[auth/callback] unexpected error during exchange: %s',
+          err instanceof Error ? err.message : String(err),
+        );
         setErrorState({
           message: 'An unexpected error occurred. Please try again.',
           isDuplicate: false,
