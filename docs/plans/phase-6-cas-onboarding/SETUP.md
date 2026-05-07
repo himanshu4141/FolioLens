@@ -172,13 +172,14 @@ Set on **both** Supabase projects:
 
 | Key | DEV value | PROD value |
 |---|---|---|
-| `RESEND_INBOUND_SECRET` | `<resend-svix-secret>` | `<resend-svix-secret>` |
+| `FOLIOLENS_INBOUND_ROUTER_SECRET` | `<shared-foliolens-secret>` | `<shared-foliolens-secret>` |
 | `INBOUND_DOMAIN` | `foliolens.in` | `foliolens.in` |
-| `RESEND_API_KEY` | `<resend-api-key>` | `<resend-api-key>` |
-| `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID` | `<dev-import-template-id>` | `<prod-import-template-id>` |
-| `RESEND_NOTIFICATION_FROM` | `FolioLens Dev <noreply-dev@foliolens.in>` | `FolioLens <noreply@foliolens.in>` |
+| `NOTIFY_ENVIRONMENT` | `dev` | `prod` |
+| `ROUTER_NOTIFY_URL` | (optional, defaults to `https://app.foliolens.in/api/cas-import-notify`) | same |
 
-`RESEND_API_KEY` is needed because Resend webhooks carry metadata; the Edge Function fetches email body / attachment download URLs through the Receiving API and sends the templated import status email. Keep DEV and PROD on distinct From addresses so beta/test messages cannot be confused with production account mail.
+Issue #107 moved every Resend touchpoint to the Vercel router, so Supabase no longer needs `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`, `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, or `RESEND_NOTIFICATION_FROM`. After this PR deploys, **delete those four secrets from both DEV and PROD Supabase project dashboards**. The router fetches Resend Receiving content + signs a normalized payload with `FOLIOLENS_INBOUND_ROUTER_SECRET` (HMAC-SHA256). Supabase verifies the FolioLens signature, downloads attachments via Resend's presigned URLs, and POSTs status emails to the router's `/api/cas-import-notify` endpoint with the same shared secret.
+
+The Vercel router needs the corresponding secrets — see the "Inbound router env" table in [docs/INFRASTRUCTURE.md](../../INFRASTRUCTURE.md) (`RESEND_INBOUND_ROUTER_SECRET`, `RESEND_API_KEY`, `FOLIOLENS_INBOUND_ROUTER_SECRET`, plus `RESEND_NOTIFICATION_FROM_DEV/_PROD` and `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_DEV/_PROD`).
 
 Verify deployment config:
 
@@ -280,8 +281,8 @@ Also verify that the user's auth email receives a Resend Template message:
 | Router returns 401 | `RESEND_INBOUND_ROUTER_SECRET` does not match the Resend webhook signing secret | Re-copy the Svix secret into Vercel and redeploy |
 | Router returns 5xx on human aliases | `RESEND_API_KEY` cannot retrieve received email or send mail | Check API key permissions and Resend error body in webhook log |
 | Router route is `drop` for a CAS address | Address local-part does not match `cas-dev-<8-char-token>` or `cas-<8-char-token>` | Re-copy the exact in-app address |
-| Supabase function returns 401 | `RESEND_INBOUND_SECRET` on Supabase does not match the same Resend Svix secret | Re-copy the secret into both Supabase projects and redeploy |
+| Supabase function returns 401 | `FOLIOLENS_INBOUND_ROUTER_SECRET` mismatch between Vercel router and Supabase, or stale clock skewing the 5-minute timestamp window | Re-copy the same FolioLens secret to Vercel + both Supabase projects, redeploy each, retry |
 | Supabase function returns unknown token for a real user | Wrong env prefix or token typo | Compare address to `select cas_inbox_token from user_profile where user_id = ...` in that environment |
 | App shows old address format | PR #93 bundle / OTA not republished after env or code change | Republish the relevant EAS update or redeploy Vercel |
-| CAS import succeeds/fails but no user email arrives | Missing `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, unpublished template, or wrong sender/domain permission | Confirm the template is published, check Supabase logs for `notification skipped` / `notification failed`, and verify the DEV/PROD sender secret |
-| User receives prod-looking email from a dev import | DEV `RESEND_NOTIFICATION_FROM` or template default sender is wrong | Set DEV Supabase secret to `FolioLens Dev <noreply-dev@foliolens.in>` and replay the webhook |
+| CAS import succeeds/fails but no user email arrives | Missing `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_DEV/_PROD` on Vercel, unpublished template, wrong From-domain permission, or the cas-import-notify endpoint rejected the FolioLens signature | Check Supabase logs for `DROPPED notification_failed`, then check Vercel function logs for `cas-import-notify`. Confirm both template ids are published in Resend |
+| User receives prod-looking email from a dev import | `NOTIFY_ENVIRONMENT` on the DEV Supabase project is `prod` (or unset, which defaults to `dev` — but a `prod` typo is the failure mode) | Set DEV Supabase `NOTIFY_ENVIRONMENT=dev` and replay the webhook |

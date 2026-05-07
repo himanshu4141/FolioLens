@@ -62,6 +62,13 @@ Thumbs.db
 coverage/
 fixtures/private/
 
+# Python (Vercel api/ functions are Python; pyc caches appear when running
+# `python3 -m unittest api.tests.*` locally)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
 # Misc
 *.pem
 .vercel

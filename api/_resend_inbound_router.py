@@ -316,29 +316,270 @@ def _supabase_url(route: Route) -> str:
     return value
 
 
-def forward_cas_to_supabase(route: Route, raw_body: bytes, headers: dict[str, str]) -> dict[str, Any]:
+# ── FolioLens-owned HMAC for router ↔ Supabase ──────────────────────────────
+#
+# Issue #107: Resend secrets stay on the router; Supabase only knows about
+# this FolioLens-owned shared secret. Every CAS handoff (router → Supabase
+# webhook) and every notification callback (Supabase → router) carries an
+# `x-foliolens-signature: v1,<base64sig>` header signed with HMAC-SHA256
+# over the raw body using `FOLIOLENS_INBOUND_ROUTER_SECRET`.
+NORMALIZED_PAYLOAD_VERSION = 1
+ROUTER_SIGNATURE_HEADER = "x-foliolens-signature"
+ROUTER_SIGNATURE_TOLERANCE_SECONDS = 5 * 60
+
+
+def _foliolens_secret() -> bytes:
+    secret = os.environ.get("FOLIOLENS_INBOUND_ROUTER_SECRET", "")
+    if not secret:
+        raise MissingConfigError("FOLIOLENS_INBOUND_ROUTER_SECRET is not set")
+    return secret.encode("utf-8")
+
+
+def sign_router_payload(body: bytes, timestamp: int | None = None) -> tuple[str, int]:
+    """Sign a body with FOLIOLENS_INBOUND_ROUTER_SECRET. Returns (header, ts)."""
+    ts = timestamp if timestamp is not None else int(time.time())
+    signed = b".".join([str(ts).encode("ascii"), body])
+    sig = base64.b64encode(
+        hmac.new(_foliolens_secret(), signed, hashlib.sha256).digest()
+    ).decode("ascii")
+    return f"v1,{sig}", ts
+
+
+def verify_router_signature(body: bytes, signature_header: str | None, timestamp_header: str | None) -> None:
+    """Inverse of sign_router_payload — used by the notify endpoint."""
+    if not signature_header or not timestamp_header:
+        raise SignatureError("Missing FolioLens signature headers")
+    try:
+        ts = int(timestamp_header)
+    except ValueError as exc:
+        raise SignatureError("Invalid FolioLens timestamp") from exc
+    if abs(time.time() - ts) > ROUTER_SIGNATURE_TOLERANCE_SECONDS:
+        raise SignatureError("FolioLens timestamp outside tolerance")
+
+    expected, _ = sign_router_payload(body, timestamp=ts)
+    if not hmac.compare_digest(signature_header, expected):
+        raise SignatureError("Invalid FolioLens signature")
+
+
+def _normalized_attachments(email_id: str) -> list[dict[str, str]]:
+    """List Resend-hosted attachments. download_url is a presigned URL the
+    Supabase function can fetch directly without a Resend API key."""
+    payloads: list[dict[str, str]] = []
+    for attachment in list_received_attachments(email_id):
+        if not isinstance(attachment, dict):
+            continue
+        download_url = attachment.get("download_url")
+        filename = attachment.get("filename")
+        if not download_url:
+            continue
+        item: dict[str, str] = {
+            "filename": str(filename or "attachment"),
+            "download_url": str(download_url),
+        }
+        content_type = attachment.get("content_type") or attachment.get("contentType")
+        if content_type:
+            item["content_type"] = str(content_type)
+        attachment_id = attachment.get("id")
+        if attachment_id:
+            item["id"] = str(attachment_id)
+        payloads.append(item)
+    return payloads
+
+
+def _build_normalized_cas_payload(route: Route, event: dict[str, Any]) -> dict[str, Any]:
+    data = event.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("email_id"), str):
+        raise UpstreamError(400, "email.received payload missing data.email_id")
+
+    email_id = data["email_id"]
+    email = get_received_email(email_id)
+    merged: dict[str, Any] = {**data, **email}
+
+    return {
+        "v": NORMALIZED_PAYLOAD_VERSION,
+        "route": route.kind,
+        "token": route.token,
+        "recipient": route.recipient,
+        "email_id": email_id,
+        "from": _original_from(email, event),
+        "subject": merged.get("subject"),
+        "text": merged.get("text"),
+        "html": merged.get("html"),
+        "headers": merged.get("headers") if isinstance(merged.get("headers"), dict) else {},
+        "attachments": _normalized_attachments(email_id),
+    }
+
+
+def forward_cas_to_supabase(route: Route, event: dict[str, Any]) -> dict[str, Any]:
+    """Build a normalized, FolioLens-signed payload and POST to Supabase.
+
+    The router is the only component that talks to Resend; Supabase verifies
+    the FolioLens HMAC and processes the normalized shape — no Resend Svix
+    verification, no Resend Receiving API calls on the Supabase side.
+    """
+    payload = _build_normalized_cas_payload(route, event)
+    body = json.dumps(payload).encode("utf-8")
+    signature, timestamp = sign_router_payload(body)
     forwarded_headers = {
-        "Content-Type": _header(headers, "content-type") or "application/json",
-        "svix-id": _header(headers, "svix-id") or "",
-        "svix-timestamp": _header(headers, "svix-timestamp") or "",
-        "svix-signature": _header(headers, "svix-signature") or "",
+        "Content-Type": "application/json",
+        ROUTER_SIGNATURE_HEADER: signature,
+        "x-foliolens-timestamp": str(timestamp),
         "x-foliolens-router": "resend-inbound-router",
     }
     request = urllib.request.Request(
         _supabase_url(route),
-        data=raw_body,
+        data=body,
         headers=forwarded_headers,
         method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=25) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            return {"status": response.status, "body": body}
+            response_body = response.read().decode("utf-8", errors="replace")
+            return {"status": response.status, "body": response_body}
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise UpstreamError(exc.code, f"Supabase CAS webhook failed: {body}") from exc
+        response_body = exc.read().decode("utf-8", errors="replace")
+        raise UpstreamError(exc.code, f"Supabase CAS webhook failed: {response_body}") from exc
     except urllib.error.URLError as exc:
         raise UpstreamError(502, f"Supabase CAS webhook unavailable: {exc.reason}") from exc
+
+
+def _notification_from_address(environment: str) -> str:
+    """Per-env Resend Notification From address. Mirrors the value the
+    Supabase function used to read directly via RESEND_NOTIFICATION_FROM."""
+    if environment == "dev":
+        return os.environ.get(
+            "RESEND_NOTIFICATION_FROM_DEV",
+            "FolioLens Dev <noreply-dev@foliolens.in>",
+        )
+    return os.environ.get(
+        "RESEND_NOTIFICATION_FROM_PROD",
+        "FolioLens <noreply@foliolens.in>",
+    )
+
+
+def _notification_template_id(environment: str) -> str:
+    env_key = (
+        "RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_DEV"
+        if environment == "dev"
+        else "RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_PROD"
+    )
+    value = os.environ.get(env_key, "")
+    if not value:
+        raise MissingConfigError(f"{env_key} is not set")
+    return value
+
+
+def _escape_template_value(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _safe_template_value(value: str) -> str:
+    truncated = value[:1897] + "..." if len(value) > 1900 else value
+    return _escape_template_value(truncated)
+
+
+def _notification_variables(payload: dict[str, Any]) -> dict[str, str]:
+    """Render the same import-status-email variables the Supabase function
+    used to render. Numbers are stringified — the Resend template renderer
+    rejects numeric values with `validation_error` even though the API docs
+    claim numbers are accepted."""
+    status = payload.get("status")
+    success = status == "success"
+    funds = int(payload.get("funds_updated") or 0)
+    transactions = int(payload.get("transactions_added") or 0)
+    errors = payload.get("errors") or []
+    if not isinstance(errors, list):
+        errors = []
+    problem = errors[0] if errors else "No importable transactions were found."
+    title = "Your CAS import is ready" if success else "Your CAS could not be imported"
+    intro = (
+        "We processed the CAS PDF from your FolioLens import inbox. "
+        "Open the app to review the updated portfolio."
+        if success
+        else "We received your CAS email, but the PDF could not be imported into your portfolio."
+    )
+    detail_text = (
+        "Your portfolio was updated from the CAS PDF received in your private import inbox."
+        if success
+        else str(problem)
+    )
+    next_step = (
+        "Open FolioLens to review your portfolio."
+        if success
+        else (
+            "Forward or upload a Detailed CAS PDF that includes transaction history "
+            "for your full investment date range. Holdings-only summaries cannot build "
+            "Money Trail or XIRR."
+        )
+    )
+    app_url = (
+        os.environ.get("APP_URL_PROD", "https://app.foliolens.in")
+        if payload.get("environment") == "prod"
+        else os.environ.get("APP_URL_DEV", "https://foliolens-dev.vercel.app")
+    )
+    return {
+        "STATUS_LABEL": "Imported" if success else "Needs attention",
+        "STATUS_BG": "#E7FAF2" if success else "#FEEDEE",
+        "STATUS_TEXT_COLOR": "#0EA372" if success else "#B91C1C",
+        "TITLE": _safe_template_value(title),
+        "INTRO": _safe_template_value(intro),
+        "FUNDS_UPDATED": str(funds),
+        "TRANSACTIONS_IMPORTED": str(transactions),
+        "DETAIL_LABEL": "What changed" if success else "Reason",
+        "DETAIL_TEXT": _safe_template_value(detail_text),
+        "NEXT_STEP_LABEL": "Next step" if success else "What to do next",
+        "NEXT_STEP_TEXT": _safe_template_value(next_step),
+        "APP_URL": _safe_template_value(app_url),
+        "CTA_LABEL": "Open FolioLens",
+        "FOOTER_TEXT": "Sent because your private FolioLens import inbox received a CAS PDF.",
+    }
+
+
+def send_import_notification(payload: dict[str, Any]) -> dict[str, Any]:
+    """Send the CAS import status email via Resend Templates. Called from
+    the cas-import-notify endpoint after Supabase POSTs a signed body."""
+    to_address = payload.get("to")
+    if not isinstance(to_address, str) or not to_address:
+        raise UpstreamError(400, "Missing recipient address")
+    status = payload.get("status")
+    if status not in ("success", "failed"):
+        raise UpstreamError(400, "Invalid import status")
+    environment = payload.get("environment") or "prod"
+    if environment not in ("dev", "prod"):
+        environment = "prod"
+    import_id = payload.get("import_id") or "unknown"
+
+    success = status == "success"
+    subject = (
+        "FolioLens imported your CAS"
+        if success
+        else "FolioLens could not import your CAS"
+    )
+    body = {
+        "from": _notification_from_address(environment),
+        "to": [to_address],
+        "subject": subject,
+        "template": {
+            "id": _notification_template_id(environment),
+            "variables": _notification_variables(payload),
+        },
+        "tags": [
+            {"name": "category", "value": "cas_import"},
+            {"name": "status", "value": status},
+        ],
+    }
+    return _request_json(
+        "POST",
+        "/emails",
+        body,
+        idempotency_key=f"cas-import-notification/{import_id}/{status}",
+    )
 
 
 def route_event(raw_body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
@@ -360,7 +601,7 @@ def route_event(raw_body: bytes, headers: dict[str, str]) -> tuple[int, dict[str
         result = forward_human_email(event, route, _header(headers, "svix-id"))
         return 200, {"ok": True, "route": "human_forward", "resend": result}
     if route.kind in {"cas_dev", "cas_prod"}:
-        result = forward_cas_to_supabase(route, raw_body, headers)
+        result = forward_cas_to_supabase(route, event)
         return 200, {"ok": True, "route": route.kind, "upstream": result}
 
     raise UpstreamError(500, f"Unhandled route kind: {route.kind}")

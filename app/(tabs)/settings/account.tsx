@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   ScrollView,
   Platform,
-  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -31,40 +30,14 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
-import { formatInboxAddress } from '@/src/utils/casInboxToken';
 
 async function fetchProfile(userId: string) {
   const { data } = await supabase
     .from('user_profile')
-    .select('pan, kfintech_email, dob, cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at')
+    .select('pan, kfintech_email, dob')
     .eq('user_id', userId)
     .maybeSingle();
   return data ?? null;
-}
-
-async function fetchLastImport(userId: string) {
-  const { data } = await supabase
-    .from('cas_import')
-    .select('id, import_status, import_source, created_at')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return data ?? null;
-}
-
-function formatRelativeTime(iso: string): string {
-  const ts = new Date(iso).getTime();
-  if (Number.isNaN(ts)) return iso;
-  const diffMs = Date.now() - ts;
-  const mins = Math.round(diffMs / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
 }
 
 function formatDob(iso: string): string {
@@ -176,8 +149,11 @@ export default function AccountScreen() {
           {!isLoading && profile?.kfintech_email && (
             <View style={[styles.row, styles.borderTop]}>
               <View style={styles.rowLeft}>
-                <Text style={styles.rowLabel}>CAS Registrar Email</Text>
+                <Text style={styles.rowLabel}>Email at CAMS / KFintech</Text>
                 <Text style={styles.rowValue} numberOfLines={1}>{profile.kfintech_email}</Text>
+                <Text style={styles.rowSub}>
+                  Used if you ever ask FolioLens to request a fresh CAS on your behalf.
+                </Text>
               </View>
               <TouchableOpacity onPress={() => router.push('/onboarding')} style={styles.actionBtn}>
                 <Text style={styles.actionBtnText}>Edit</Text>
@@ -214,18 +190,10 @@ export default function AccountScreen() {
           )}
         </View>
 
-        {/* Auto-refresh inbox */}
-        {!isLoading && profile?.cas_inbox_token ? (
-          <AutoRefreshRow
-            userId={userId!}
-            inboxToken={profile.cas_inbox_token}
-            pendingConfirmationUrl={profile.cas_inbox_confirmation_url ?? null}
-            autoForwardCompletedAt={profile.cas_auto_forward_setup_completed_at ?? null}
-            onSetupPress={() => router.push('/onboarding')}
-            styles={styles}
-            tokens={tokens}
-          />
-        ) : null}
+        {/* Auto-refresh status, inbox address, last import details, and the
+            Gmail confirm CTA all live on Settings → Portfolio import. Account
+            stays focused on identity (PAN / DOB / email / connected accounts);
+            the previous AutoRefreshRow here was a duplicate of that hub. */}
 
         {/* Connected accounts */}
         <Text style={styles.sectionLabel}>Connected Accounts</Text>
@@ -309,96 +277,6 @@ export default function AccountScreen() {
         }
       />
     </SafeAreaView>
-  );
-}
-
-function AutoRefreshRow({
-  userId,
-  inboxToken,
-  pendingConfirmationUrl,
-  autoForwardCompletedAt,
-  onSetupPress,
-  styles,
-  tokens,
-}: {
-  userId: string;
-  inboxToken: string;
-  pendingConfirmationUrl: string | null;
-  autoForwardCompletedAt: string | null;
-  onSetupPress: () => void;
-  styles: ReturnType<typeof makeStyles>;
-  tokens: ClearLensTokens;
-}) {
-  const cl = tokens.colors;
-  const inboxAddress = useMemo(() => {
-    try {
-      return formatInboxAddress(inboxToken);
-    } catch {
-      return '';
-    }
-  }, [inboxToken]);
-
-  const { data: lastImport } = useQuery({
-    queryKey: ['cas-import-latest', userId],
-    queryFn: () => fetchLastImport(userId),
-    enabled: !!userId,
-  });
-
-  return (
-    <>
-      <Text style={styles.sectionLabel}>Auto-refresh inbox</Text>
-      <View style={styles.card}>
-        <TouchableOpacity
-          style={styles.row}
-          onPress={onSetupPress}
-          activeOpacity={0.7}
-        >
-          <View style={styles.providerIconWrap}>
-            <Ionicons name="mail-unread-outline" size={18} color={cl.emeraldDeep} />
-          </View>
-          <View style={styles.rowLeft}>
-            <Text style={styles.rowValue} numberOfLines={1}>
-              {inboxAddress || 'Address loading…'}
-            </Text>
-            <Text style={styles.rowSub} numberOfLines={1}>
-              {autoForwardCompletedAt
-                ? 'Auto-forward ready for future CAMS / KFintech emails'
-                : lastImport
-                ? `Last import: ${formatRelativeTime(lastImport.created_at)} (${
-                    lastImport.import_source === 'email' ? 'auto-refresh' : 'upload'
-                  })`
-                : 'No imports yet — set up forwarding to start.'}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={cl.textTertiary} />
-        </TouchableOpacity>
-
-        {pendingConfirmationUrl && !autoForwardCompletedAt ? (
-          <View style={[styles.row, styles.borderTop]}>
-            <View style={styles.rowLeft}>
-              <Text style={styles.rowLabel}>Gmail forwarding</Text>
-              <Text style={styles.rowSub}>
-                Click to confirm with Google so auto-forward activates.
-              </Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => {
-                if (Platform.OS === 'web') {
-                  void Linking.openURL(pendingConfirmationUrl);
-                } else {
-                  void WebBrowser.openBrowserAsync(pendingConfirmationUrl);
-                }
-              }}
-              style={[styles.actionBtn, styles.actionBtnPrimary]}
-            >
-              <Text style={[styles.actionBtnText, styles.actionBtnTextPrimary]}>
-                Confirm
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-      </View>
-    </>
   );
 }
 
@@ -488,16 +366,10 @@ function makeStyles(tokens: ClearLensTokens) {
       backgroundColor: cl.mint50,
       borderRadius: ClearLensRadii.full,
     },
-    actionBtnPrimary: {
-      backgroundColor: cl.emeraldDeep,
-    },
     actionBtnText: {
       ...ClearLensTypography.caption,
       fontFamily: ClearLensFonts.semiBold,
       color: cl.emerald,
-    },
-    actionBtnTextPrimary: {
-      color: cl.textOnDark,
     },
 
     providerIconWrap: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },

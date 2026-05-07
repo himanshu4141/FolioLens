@@ -2,13 +2,18 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 import unittest
+from unittest import mock
 
 from api._resend_inbound_router import (
+    MissingConfigError,
     SignatureError,
     choose_route,
     extract_recipients,
+    sign_router_payload,
+    verify_router_signature,
     verify_svix_signature,
 )
 
@@ -94,6 +99,45 @@ class ResendInboundRouterTest(unittest.TestCase):
 
         with self.assertRaises(SignatureError):
             verify_svix_signature(b'{"type":"other"}', headers, secret)
+
+
+class FoliolensRouterSignatureTest(unittest.TestCase):
+    """Issue #107 — HMAC handshake between the router and Supabase / between
+    Supabase and the cas-import-notify endpoint. The same secret signs both
+    directions; tests verify sign-then-verify roundtrip + tampering rejection."""
+
+    SECRET = "test-foliolens-secret"
+
+    def test_sign_and_verify_roundtrip(self):
+        body = b'{"v":1,"token":"ABC23456"}'
+        with mock.patch.dict(os.environ, {"FOLIOLENS_INBOUND_ROUTER_SECRET": self.SECRET}):
+            signature, ts = sign_router_payload(body)
+            verify_router_signature(body, signature, str(ts))
+
+    def test_verify_rejects_tampered_body(self):
+        with mock.patch.dict(os.environ, {"FOLIOLENS_INBOUND_ROUTER_SECRET": self.SECRET}):
+            signature, ts = sign_router_payload(b'{"v":1,"token":"ABC23456"}')
+            with self.assertRaises(SignatureError):
+                verify_router_signature(b'{"v":1,"token":"OTHER"}', signature, str(ts))
+
+    def test_verify_rejects_stale_timestamp(self):
+        with mock.patch.dict(os.environ, {"FOLIOLENS_INBOUND_ROUTER_SECRET": self.SECRET}):
+            stale_ts = int(time.time()) - 6 * 60  # 6 minutes ago
+            signature, _ = sign_router_payload(b"x", timestamp=stale_ts)
+            with self.assertRaises(SignatureError):
+                verify_router_signature(b"x", signature, str(stale_ts))
+
+    def test_verify_rejects_missing_headers(self):
+        with mock.patch.dict(os.environ, {"FOLIOLENS_INBOUND_ROUTER_SECRET": self.SECRET}):
+            with self.assertRaises(SignatureError):
+                verify_router_signature(b"x", None, str(int(time.time())))
+            with self.assertRaises(SignatureError):
+                verify_router_signature(b"x", "v1,whatever", None)
+
+    def test_sign_requires_secret(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(MissingConfigError):
+                sign_router_payload(b"x")
 
 
 if __name__ == "__main__":

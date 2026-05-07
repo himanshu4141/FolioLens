@@ -27,6 +27,7 @@ import { useSession } from '@/src/hooks/useSession';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { DesktopFormFrame } from '@/src/components/responsive';
 import { AutoRefreshSetup } from '@/src/components/onboarding/AutoRefreshSetup';
+import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,
@@ -495,6 +496,11 @@ function IdentityStep({
   const [error, setError] = useState<string | null>(null);
   // dobText is the on-screen DD-MM-YYYY string; draft.dob (and the DB) are ISO.
   const [dobText, setDobText] = useState(draft.dob ? formatDobDisplay(draft.dob) : '');
+  // Mirrors the Account screen's correction flow: PAN/DOB are write-once after
+  // first save, so locked-state hints expose a "Wrong? Request correction"
+  // tappable that opens a pre-filled bug-report sheet. Lets the user fix a
+  // typo without leaving the wizard mid-flow.
+  const [correctionField, setCorrectionField] = useState<'pan' | 'dob' | null>(null);
 
   const panLocked = !!lockedPan;
   const dobLocked = !!lockedDob;
@@ -611,7 +617,15 @@ function IdentityStep({
           />
         )}
         {panLocked ? (
-          <Text style={styles.fieldHint}>PAN is saved and cannot be changed in-app.</Text>
+          <View style={styles.lockedFieldHintRow}>
+            <Text style={styles.fieldHint}>PAN is saved and cannot be changed in-app.</Text>
+            <Text
+              style={styles.correctionLink}
+              onPress={() => setCorrectionField('pan')}
+            >
+              Wrong PAN? Request correction
+            </Text>
+          </View>
         ) : draft.pan.length > 0 && !panValid ? (
           <Text style={styles.fieldError}>
             PAN should look like ABCPE1234F (5 letters, 4 digits, 1 letter).
@@ -663,7 +677,15 @@ function IdentityStep({
           />
         )}
         {dobLocked ? (
-          <Text style={styles.fieldHint}>Date of birth is saved and cannot be changed in-app.</Text>
+          <View style={styles.lockedFieldHintRow}>
+            <Text style={styles.fieldHint}>Date of birth is saved and cannot be changed in-app.</Text>
+            <Text
+              style={styles.correctionLink}
+              onPress={() => setCorrectionField('dob')}
+            >
+              Wrong date? Request correction
+            </Text>
+          </View>
         ) : dobText.length > 0 && !dobValid ? (
           <Text style={styles.fieldError}>Use DD-MM-YYYY format, e.g. 12-05-1990.</Text>
         ) : (
@@ -708,8 +730,33 @@ function IdentityStep({
         styles={styles}
         cl={cl}
       />
+
+      <FeedbackSheet
+        visible={correctionField !== null}
+        kind={correctionField !== null ? ('bug_report' as FeedbackKind) : null}
+        onClose={() => setCorrectionField(null)}
+        initialTitle={
+          correctionField === 'pan'
+            ? `Correct my PAN (currently ${lockedPan ? maskPanForCorrection(lockedPan) : 'set'})`
+            : correctionField === 'dob'
+              ? `Correct my date of birth (currently ${lockedDob ? formatDobDisplay(lockedDob) : 'set'})`
+              : ''
+        }
+        initialBody={
+          correctionField === 'pan'
+            ? `My current saved PAN is ${lockedPan ? maskPanForCorrection(lockedPan) : '—'}. The correct PAN is:\n\n[enter correct PAN]\n\nReason: `
+            : correctionField === 'dob'
+              ? `My current saved date of birth is ${lockedDob ? formatDobDisplay(lockedDob) : '—'}. The correct date of birth (DD-MM-YYYY) is:\n\n[enter correct DOB]\n\nReason: `
+              : ''
+        }
+      />
     </ScrollView>
   );
+}
+
+function maskPanForCorrection(pan: string): string {
+  if (pan.length !== 10) return pan;
+  return pan.slice(0, 2) + '•'.repeat(6) + pan.slice(8);
 }
 
 type ImportSubScreen = 'choose' | 'request' | 'autoRefresh';
@@ -1590,6 +1637,14 @@ function makeStyles(tokens: ClearLensTokens) {
     fieldHint: {
       ...ClearLensTypography.caption,
       color: cl.textTertiary,
+    },
+    lockedFieldHintRow: {
+      gap: 4,
+    },
+    correctionLink: {
+      ...ClearLensTypography.caption,
+      fontFamily: ClearLensFonts.semiBold,
+      color: cl.emeraldDeep,
     },
     savedBadge: {
       flexDirection: 'row',

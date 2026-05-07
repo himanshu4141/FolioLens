@@ -1,29 +1,31 @@
 /**
- * cas-webhook-resend — receives an inbound email from Resend Inbound Routes
- * and imports any CAS PDF attachments for the addressed user.
+ * cas-webhook-resend — receives a normalized, FolioLens-signed CAS payload
+ * from the Vercel router and imports any CAS PDF attachments for the
+ * addressed user.
  *
- * Flow:
- *   1. Verify the Svix signature Resend attaches to every webhook (rejects spoofs)
- *   2. Parse the `to` header to extract `cas-dev-<token>@foliolens.in` or
- *      `cas-<token>@foliolens.in`
- *   3. Resolve the user via `user_profile.cas_inbox_token`
- *   4. Fetch received email content and attachment download URLs through
- *      Resend's Receiving API, then POST PDF bytes to the existing Vercel
- *      Python parser at `${APP_BASE_URL}/api/parse-cas-pdf` with the user's PAN
- *      (and a CDSL/NSDL fallback password from PAN+DOB)
- *   5. Run the shared `importCASData` helper to upsert funds and transactions
- *   6. Insert a `cas_import` audit row with status + counts + errors
- *   7. Always return 200 so Resend doesn't retry on user-side errors
+ * Issue #107 — Resend secrets and Resend-specific verification logic live
+ * exclusively at the Vercel router. This function:
  *
- * INBOUND_DOMAIN is `foliolens.in` for both environments. The production
- * Vercel router handles dev/prod separation by local-part before forwarding
- * the original signed Resend payload and svix-* headers here.
+ *   1. Verifies the FolioLens HMAC signature attached by the router
+ *      (rejects spoofs without needing any Resend knowledge here)
+ *   2. Resolves the user via `user_profile.cas_inbox_token`
+ *   3. Downloads each attachment via the Resend-presigned `download_url`
+ *      the router included in the normalized payload (no Resend API key
+ *      required for the download)
+ *   4. POSTs PDF bytes to the existing Vercel Python parser at
+ *      `${APP_BASE_URL}/api/parse-cas-pdf` with the user's PAN (and a
+ *      CDSL/NSDL fallback password from PAN+DOB)
+ *   5. Runs the shared `importCASData` helper to upsert funds and transactions
+ *   6. Updates the `cas_import` audit row with status + counts + errors
+ *   7. Sends the status email by POSTing a FolioLens-signed payload to
+ *      the router's `/api/cas-import-notify` endpoint
+ *   8. Always returns 200 so the router doesn't retry on user-side errors
  *
- * Deploy with `--no-verify-jwt` (Resend cannot send a Supabase JWT).
+ * Deploy with `--no-verify-jwt` (the router cannot send a Supabase JWT).
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { decodeBase64 } from 'jsr:@std/encoding/base64';
+import { encodeBase64 } from 'jsr:@std/encoding/base64';
 import {
   countParsedTransactions,
   importCASData,
@@ -36,257 +38,139 @@ import {
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const RESEND_INBOUND_SECRET = Deno.env.get('RESEND_INBOUND_SECRET') ?? '';
-const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? '';
+// Issue #107: only one inbound secret on Supabase — the FolioLens-owned HMAC
+// shared with the Vercel router. Resend secrets stay at the router boundary.
+const FOLIOLENS_INBOUND_ROUTER_SECRET = Deno.env.get('FOLIOLENS_INBOUND_ROUTER_SECRET') ?? '';
 const CAS_PARSER_SHARED_SECRET = Deno.env.get('CAS_PARSER_SHARED_SECRET') ?? '';
 const APP_BASE_URL = Deno.env.get('APP_BASE_URL') ?? 'https://app.foliolens.in';
 const VERCEL_PROTECTION_BYPASS_TOKEN = Deno.env.get('VERCEL_PROTECTION_BYPASS_TOKEN') ?? '';
-const RESEND_NOTIFICATION_FROM = Deno.env.get('RESEND_NOTIFICATION_FROM') ?? '';
-const RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID =
-  Deno.env.get('RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID') ?? '';
+// Where to POST status emails. The router's prod endpoint handles both DEV
+// and PROD Supabase callers; the env tag in the body picks the From address.
+const ROUTER_NOTIFY_URL =
+  Deno.env.get('ROUTER_NOTIFY_URL') ?? 'https://app.foliolens.in/api/cas-import-notify';
+// Self-tag in the notify payload so the router selects the right Resend
+// template id / From address. Defaults to 'dev' so a missing env doesn't
+// accidentally send prod-branded mail from a dev project.
+const NOTIFY_ENVIRONMENT = Deno.env.get('NOTIFY_ENVIRONMENT') ?? 'dev';
 
-// Resolve the inbound domain from env. Both dev and prod use the apex domain;
-// the Vercel router encodes environment in the local-part.
-const INBOX_DOMAIN = Deno.env.get('INBOUND_DOMAIN') ?? 'foliolens.in';
-// Alphabet matches the SQL generator: A–Z minus I, L, O; 2–9.
-const TOKEN_REGEX = /^[A-HJKMNP-Z2-9]{8}$/;
-const TOKEN_EXTRACT_RE = new RegExp(
-  `cas(?:-dev)?-([A-Za-z0-9]+)@${INBOX_DOMAIN.replace(/\./g, '\\.')}`,
-  'i',
-);
+const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
-// ── Token parsing (mirrors src/utils/casInboxToken.ts) ──────────────────────────
-
-function parseInboxToken(toHeader: string | null | undefined): string | null {
-  if (!toHeader) return null;
-  const match = TOKEN_EXTRACT_RE.exec(toHeader);
-  if (!match) return null;
-  const candidate = match[1].toUpperCase();
-  return TOKEN_REGEX.test(candidate) ? candidate : null;
-}
-
-// ── Resend signature verification ───────────────────────────────────────────────
+// ── Router signature verification ───────────────────────────────────────────────
 //
-// Resend signs inbound webhooks with the Svix protocol. Their docs spec is:
-//   svix-id, svix-timestamp, svix-signature headers
-//   signed payload = `${svix_id}.${svix_timestamp}.${raw_body}`
-//   signature = base64( HMAC-SHA-256( payload, secret ) )
-//   the svix-signature header lists `v1,<sig>` (multi-version, comma-separated)
+// Mirrors `sign_router_payload` in `api/_resend_inbound_router.py`. The
+// router signs `<timestamp>.<rawBody>` with HMAC-SHA256 using
+// `FOLIOLENS_INBOUND_ROUTER_SECRET` and sends:
+//
+//   x-foliolens-signature: v1,<base64sig>
+//   x-foliolens-timestamp: <unix-seconds>
+//
+// We reject anything missing the headers, outside the 5-minute window, or
+// whose signature doesn't match.
 
-async function verifyResendSignature(
+async function verifyRouterSignature(
   rawBody: string,
   headers: Headers,
 ): Promise<boolean> {
-  if (!RESEND_INBOUND_SECRET) {
-    console.warn('[cas-webhook-resend] RESEND_INBOUND_SECRET not set — refusing all requests');
+  if (!FOLIOLENS_INBOUND_ROUTER_SECRET) {
+    console.warn(
+      '[cas-webhook-resend] FOLIOLENS_INBOUND_ROUTER_SECRET not set — refusing all requests',
+    );
     return false;
   }
-  const svixId = headers.get('svix-id');
-  const svixTimestamp = headers.get('svix-timestamp');
-  const svixSignature = headers.get('svix-signature');
-  if (!svixId || !svixTimestamp || !svixSignature) {
-    console.warn('[cas-webhook-resend] missing svix-* signature headers');
+  const sigHeader = headers.get('x-foliolens-signature');
+  const tsHeader = headers.get('x-foliolens-timestamp');
+  if (!sigHeader || !tsHeader) {
+    console.warn('[cas-webhook-resend] missing x-foliolens-signature / x-foliolens-timestamp');
+    return false;
+  }
+  const ts = Number(tsHeader);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > SIGNATURE_TOLERANCE_SECONDS) {
+    console.warn('[cas-webhook-resend] x-foliolens-timestamp out of range, possible replay');
     return false;
   }
 
-  // Reject replays older than 5 minutes
-  const tsSeconds = Number(svixTimestamp);
-  if (!Number.isFinite(tsSeconds) || Math.abs(Date.now() / 1000 - tsSeconds) > 5 * 60) {
-    console.warn('[cas-webhook-resend] svix-timestamp out of range, possible replay');
-    return false;
-  }
-
-  // Resend's signing key has the form `whsec_<base64-secret>`.
-  // Strip the prefix and decode before HMAC.
-  const secret = RESEND_INBOUND_SECRET.startsWith('whsec_')
-    ? RESEND_INBOUND_SECRET.slice('whsec_'.length)
-    : RESEND_INBOUND_SECRET;
-
-  let secretBytes: Uint8Array;
-  try {
-    secretBytes = decodeBase64(secret);
-  } catch {
-    secretBytes = new TextEncoder().encode(secret);
-  }
-
-  const payload = `${svixId}.${svixTimestamp}.${rawBody}`;
   const key = await crypto.subtle.importKey(
     'raw',
-    secretBytes,
+    new TextEncoder().encode(FOLIOLENS_INBOUND_ROUTER_SECRET),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
-  const expected = btoa(String.fromCharCode(...new Uint8Array(sig)));
-
-  // svix-signature is `v1,<sig> v1,<sig2> …` (space-separated for rotation)
-  return svixSignature
-    .split(' ')
-    .map((entry) => entry.trim())
-    .some((entry) => {
-      const [version, value] = entry.split(',');
-      return version === 'v1' && value === expected;
-    });
+  const signed = `${ts}.${rawBody}`;
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signed));
+  const expected = `v1,${encodeBase64(new Uint8Array(sig))}`;
+  return sigHeader === expected;
 }
 
-// ── Email payload typing ────────────────────────────────────────────────────────
+async function signRouterPayload(body: string): Promise<{ signature: string; timestamp: number }> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(FOLIOLENS_INBOUND_ROUTER_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signed = `${timestamp}.${body}`;
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signed));
+  return { signature: `v1,${encodeBase64(new Uint8Array(sig))}`, timestamp };
+}
 
-interface ResendInboundAttachment {
-  id?: string;
-  filename?: string;
-  contentType?: string;
+// ── Normalized payload typing ──────────────────────────────────────────────────
+
+interface NormalizedAttachment {
+  filename: string;
+  download_url: string;
   content_type?: string;
-  download_url?: string;
-  // Resend ships attachment bodies inline as base64 by default
-  content?: string;
+  id?: string;
 }
 
-interface ResendInboundData {
-  id?: string;
-  email_id?: string;
-  from?: string | { email?: string; name?: string };
-  to?: string | string[];
+interface NormalizedRouterPayload {
+  v: number;
+  route: 'cas_dev' | 'cas_prod';
+  token: string;
+  recipient: string;
+  email_id: string;
+  from?: string;
   subject?: string;
   text?: string;
   html?: string;
   headers?: Record<string, string>;
-  attachments?: ResendInboundAttachment[];
+  attachments: NormalizedAttachment[];
 }
 
-interface ResendInboundPayload {
-  type?: string;
-  data?: ResendInboundData;
-}
-
-function getRecipientList(data: ResendInboundData): string {
-  const to = data.to;
-  if (!to) return '';
-  if (Array.isArray(to)) return to.join(', ');
-  return to;
-}
-
-function getReceivedEmailId(data: ResendInboundData): string | null {
-  return data.email_id ?? data.id ?? null;
-}
-
-function mergeEmailData(base: ResendInboundData, received: ResendInboundData | null): ResendInboundData {
-  if (!received) return base;
+// Adapter for the gmail-verification helpers, which were originally written
+// against Resend's payload shape. The relevant fields (from/subject/text/html)
+// are 1:1 in the normalized payload.
+function gmailVerificationView(payload: NormalizedRouterPayload) {
   return {
-    ...base,
-    ...received,
-    from: received.from ?? base.from,
-    to: received.to ?? base.to,
-    subject: received.subject ?? base.subject,
-    text: received.text ?? base.text,
-    html: received.html ?? base.html,
-    headers: received.headers ?? base.headers,
-    attachments: received.attachments ?? base.attachments,
+    from: payload.from,
+    subject: payload.subject,
+    text: payload.text,
+    html: payload.html,
+    headers: payload.headers,
   };
 }
 
-async function resendApiJson<T>(path: string): Promise<T> {
-  if (!RESEND_API_KEY) {
-    throw new Error('RESEND_API_KEY is not set');
-  }
-  const res = await fetch(`https://api.resend.com${path}`, {
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-    },
-  });
-  const body = await res.text();
-  const parsed = body ? JSON.parse(body) : {};
-  if (!res.ok) {
-    const message =
-      typeof parsed?.message === 'string'
-        ? parsed.message
-        : `Resend API request failed (${res.status})`;
-    throw new Error(message);
-  }
-  return parsed as T;
-}
+const TOKEN_REGEX = /^[A-HJKMNP-Z2-9]{8}$/;
 
-async function resendApiPost<T>(
-  path: string,
-  body: Record<string, unknown>,
-  headers: Record<string, string> = {},
-): Promise<T> {
-  if (!RESEND_API_KEY) {
-    throw new Error('RESEND_API_KEY is not set');
-  }
-  const res = await fetch(`https://api.resend.com${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-      ...headers,
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  const parsed = text ? JSON.parse(text) : {};
-  if (!res.ok) {
-    const message =
-      typeof parsed?.message === 'string'
-        ? parsed.message
-        : `Resend API request failed (${res.status})`;
-    throw new Error(message);
-  }
-  return parsed as T;
-}
-
-async function fetchReceivedEmail(emailId: string | null): Promise<ResendInboundData | null> {
-  if (!emailId) return null;
-  return await resendApiJson<ResendInboundData>(`/emails/receiving/${emailId}`);
-}
-
-async function listReceivedAttachments(emailId: string | null): Promise<ResendInboundAttachment[]> {
-  if (!emailId) return [];
-  const response = await resendApiJson<{ data?: ResendInboundAttachment[] }>(
-    `/emails/receiving/${emailId}/attachments`,
-  );
-  return response.data ?? [];
-}
-
-function getAttachmentContentType(attachment: ResendInboundAttachment): string {
-  return attachment.contentType ?? attachment.content_type ?? '';
-}
-
-function isPdfAttachment(attachment: ResendInboundAttachment): boolean {
-  const contentType = getAttachmentContentType(attachment).toLowerCase();
+function isPdfAttachment(attachment: NormalizedAttachment): boolean {
+  const contentType = (attachment.content_type ?? '').toLowerCase();
   return (
     contentType === 'application/pdf' ||
     (attachment.filename?.toLowerCase().endsWith('.pdf') ?? false)
   );
 }
 
-async function getAttachmentBytes(
-  attachment: ResendInboundAttachment,
-  emailId: string | null,
-): Promise<Uint8Array> {
-  if (attachment.content) {
-    return decodeBase64(attachment.content);
-  }
-
-  let downloadUrl = attachment.download_url;
-  if (!downloadUrl && emailId && attachment.id) {
-    const details = await resendApiJson<ResendInboundAttachment>(
-      `/emails/receiving/${emailId}/attachments/${attachment.id}`,
-    );
-    downloadUrl = details.download_url;
-  }
-
-  if (!downloadUrl) {
-    throw new Error(`No download URL for attachment ${attachment.filename ?? attachment.id ?? ''}`);
-  }
-
-  const res = await fetch(downloadUrl);
+async function downloadAttachmentBytes(attachment: NormalizedAttachment): Promise<Uint8Array> {
+  const res = await fetch(attachment.download_url);
   if (!res.ok) {
-    throw new Error(`Attachment download failed (${res.status})`);
+    throw new Error(
+      `Attachment download failed (${res.status}) for ${attachment.filename}`,
+    );
   }
   return new Uint8Array(await res.arrayBuffer());
 }
-
 
 // ── Password derivation ─────────────────────────────────────────────────────────
 
@@ -296,13 +180,7 @@ function computeCdslPassword(pan: string, dob: string): string {
   return `${pan.toUpperCase()}${dd}${mm}${yyyy}`;
 }
 
-function notificationFromAddress(recipients: string): string {
-  if (RESEND_NOTIFICATION_FROM) return RESEND_NOTIFICATION_FROM;
-  if (/cas-dev-/i.test(recipients) || APP_BASE_URL.includes('foliolens-dev')) {
-    return 'FolioLens Dev <noreply-dev@foliolens.in>';
-  }
-  return 'FolioLens <noreply@foliolens.in>';
-}
+// ── Notification (router callback) ──────────────────────────────────────────────
 
 async function getAuthEmail(
   supabase: ReturnType<typeof createClient>,
@@ -316,73 +194,8 @@ async function getAuthEmail(
   return data.user?.email ?? null;
 }
 
-function escapeTemplateValue(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-function limitTemplateValue(value: string): string {
-  return value.length > 1900 ? `${value.slice(0, 1897)}...` : value;
-}
-
-function safeTemplateValue(value: string): string {
-  return escapeTemplateValue(limitTemplateValue(value));
-}
-
-function buildImportNotificationVariables({
-  status,
-  funds,
-  transactions,
-  errors,
-}: {
-  status: 'success' | 'failed';
-  funds: number;
-  transactions: number;
-  errors: string[];
-}): Record<string, string> {
-  const success = status === 'success';
-  const title = success ? 'Your CAS import is ready' : 'Your CAS could not be imported';
-  const intro = success
-    ? 'We processed the CAS PDF from your FolioLens import inbox. Open the app to review the updated portfolio.'
-    : 'We received your CAS email, but the PDF could not be imported into your portfolio.';
-  const problem = errors.length > 0 ? errors[0] : 'No importable transactions were found.';
-
-  // Resend template variables must be strings — even though the API docs
-  // claim numbers are accepted, the runtime returns 422 validation_error
-  // ("Variable X must be a `string`") on numeric values.
-  return {
-    STATUS_LABEL: success ? 'Imported' : 'Needs attention',
-    STATUS_BG: success ? '#E7FAF2' : '#FEEDEE',
-    STATUS_TEXT_COLOR: success ? '#0EA372' : '#B91C1C',
-    TITLE: safeTemplateValue(title),
-    INTRO: safeTemplateValue(intro),
-    FUNDS_UPDATED: String(funds),
-    TRANSACTIONS_IMPORTED: String(transactions),
-    DETAIL_LABEL: success ? 'What changed' : 'Reason',
-    DETAIL_TEXT: safeTemplateValue(
-      success
-        ? 'Your portfolio was updated from the CAS PDF received in your private import inbox.'
-        : problem,
-    ),
-    NEXT_STEP_LABEL: success ? 'Next step' : 'What to do next',
-    NEXT_STEP_TEXT: safeTemplateValue(
-      success
-        ? 'Open FolioLens to review your portfolio.'
-        : 'Forward or upload a Detailed CAS PDF that includes transaction history for your full investment date range. Holdings-only summaries cannot build Money Trail or XIRR.',
-    ),
-    APP_URL: safeTemplateValue(APP_BASE_URL),
-    CTA_LABEL: 'Open FolioLens',
-    FOOTER_TEXT: 'Sent because your private FolioLens import inbox received a CAS PDF.',
-  };
-}
-
 async function sendImportNotification({
   to,
-  from,
   importId,
   status,
   funds,
@@ -390,7 +203,6 @@ async function sendImportNotification({
   errors,
 }: {
   to: string | null;
-  from: string;
   importId: string;
   status: 'success' | 'failed';
   funds: number;
@@ -401,40 +213,38 @@ async function sendImportNotification({
     console.warn('[cas-webhook-resend] notification skipped, auth email missing');
     return;
   }
-  if (!RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID) {
-    console.warn('[cas-webhook-resend] notification skipped, Resend template id missing');
-    return;
-  }
-
-  const success = status === 'success';
-  const subject = success
-    ? 'FolioLens imported your CAS'
-    : 'FolioLens could not import your CAS';
-
+  const body = JSON.stringify({
+    v: 1,
+    to,
+    import_id: importId,
+    status,
+    funds_updated: funds,
+    transactions_added: transactions,
+    errors,
+    environment: NOTIFY_ENVIRONMENT,
+  });
   try {
-    await resendApiPost<{ id?: string }>(
-      '/emails',
-      {
-        from,
-        to: [to],
-        subject,
-        template: {
-          id: RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID,
-          variables: buildImportNotificationVariables({ status, funds, transactions, errors }),
-        },
-        tags: [
-          { name: 'category', value: 'cas_import' },
-          { name: 'status', value: status },
-        ],
+    const { signature, timestamp } = await signRouterPayload(body);
+    const res = await fetch(ROUTER_NOTIFY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-foliolens-signature': signature,
+        'x-foliolens-timestamp': String(timestamp),
       },
-      { 'Idempotency-Key': `cas-import-notification/${importId}/${status}` },
+      body,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Notify endpoint returned ${res.status}: ${text}`);
+    }
+    console.log(
+      '[cas-webhook-resend] notification sent, import_id=%s, status=%s',
+      importId,
+      status,
     );
-    console.log('[cas-webhook-resend] notification sent, import_id=%s, status=%s', importId, status);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // The import itself succeeded/failed independently — this only means
-    // the user didn't get a status email. Log at error so it stands out
-    // in the dashboard log explorer when grepping by import_id.
     console.error(
       '[cas-webhook-resend] DROPPED notification_failed: import_id=%s, status=%s, error=%s',
       importId,
@@ -446,26 +256,8 @@ async function sendImportNotification({
 
 // ── Background processor ───────────────────────────────────────────────────────
 //
-// Why background: the full import path takes 20-40 seconds (Resend Receiving
-// API fetch + attachment download + Vercel Python parser POST + importCASData
-// upserts). Resend's Svix webhook delivery has a hard 15-second timeout. If
-// we ran inline, every successful import would trigger a Resend retry and a
-// duplicate `cas_import` row (the dedup upsert protects data integrity but
-// produces double notification emails and bogus "0 transactions" follow-ups).
-//
-// The sync handler now does only what's strictly required to acknowledge the
-// inbound email — signature verify, recipient lookup, audit-row insert with
-// status='pending' — and returns 200 in <1s. Everything heavy runs inside
-// `processImportInBackground`, scheduled via `EdgeRuntime.waitUntil(...)`.
-//
-// Error visibility is preserved by:
-//  - The `cas_import` row is the source of truth. The catch-all at the
-//    bottom of the background processor guarantees it never stays 'pending'
-//    on a hard crash.
-//  - `sendImportNotification` runs in the background and emails the user
-//    on either success or failure with the actual reason.
-//  - `[cas-webhook-resend] background_started/completed/CRITICAL` log lines
-//    are tagged with `import_id` so ops can correlate by SQL.
+// Same shape as before: sync handler does the bare minimum and hands off to
+// EdgeRuntime.waitUntil so we always answer the router in <1s.
 
 interface BackgroundJobArgs {
   supabase: ReturnType<typeof createClient>;
@@ -473,9 +265,7 @@ interface BackgroundJobArgs {
   userId: string;
   pan: string;
   dob: string | null;
-  emailId: string | null;
-  attachments: ResendInboundAttachment[];
-  recipients: string;
+  attachments: NormalizedAttachment[];
 }
 
 async function finalizeImportRow(
@@ -505,7 +295,7 @@ async function finalizeImportRow(
 }
 
 async function processImportInBackground(args: BackgroundJobArgs) {
-  const { supabase, importId, userId, pan, dob, emailId, attachments, recipients } = args;
+  const { supabase, importId, userId, pan, dob, attachments } = args;
   const authEmailPromise = getAuthEmail(supabase, userId);
 
   try {
@@ -525,17 +315,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       await finalizeImportRow(supabase, importId, 'failed', 0, 0, [errorMsg]);
       await sendImportNotification({
         to: await authEmailPromise,
-        from: notificationFromAddress(recipients),
         importId,
         status: 'failed',
         funds: 0,
         transactions: 0,
         errors: [errorMsg],
       });
-      console.log(
-        '[cas-webhook-resend] background_completed import_id=%s status=no_pdfs',
-        importId,
-      );
       return;
     }
 
@@ -546,11 +331,11 @@ async function processImportInBackground(args: BackgroundJobArgs) {
 
     for (const attachment of pdfAttachments) {
       try {
-        const pdfBytes = await getAttachmentBytes(attachment, emailId);
+        const pdfBytes = await downloadAttachmentBytes(attachment);
 
         const parserHeaders: Record<string, string> = {
           'Content-Type': 'application/octet-stream',
-          'x-file-name': attachment.filename ?? 'cas.pdf',
+          'x-file-name': attachment.filename,
           'x-password': pan,
           'x-parser-secret': CAS_PARSER_SHARED_SECRET,
         };
@@ -579,7 +364,7 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         const parsedTransactions = countParsedTransactions(parsedResult);
         console.log(
           '[cas-webhook-resend] attachment parsed file=%s, raw_txns=%d',
-          attachment.filename ?? 'cas.pdf',
+          attachment.filename,
           parsedTransactions,
         );
 
@@ -622,7 +407,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
 
     await sendImportNotification({
       to: await authEmailPromise,
-      from: notificationFromAddress(recipients),
       importId,
       status,
       funds: totalFunds,
@@ -630,11 +414,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       errors: allErrors,
     });
 
-    // Opportunistic clear of cas_inbox_confirmation_url: if a real CAS
-    // email just imported successfully, the Gmail filter is provably
-    // active and the previously-captured verification URL is no longer
-    // useful. Google won't echo the confirm-click back to us, so the
-    // next-import-succeeded heuristic is the closest signal we have.
     if (status === 'success') {
       const { error: clearErr } = await supabase
         .from('user_profile')
@@ -649,7 +428,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       }
     }
 
-    // Trigger sync-nav so latest NAVs land without waiting for cron
     if (totalFunds > 0) {
       fetch(`${SUPABASE_URL}/functions/v1/sync-nav`, {
         method: 'POST',
@@ -657,9 +435,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       }).catch((err) => console.error('[cas-webhook-resend] sync-nav trigger failed:', err));
     }
   } catch (err) {
-    // Catch-all: any unexpected throw must promote the row out of 'pending'
-    // and tell the user. Without this the row would sit at 'pending' forever
-    // and the user would get no feedback.
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
       '[cas-webhook-resend] CRITICAL background failure import_id=%s: %s',
@@ -672,7 +447,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       ]);
       await sendImportNotification({
         to: await authEmailPromise,
-        from: notificationFromAddress(recipients),
         importId,
         status: 'failed',
         funds: 0,
@@ -699,48 +473,28 @@ Deno.serve(async (req) => {
 
   const rawBody = await req.text();
 
-  if (!(await verifyResendSignature(rawBody, req.headers))) {
+  if (!(await verifyRouterSignature(rawBody, req.headers))) {
     return new Response('Invalid signature', { status: 401 });
   }
 
-  let payload: ResendInboundPayload;
+  let payload: NormalizedRouterPayload;
   try {
     payload = JSON.parse(rawBody);
   } catch {
     return new Response('Invalid JSON', { status: 400 });
   }
 
-  const eventData = payload.data ?? {};
-  const emailId = getReceivedEmailId(eventData);
-  let receivedEmail: ResendInboundData | null = null;
-  try {
-    receivedEmail = await fetchReceivedEmail(emailId);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[cas-webhook-resend] received email fetch failed: %s', msg);
-    // Return 200 — Resend retrying won't help. The DROPPED log is the only
-    // signal; ops can correlate via Resend dashboard email_id.
-    console.warn(
-      '[cas-webhook-resend] DROPPED resend_email_fetch_failed: email_id=%s, error=%s',
-      emailId ?? '(none)',
-      msg,
-    );
-    return Response.json({ ok: false, reason: 'resend_email_fetch_failed' });
+  if (payload.v !== 1) {
+    console.warn('[cas-webhook-resend] DROPPED unsupported_payload_version: v=%s', payload.v);
+    return Response.json({ ok: false, reason: 'unsupported_payload_version' });
   }
 
-  const emailData = mergeEmailData(eventData, receivedEmail);
-  const recipients = getRecipientList(emailData);
-  const token = parseInboxToken(recipients);
-  if (!token) {
-    // DROPPED log lines are the sole record an inbound email got dropped —
-    // no `cas_import` row is written and no notification email goes out, so
-    // they're the only signal ops have to catch misrouted mail. Keep the
-    // tag stable and include `email_id` so we can correlate with Resend's
-    // dashboard log entry.
+  const token = (payload.token ?? '').toUpperCase();
+  if (!token || !TOKEN_REGEX.test(token)) {
     console.warn(
-      '[cas-webhook-resend] DROPPED no_token: to=%s, email_id=%s',
-      recipients,
-      emailId ?? '(none)',
+      '[cas-webhook-resend] DROPPED no_token: recipient=%s, email_id=%s',
+      payload.recipient ?? '(none)',
+      payload.email_id ?? '(none)',
     );
     return Response.json({ ok: false, reason: 'no_token' });
   }
@@ -760,10 +514,10 @@ Deno.serve(async (req) => {
 
   if (!profile?.user_id || !profile?.pan) {
     console.warn(
-      '[cas-webhook-resend] DROPPED unknown_token: token=%s, to=%s, email_id=%s',
+      '[cas-webhook-resend] DROPPED unknown_token: token=%s, recipient=%s, email_id=%s',
       token,
-      recipients,
-      emailId ?? '(none)',
+      payload.recipient ?? '(none)',
+      payload.email_id ?? '(none)',
     );
     return Response.json({ ok: false, reason: 'unknown_token' });
   }
@@ -772,10 +526,10 @@ Deno.serve(async (req) => {
   const pan = profile.pan as string;
   const dob = (profile.dob as string | null) ?? null;
 
-  // Gmail auto-forward verification: handle inline. It's a single UPDATE,
-  // doesn't need an audit row, and finishes in <100ms.
-  if (isGmailForwardingVerification(emailData)) {
-    const url = extractGmailVerificationUrl(emailData);
+  // Gmail auto-forward verification — single UPDATE, fast, runs inline.
+  const verificationView = gmailVerificationView(payload);
+  if (isGmailForwardingVerification(verificationView)) {
+    const url = extractGmailVerificationUrl(verificationView);
     if (!url) {
       console.warn(
         '[cas-webhook-resend] gmail-verification email matched sender+subject but no URL found, token=%s',
@@ -802,41 +556,18 @@ Deno.serve(async (req) => {
     return Response.json({ ok: true, captured: 'gmail_forwarding_verification' });
   }
 
-  // List attachments via Resend Receiving API. Done in sync so we can
-  // distinguish "no PDF — drop with no audit row" from "has PDF — accept
-  // and process in background".
-  let attachments = emailData.attachments ?? [];
-  try {
-    const listedAttachments = await listReceivedAttachments(emailId);
-    if (listedAttachments.length > 0) {
-      attachments = listedAttachments;
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[cas-webhook-resend] attachment list failed: %s', msg);
-    console.warn(
-      '[cas-webhook-resend] DROPPED resend_attachment_list_failed: email_id=%s, error=%s',
-      emailId ?? '(none)',
-      msg,
-    );
-    return Response.json({ ok: false, reason: 'resend_attachment_list_failed' });
-  }
-
-  const pdfAttachments = attachments.filter(isPdfAttachment);
+  const pdfAttachments = (payload.attachments ?? []).filter(isPdfAttachment);
   if (pdfAttachments.length === 0) {
     console.warn(
-      '[cas-webhook-resend] DROPPED no_pdfs: token=%s, to=%s, email_id=%s, total_files=%d',
+      '[cas-webhook-resend] DROPPED no_pdfs: token=%s, recipient=%s, email_id=%s, total_files=%d',
       token,
-      recipients,
-      emailId ?? '(none)',
-      attachments.length,
+      payload.recipient ?? '(none)',
+      payload.email_id ?? '(none)',
+      payload.attachments?.length ?? 0,
     );
     return Response.json({ ok: false, reason: 'no_pdfs' });
   }
 
-  // Audit row — must exist before we hand off to background. The catch-all
-  // in the background processor keys off this `importId` to ensure the row
-  // never stays 'pending' on a hard crash.
   const { data: importRecord, error: importError } = await supabase
     .from('cas_import')
     .insert({
@@ -862,8 +593,6 @@ Deno.serve(async (req) => {
     pdfAttachments.length,
   );
 
-  // Hand the heavy lifting off to a background task. Resend will see 200
-  // within ~1s, no Svix-timeout retries, no duplicate cas_import rows.
   EdgeRuntime.waitUntil(
     processImportInBackground({
       supabase,
@@ -871,14 +600,9 @@ Deno.serve(async (req) => {
       userId,
       pan,
       dob,
-      emailId,
       attachments: pdfAttachments,
-      recipients,
     }),
   );
 
-  // 202 Accepted — the audit row exists, the heavy work is in flight, and
-  // Resend gets a fast OK well inside the 15s Svix timeout. The user will
-  // receive a notification email when the background job completes.
   return Response.json({ ok: true, accepted: true, import_id: importId });
 });
