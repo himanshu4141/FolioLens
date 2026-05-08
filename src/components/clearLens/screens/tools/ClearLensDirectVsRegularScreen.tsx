@@ -1,7 +1,8 @@
 /**
  * Direct vs Regular Impact — surfaces the cost-drag between regular- and
- * direct-plan mutual funds in the user's portfolio, with an editable
- * what-if for users who don't currently hold any regular plans.
+ * direct-plan mutual funds in the user's portfolio. Brand-faithful factory
+ * shape: inputs → hero (lead with the answer) → short prose insights →
+ * disclosure.
  *
  * Detection is name-based (AMFI naming convention puts "Direct Plan" or
  * "Regular Plan" right in the scheme name). Cost impact is a future-value
@@ -17,7 +18,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
@@ -174,8 +174,12 @@ export function ClearLensDirectVsRegularScreen() {
     [corpusForImpact, monthlySip, years, expenseRatioDelta],
   );
 
-  const noRegularDetected = breakdown.regular.length === 0 && breakdown.totalValue > 0;
   const hasRegular = breakdown.regular.length > 0;
+  const hasAnyFunds = breakdown.totalValue > 0;
+  const allDirect = hasAnyFunds && breakdown.direct.length > 0 && !hasRegular && breakdown.unknown.length === 0;
+  const regularSharePct = hasAnyFunds
+    ? (breakdown.regularValue / breakdown.totalValue) * 100
+    : 0;
 
   if (!userId) {
     return (
@@ -203,12 +207,6 @@ export function ClearLensDirectVsRegularScreen() {
               that compounds. Here&apos;s the size of that drag for your portfolio.
             </Text>
           </View>
-
-          {fundsQuery.isLoading ? (
-            <View style={styles.center}><Text style={styles.helperText}>Loading your funds…</Text></View>
-          ) : (
-            <PlanBreakdownCard breakdown={breakdown} tokens={tokens} />
-          )}
 
           {/* Inputs */}
           <View style={styles.card}>
@@ -255,68 +253,127 @@ export function ClearLensDirectVsRegularScreen() {
             </View>
           </View>
 
-          {/* Result banner */}
-          <View style={styles.banner}>
-            <Text style={styles.bannerLabel}>
-              {hasRegular ? 'Estimated cost drag over' : 'Illustrative cost drag over'} {horizon}
-            </Text>
-            <Text style={styles.bannerValue}>{formatCurrency(impact.impact)}</Text>
-            <Text style={styles.bannerSubtitle}>
-              ~{impact.impactPct.toFixed(1)}% smaller corpus vs the same money in direct plans
-            </Text>
-          </View>
+          {fundsQuery.isLoading ? (
+            <View style={styles.center}><Text style={styles.helperText}>Loading your funds…</Text></View>
+          ) : (
+            <>
+              {/* Hero — leads with the rupee gap and the % corpus shrinkage */}
+              <View style={styles.banner}>
+                <Text style={styles.bannerLabel}>
+                  {hasRegular ? `Estimated cost drag over ${horizon}` : `Illustrative cost drag over ${horizon}`}
+                </Text>
+                <Text style={styles.bannerValue}>{formatCurrency(impact.impact)}</Text>
+                <Text style={styles.bannerSubtitle}>
+                  ~{impact.impactPct.toFixed(1)}% smaller corpus vs the same money in direct plans
+                </Text>
+              </View>
 
-          {/* Result detail */}
-          <View style={styles.card}>
-            <Row label={`Direct plan corpus in ${horizon}`} value={formatCurrency(impact.directFutureValue)} highlight />
-            <RowDivider />
-            <Row label={`Regular plan corpus in ${horizon}`} value={formatCurrency(impact.regularFutureValue)} />
-            <RowDivider />
-            <Row
-              label="Difference"
-              value={formatCurrency(impact.impact)}
-              tone="negative"
-            />
-            <RowDivider />
-            <Row label="Base return assumption" value={`${(DEFAULT_BASE_RETURN * 100).toFixed(0)}% p.a.`} />
-            <RowDivider />
-            <Row label="Starting corpus" value={formatCurrency(corpusForImpact)} />
-          </View>
+              {/* Comparison detail — replaces the 5-row spreadsheet card */}
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>What that looks like</Text>
+                <Text style={styles.insightBody}>
+                  Same SIP, two return streams. In <Text style={styles.insightStrong}>{horizon}</Text>,{' '}
+                  {formatCurrency(corpusForImpact)} + {formatCurrency(monthlySip)}/mo grows to{' '}
+                  <Text style={styles.insightStrong}>{formatCurrency(impact.directFutureValue)}</Text> in direct plans
+                  vs{' '}
+                  <Text style={styles.insightStrong}>{formatCurrency(impact.regularFutureValue)}</Text> in regular —{' '}
+                  a <Text style={styles.insightLoss}>{formatCurrency(impact.impact)}</Text> gap from the{' '}
+                  {(expenseRatioDelta * 100).toFixed(2)}%/yr fee delta. Both assume a{' '}
+                  {(DEFAULT_BASE_RETURN * 100).toFixed(0)}% base return.
+                </Text>
+              </View>
 
-          {/* Education / action card */}
-          <View style={styles.infoCard}>
-            <View style={styles.infoIconWrap}>
-              <Ionicons name="information-circle-outline" size={18} color={tokens.colors.emerald} />
-            </View>
-            <Text style={styles.infoText}>
-              {hasRegular
-                ? 'Some of your funds are regular plans. If you\'re paying for advice, that\'s a fair trade. If you\'re not, you may want to review whether the direct plan would suit you better — your platform or advisor can help.'
-                : noRegularDetected
-                  ? 'All your detected funds appear to be direct plans, which is the lower-cost option. The numbers above are illustrative.'
-                  : 'No funds detected yet. The numbers above are illustrative — adjust the inputs to see how a 70bps fee delta compounds.'}
-            </Text>
-          </View>
+              {/* Portfolio split — replaces the standalone PlanBreakdownCard */}
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Your portfolio</Text>
+                <Text style={styles.insightBody}>
+                  {!hasAnyFunds ? (
+                    <>
+                      No funds detected yet — the numbers above are illustrative on{' '}
+                      <Text style={styles.insightStrong}>{formatCurrency(corpusForImpact)}</Text>.
+                      Adjust the inputs to see how the fee delta compounds.
+                    </>
+                  ) : allDirect ? (
+                    <>
+                      <Text style={styles.insightStrong}>
+                        All {breakdown.direct.length} of your detected funds are direct plans.
+                      </Text>{' '}
+                      No commission drag from the regular-vs-direct gap.
+                      {breakdown.weightedExpenseRatio != null
+                        ? ` Weighted expense ratio: ${breakdown.weightedExpenseRatio.toFixed(2)}%.`
+                        : ''}
+                    </>
+                  ) : hasRegular ? (
+                    <>
+                      <Text style={styles.insightStrong}>
+                        {breakdown.regular.length} of your {breakdown.direct.length + breakdown.regular.length + breakdown.unknown.length} funds
+                      </Text>
+                      {' '}
+                      ({formatCurrency(breakdown.regularValue)} of {formatCurrency(breakdown.totalValue)},{' '}
+                      <Text style={styles.insightStrong}>{regularSharePct.toFixed(0)}%</Text>) are in regular plans.
+                      {breakdown.weightedExpenseRatio != null
+                        ? ` Weighted expense ratio across the portfolio: ${breakdown.weightedExpenseRatio.toFixed(2)}%.`
+                        : ''}
+                    </>
+                  ) : (
+                    <>
+                      Plan type couldn&apos;t be detected for{' '}
+                      <Text style={styles.insightStrong}>{breakdown.unknown.length} fund(s)</Text>{' '}
+                      — the numbers above are illustrative.
+                    </>
+                  )}
+                </Text>
+              </View>
 
-          {breakdown.regular.length > 0 ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Your regular-plan funds</Text>
-              {breakdown.regular.map((fund, idx) => (
-                <View key={fund.id}>
-                  {idx > 0 ? <RowDivider /> : null}
-                  <View style={styles.row}>
-                    <Text style={styles.rowLabel} numberOfLines={2}>{fund.schemeName}</Text>
-                    <Text style={styles.rowValue}>{formatCurrency(fund.currentValue)}</Text>
-                  </View>
+              {/* What to do — folded the old infoCard into a normal prose card */}
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>What to do</Text>
+                <Text style={styles.insightBody}>
+                  {hasRegular ? (
+                    <>
+                      <Text style={styles.insightStrong}>If you&apos;re paying for advice</Text>, the regular-plan
+                      fee is a fair trade.{' '}
+                      <Text style={styles.insightStrong}>If you&apos;re not</Text> — and the lowest-cost option
+                      is what you want — your platform or advisor can help you switch the regular-plan funds
+                      to direct.
+                    </>
+                  ) : allDirect ? (
+                    <>
+                      You&apos;re already on the lower-cost side. Nothing to action — keep an eye on the
+                      expense ratios when you add new funds.
+                    </>
+                  ) : (
+                    <>
+                      Adjust the inputs above to see how a regular-vs-direct fee gap compounds.
+                      When you import funds, we&apos;ll detect plan type from the scheme name and tailor this advice.
+                    </>
+                  )}
+                </Text>
+              </View>
+
+              {/* Regular-plan funds list — kept compact, only when present */}
+              {hasRegular ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>Your regular-plan funds</Text>
+                  {breakdown.regular.map((fund, idx) => (
+                    <View key={fund.id}>
+                      {idx > 0 ? <View style={styles.rowDivider} /> : null}
+                      <View style={styles.row}>
+                        <Text style={styles.rowLabel} numberOfLines={2}>{fund.schemeName}</Text>
+                        <Text style={styles.rowValue}>{formatCurrency(fund.currentValue)}</Text>
+                      </View>
+                    </View>
+                  ))}
                 </View>
-              ))}
-            </View>
-          ) : null}
+              ) : null}
 
-          <Text style={styles.disclaimer}>
-            Estimates use a fixed {(DEFAULT_BASE_RETURN * 100).toFixed(0)}% p.a. base return for both plans;
-            the difference comes only from the expense ratio gap. Past performance is not indicative of future returns.
-            We don&apos;t advise switching — your platform or advisor is the right place for that.
-          </Text>
+              <Text style={styles.disclaimer}>
+                Estimates use a fixed {(DEFAULT_BASE_RETURN * 100).toFixed(0)}% p.a. base return for both plans;
+                the difference comes only from the expense ratio gap. Past performance is not indicative of future returns.
+                We don&apos;t advise switching — your platform or advisor is the right place for that.
+              </Text>
+            </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </ClearLensScreen>
@@ -324,108 +381,8 @@ export function ClearLensDirectVsRegularScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Plan breakdown summary
-// ---------------------------------------------------------------------------
-
-function PlanBreakdownCard({
-  breakdown,
-  tokens,
-}: {
-  breakdown: ReturnType<typeof buildPlanBreakdown>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const total = breakdown.totalValue;
-
-  if (total === 0) {
-    return (
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Your portfolio split</Text>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>No active funds detected.</Text>
-        </View>
-      </View>
-    );
-  }
-
-  function pct(value: number): string {
-    return `${((value / total) * 100).toFixed(0)}%`;
-  }
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Your portfolio split</Text>
-      <View style={styles.splitRow}>
-        <View style={[styles.splitChip, styles.splitChipDirect]}>
-          <Text style={styles.splitChipLabel}>Direct</Text>
-          <Text style={styles.splitChipValue}>
-            {breakdown.direct.length} • {pct(breakdown.directValue)}
-          </Text>
-        </View>
-        <View style={[styles.splitChip, styles.splitChipRegular]}>
-          <Text style={styles.splitChipLabel}>Regular</Text>
-          <Text style={styles.splitChipValue}>
-            {breakdown.regular.length} • {pct(breakdown.regularValue)}
-          </Text>
-        </View>
-        <View style={[styles.splitChip, styles.splitChipUnknown]}>
-          <Text style={styles.splitChipLabel}>Unknown</Text>
-          <Text style={styles.splitChipValue}>
-            {breakdown.unknown.length} • {pct(breakdown.unknownValue)}
-          </Text>
-        </View>
-      </View>
-      {breakdown.weightedExpenseRatio != null ? (
-        <>
-          <RowDivider />
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>Weighted expense ratio</Text>
-            <Text style={styles.rowValue}>{breakdown.weightedExpenseRatio.toFixed(2)}%</Text>
-          </View>
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function Row({
-  label,
-  value,
-  highlight,
-  tone,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-  tone?: 'positive' | 'negative';
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const cl = tokens.colors;
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={[
-        styles.rowValue,
-        highlight && styles.rowValueHighlight,
-        tone === 'positive' && { color: cl.positive },
-        tone === 'negative' && { color: cl.negative },
-      ]}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function RowDivider() {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  return <View style={styles.rowDivider} />;
-}
 
 function Separator() {
   const tokens = useClearLensTokens();
@@ -463,6 +420,7 @@ function makeStyles(tokens: ClearLensTokens) {
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: ClearLensSpacing.xl,
+      paddingVertical: ClearLensSpacing.lg,
       gap: ClearLensSpacing.sm,
     },
     helperText: { ...ClearLensTypography.body, color: cl.textTertiary },
@@ -497,43 +455,21 @@ function makeStyles(tokens: ClearLensTokens) {
       paddingTop: ClearLensSpacing.xs,
       paddingBottom: ClearLensSpacing.xs,
     },
-
-    splitRow: {
-      flexDirection: 'row',
-      gap: ClearLensSpacing.xs,
+    insightBody: {
+      ...ClearLensTypography.body,
+      color: cl.textSecondary,
       paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: ClearLensSpacing.sm,
+      paddingTop: ClearLensSpacing.xs,
+      paddingBottom: ClearLensSpacing.sm,
+      lineHeight: 22,
     },
-    splitChip: {
-      flex: 1,
-      borderRadius: ClearLensRadii.md,
-      paddingVertical: ClearLensSpacing.sm,
-      paddingHorizontal: ClearLensSpacing.sm,
-      borderWidth: 1,
-      gap: 2,
-    },
-    splitChipDirect: {
-      backgroundColor: cl.positiveBg,
-      borderColor: cl.positive,
-    },
-    splitChipRegular: {
-      backgroundColor: cl.warningBg,
-      borderColor: cl.amber,
-    },
-    splitChipUnknown: {
-      backgroundColor: cl.surfaceSoft,
-      borderColor: cl.borderLight,
-    },
-    splitChipLabel: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.4,
-    },
-    splitChipValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 14,
+    insightStrong: {
       color: cl.navy,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    insightLoss: {
+      color: cl.negative,
+      fontFamily: ClearLensFonts.semiBold,
     },
 
     inputRow: {
@@ -600,34 +536,10 @@ function makeStyles(tokens: ClearLensTokens) {
       fontSize: 14,
       color: cl.navy,
     },
-    rowValueHighlight: {
-      fontSize: 16,
-      color: cl.emerald,
-    },
     rowDivider: {
       height: 1,
       backgroundColor: cl.borderLight,
       marginHorizontal: ClearLensSpacing.md,
-    },
-
-    infoCard: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: ClearLensSpacing.sm,
-      padding: ClearLensSpacing.md,
-      borderRadius: ClearLensRadii.md,
-      backgroundColor: cl.mint50,
-      borderWidth: 1,
-      borderColor: cl.mint,
-    },
-    infoIconWrap: {
-      paddingTop: 1,
-    },
-    infoText: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textSecondary,
-      flex: 1,
-      lineHeight: 19,
     },
 
     disclaimer: {
