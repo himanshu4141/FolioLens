@@ -14,6 +14,7 @@ import {
   importCASData,
   type CASParseResult,
 } from '../_shared/import-cas.ts';
+import { trackServerEvent } from '../_shared/analytics.ts';
 
 const LOCAL_CAS_PARSER_URL = Deno.env.get('LOCAL_CAS_PARSER_URL') ?? '';
 const CAS_PARSER_SHARED_SECRET = Deno.env.get('CAS_PARSER_SHARED_SECRET') ?? '';
@@ -235,6 +236,19 @@ Deno.serve(async (req) => {
     const msgLower = msg.toLowerCase();
     const isPasswordError = msgLower.includes('password') || msgLower.includes('decrypt');
     const isHoldingsOnly = msgLower.includes('holdings-only') || msgLower.includes('detailed cas');
+    trackServerEvent(
+      'cas_parse_failed',
+      {
+        source: 'parse-cas-pdf',
+        failure_reason: isPasswordError
+          ? 'wrong_password'
+          : isHoldingsOnly
+            ? 'holdings_only'
+            : 'parser_error',
+        error_message: msg.slice(0, 240),
+      },
+      user.id,
+    );
     return json(
       {
         error: isHoldingsOnly
@@ -308,6 +322,16 @@ Deno.serve(async (req) => {
 
   if (fundsUpdated === 0 && errors.length > 0) {
     console.error('[parse-cas-pdf] all scheme upserts failed; first error: %s', errors[0]);
+    trackServerEvent(
+      'cas_parse_failed',
+      {
+        source: 'parse-cas-pdf',
+        failure_reason: 'import_all_failed',
+        scheme_errors: errors.length,
+        first_error: errors[0]?.slice(0, 240),
+      },
+      user.id,
+    );
     return json({ error: 'Import failed — no funds could be saved. Please try again.' }, { status: 500 });
   }
 
@@ -326,6 +350,18 @@ Deno.serve(async (req) => {
       headers,
     }).catch((err) => console.error('[parse-cas-pdf] sync-index trigger failed:', err));
   }
+
+  trackServerEvent(
+    'cas_parse_success',
+    {
+      source: 'parse-cas-pdf',
+      funds_updated: fundsUpdated,
+      transactions_added: transactionsAdded,
+      partial: errors.length > 0,
+      partial_errors: errors.length,
+    },
+    user.id,
+  );
 
   return json({ ok: true, funds: fundsUpdated, transactions: transactionsAdded });
 });

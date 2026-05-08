@@ -74,7 +74,42 @@ This milestone is the second instalment of Phase 9 readiness; M1 (`M1-store-subm
 - A/B testing infrastructure.
 - Migrating away from Vercel Web Vitals. They cover Web Vital metrics PostHog reports differently; both stay, complementing each other.
 - Any per-screen or per-button autocapture. We emit explicit events with curated properties — autocapture noise hurts more than it helps for funnel analysis.
-- Server-side / Edge Function instrumentation. Possible later via PostHog's Node SDK; out of scope here because the audit asked specifically about the *client* event taxonomy.
+- ~~Server-side / Edge Function instrumentation~~ — **expanded scope** during implementation per a user direction ("we need both before prod deploy anyways"). Now in scope; see "Server-side instrumentation" below.
+
+
+## Server-side instrumentation
+
+
+All server surfaces report to the **same PostHog project** as the client SDKs — that's what makes the dashboard a single pane. Events from the server side carry `environment: 'production' | 'dev'` so dashboards can filter prod from dev when one project ingests both. Distinct IDs use `system:<surface>` for non-user events (cron jobs, webhook handlers pre-auth) and the auth user id for user-attributed events.
+
+
+    Surface                         SDK / transport                          Events
+    ──────────────────────────────────────────────────────────────────────────────────────────────
+    Supabase Edge Functions (Deno)  Direct HTTP via fetch to /capture/       cas_parse_success
+                                    (no JSR/npm dep — keeps cold-start       cas_parse_failed
+                                    minimal)                                  cas_inbound_imported
+                                                                              cas_inbound_failed
+                                                                              cas_inbound_crashed
+                                                                              sync_completed (per cron)
+                                                                              sync_failed (per cron)
+
+    Vercel Python parser            urllib in stdlib (no posthog-python      cas_parser_python_outcome
+                                    dep — avoids bumping requirements.txt)    {outcome: success | wrong_password
+                                                                                      | holdings_only | exception}
+
+    GitHub Actions AMFI sync        curl on success/failure (closes audit    amfi_sync_completed
+                                    Topic 15 alerting gap)                    {outcome, environment, run_url}
+
+
+All server-side captures are fire-and-forget when the function still has work to do (e.g. `parse-cas-pdf` returning a user response) and `await`-ed when the function is wrapping up (cron jobs ending). Errors from the analytics POST itself are swallowed and logged at `console.warn` — analytics must never break a user-visible function.
+
+
+Server env vars (set in Supabase Edge Function Secrets, Vercel project env, and GitHub Actions secrets — same value as client `EXPO_PUBLIC_POSTHOG_KEY`):
+
+
+    POSTHOG_PROJECT_KEY    project token (`phc_...`)
+    POSTHOG_HOST           defaults to https://us.i.posthog.com
+    APP_ENVIRONMENT        'production' or 'dev' — added as a property to every event
 
 
 ## Approach
@@ -313,6 +348,8 @@ This is a single coherent PR. Tasks are ordered for execution, not sliced for se
 - **2026-05-08**: Kept Vercel Speed Insights + Web Analytics. They cover Web Vitals at the infrastructure level (per-route, per-deploy); PostHog covers user-journey-level events. They don't duplicate.
 - **2026-05-08**: Disabled session replay and autocapture by default. Re-enable later only if a specific debugging need arises and only for opted-in cohorts.
 - **2026-05-08**: Used the same `EXPO_PUBLIC_*` build-time gating model as PR #102 (Vercel insights). One mental model, one place to flip.
+- **2026-05-08**: Expanded scope mid-implementation to include server-side instrumentation (Edge Functions + Python parser + AMFI GitHub Action). User asked "shouldn't we be using the same for backend logs too" — single-pane goal would have been hollow without this. Implemented via direct HTTP capture (no new SDK deps) so the change is small and the cold-start cost on Edge Functions is unaffected.
+- **2026-05-08**: Decided not to add the `posthog-python` SDK to the Vercel parser — used `urllib` for direct HTTP capture. Avoids a new pip dep and the parser already has a tight dependency closure (`casparser`, `pdfplumber`).
 
 
 ## Progress
@@ -333,6 +370,10 @@ This is a single coherent PR. Tasks are ordered for execution, not sliced for se
 - [ ] `app_started` emitted on cold start with EAS update properties
 - [ ] `scripts/vercel-build.py` forwards `EXPO_PUBLIC_POSTHOG_KEY` on prod
 - [ ] Jest test for the facade covers happy / no-key / exception path
+- [ ] `supabase/functions/_shared/analytics.ts` helper for Edge Functions (HTTP capture, no JSR deps)
+- [ ] Edge function events wired: parse-cas-pdf (success / failed), cas-webhook-resend (imported / failed / crashed), sync-nav, sync-index, sync-fund-portfolios, sync-fund-meta (completed / failed)
+- [ ] Python parser `cas_parser_python_outcome` event via urllib (no new pip dep)
+- [ ] AMFI sync GitHub Actions workflow emits `amfi_sync_completed` on success and failure
 - [ ] `docs/INFRASTRUCTURE.md` Observability section updated
 - [ ] `npm run typecheck` zero errors
 - [ ] `npm run lint --max-warnings 0` zero warnings

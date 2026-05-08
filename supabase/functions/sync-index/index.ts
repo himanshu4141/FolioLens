@@ -28,6 +28,7 @@
 
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
+import { trackServerEventAwait } from '../_shared/analytics.ts';
 
 const BATCH_SIZE = 500;
 const YF_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart';
@@ -324,6 +325,7 @@ async function upsertWithPriority(
 // ---------------------------------------------------------------------------
 
 Deno.serve(async (req) => {
+  const startedAt = Date.now();
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: CORS });
   }
@@ -503,13 +505,32 @@ Deno.serve(async (req) => {
     }
   }
 
+  const elapsedMs = Date.now() - startedAt;
   console.log(
-    '[sync-index] done — TRI symbols=%d errors=%d, PR symbols=%d skipped=%d errors=%d',
+    '[sync-index] done — TRI symbols=%d errors=%d, PR symbols=%d skipped=%d errors=%d, elapsed_ms=%d',
     Object.keys(NSE_TRI_NAME_MAP).length,
     triErrors.length,
     symbolMap.size - prSkipped.length,
     prSkipped.length,
     prErrors.length,
+    elapsedMs,
+  );
+
+  const totalErrors = triErrors.length + prErrors.length;
+  const totalRows = prTotalUpserted;
+  await trackServerEventAwait(
+    totalErrors > 0 && totalRows === 0 ? 'sync_failed' : 'sync_completed',
+    {
+      job: 'sync-index',
+      tri_symbols: Object.keys(NSE_TRI_NAME_MAP).length,
+      tri_errors: triErrors.length,
+      pr_symbols: symbolMap.size - prSkipped.length,
+      pr_skipped: prSkipped.length,
+      pr_errors: prErrors.length,
+      pr_rows_upserted: prTotalUpserted,
+      elapsed_ms: elapsedMs,
+    },
+    'system:sync-index',
   );
 
   return json({

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
 from api._cas_parser import parse_cas_pdf_bytes
@@ -10,6 +12,42 @@ from api._cdsl_nsdl_parser import HoldingsOnlyError
 
 
 PARSER_SECRET = os.environ.get("CAS_PARSER_SHARED_SECRET", "")
+POSTHOG_KEY = os.environ.get("POSTHOG_PROJECT_KEY", "")
+POSTHOG_HOST = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com")
+APP_ENVIRONMENT = os.environ.get("APP_ENVIRONMENT", "unknown")
+
+
+def _track_event(event: str, properties: dict) -> None:
+    """Fire-and-forget PostHog capture. Silently no-ops without a key.
+
+    Uses urllib so we don't pull in a new dependency. Errors are swallowed
+    — analytics must never break a user-visible parse response.
+    """
+    if not POSTHOG_KEY:
+        return
+    payload = json.dumps({
+        "api_key": POSTHOG_KEY,
+        "event": event,
+        "distinct_id": "system:python-parser",
+        "properties": {
+            "$lib": "foliolens-vercel-python",
+            "environment": APP_ENVIRONMENT,
+            **properties,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{POSTHOG_HOST}/capture/",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as _:
+            pass
+    except Exception:
+        # Analytics failures are never fatal here.
+        pass
 
 
 def _json(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
@@ -64,6 +102,10 @@ class handler(BaseHTTPRequestHandler):
         try:
             parsed = parse_cas_pdf_bytes(pdf_bytes, password, cdsl_password)
         except HoldingsOnlyError as exc:
+            _track_event("cas_parser_python_outcome", {
+                "outcome": "holdings_only",
+                "exception_class": "HoldingsOnlyError",
+            })
             _json(self, 422, {"error": str(exc)})
             return
         except Exception as exc:
@@ -75,6 +117,11 @@ class handler(BaseHTTPRequestHandler):
                 or "encrypted" in lowered
                 or "invalid key" in lowered
             )
+            _track_event("cas_parser_python_outcome", {
+                "outcome": "wrong_password" if is_password_error else "exception",
+                "exception_class": type(exc).__name__,
+                "error_message": message[:240],
+            })
             _json(
                 self,
                 422 if is_password_error else 500,
@@ -82,4 +129,5 @@ class handler(BaseHTTPRequestHandler):
             )
             return
 
+        _track_event("cas_parser_python_outcome", {"outcome": "success"})
         _json(self, 200, parsed)

@@ -35,6 +35,7 @@ import {
   extractGmailVerificationUrl,
   isGmailForwardingVerification,
 } from '../_shared/gmail-verification.ts';
+import { trackServerEvent } from '../_shared/analytics.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -405,6 +406,17 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       allErrors.length,
     );
 
+    trackServerEvent(
+      status === 'success' ? 'cas_inbound_imported' : 'cas_inbound_failed',
+      {
+        funds_updated: totalFunds,
+        transactions_added: totalTransactions,
+        attachment_errors: allErrors.length,
+        first_error: allErrors[0]?.slice(0, 240),
+      },
+      userId,
+    );
+
     await sendImportNotification({
       to: await authEmailPromise,
       importId,
@@ -440,6 +452,14 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       '[cas-webhook-resend] CRITICAL background failure import_id=%s: %s',
       importId,
       msg,
+    );
+    trackServerEvent(
+      'cas_inbound_crashed',
+      {
+        import_id: importId,
+        error_message: msg.slice(0, 240),
+      },
+      userId,
     );
     try {
       await finalizeImportRow(supabase, importId, 'failed', 0, 0, [
