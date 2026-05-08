@@ -149,10 +149,10 @@ export default function AccountScreen() {
           {!isLoading && profile?.kfintech_email && (
             <View style={[styles.row, styles.borderTop]}>
               <View style={styles.rowLeft}>
-                <Text style={styles.rowLabel}>Email at CAMS / KFintech</Text>
+                <Text style={styles.rowLabel}>CAS request email</Text>
                 <Text style={styles.rowValue} numberOfLines={1}>{profile.kfintech_email}</Text>
                 <Text style={styles.rowSub}>
-                  Used if you ever ask FolioLens to request a fresh CAS on your behalf.
+                  The email you use when requesting a CAS from CAMS, KFintech, MFCentral, NSDL, or CDSL portals.
                 </Text>
               </View>
               <TouchableOpacity

@@ -751,7 +751,7 @@ function IdentityStep({
       </View>
 
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>Email</Text>
+        <Text style={styles.fieldLabel}>CAS request email</Text>
         <TextInput
           value={draft.email}
           onChangeText={(value) => dispatch({ type: 'set_email', email: value })}
@@ -763,7 +763,7 @@ function IdentityStep({
           style={styles.input}
         />
         <Text style={styles.fieldHint}>
-          We&apos;ll send your CAS reminders here. Pre-filled from your sign-in.
+          The email you give to CAMS / KFintech / MFCentral / NSDL / CDSL when requesting a CAS — pre-filled from your sign-in.
         </Text>
       </View>
 
