@@ -1,17 +1,15 @@
 /**
- * Compare Funds — side-by-side comparison of up to 3 user-held funds.
+ * Compare Funds — brand-faithful, prose-led comparison of up to 3 user-held
+ * funds. Mirrors the factory shape of the Past SIP Check screen: inputs →
+ * hero (lead with the answer) → short prose insights → disclosure.
  *
  * Pulls from existing data sources:
  *  - `fund` table for metadata (category, expense ratio, AUM, benchmark, ISIN)
- *  - `fund_portfolio_composition` (via fetchCompositions) for asset mix,
- *    market cap, sector allocation, and top holdings
+ *  - `fund_portfolio_composition` (via fetchCompositions) for asset mix and
+ *    market cap mix
  *  - NAV history for trailing returns (via fetchPerformanceTimeline)
- *
- * The screen renders comparison sections in horizontal-scroll rows so 3
- * columns fit on a 375px phone. Sections with no data for any fund are
- * silently omitted.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -41,9 +39,7 @@ import { fetchCompositions } from '@/src/hooks/usePortfolioInsights';
 import {
   computeHoldingOverlap,
   computeTrailingReturn,
-  formatTrailingReturn,
 } from '@/src/utils/compareFunds';
-import { formatCurrency } from '@/src/utils/formatting';
 import type { FundPortfolioComposition } from '@/src/types/app';
 
 const MAX_FUNDS = 3;
@@ -176,6 +172,102 @@ export function ClearLensCompareFundsScreen() {
     return out;
   }, [selectedFunds, compositionsByCode]);
 
+  // ---------------------------------------------------------------------------
+  // Insight derivation — every block decides for itself whether it has enough
+  // signal to render. Each one returns a small typed object the JSX can splat
+  // into a card; if the data isn't there, the card is omitted.
+  // ---------------------------------------------------------------------------
+  const insights = useMemo(() => {
+    if (selectedFunds.length < MIN_FUNDS) return null;
+
+    type ReturnEntry = { id: string; name: string; value: number };
+
+    // Pick the longest window where every selected fund has a number.
+    // 3Y is the "real" comparison window; 1Y is a fallback when one of the
+    // funds is too new for 3Y. If neither aligns across all funds we surface
+    // nothing rather than a half-truthful chart.
+    const windows: { years: number; label: string; key: 'y3' | 'y1' }[] = [
+      { years: 3, label: '3 years', key: 'y3' },
+      { years: 1, label: '1 year', key: 'y1' },
+    ];
+    let returnsWindow: { label: string; entries: ReturnEntry[] } | null = null;
+    for (const w of windows) {
+      const entries: ReturnEntry[] = [];
+      let allHave = true;
+      for (const f of selectedFunds) {
+        const v = trailingReturnsByFundId.get(f.id)?.[w.key];
+        if (v == null || !Number.isFinite(v)) { allHave = false; break; }
+        entries.push({ id: f.id, name: shortName(f.name), value: v });
+      }
+      if (allHave && entries.length === selectedFunds.length) {
+        returnsWindow = { label: w.label, entries };
+        break;
+      }
+    }
+
+    let hero: {
+      windowLabel: string;
+      leaderName: string;
+      leaderReturn: number;
+      laggardNames: string[];
+      deltaPp: number | null;
+    } | null = null;
+    if (returnsWindow) {
+      const sorted = [...returnsWindow.entries].sort((a, b) => b.value - a.value);
+      const leader = sorted[0];
+      const next = sorted[1];
+      const spreadPp = (sorted[0].value - sorted[sorted.length - 1].value) * 100;
+      hero = {
+        windowLabel: returnsWindow.label,
+        leaderName: leader.name,
+        leaderReturn: leader.value,
+        laggardNames: sorted.slice(1).map((x) => x.name),
+        // Treat <1pp as "essentially the same" — calling 0.3pp a "lead" is the
+        // kind of false-precision the brand actively avoids.
+        deltaPp: spreadPp < 1 ? null : (leader.value - next.value) * 100,
+      };
+    }
+
+    const costs = selectedFunds.map((f) => ({
+      id: f.id, name: shortName(f.name), er: f.expenseRatio,
+    }));
+    const allDirect = selectedFunds.every((f) => /direct/i.test(f.name));
+    const allRegular = selectedFunds.every((f) => /regular/i.test(f.name));
+    const planNote = allDirect ? 'all direct plans' : allRegular ? 'all regular plans' : null;
+
+    const assetMix = selectedFunds.map((f) => {
+      const c = compositionsByCode.get(f.schemeCode);
+      return {
+        id: f.id, name: shortName(f.name),
+        equity: c?.equityPct ?? null,
+        debt: c?.debtPct ?? null,
+        cash: c?.cashPct ?? null,
+      };
+    });
+    const assetMixAvail = assetMix.some((a) => a.equity != null);
+
+    const riskProfile = selectedFunds.map((f) => {
+      const c = compositionsByCode.get(f.schemeCode);
+      const segs: { name: string; pct: number }[] = [];
+      if (c?.largeCapPct != null) segs.push({ name: 'large-cap', pct: c.largeCapPct });
+      if (c?.midCapPct != null) segs.push({ name: 'mid-cap', pct: c.midCapPct });
+      if (c?.smallCapPct != null) segs.push({ name: 'small-cap', pct: c.smallCapPct });
+      if (segs.length === 0) return { id: f.id, name: shortName(f.name), top: null };
+      const top = segs.reduce((acc, s) => (s.pct > acc.pct ? s : acc));
+      return { id: f.id, name: shortName(f.name), top };
+    });
+    const riskAvail = riskProfile.some((r) => r.top != null);
+
+    return {
+      hero,
+      returnsWindow,
+      costs,
+      planNote,
+      assetMix: assetMixAvail ? assetMix : null,
+      riskProfile: riskAvail ? riskProfile : null,
+    };
+  }, [selectedFunds, trailingReturnsByFundId, compositionsByCode]);
+
   // ------ empty / loading states ------
   if (!userId) {
     return (
@@ -258,59 +350,140 @@ export function ClearLensCompareFundsScreen() {
               Pick at least {MIN_FUNDS} funds to compare.
             </Text>
           </View>
-        ) : (
+        ) : timelineQuery.isLoading || compositionsQuery.isLoading ? (
+          <View style={styles.center}>
+            <Text style={styles.helperText}>Crunching the numbers…</Text>
+          </View>
+        ) : insights ? (
           <>
-            <ComparisonSection title="Basic" funds={selectedFunds} cells={[
-              { label: 'Category', render: (f) => f.category ?? '—' },
-              { label: 'Benchmark', render: (f) => f.benchmark ?? '—' },
-            ]} tokens={tokens} />
+            {/* Hero — leads with the answer. The leader's annualised return is
+                the single number that matters most; the supporting line carries
+                the delta vs the rest of the picks. */}
+            {insights.hero ? (
+              <View style={styles.banner}>
+                <Text style={styles.bannerLabel}>{insights.hero.windowLabel} · best performer</Text>
+                <Text style={styles.bannerValue} numberOfLines={2}>
+                  {insights.hero.leaderName}
+                </Text>
+                <Text style={styles.bannerSubtitle}>
+                  <Text style={styles.bannerGainUp}>
+                    +{(insights.hero.leaderReturn * 100).toFixed(1)}%/yr
+                  </Text>
+                  {insights.hero.deltaPp != null
+                    ? ` — ${insights.hero.deltaPp.toFixed(1)} pp ahead of ${joinNames(insights.hero.laggardNames)}.`
+                    : ` — close to ${joinNames(insights.hero.laggardNames)} over the same window.`}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.banner}>
+                <Text style={styles.bannerLabel}>Not enough overlap</Text>
+                <Text style={styles.bannerValue} numberOfLines={2}>
+                  Limited common history
+                </Text>
+                <Text style={styles.bannerSubtitle}>
+                  At least one of these funds is too new to share a 3-year or 1-year window with the rest.
+                </Text>
+              </View>
+            )}
 
-            <ComparisonSection title="Costs" funds={selectedFunds} cells={[
-              { label: 'Expense ratio',
-                render: (f) => f.expenseRatio != null ? `${f.expenseRatio.toFixed(2)}%` : '—' },
-              { label: 'AUM',
-                render: (f) => f.aumCr != null ? formatCurrency(f.aumCr * 1_00_00_000) : '—' },
-            ]} tokens={tokens} />
+            {/* Returns — every fund's annualised return for the chosen window */}
+            {insights.returnsWindow ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Returns</Text>
+                <Text style={styles.insightBody}>
+                  Over {insights.returnsWindow.label}:{' '}
+                  {insights.returnsWindow.entries.map((e, i) => (
+                    <Fragment key={e.id}>
+                      {i > 0 ? ' · ' : ''}
+                      {e.name}{' '}
+                      <Text style={styles.insightStrong}>
+                        {(e.value * 100).toFixed(1)}%/yr
+                      </Text>
+                    </Fragment>
+                  ))}
+                  .
+                </Text>
+              </View>
+            ) : null}
 
-            <ComparisonSection title="Trailing returns (annualised)" funds={selectedFunds} cells={[
-              { label: '1Y',
-                render: (f) => formatTrailingReturn(trailingReturnsByFundId.get(f.id)?.y1 ?? null) },
-              { label: '3Y',
-                render: (f) => formatTrailingReturn(trailingReturnsByFundId.get(f.id)?.y3 ?? null) },
-              { label: '5Y',
-                render: (f) => formatTrailingReturn(trailingReturnsByFundId.get(f.id)?.y5 ?? null) },
-            ]} tokens={tokens} />
+            {/* Cost — expense ratios; flag plan kind only when it's uniform */}
+            {insights.costs.some((c) => c.er != null) ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Cost</Text>
+                <Text style={styles.insightBody}>
+                  {insights.costs.map((c, i) => (
+                    <Fragment key={c.id}>
+                      {i > 0 ? ' · ' : ''}
+                      {c.name}{' '}
+                      <Text style={styles.insightStrong}>
+                        {c.er != null ? `${c.er.toFixed(2)}%/yr` : '—'}
+                      </Text>
+                    </Fragment>
+                  ))}
+                  {insights.planNote ? ` — ${insights.planNote}.` : '.'}
+                </Text>
+              </View>
+            ) : null}
 
-            <ComparisonSection title="Asset allocation" funds={selectedFunds} cells={[
-              { label: 'Equity', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.equityPct) },
-              { label: 'Debt', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.debtPct) },
-              { label: 'Cash', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.cashPct) },
-            ]} tokens={tokens} />
-
-            <ComparisonSection title="Market cap mix" funds={selectedFunds} cells={[
-              { label: 'Large cap', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.largeCapPct) },
-              { label: 'Mid cap', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.midCapPct) },
-              { label: 'Small cap', render: (f) => pctOrDash(compositionsByCode.get(f.schemeCode)?.smallCapPct) },
-            ]} tokens={tokens} />
-
-            <TopSectorsSection funds={selectedFunds} compositionsByCode={compositionsByCode} tokens={tokens} />
-
-            <TopHoldingsSection funds={selectedFunds} compositionsByCode={compositionsByCode} tokens={tokens} />
-
+            {/* Overlap — pairwise % of shared top holdings */}
             {overlapPairs.length > 0 ? (
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Holding overlap</Text>
-                {overlapPairs.map((pair, idx) => (
-                  <View key={`${pair.aId}-${pair.bId}`}>
-                    {idx > 0 ? <View style={styles.rowDivider} /> : null}
-                    <View style={styles.row}>
-                      <Text style={styles.rowLabel} numberOfLines={2}>
-                        {shortName(pair.aName)} ↔ {shortName(pair.bName)}
+                <Text style={styles.insightBody}>
+                  {overlapPairs.map((pair, idx) => (
+                    <Fragment key={`${pair.aId}-${pair.bId}`}>
+                      {idx > 0 ? ' · ' : ''}
+                      {shortName(pair.aName)} ↔ {shortName(pair.bName)}{' '}
+                      <Text style={styles.insightStrong}>{pair.pct.toFixed(0)}%</Text>
+                    </Fragment>
+                  ))}
+                  .{' '}
+                  <Text style={styles.insightMuted}>
+                    {describeOverlap(overlapPairs.map((p) => p.pct))}
+                  </Text>
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Risk profile — most distinctive market-cap segment per fund */}
+            {insights.riskProfile ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Risk profile</Text>
+                <Text style={styles.insightBody}>
+                  {insights.riskProfile.map((r, i) => (
+                    <Fragment key={r.id}>
+                      {i > 0 ? ' · ' : ''}
+                      {r.name}{' '}
+                      {r.top ? (
+                        <Text style={styles.insightStrong}>
+                          {`${r.top.pct.toFixed(0)}% ${r.top.name}`}
+                        </Text>
+                      ) : (
+                        <Text style={styles.insightStrong}>—</Text>
+                      )}
+                    </Fragment>
+                  ))}
+                  .
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Asset mix — equity / debt / cash split per fund */}
+            {insights.assetMix ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Asset mix</Text>
+                <Text style={styles.insightBody}>
+                  {insights.assetMix.map((a, i) => (
+                    <Fragment key={a.id}>
+                      {i > 0 ? ' · ' : ''}
+                      {a.name}{' '}
+                      <Text style={styles.insightStrong}>
+                        {formatAssetMix(a.equity, a.debt, a.cash)}
                       </Text>
-                      <Text style={styles.rowValue}>{pair.pct.toFixed(0)}%</Text>
-                    </View>
-                  </View>
-                ))}
+                    </Fragment>
+                  ))}
+                  .
+                </Text>
               </View>
             ) : null}
 
@@ -320,7 +493,7 @@ export function ClearLensCompareFundsScreen() {
               recommend or rate funds.
             </Text>
           </>
-        )}
+        ) : null}
       </ScrollView>
 
       <FundPicker
@@ -338,172 +511,6 @@ export function ClearLensCompareFundsScreen() {
         onClose={() => setPickerOpen(false)}
       />
     </ClearLensScreen>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Comparison section — header row of fund names + a row per metric
-// ---------------------------------------------------------------------------
-
-interface ComparisonCell {
-  label: string;
-  render: (fund: UserFund) => string;
-}
-
-function ComparisonSection({
-  title,
-  funds,
-  cells,
-  tokens,
-}: {
-  title: string;
-  funds: UserFund[];
-  cells: ComparisonCell[];
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  // Hide the section entirely if every cell renders "—" for every fund
-  const hasAny = cells.some((cell) => funds.some((f) => cell.render(f) !== '—'));
-  if (!hasAny) return null;
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View>
-          <View style={styles.compRow}>
-            <View style={styles.compRowLabel} />
-            {funds.map((f) => (
-              <View key={f.id} style={styles.compRowCell}>
-                <Text style={styles.compHeaderText} numberOfLines={2}>{shortName(f.name)}</Text>
-              </View>
-            ))}
-          </View>
-          {cells.map((cell, idx) => (
-            <View key={cell.label} style={[styles.compRow, idx > 0 && styles.compRowDividerTop]}>
-              <View style={styles.compRowLabel}>
-                <Text style={styles.compLabelText}>{cell.label}</Text>
-              </View>
-              {funds.map((f) => (
-                <View key={f.id} style={styles.compRowCell}>
-                  <Text style={styles.compValueText}>{cell.render(f)}</Text>
-                </View>
-              ))}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-    </View>
-  );
-}
-
-function TopSectorsSection({
-  funds,
-  compositionsByCode,
-  tokens,
-}: {
-  funds: UserFund[];
-  compositionsByCode: Map<number, FundPortfolioComposition>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const fundSectors = funds.map((f) => {
-    const sectors = compositionsByCode.get(f.schemeCode)?.sectorAllocation;
-    if (!sectors) return [] as { name: string; pct: number }[];
-    return Object.entries(sectors)
-      .map(([name, pct]) => ({ name, pct: Number(pct) }))
-      .sort((a, b) => b.pct - a.pct)
-      .slice(0, 3);
-  });
-
-  if (!fundSectors.some((s) => s.length > 0)) return null;
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Top 3 sectors</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View>
-          <View style={styles.compRow}>
-            <View style={styles.compRowLabel} />
-            {funds.map((f) => (
-              <View key={f.id} style={styles.compRowCell}>
-                <Text style={styles.compHeaderText} numberOfLines={2}>{shortName(f.name)}</Text>
-              </View>
-            ))}
-          </View>
-          {[0, 1, 2].map((rankIdx) => (
-            <View key={rankIdx} style={[styles.compRow, rankIdx > 0 && styles.compRowDividerTop]}>
-              <View style={styles.compRowLabel}>
-                <Text style={styles.compLabelText}>{`#${rankIdx + 1}`}</Text>
-              </View>
-              {fundSectors.map((sectors, fundIdx) => {
-                const item = sectors[rankIdx];
-                return (
-                  <View key={`${fundIdx}-${rankIdx}`} style={styles.compRowCell}>
-                    <Text style={styles.compValueText} numberOfLines={2}>
-                      {item ? `${item.name} (${item.pct.toFixed(0)}%)` : '—'}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-    </View>
-  );
-}
-
-function TopHoldingsSection({
-  funds,
-  compositionsByCode,
-  tokens,
-}: {
-  funds: UserFund[];
-  compositionsByCode: Map<number, FundPortfolioComposition>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const fundHoldings = funds.map((f) => {
-    const h = compositionsByCode.get(f.schemeCode)?.topHoldings;
-    return Array.isArray(h) ? h.slice(0, 5) : [];
-  });
-
-  if (!fundHoldings.some((h) => h.length > 0)) return null;
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Top 5 holdings</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View>
-          <View style={styles.compRow}>
-            <View style={styles.compRowLabel} />
-            {funds.map((f) => (
-              <View key={f.id} style={styles.compRowCell}>
-                <Text style={styles.compHeaderText} numberOfLines={2}>{shortName(f.name)}</Text>
-              </View>
-            ))}
-          </View>
-          {[0, 1, 2, 3, 4].map((rankIdx) => (
-            <View key={rankIdx} style={[styles.compRow, rankIdx > 0 && styles.compRowDividerTop]}>
-              <View style={styles.compRowLabel}>
-                <Text style={styles.compLabelText}>{`#${rankIdx + 1}`}</Text>
-              </View>
-              {fundHoldings.map((holdings, fundIdx) => {
-                const h = holdings[rankIdx];
-                return (
-                  <View key={`${fundIdx}-${rankIdx}`} style={styles.compRowCell}>
-                    <Text style={styles.compValueText} numberOfLines={2}>
-                      {h ? `${h.name} (${h.pctOfNav.toFixed(1)}%)` : '—'}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-    </View>
   );
 }
 
@@ -573,18 +580,41 @@ function FundPicker({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function pctOrDash(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return `${value.toFixed(0)}%`;
-}
-
 function shortName(name: string): string {
-  // Trim "- Direct Plan - Growth" / "- Direct Plan - Growth Option" suffixes so
-  // the column header doesn't dominate every comparison row.
+  // Trim "- Direct Plan - Growth" / "- Direct Plan - Growth Option" suffixes
+  // so they don't dominate the prose; the user already sees the full name in
+  // the chip above.
   return name
     .replace(/\s+-\s+(Direct|Regular)\s+Plan(\s+-\s+Growth(\s+Option)?)?$/i, '')
     .replace(/\s+-\s+Growth(\s+Option)?$/i, '')
     .trim();
+}
+
+function joinNames(names: string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+}
+
+function describeOverlap(percentages: number[]): string {
+  const max = Math.max(...percentages);
+  if (max < 10) return "Low — these funds aren't doubling up.";
+  if (max < 25) return 'Moderate — some shared bets, but each adds its own picks.';
+  if (max < 50) return 'High — a meaningful slice of the same names.';
+  return 'Very high — these funds are mostly buying the same things.';
+}
+
+function formatAssetMix(
+  equity: number | null,
+  debt: number | null,
+  cash: number | null,
+): string {
+  const parts: string[] = [];
+  if (equity != null) parts.push(`${equity.toFixed(0)}% equity`);
+  if (debt != null && debt >= 1) parts.push(`${debt.toFixed(0)}% debt`);
+  if (cash != null && cash >= 1) parts.push(`${cash.toFixed(0)}% cash`);
+  return parts.length > 0 ? parts.join(' / ') : '—';
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +635,7 @@ function makeStyles(tokens: ClearLensTokens) {
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: ClearLensSpacing.xl,
+      paddingVertical: ClearLensSpacing.lg,
       gap: ClearLensSpacing.sm,
     },
     helperText: {
@@ -694,6 +725,32 @@ function makeStyles(tokens: ClearLensTokens) {
       color: cl.emerald,
     },
 
+    banner: {
+      backgroundColor: cl.heroSurface,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      gap: 4,
+    },
+    bannerLabel: {
+      ...ClearLensTypography.label,
+      color: cl.textOnDarkMuted,
+      textTransform: 'uppercase',
+    },
+    bannerValue: {
+      ...ClearLensTypography.h1,
+      color: cl.textOnDark,
+    },
+    bannerSubtitle: {
+      ...ClearLensTypography.bodySmall,
+      color: cl.textOnDarkMuted,
+      paddingTop: ClearLensSpacing.xs,
+      lineHeight: 19,
+    },
+    bannerGainUp: {
+      color: cl.positive,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+
     card: {
       backgroundColor: cl.surface,
       borderRadius: ClearLensRadii.lg,
@@ -710,63 +767,21 @@ function makeStyles(tokens: ClearLensTokens) {
       paddingTop: ClearLensSpacing.xs,
       paddingBottom: ClearLensSpacing.xs,
     },
-
-    compRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: 10,
-    },
-    compRowDividerTop: {
-      borderTopWidth: 1,
-      borderTopColor: cl.borderLight,
-    },
-    compRowLabel: {
-      width: 110,
-      paddingRight: ClearLensSpacing.xs,
-    },
-    compRowCell: {
-      width: 130,
-      paddingRight: ClearLensSpacing.xs,
-    },
-    compHeaderText: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.3,
-    },
-    compLabelText: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textSecondary,
-    },
-    compValueText: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 13,
-      color: cl.navy,
-    },
-
-    row: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: 12,
-      gap: ClearLensSpacing.sm,
-    },
-    rowLabel: {
+    insightBody: {
       ...ClearLensTypography.body,
       color: cl.textSecondary,
-      flex: 1,
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.xs,
+      paddingBottom: ClearLensSpacing.sm,
+      lineHeight: 22,
     },
-    rowValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 14,
+    insightStrong: {
       color: cl.navy,
+      fontFamily: ClearLensFonts.semiBold,
     },
-    rowDivider: {
-      height: 1,
-      backgroundColor: cl.borderLight,
-      marginHorizontal: ClearLensSpacing.md,
+    insightMuted: {
+      ...ClearLensTypography.bodySmall,
+      color: cl.textTertiary,
     },
 
     errorBox: {
