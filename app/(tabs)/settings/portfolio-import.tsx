@@ -206,7 +206,9 @@ export default function PortfolioImportScreen() {
 
             <TouchableOpacity
               style={styles.primaryAction}
-              onPress={() => router.push('/onboarding')}
+              onPress={() =>
+                router.push({ pathname: '/onboarding', params: { mode: 'auto-refresh' } })
+              }
               activeOpacity={0.78}
             >
               <Ionicons name="settings-outline" size={15} color={cl.textOnDark} />

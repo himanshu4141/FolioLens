@@ -120,7 +120,7 @@ export default function AccountScreen() {
         <View style={styles.card}>
           <TouchableOpacity
             style={styles.profileRow}
-            onPress={() => router.push('/onboarding')}
+            onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
             activeOpacity={0.7}
           >
             <View style={styles.avatarCircle}>
@@ -155,7 +155,10 @@ export default function AccountScreen() {
                   Used if you ever ask FolioLens to request a fresh CAS on your behalf.
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => router.push('/onboarding')} style={styles.actionBtn}>
+              <TouchableOpacity
+                onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
+                style={styles.actionBtn}
+              >
                 <Text style={styles.actionBtnText}>Edit</Text>
               </TouchableOpacity>
             </View>
@@ -182,7 +185,10 @@ export default function AccountScreen() {
                 )}
               </View>
               {!profile?.dob ? (
-                <TouchableOpacity onPress={() => router.push('/onboarding')} style={styles.actionBtn}>
+                <TouchableOpacity
+                  onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
+                  style={styles.actionBtn}
+                >
                   <Text style={styles.actionBtnText}>Add</Text>
                 </TouchableOpacity>
               ) : null}

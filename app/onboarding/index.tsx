@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -178,8 +178,30 @@ interface SavedProfile {
   cas_auto_forward_setup_completed_at: string | null;
 }
 
+// Deep-link modes the wizard accepts via `?mode=` from Settings buttons. The
+// wizard maps each to (step, sub) so an existing user lands on the right
+// screen instead of being thrown back to Welcome / Identity.
+//
+// - `auto-refresh` — Settings → Portfolio import → "Set up auto-forward"
+//   should jump straight to the AutoRefresh setup screen (Import step,
+//   `autoRefresh` sub). Falls back to the Import step's chooser if the user
+//   doesn't yet have an inbox token (the AutoRefresh component is
+//   conditionally rendered).
+// - `request-cas` — same idea but for "Get a fresh CAS" entry points.
+//   Lands on the Import step's `request` sub.
+// - `identity`     — Settings → Account edits (PAN / DOB / KFintech email).
+//   Lands on Identity even when PAN+DOB are already saved, so the user can
+//   review the locked fields and trigger a correction.
+type OnboardingMode = 'auto-refresh' | 'request-cas' | 'identity';
+
+function isOnboardingMode(value: unknown): value is OnboardingMode {
+  return value === 'auto-refresh' || value === 'request-cas' || value === 'identity';
+}
+
 function OnboardingWizard() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
+  const requestedMode: OnboardingMode | null = isOnboardingMode(params.mode) ? params.mode : null;
   const { session } = useSession();
   const queryClient = useQueryClient();
   const tokens = useClearLensTokens();
@@ -241,6 +263,24 @@ function OnboardingWizard() {
         initialStep = 'import';
       }
 
+      // Settings deep-links: a `?mode=` param expresses which screen the user
+      // *intended* to reach. If the wizard wants to gate them on Identity
+      // first (PAN/DOB missing) we leave that gate up; otherwise honour the
+      // requested target.
+      if (requestedMode === 'identity') {
+        // Always show Identity when the user explicitly asked to edit it.
+        initialStep = 'identity';
+      } else if (
+        (requestedMode === 'auto-refresh' || requestedMode === 'request-cas') &&
+        profile?.pan &&
+        profile.dob
+      ) {
+        // Existing user with PAN+DOB saved — skip straight to Import. The
+        // sub-screen (autoRefresh / request) is selected via `initialSub`
+        // passed into ImportStep below.
+        initialStep = 'import';
+      }
+
       console.log('[onboarding:wizard] hydrated', {
         platform: Platform.OS,
         initial_step: initialStep,
@@ -263,8 +303,10 @@ function OnboardingWizard() {
     };
     // We deliberately wait until the user_profile query resolves before
     // hydrating — `profile` is part of the deps so a late-arriving DB row
-    // still drives the right initial step.
-  }, [session?.user.email, profile]);
+    // still drives the right initial step. `requestedMode` is included so a
+    // fresh `?mode=…` (e.g. user goes Settings → Auto-forward, then back,
+    // then Settings → Edit identity) re-runs the initial-step picker.
+  }, [session?.user.email, profile, requestedMode]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -382,6 +424,13 @@ function OnboardingWizard() {
             inboxToken={profile?.cas_inbox_token ?? null}
             pendingConfirmationUrl={profile?.cas_inbox_confirmation_url ?? null}
             autoForwardCompletedAt={profile?.cas_auto_forward_setup_completed_at ?? null}
+            initialSub={
+              requestedMode === 'auto-refresh'
+                ? 'autoRefresh'
+                : requestedMode === 'request-cas'
+                ? 'request'
+                : 'choose'
+            }
             onConfirmClicked={() => {
               queryClient.invalidateQueries({ queryKey: ['user-profile', session?.user.id] });
             }}
@@ -778,6 +827,7 @@ function ImportStep({
   inboxToken,
   pendingConfirmationUrl,
   autoForwardCompletedAt,
+  initialSub,
   onConfirmClicked,
   onAutoForwardCompleted,
   styles,
@@ -796,6 +846,9 @@ function ImportStep({
   pendingConfirmationUrl: string | null;
   /** Set once the user confirms the advanced auto-forward setup is complete. */
   autoForwardCompletedAt: string | null;
+  /** Sub-screen to land on. Defaults to 'choose' (the 3-option grid). Settings
+   * deep-links pass 'autoRefresh' or 'request' to skip the chooser. */
+  initialSub?: ImportSubScreen;
   /** Called after the user clicks the Gmail confirm CTA so the parent can refetch. */
   onConfirmClicked: () => void;
   /** Called when the user marks the provider-side auto-forward setup complete. */
@@ -804,7 +857,7 @@ function ImportStep({
   cl: Cl;
   tokens: ClearLensTokens;
 }) {
-  const [sub, setSub] = useState<ImportSubScreen>('choose');
+  const [sub, setSub] = useState<ImportSubScreen>(initialSub ?? 'choose');
   const [holdingMode, setHoldingMode] = useState<HoldingMode>('unsure');
   const [requestKind, setRequestKind] = useState<RequestKind>('rta');
   const [uploading, setUploading] = useState(false);
