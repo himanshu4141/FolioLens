@@ -157,6 +157,23 @@ Data requirements to confirm before implementing:
 - [x] `ClearLensPastSipCheckScreen` implemented
 - [x] `app/tools/past-sip-check.tsx` route created
 - [x] `toolsFlags.pastSipCheck` set to `true`
-- [x] typecheck + lint + tests green (585 tests pass)
-- [ ] PR raised against `main`
+- [x] typecheck + lint + tests green (783 tests pass at PR-ready tip)
+- [x] PR raised against `main` — #99
 - [ ] Local QA pass
+
+
+## Amendments
+
+Shipped beyond the original plan, with reasons:
+
+- **Custom duration picker.** Added a years+months stepper alongside the `1Y / 3Y / 5Y / All` preset pills so users aren't forced into round windows. `PastSipDuration` extended to also accept `{ months: number }`; min 6 months, max 30 years. The Custom pill label flips from "Custom" to a compact summary like "2y 6m" once a value is set.
+
+- **Benchmark alignment to fund calendar.** Original sim let the benchmark pick its own terminal and installment dates, producing a spurious 0.5–1%/yr XIRR gap purely from a 1–2 day terminal-date drift. `simulatePastSip` now takes an `alignToFund` parameter that pins the benchmark series to the fund's installment dates and terminal date — the XIRR comparison now reflects only underlying performance.
+
+- **3Y = exactly 36 buys.** Original month-iteration counted today's month twice (end-anchor + last installment), producing 37 buys for a 3Y request. Convention is now "today's month is the last buy", so a request for N months starts (N-1) months before today's month.
+
+- **Brand-vision rework on the result section.** Original plan had a 4-row stats card (Total invested / Current value / Gain / XIRR) and a separate label-value vs-benchmark card. Both turned the screen into a calculator. Replaced with a hero ("Worth today" + ₹value + supporting line that carries totalInvested / installment count / gain inline + fund name) and a single prose vs-benchmark paragraph (`₹X in your fund vs ₹Y in benchmark. You're ₹Z ahead — N% extra per year.`), with XIRR demoted to a "%/yr extra" qualifier. Drove the headline comparison from XIRR-led to rupee-led — XIRR can move against the rupee delta on edge cases (very short history, partial period) and the user is ultimately reading "would I have ended up with more money?".
+
+- **TRI disclosure.** Surfaced via the canonical `BENCHMARK_DISCLOSURE` constant under the vs-card now that benchmark series are total-return.
+
+`simulatePastSip` and its 31 unit tests are unchanged in shape — the reshape was on the screen, not the sim.
