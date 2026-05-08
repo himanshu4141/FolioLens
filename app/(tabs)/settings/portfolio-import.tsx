@@ -72,22 +72,34 @@ function formatImportSource(source: LastImport['import_source']): string {
 }
 
 async function fetchProfile(userId: string): Promise<Profile | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('user_profile')
     .select('cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at')
     .eq('user_id', userId)
     .maybeSingle();
+  if (error) {
+    // Surface the real cause instead of silently degrading to "Open import flow
+    // to create your inbox". Common culprits: a stale PostgREST schema cache
+    // after a column add (the M2 columns), RLS misconfig, or a missing
+    // migration on the connected project.
+    console.error('[settings/portfolio-import] fetchProfile failed', error);
+    throw error;
+  }
   return data ?? null;
 }
 
 async function fetchLastImport(userId: string): Promise<LastImport | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('cas_import')
     .select('created_at, import_source, import_status, funds_updated, transactions_added')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (error) {
+    console.error('[settings/portfolio-import] fetchLastImport failed', error);
+    throw error;
+  }
   return data as LastImport | null;
 }
 

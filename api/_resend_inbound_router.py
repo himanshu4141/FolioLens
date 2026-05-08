@@ -107,6 +107,20 @@ def verify_svix_signature(raw_body: bytes, headers: dict[str, str], secret: str)
         raise SignatureError("Invalid Svix signature")
 
 
+# Headers that may carry the actual SMTP delivery destination after one or more
+# forward hops. Auto-forwards from Gmail / Outlook / corporate MTAs preserve the
+# original `To:` header and stamp the real recipient into one of these instead.
+# We scan all of them so we don't over-fit to one mail provider.
+DELIVERY_HEADER_NAMES = {
+    "delivered-to",        # Postfix, Gmail, most modern MTAs
+    "x-original-to",       # Postfix variant
+    "x-forwarded-to",      # Some Outlook configurations
+    "envelope-to",         # Exim
+    "x-rcpt-to",           # SendGrid / various
+    "x-delivered-to",      # rarer, but seen in the wild
+}
+
+
 def _recipient_values(data: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for key in ("to", "cc", "bcc"):
@@ -126,14 +140,78 @@ def _recipient_values(data: dict[str, Any]) -> list[str]:
     return values
 
 
+def _envelope_values(data: dict[str, Any]) -> list[str]:
+    """Pull recipient candidates from forwarding-marker headers + envelope hints."""
+    values: list[str] = []
+
+    # Resend-shaped envelope hints (singular keys some providers expose).
+    for key in ("envelope_to", "recipient", "rcpt_to"):
+        raw = data.get(key)
+        if isinstance(raw, str) and raw:
+            values.append(raw)
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item:
+                    values.append(item)
+
+    # Headers come either as a list of {name, value} pairs or as a flat dict.
+    headers = data.get("headers")
+    pairs: list[tuple[str, str]] = []
+    if isinstance(headers, list):
+        for h in headers:
+            if isinstance(h, dict):
+                name, value = h.get("name"), h.get("value")
+                if isinstance(name, str) and isinstance(value, str):
+                    pairs.append((name, value))
+    elif isinstance(headers, dict):
+        for name, value in headers.items():
+            if isinstance(value, str):
+                pairs.append((name, value))
+            elif isinstance(value, list):
+                for v in value:
+                    if isinstance(v, str):
+                        pairs.append((name, v))
+
+    received_chain: list[str] = []
+    for name, value in pairs:
+        lname = name.lower()
+        if lname in DELIVERY_HEADER_NAMES:
+            values.append(value)
+        elif lname == "received":
+            received_chain.append(value)
+
+    # The `Received:` chain often contains `for <cas-dev-XYZ@foliolens.in>`. Mine
+    # those out as a last resort — they're authoritative for the SMTP envelope's
+    # RCPT TO at each hop.
+    received_for_re = re.compile(r"\bfor\s*<?([^\s>;]+@" + re.escape(INBOUND_DOMAIN) + r")>?", re.IGNORECASE)
+    for line in received_chain:
+        for match in received_for_re.finditer(line):
+            values.append(match.group(1))
+
+    return values
+
+
 def extract_recipients(event: dict[str, Any]) -> list[str]:
+    """Pull every recipient address we can see, from both header and envelope sources.
+
+    Order matters: header `To/Cc/Bcc` first (so manual forwards keep matching the
+    cas-XXX address the user typed), then envelope-marker headers (so auto-forwards
+    that preserve the original `To:` still expose the actual delivery destination).
+    """
     data = event.get("data")
     if not isinstance(data, dict):
         return []
-    recipients = []
-    for _, address in getaddresses(_recipient_values(data)):
-        if address:
-            recipients.append(address.lower())
+    recipients: list[str] = []
+    seen: set[str] = set()
+    for raw in _recipient_values(data) + _envelope_values(data):
+        for _, address in getaddresses([raw]):
+            if not address:
+                continue
+            lowered = address.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            recipients.append(lowered)
     return recipients
 
 
@@ -588,6 +666,31 @@ def send_import_notification(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _enrich_with_received_email(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Fetch the full received email from Resend and merge its headers into the
+    event so a second `choose_route()` pass can see the SMTP-envelope recipient.
+
+    Returns None when there's no email_id to fetch or the API call fails — the
+    caller falls back to dropping the event in that case.
+    """
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return None
+    email_id = data.get("email_id")
+    if not isinstance(email_id, str) or not email_id:
+        return None
+    try:
+        email = get_received_email(email_id)
+    except RouterError:
+        return None
+    if not isinstance(email, dict):
+        return None
+    # Merge: the GET response carries `headers` and may carry richer to/cc/bcc.
+    # `event["data"]` already has subject/from etc., so don't lose them.
+    merged_data = {**data, **email}
+    return {**event, "data": merged_data}
+
+
 def route_event(raw_body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
     verify_svix_signature(
         raw_body,
@@ -601,6 +704,19 @@ def route_event(raw_body: bytes, headers: dict[str, str]) -> tuple[int, dict[str
         return 200, {"ok": True, "route": "ignored", "event_type": event_type}
 
     route = choose_route(event)
+
+    # The webhook payload doesn't always include `data.headers`. If we couldn't
+    # find a recipient match in the lightweight event, fall back to fetching
+    # the full received email from Resend's Receiving API — that response carries
+    # the complete header chain (Delivered-To, Received: ... for <addr>, etc.)
+    # that auto-forwarded mail needs us to read.
+    if route.kind == "drop":
+        enriched_event = _enrich_with_received_email(event)
+        if enriched_event is not None:
+            route = choose_route(enriched_event)
+            if route.kind != "drop":
+                event = enriched_event
+
     if route.kind == "drop":
         return 200, {"ok": True, "route": "drop"}
     if route.kind == "human_forward":

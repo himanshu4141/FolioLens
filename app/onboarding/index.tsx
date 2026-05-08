@@ -142,11 +142,19 @@ function maskDobInput(raw: string): string {
 }
 
 async function fetchSavedProfile(userId: string): Promise<SavedProfile | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('user_profile')
     .select('pan, dob, kfintech_email, cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at')
     .eq('user_id', userId)
     .maybeSingle();
+  if (error) {
+    // The wizard's hydration depends on this row to decide the initial step
+    // and pre-fill PAN/DOB. A silently-swallowed error sends the user back
+    // through Welcome / Identity even when their profile is fully populated,
+    // which is exactly the broken behaviour we just spent a session debugging.
+    console.error('[onboarding:wizard] fetchSavedProfile failed', error);
+    throw error;
+  }
   return data ?? null;
 }
 

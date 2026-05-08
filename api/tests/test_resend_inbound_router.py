@@ -71,6 +71,162 @@ class ResendInboundRouterTest(unittest.TestCase):
 
         self.assertEqual(route.kind, "drop")
 
+    # ── Auto-forwarded mail: data.to keeps the original recipient (the user's
+    #    personal address). The actual delivery destination only shows up in
+    #    forwarding-marker headers. We must still route correctly. ──
+
+    def test_choose_route_finds_cas_token_in_delivered_to_header(self):
+        """Gmail-style auto-forward: data.to is the original inbox, the cas-dev
+        address is in `Delivered-To`."""
+        event = {
+            "data": {
+                "to": ["himanshu4141@gmail.com"],
+                "from": "donotreply@camsonline.com",
+                "headers": [
+                    {"name": "Delivered-To", "value": "cas-dev-3ZQNUTF7@foliolens.in"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_dev")
+        self.assertEqual(route.token, "3ZQNUTF7")
+
+    def test_choose_route_finds_cas_token_in_x_forwarded_to(self):
+        """Some Outlook configurations stamp `X-Forwarded-To` instead of
+        Delivered-To."""
+        event = {
+            "data": {
+                "to": ["user@outlook.com"],
+                "headers": [
+                    {"name": "X-Forwarded-To", "value": "cas-A2B3C4D5@foliolens.in"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_prod")
+        self.assertEqual(route.token, "A2B3C4D5")
+
+    def test_choose_route_finds_cas_token_in_x_original_to(self):
+        """Postfix-style `X-Original-To` header."""
+        event = {
+            "data": {
+                "to": ["user@example.com"],
+                "headers": [
+                    {"name": "X-Original-To", "value": "cas-dev-ABCDEF23@foliolens.in"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_dev")
+        self.assertEqual(route.token, "ABCDEF23")
+
+    def test_choose_route_finds_cas_token_in_envelope_to(self):
+        """Exim-style `Envelope-To` header."""
+        event = {
+            "data": {
+                "to": ["user@example.com"],
+                "headers": [
+                    {"name": "Envelope-To", "value": "cas-XYZ23456@foliolens.in"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_prod")
+        self.assertEqual(route.token, "XYZ23456")
+
+    def test_choose_route_handles_dict_shaped_headers(self):
+        """Some Resend payloads expose headers as a flat dict instead of a list
+        of {name,value} pairs."""
+        event = {
+            "data": {
+                "to": ["user@example.com"],
+                "headers": {
+                    "Delivered-To": "cas-dev-ABCDEF23@foliolens.in",
+                },
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_dev")
+        self.assertEqual(route.token, "ABCDEF23")
+
+    def test_choose_route_mines_cas_token_from_received_chain(self):
+        """Last-resort: parse `for <cas-XXX@foliolens.in>` out of the Received
+        header chain. Many MTAs stamp the SMTP envelope's RCPT TO there."""
+        event = {
+            "data": {
+                "to": ["user@example.com"],
+                "headers": [
+                    {
+                        "name": "Received",
+                        "value": "by mx.google.com with SMTPS id abc "
+                                 "for <cas-dev-3ZQNUTF7@foliolens.in> "
+                                 "(Google Transport Security); ",
+                    },
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_dev")
+        self.assertEqual(route.token, "3ZQNUTF7")
+
+    def test_choose_route_falls_back_to_envelope_to_singular_field(self):
+        """Some webhook payload shapes expose a singular `envelope_to` /
+        `recipient` / `rcpt_to` instead of headers."""
+        for key in ("envelope_to", "recipient", "rcpt_to"):
+            with self.subTest(key=key):
+                event = {
+                    "data": {
+                        "to": ["user@example.com"],
+                        key: "cas-A2B3C4D5@foliolens.in",
+                    }
+                }
+                route = choose_route(event)
+                self.assertEqual(route.kind, "cas_prod")
+                self.assertEqual(route.token, "A2B3C4D5")
+
+    def test_choose_route_prefers_header_to_over_delivered_to_for_manual_forward(self):
+        """A manual forward — user typed cas-dev-XXX@ themselves, so it lands
+        in data.to. Delivered-To might still show their own inbox from the
+        ingress hop, but we should match the user-typed address first."""
+        event = {
+            "data": {
+                "to": ["cas-dev-A2B3C4D5@foliolens.in"],
+                "headers": [
+                    {"name": "Delivered-To", "value": "ingress@example.com"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "cas_dev")
+        self.assertEqual(route.recipient, "cas-dev-a2b3c4d5@foliolens.in")
+        self.assertEqual(route.token, "A2B3C4D5")
+
+    def test_choose_route_still_drops_when_no_source_has_a_cas_address(self):
+        event = {
+            "data": {
+                "to": ["random@example.com"],
+                "headers": [
+                    {"name": "Delivered-To", "value": "another@example.com"},
+                ],
+            }
+        }
+        route = choose_route(event)
+        self.assertEqual(route.kind, "drop")
+
+    def test_extract_recipients_deduplicates_across_sources(self):
+        """The same address appearing in both data.to and Delivered-To should
+        appear once in the output."""
+        event = {
+            "data": {
+                "to": ["cas-dev-A2B3C4D5@foliolens.in"],
+                "headers": [
+                    {"name": "Delivered-To", "value": "cas-dev-A2B3C4D5@foliolens.in"},
+                ],
+            }
+        }
+        recipients = extract_recipients(event)
+        self.assertEqual(recipients.count("cas-dev-a2b3c4d5@foliolens.in"), 1)
+
     def _signed_headers(self, raw_body: bytes, secret: str) -> dict[str, str]:
         svix_id = "msg_test"
         svix_timestamp = str(int(time.time()))
