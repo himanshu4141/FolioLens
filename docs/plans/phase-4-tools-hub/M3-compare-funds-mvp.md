@@ -147,6 +147,25 @@ The holding-overlap calculation is a pure function tested independently.
 - [x] `ClearLensCompareFundsScreen` implemented (chips + bottom sheet picker + 8 horizontally-scrollable comparison sections + overlap card)
 - [x] `app/tools/compare-funds.tsx` route created
 - [x] `toolsFlags.compareFunds` set to `true`
-- [x] typecheck + lint + tests green (610 pass)
-- [ ] PR raised against `main` (stacked on M2 PR #99)
+- [x] typecheck + lint + tests green (805 pass at PR-ready tip)
+- [x] PR raised — #100, stacked on M2 PR #99
 - [ ] Local QA pass
+
+
+## Amendments
+
+The original plan called for **8 horizontally-scrollable comparison sections** (Basic, Costs, Trailing returns, Asset allocation, Market cap mix), plus a standalone **Top 3 sectors** table, a **Top 5 holdings** table, and a separate **Holding overlap** row card. In QA the screen read as a calculator/spreadsheet rather than the brand voice.
+
+**What shipped instead:** a hero (best performer over the longest common return window) plus 5 short prose insight cards:
+
+- **Returns** — `Over 3 years: Fund A 18.2%/yr · Fund B 14.6%/yr.`
+- **Cost** — `Fund A 0.43%/yr · Fund B 0.61%/yr — both direct plans.`
+- **Holding overlap** — `Fund A ↔ Fund B 12% · Fund B ↔ Fund C 8%. Low — these funds aren't doubling up.`
+- **Risk profile** — `Fund A 60% small-cap · Fund B 80% large-cap.`
+- **Asset mix** — `Fund A 97% equity · Fund B 65% equity / 25% debt.`
+
+Each insight is a single sentence with semibold values inline; cards self-suppress when there's no signal (e.g. cost only renders when at least one expense ratio is known). The hero falls back to a 1Y window when the picks don't share 3 years of history and to a "limited common history" notice when neither aligns. A spread of <1pp across funds is reported as "close to" rather than calling 0.3pp a lead — false-precision the brand actively avoids.
+
+**Dropped:** Top 3 sectors and Top 5 holdings tables — both were redundant once the brand vision principle of "minimal noise, lead with the answer" applied. The overlap percentage already captures the question those tables were trying to answer ("are these funds buying the same things?").
+
+`compareFunds.ts` (`computeHoldingOverlap`, `computeTrailingReturn`, `findNavNearDate`) and its 22 unit tests are unchanged. The reshape was screen-only; `formatTrailingReturn` is the only export that lost its consumer (the prose now formats inline).
