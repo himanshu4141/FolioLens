@@ -6,6 +6,7 @@ const config = {
     '<rootDir>/src/utils/**/*.test.ts',
     '<rootDir>/src/hooks/**/*.test.ts',
     '<rootDir>/src/store/**/*.test.ts',
+    '<rootDir>/src/constants/**/*.test.ts',
     '<rootDir>/supabase/functions/_shared/**/*.test.ts',
   ],
   moduleNameMapper: {

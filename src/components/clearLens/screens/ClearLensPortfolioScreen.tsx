@@ -974,7 +974,7 @@ function ClearLensPortfolioScreenMobile() {
 
           <EntryRows
             onInsights={() => router.push('/portfolio-insights')}
-            onFunds={() => router.push('/(tabs)/leaderboard')}
+            onFunds={() => router.push('/funds')}
             onTools={() => router.push('/tools' as never)}
           />
         </ScrollView>

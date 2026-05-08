@@ -39,8 +39,8 @@ const NAV_ITEMS: NavItem[] = [
     key: 'funds',
     label: 'Funds',
     icon: 'list-outline',
-    href: '/(tabs)/leaderboard',
-    match: (segments) => segments[0] === '(tabs)' && segments[1] === 'leaderboard',
+    href: '/(tabs)/funds',
+    match: (segments) => segments[0] === '(tabs)' && segments[1] === 'funds',
   },
   {
     key: 'wealth',

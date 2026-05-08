@@ -110,6 +110,8 @@ Single Resend account on the verified domain `foliolens.in`. Used for two purpos
    - `cas-dev-<token>@foliolens.in` → DEV `cas-webhook-resend`
    - `cas-<token>@foliolens.in` → PROD `cas-webhook-resend`
 
+   **Recipient discovery is multi-source** so both manual forwards (user types the cas-XXX address themselves) and auto-forwards (Gmail / Outlook / Postfix / Exim, which preserve the original `To:` and stamp the real destination into a forwarding-marker header) route correctly. Order of resolution: `data.to/cc/bcc` → `Delivered-To` / `X-Original-To` / `X-Forwarded-To` / `Envelope-To` / `X-Rcpt-To` headers → `Received: ... for <addr>` chain → singular `envelope_to` / `recipient` / `rcpt_to` keys → fallback fetch of the full email via the Resend Receiving API (`GET /emails/receiving/{email_id}`) when the lightweight webhook payload omits headers entirely.
+
 The inbound CAS path also sends a FolioLens-branded status email to the user's auth email after each PDF import attempt. These are application-triggered Resend Template emails, not Supabase Auth templates. DEV and PROD must use distinct template ids / aliases and From addresses:
 
 | Environment | Template source | Required sender |

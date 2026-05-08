@@ -351,13 +351,6 @@ export interface AppStore {
   setMoneyTrailSortBy: (sort: MoneyTrailSortKey) => void;
 }
 
-type PersistedAppStore = Partial<AppStore> & {
-  designVariant?: 'v1' | 'v2';
-  // Removed in v5; the field is read here only to detect legacy persisted state
-  // that was migrated to the always-on Clear Lens design.
-  appDesignMode?: 'classic' | 'clearLens';
-};
-
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
 // to their TRI counterparts so the user's saved benchmark choice still
 // resolves to a valid option after the cutover. BSE Sensex maps to Nifty 50
@@ -376,6 +369,42 @@ function migrateBenchmarkSymbol(raw: unknown): string {
   return raw;
 }
 
+// Merge persisted state into the runtime store on rehydration. Splits out from
+// the inline Zustand `persist` arg so we can unit-test it. `merge` runs after
+// `migrate` has already cleaned the state shape, but the second arg
+// (currentState) carries the runtime defaults, so we still defensively
+// sanitize each field rather than trusting the persisted blob.
+export function mergePersistedAppState(
+  persistedState: unknown,
+  currentState: AppStore,
+): AppStore {
+  const state =
+    persistedState && typeof persistedState === 'object'
+      ? (persistedState as Partial<AppStore>)
+      : {};
+  return {
+    ...currentState,
+    defaultBenchmarkSymbol: migrateBenchmarkSymbol(
+      state.defaultBenchmarkSymbol ?? currentState.defaultBenchmarkSymbol,
+    ),
+    appColorScheme: sanitizeColorScheme(state.appColorScheme, currentState.appColorScheme),
+    wealthJourney: sanitizeWealthJourneyState({
+      ...DEFAULT_WEALTH_JOURNEY_STATE,
+      ...(state.wealthJourney ?? {}),
+    }),
+    returnAssumptions: sanitizeReturnAssumptions(state.returnAssumptions),
+    goals: sanitizeGoals(state.goals),
+    fundsSortBy: sanitizeFundsSort(state.fundsSortBy ?? currentState.fundsSortBy),
+    portfolioChartWindow: sanitizeChartWindow(
+      state.portfolioChartWindow ?? currentState.portfolioChartWindow,
+    ),
+    moneyTrailSortBy: sanitizeMoneyTrailSort(
+      state.moneyTrailSortBy ?? currentState.moneyTrailSortBy,
+    ),
+    // fundsSearchQuery is intentionally not restored from disk — see partialize.
+  };
+}
+
 export function migratePersistedAppState(persistedState: unknown): Partial<AppStore> {
   if (!persistedState || typeof persistedState !== 'object') {
     return {
@@ -389,7 +418,7 @@ export function migratePersistedAppState(persistedState: unknown): Partial<AppSt
     };
   }
 
-  const state = persistedState as PersistedAppStore;
+  const state = persistedState as Partial<AppStore>;
 
   return {
     defaultBenchmarkSymbol: migrateBenchmarkSymbol(state.defaultBenchmarkSymbol),
@@ -462,33 +491,7 @@ export const useAppStore = create<AppStore>()(
       storage: createJSONStorage(() => AsyncStorage),
       version: 7,
       migrate: migratePersistedAppState,
-      merge: (persistedState, currentState) => {
-        const state =
-          persistedState && typeof persistedState === 'object'
-            ? (persistedState as PersistedAppStore)
-            : {};
-        return {
-          ...currentState,
-          defaultBenchmarkSymbol: migrateBenchmarkSymbol(
-            state.defaultBenchmarkSymbol ?? currentState.defaultBenchmarkSymbol,
-          ),
-          appColorScheme: sanitizeColorScheme(state.appColorScheme, currentState.appColorScheme),
-          wealthJourney: sanitizeWealthJourneyState({
-            ...DEFAULT_WEALTH_JOURNEY_STATE,
-            ...(state.wealthJourney ?? {}),
-          }),
-          returnAssumptions: sanitizeReturnAssumptions(state.returnAssumptions),
-          goals: sanitizeGoals(state.goals),
-          fundsSortBy: sanitizeFundsSort(state.fundsSortBy ?? currentState.fundsSortBy),
-          portfolioChartWindow: sanitizeChartWindow(
-            state.portfolioChartWindow ?? currentState.portfolioChartWindow,
-          ),
-          moneyTrailSortBy: sanitizeMoneyTrailSort(
-            state.moneyTrailSortBy ?? currentState.moneyTrailSortBy,
-          ),
-          // fundsSearchQuery is intentionally not restored from disk — see partialize.
-        };
-      },
+      merge: mergePersistedAppState,
       partialize: (state) => ({
         defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
         appColorScheme: state.appColorScheme,
