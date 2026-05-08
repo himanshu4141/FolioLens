@@ -190,6 +190,27 @@ The calculation is a pure function — easy to test. The cross-app additions are
 - [ ] Portfolio Insights screen — Cost & Fees section added (deferred to M4b)
 - [ ] Your Funds screen — plan-type chips added (deferred to M4b)
 - [ ] Fund Detail screen — Plan Cost card added (deferred to M4b)
-- [x] typecheck + lint + tests green (632 pass)
-- [ ] PR raised against `main` (stacked on M3 PR #100)
+- [x] typecheck + lint + tests green (827 pass at PR-ready tip)
+- [x] PR raised — #101, stacked on M3 PR #100
 - [ ] Local QA pass
+
+
+## Amendments
+
+(The four cross-app additions — Portfolio cost insight card, Portfolio Insights "Cost & Fees" section, Your Funds plan-type chip, Fund Detail Plan Cost card — were already deferred to M4b in the front matter. That deferral stands.)
+
+**Brand-vision rework on the tool screen.** Original plan had three blocks under the inputs:
+
+- A standalone **PlanBreakdownCard** with three coloured chips (Direct / Regular / Unknown counts and value share) above the inputs.
+- A 5-row **Result detail card** under the hero (Direct corpus / Regular corpus / Difference / Base return / Starting corpus).
+- A green-tinted **infoCard** with the action advice.
+
+In QA the screen read as a spreadsheet sandwiched between two off-tone callouts. Replaced with three prose insight cards under the hero:
+
+- **What that looks like** — direct vs regular future value + the gap, in one sentence with semibold values inline (`Same SIP, two return streams. In 10Y, ₹X + ₹Y/mo grows to ₹A in direct plans vs ₹B in regular — a ₹C gap from the 0.7%/yr fee delta. Both assume a 10% base return.`).
+- **Your portfolio** — split summary that branches on all-direct / mixed / no-funds / unknown-only states (no chip grid). The mixed branch carries the regular-plan share, value sums, and weighted expense ratio.
+- **What to do** — same three-branch advice the old infoCard carried, now in a normal prose card matching the rest of the surface.
+
+The hero (rupee gap headline + ~%-smaller-corpus subtitle) and the regular-plan funds list are unchanged — both already followed the lead-with-the-answer brand vision.
+
+`directVsRegularCalc.ts` (`detectPlanType`, `projectFutureValue`, `computeCostImpact`, `buildPlanBreakdown`) and its 22 unit tests are unchanged. The reshape was screen-only.
