@@ -6,6 +6,7 @@ import {
   uploadAsync,
 } from 'expo-file-system/legacy';
 import { supabase } from '@/src/lib/supabase';
+import { analytics } from '@/src/lib/analytics';
 
 export type CasUploadResult = { funds: number; transactions: number };
 
@@ -93,6 +94,11 @@ function parseUploadResponse(status: number, bodyText: string): CasUploadResult 
       status,
       funds: body.funds ?? 0,
       transactions: body.transactions ?? 0,
+    });
+    analytics.track('portfolio_imported', {
+      source: 'cas_pdf',
+      funds_count: body.funds ?? 0,
+      transactions_count: body.transactions ?? 0,
     });
     return { funds: body.funds ?? 0, transactions: body.transactions ?? 0 };
   }

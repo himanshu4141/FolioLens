@@ -8,6 +8,7 @@ import {
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useToolsFeatureFlags } from '@/src/hooks/useToolsFeatureFlags';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { useIsDesktop } from '@/src/components/responsive';
 import {
   ClearLensFonts,
@@ -43,6 +44,7 @@ interface ToolSection {
 // ---------------------------------------------------------------------------
 
 export function ClearLensToolsScreen() {
+  useTrackInsightViewed('tools');
   const router = useRouter();
   const flags = useToolsFeatureFlags();
   const isDesktop = useIsDesktop();

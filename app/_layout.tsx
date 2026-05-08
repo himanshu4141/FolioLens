@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { AppState, type AppStateStatus, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import * as SystemUI from 'expo-system-ui';
+import * as Updates from 'expo-updates';
+import ExpoConstants from 'expo-constants';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -21,6 +23,9 @@ import { supabase } from '@/src/lib/supabase';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
+import { ErrorBoundary } from '@/src/components/ErrorBoundary';
+import { analytics } from '@/src/lib/analytics';
+import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
 
 // Required for expo-web-browser openAuthSessionAsync to complete on Android.
 // When Chrome Custom Tabs redirects to the app's active scheme, Android opens the app via
@@ -74,6 +79,68 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Threshold for the `app_returned` event. Anything shorter than this is a
+// brief OS interruption (notification, control centre) we don't count as
+// a "return" — only resumes after at least 5 minutes of background time.
+const APP_RETURNED_THRESHOLD_MS = 5 * 60 * 1000;
+
+function useAnalyticsLifecycle() {
+  // Tracks the last time the app was in foreground; used to compute the
+  // gap before emitting `app_returned`. Initialised on mount.
+  const lastActiveAtRef = useRef<number>(Date.now());
+  const sentAppStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!analytics.isEnabled) return;
+
+    installGlobalErrorHandlers();
+
+    if (!sentAppStartedRef.current) {
+      sentAppStartedRef.current = true;
+      analytics.track('app_started', {
+        app_version: ExpoConstants.expoConfig?.version ?? null,
+        eas_update_id: Updates.updateId ?? null,
+        eas_update_created_at: Updates.createdAt?.toISOString() ?? null,
+        is_embedded_launch: Updates.isEmbeddedLaunch,
+        platform: Platform.OS,
+      });
+    }
+
+    const identify = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+      if (session?.user) {
+        analytics.identify(session.user.id, {
+          email_domain: session.user.email?.split('@')[1] ?? null,
+        });
+      } else {
+        analytics.reset();
+      }
+    };
+
+    supabase.auth.getSession().then(({ data: { session } }) => identify(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evt, session) => identify(session));
+
+    const onAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        const idleMs = Date.now() - lastActiveAtRef.current;
+        lastActiveAtRef.current = Date.now();
+        if (idleMs >= APP_RETURNED_THRESHOLD_MS) {
+          analytics.track('app_returned', {
+            previous_session_age_hours: Number((idleMs / 1000 / 60 / 60).toFixed(2)),
+          });
+        }
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        lastActiveAtRef.current = Date.now();
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', onAppStateChange);
+
+    return () => {
+      subscription.unsubscribe();
+      appStateSub.remove();
+    };
+  }, []);
+}
+
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
@@ -82,6 +149,8 @@ export default function RootLayout() {
     Inter_700Bold,
     Inter_800ExtraBold,
   });
+
+  useAnalyticsLifecycle();
 
   useEffect(() => {
     // Web: Supabase handles the hash fragment natively via detectSessionInUrl
@@ -102,12 +171,14 @@ export default function RootLayout() {
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <ThemedAppShell />
-        <VercelInsights />
-      </ThemeProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <ThemedAppShell />
+          <VercelInsights />
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

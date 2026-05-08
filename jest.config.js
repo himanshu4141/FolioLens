@@ -5,6 +5,7 @@ const config = {
   testMatch: [
     '<rootDir>/src/utils/**/*.test.ts',
     '<rootDir>/src/hooks/**/*.test.ts',
+    '<rootDir>/src/lib/**/*.test.ts',
     '<rootDir>/src/store/**/*.test.ts',
     '<rootDir>/src/constants/**/*.test.ts',
     '<rootDir>/supabase/functions/_shared/**/*.test.ts',
@@ -25,6 +26,9 @@ const config = {
     '!src/types/**',          // pure type declarations — nothing executable to cover
     '!src/lib/supabase.ts',   // React Native + Supabase bootstrap — not runnable in Node
     '!src/lib/queryClient.ts',// trivial config object
+    '!src/lib/analytics.web.ts',  // browser-only impl; covered by manual smoke
+    '!src/lib/analytics.native.ts', // RN-only impl; covered by manual smoke
+    '!src/lib/installGlobalErrorHandlers.ts', // RN/window globals; covered by manual smoke
   ],
   coverageThreshold: {
     // Functions threshold is the lowest of the four because the global

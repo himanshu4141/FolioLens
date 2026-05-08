@@ -37,6 +37,7 @@ import {
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
 import {
   useAppStore,
@@ -569,6 +570,7 @@ function SipEditorModal({
 }
 
 export function ClearLensWealthJourneyScreen() {
+  useTrackInsightViewed('wealth_journey');
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();

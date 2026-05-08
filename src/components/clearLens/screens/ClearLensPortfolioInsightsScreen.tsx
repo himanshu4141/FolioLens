@@ -17,6 +17,7 @@ import {
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { useAppStore } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import type { InsightDebtFund } from '@/src/types/app';
@@ -318,6 +319,7 @@ function PendingCard({ title, onSync, isSyncing }: { title: string; onSync: () =
 }
 
 export function ClearLensPortfolioInsightsScreen() {
+  useTrackInsightViewed('insights');
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();

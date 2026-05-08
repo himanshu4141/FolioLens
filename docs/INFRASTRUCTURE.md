@@ -305,9 +305,10 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 ## Observability
 
 
+- **PostHog** — single pane for product events (`onboarding_started`, `onboarding_step_completed`, `onboarding_completed`, `portfolio_imported`, `insight_viewed`, `app_started`, `app_returned`) and uncaught exceptions (`$exception`). Both native iOS/Android and the Vercel-served web bundle report to the same project. Gated by `EXPO_PUBLIC_POSTHOG_KEY` set per environment in expo.dev (native) and the Vercel project (web); PR-preview deploys leave it unset and stay quiet.
+- **Vercel Speed Insights + Web Analytics** — Web Vitals (LCP / INP / CLS) per-route and infrastructure-side page views for the Vercel-served web build. Complements PostHog (which captures user-journey events but not Web Vitals).
 - **Supabase Logs** — Auth, Edge Function, and Database logs viewable in the dashboard. Auth log level is set to "errors only" by default; set to "info" temporarily when debugging sign-in flows.
 - **Vercel Logs** — only the dev project receives meaningful traffic; prod logs are sparse since the app is mostly RN with thin web shell.
-- **Expo Insights** — `expo-insights` is in the bundle. App-launch counts, OTA update reach, and version distribution show up at expo.dev → Project → Insights.
 - **Supabase Dashboard → Database → Cron Jobs** — confirms each pg_cron job is firing on schedule.
 - **Resend Dashboard → Logs** — outbound delivery and inbound webhook firing per email.
 
@@ -322,6 +323,7 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 - Cloudflare: free tier
 - Google OAuth: free
 - Vercel Python parser: deployed to the same `foliolens` Vercel project's Serverless Functions — counts toward Vercel's Hobby execution-time budget
+- PostHog: free tier (1M events / mo). Comfortably above closed-beta volume.
 
 
 ## Out of scope (for now)

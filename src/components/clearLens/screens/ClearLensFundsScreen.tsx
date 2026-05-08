@@ -21,6 +21,7 @@ import {
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import { useSession } from '@/src/hooks/useSession';
 import { useAppStore } from '@/src/store/appStore';
@@ -430,6 +431,7 @@ function FundsBottomNav() {
 }
 
 export function ClearLensFundsScreen({ insideTab = false }: { insideTab?: boolean }) {
+  useTrackInsightViewed('funds');
   const { layout } = useResponsiveLayout();
   if (layout === 'desktop') return <ClearLensFundsScreenDesktop />;
   return <ClearLensFundsScreenMobile insideTab={insideTab} />;
