@@ -63,6 +63,10 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}
           EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_PROD }}
           EXPO_PUBLIC_APP_BASE_URL: ${{ secrets.EXPO_PUBLIC_APP_BASE_URL_PROD }}
+          # PostHog client key — Metro inlines EXPO_PUBLIC_* at bundle time, so
+          # this MUST be present in the env when `eas update` runs. Without it,
+          # src/lib/analytics.native.ts no-ops and zero events flow.
+          EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
           EAS_UPDATE_CHANNEL: foliolens-production
           EAS_UPDATE_MESSAGE: "Release: ${{ github.ref_name }}"
       - name: Trace OTA update IDs
