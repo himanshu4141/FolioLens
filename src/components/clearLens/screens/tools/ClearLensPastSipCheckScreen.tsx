@@ -27,6 +27,7 @@ import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -40,6 +41,8 @@ import { useSession } from '@/src/hooks/useSession';
 import { supabase } from '@/src/lib/supabase';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { fetchPerformanceTimeline } from '@/src/hooks/usePerformanceTimeline';
+import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
+import { shortSchemeName } from '@/src/utils/schemeName';
 import {
   buildPastSipChartSeries,
   simulatePastSip,
@@ -50,6 +53,7 @@ import {
 } from '@/src/utils/pastSipCheck';
 import { formatCurrency } from '@/src/utils/formatting';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
+import type { NavPoint } from '@/src/utils/navUtils';
 
 // String-only key the segmented control accepts (it's generic over T extends
 // string). The actual simulator-bound duration is held separately and can be
@@ -68,27 +72,38 @@ function formatCustomLabel(months: number): string {
   return `${y}y ${m}m`;
 }
 
-interface UserFund {
-  id: string;
-  name: string;
-  category: string | null;
+interface PickedScheme {
+  schemeCode: number;
+  schemeName: string;
+  schemeCategory: string | null;
 }
 
-async function fetchUserHoldings(userId: string): Promise<UserFund[]> {
+/**
+ * Direct fetch of nav_history by scheme_code — works for any scheme, not
+ * just held funds. Returns ascending date order so simulatePastSip can walk
+ * forward through it.
+ */
+async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
   const { data, error } = await supabase
-    .from('fund')
-    .select('id, scheme_name, scheme_category')
-    .eq('user_id', userId)
-    .eq('is_active', true)
-    .order('scheme_name', { ascending: true });
-  if (error) throw error;
-  return (data ?? [])
-    .filter((row) => row.id && row.scheme_name)
-    .map((row) => ({
-      id: row.id as string,
-      name: row.scheme_name as string,
-      category: (row.scheme_category as string | null) ?? null,
-    }));
+    .from('nav_history')
+    .select('nav_date, nav')
+    .eq('scheme_code', schemeCode)
+    .order('nav_date', { ascending: true });
+  if (error) throw new Error(`fetchNavSeries: ${error.message}`);
+  return (data ?? []).map((row) => ({ date: row.nav_date, value: Number(row.nav) }));
+}
+
+/**
+ * Trigger an on-demand NAV backfill for a non-held scheme. The edge function
+ * is idempotent (skips the upstream fetch if the cache is fresh), so calling
+ * this on every scheme change is safe.
+ */
+async function ensureNavCached(schemeCode: number): Promise<{ status: string }> {
+  const { data, error } = await supabase.functions.invoke<{ status: string }>('fetch-fund-nav', {
+    body: { scheme_code: schemeCode },
+  });
+  if (error) throw new Error(`fetch-fund-nav failed: ${error.message}`);
+  return data ?? { status: 'unknown' };
 }
 
 export function ClearLensPastSipCheckScreen() {
@@ -100,7 +115,7 @@ export function ClearLensPastSipCheckScreen() {
   const userId = session?.user.id;
   const { defaultBenchmarkSymbol } = useAppStore();
 
-  const [selectedFundId, setSelectedFundId] = useState<string | null>(null);
+  const [selectedScheme, setSelectedScheme] = useState<PickedScheme | null>(null);
   const [amountStr, setAmountStr] = useState<string>('10000');
   const [duration, setDuration] = useState<PastSipDuration>('3Y');
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string>(defaultBenchmarkSymbol);
@@ -143,48 +158,72 @@ export function ClearLensPastSipCheckScreen() {
     setCustomOpen(false);
   };
 
-  const holdings = useQuery({
-    queryKey: ['past-sip-check-holdings', userId],
-    queryFn: () => (userId ? fetchUserHoldings(userId) : Promise.resolve([] as UserFund[])),
+  // For seeding the picker default with the user's first held fund.
+  const userHeldQuery = useQuery({
+    queryKey: ['past-sip-check:user-held-seed', userId],
+    queryFn: () => (userId ? fetchUserHeldSchemes(userId) : Promise.resolve([] as SchemeSearchResult[])),
     enabled: !!userId,
-    staleTime: 60_000,
+    staleTime: 5 * 60 * 1000,
   });
 
-  // Auto-pick the first holding once data arrives
+  // Auto-pick the first holding once data arrives.
   useEffect(() => {
-    if (!selectedFundId && (holdings.data?.length ?? 0) > 0) {
-      setSelectedFundId(holdings.data![0].id);
+    if (!selectedScheme && (userHeldQuery.data?.length ?? 0) > 0) {
+      const f = userHeldQuery.data![0];
+      setSelectedScheme({
+        schemeCode: f.schemeCode,
+        schemeName: f.schemeName,
+        schemeCategory: f.schemeCategory,
+      });
     }
-  }, [holdings.data, selectedFundId]);
+  }, [userHeldQuery.data, selectedScheme]);
 
-  const selectedFund = holdings.data?.find((f) => f.id === selectedFundId) ?? null;
   const benchmarkLabel =
     BENCHMARK_OPTIONS.find((b) => b.symbol === benchmarkSymbol)?.label ?? benchmarkSymbol;
 
-  const timeline = useQuery({
-    queryKey: ['past-sip-check-timeline', selectedFundId, benchmarkSymbol],
-    enabled: !!selectedFund,
+  // On-demand NAV backfill for the picked scheme. Idempotent — the edge
+  // function is a no-op when the cache is fresh.
+  const navBackfillQuery = useQuery({
+    queryKey: ['past-sip-check:nav-backfill', selectedScheme?.schemeCode],
+    enabled: !!selectedScheme,
+    queryFn: () => (selectedScheme ? ensureNavCached(selectedScheme.schemeCode) : Promise.resolve({ status: 'noop' })),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fund NAV history — direct query of nav_history by scheme_code. Reruns
+  // after the backfill completes (queryKey depends on backfill status).
+  const fundNavQuery = useQuery({
+    queryKey: ['past-sip-check:fund-nav', selectedScheme?.schemeCode, navBackfillQuery.data?.status],
+    enabled: !!selectedScheme && !!navBackfillQuery.data,
+    queryFn: () => (selectedScheme ? fetchNavSeries(selectedScheme.schemeCode) : Promise.resolve([])),
+    staleTime: 60_000,
+  });
+
+  // Benchmark NAV — keep using fetchPerformanceTimeline since index_history
+  // is a different schema (index_symbol keyed) and existing benchmark sync
+  // already covers our supported indices.
+  const benchmarkTimelineQuery = useQuery({
+    queryKey: ['past-sip-check:benchmark', benchmarkSymbol],
     queryFn: () =>
-      fetchPerformanceTimeline(
-        selectedFund ? [{ id: selectedFund.id, name: selectedFund.name }] : [],
-        [{ symbol: benchmarkSymbol, name: benchmarkLabel }],
-      ),
+      fetchPerformanceTimeline([], [{ symbol: benchmarkSymbol, name: benchmarkLabel }]),
     staleTime: 5 * 60 * 1000,
   });
 
   const monthlyAmount = parseRupees(amountStr);
 
-  const fundEntry = timeline.data?.entries.find((e) => e.type === 'fund' && e.id === selectedFundId);
-  const benchmarkEntry = timeline.data?.entries.find((e) => e.type === 'index' && e.id === benchmarkSymbol);
+  const fundNavSeries = fundNavQuery.data ?? null;
+  const benchmarkEntry = benchmarkTimelineQuery.data?.entries.find(
+    (e) => e.type === 'index' && e.id === benchmarkSymbol,
+  );
 
   const fundResult = useMemo(() => {
-    if (!fundEntry) return null;
+    if (!fundNavSeries || fundNavSeries.length === 0) return null;
     return simulatePastSip({
-      navSeries: fundEntry.history,
+      navSeries: fundNavSeries,
       monthlyAmount,
       duration,
     });
-  }, [fundEntry, monthlyAmount, duration]);
+  }, [fundNavSeries, monthlyAmount, duration]);
 
   // Align the benchmark sim to the fund's installment dates and terminal date
   // so the XIRR comparison reflects only underlying performance — without
@@ -223,35 +262,6 @@ export function ClearLensPastSipCheckScreen() {
     );
   }
 
-  if (holdings.isLoading) {
-    return (
-      <ClearLensScreen>
-        <ClearLensHeader onPressBack={() => router.back()} />
-        <View style={styles.center}>
-          <Text style={styles.helperText}>Loading your funds…</Text>
-        </View>
-      </ClearLensScreen>
-    );
-  }
-
-  if ((holdings.data?.length ?? 0) === 0) {
-    return (
-      <ClearLensScreen>
-        <ClearLensHeader onPressBack={() => router.back()} />
-        <View style={styles.center}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="time-outline" size={36} color={tokens.colors.textTertiary} />
-          </View>
-          <Text style={styles.emptyTitle}>No funds yet</Text>
-          <Text style={styles.emptySubtitle}>
-            Past SIP Check uses your existing holdings. Import a CAS or sync to bring funds in,
-            then come back here.
-          </Text>
-        </View>
-      </ClearLensScreen>
-    );
-  }
-
   // -------------------------------------------------------------------------
   // Main view
   // -------------------------------------------------------------------------
@@ -272,7 +282,7 @@ export function ClearLensPastSipCheckScreen() {
             <Text style={styles.eyebrow}>Past SIP Check</Text>
             <Text style={styles.title}>What if you&apos;d invested?</Text>
             <Text style={styles.subtitle}>
-              See how a monthly SIP into one of your funds would have performed compared to a benchmark.
+              See how a monthly SIP into any fund — yours or any in our catalog — would have performed compared to a benchmark.
             </Text>
           </View>
 
@@ -285,7 +295,7 @@ export function ClearLensPastSipCheckScreen() {
               <View style={styles.fundRowLeft}>
                 <Text style={styles.inputLabel}>Fund</Text>
                 <Text style={styles.fundName} numberOfLines={1}>
-                  {selectedFund ? selectedFund.name : 'Pick a fund'}
+                  {selectedScheme ? shortSchemeName(selectedScheme.schemeName) : 'Pick a fund'}
                 </Text>
               </View>
               <Ionicons name="chevron-down" size={18} color={tokens.colors.textTertiary} />
@@ -330,11 +340,15 @@ export function ClearLensPastSipCheckScreen() {
           </View>
 
           {/* Results */}
-          {timeline.isLoading ? (
+          {!selectedScheme ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>Pick a fund to see how a SIP would have performed.</Text>
+            </View>
+          ) : navBackfillQuery.isFetching || fundNavQuery.isLoading || benchmarkTimelineQuery.isLoading ? (
             <View style={styles.center}>
               <Text style={styles.helperText}>Crunching NAV history…</Text>
             </View>
-          ) : timeline.isError ? (
+          ) : navBackfillQuery.isError || fundNavQuery.isError || benchmarkTimelineQuery.isError ? (
             <View style={styles.errorBox}>
               <Text style={styles.errorText}>
                 Couldn&apos;t load NAV history. Pull down to retry.
@@ -342,7 +356,7 @@ export function ClearLensPastSipCheckScreen() {
             </View>
           ) : fundResult && fundResult.hasEnoughData ? (
             <ResultSection
-              fundName={selectedFund?.name ?? ''}
+              fundName={selectedScheme.schemeName}
               benchmarkLabel={benchmarkLabel}
               fundResult={fundResult}
               benchmarkResult={benchmarkResult}
@@ -365,15 +379,20 @@ export function ClearLensPastSipCheckScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <FundPicker
+      <UniversalFundPicker
         visible={pickerOpen}
-        funds={holdings.data ?? []}
-        selectedId={selectedFundId}
-        onSelect={(id) => {
-          setSelectedFundId(id);
+        selectedCodes={selectedScheme ? [selectedScheme.schemeCode] : []}
+        mode="single"
+        onToggle={(scheme) => {
+          setSelectedScheme({
+            schemeCode: scheme.schemeCode,
+            schemeName: scheme.schemeName,
+            schemeCategory: scheme.schemeCategory,
+          });
           setPickerOpen(false);
         }}
         onClose={() => setPickerOpen(false)}
+        title="Pick a fund"
       />
 
       <CustomDurationPicker
@@ -515,56 +534,6 @@ function ResultSection({
         </View>
       ) : null}
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fund picker
-// ---------------------------------------------------------------------------
-
-function FundPicker({
-  visible,
-  funds,
-  selectedId,
-  onSelect,
-  onClose,
-}: {
-  visible: boolean;
-  funds: UserFund[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onClose: () => void;
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>Pick a fund</Text>
-          <ScrollView style={styles.sheetList}>
-            {funds.map((fund, idx) => (
-              <TouchableOpacity
-                key={fund.id}
-                style={[styles.sheetOption, idx > 0 && styles.sheetDivider]}
-                onPress={() => onSelect(fund.id)}
-                activeOpacity={0.76}
-              >
-                <View style={styles.sheetOptionLeft}>
-                  <Text style={styles.sheetRowText} numberOfLines={2}>{fund.name}</Text>
-                  {fund.category ? <Text style={styles.sheetRowSub}>{fund.category}</Text> : null}
-                </View>
-                <View style={[styles.radioOuter, fund.id === selectedId && styles.radioOuterActive]}>
-                  {fund.id === selectedId && <View style={styles.radioInner} />}
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
   );
 }
 
