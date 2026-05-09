@@ -31,6 +31,28 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Guard against forgetting to bump app.config.js when cutting a
+      # release tag. The version shown in Settings → About is what
+      # users see; if it drifts from the git tag, support tickets get
+      # confusing. Skipped for workflow_dispatch so we can manually
+      # re-run a release without bumping the tag.
+      - name: Verify tag matches app.config.js version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(node -e "
+            const cfg = require('./app.config.js');
+            const result = typeof cfg === 'function' ? cfg({ config: {} }) : cfg;
+            const version = result?.expo?.version ?? result?.version;
+            if (!version) { console.error('No version in app.config.js'); process.exit(1); }
+            console.log(version);
+          ")
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$APP_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match app.config.js version $APP_VERSION. Bump app.config.js before tagging."
+            exit 1
+          fi
+          echo "Tag v$TAG_VERSION matches app version $APP_VERSION"
       - run: npm run typecheck
       - run: npm run lint
       - name: Run tests
