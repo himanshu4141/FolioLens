@@ -10,9 +10,8 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
+import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { DesktopFormFrame } from '@/src/components/responsive';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
@@ -38,18 +37,7 @@ export default function PDFScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [customPassword, setCustomPassword] = useState('');
 
-  const { data: profile } = useQuery({
-    queryKey: ['user-profile', session?.user.id],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from('user_profile')
-        .select('dob')
-        .eq('user_id', session!.user.id)
-        .maybeSingle();
-      return data ?? null;
-    },
-    enabled: !!session?.user.id,
-  });
+  const { data: profile } = useUserProfile(session?.user.id);
 
   const dobMissing = !profile?.dob;
 

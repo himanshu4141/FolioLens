@@ -16,6 +16,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
+import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import {
   ClearLensFonts,
@@ -27,12 +28,6 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { formatInboxAddress } from '@/src/utils/casInboxToken';
-
-type Profile = {
-  cas_inbox_token: string | null;
-  cas_inbox_confirmation_url: string | null;
-  cas_auto_forward_setup_completed_at: string | null;
-};
 
 type LastImport = {
   created_at: string;
@@ -71,23 +66,6 @@ function formatImportSource(source: LastImport['import_source']): string {
   return 'Legacy email route';
 }
 
-async function fetchProfile(userId: string): Promise<Profile | null> {
-  const { data, error } = await supabase
-    .from('user_profile')
-    .select('cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) {
-    // Surface the real cause instead of silently degrading to "Open import flow
-    // to create your inbox". Common culprits: a stale PostgREST schema cache
-    // after a column add (the M2 columns), RLS misconfig, or a missing
-    // migration on the connected project.
-    console.error('[settings/portfolio-import] fetchProfile failed', error);
-    throw error;
-  }
-  return data ?? null;
-}
-
 async function fetchLastImport(userId: string): Promise<LastImport | null> {
   const { data, error } = await supabase
     .from('cas_import')
@@ -112,12 +90,7 @@ export default function PortfolioImportScreen() {
   const cl = tokens.colors;
   const [copied, setCopied] = useState(false);
 
-  const { data: profile, isLoading: profileLoading } = useQuery({
-    queryKey: ['user-profile', userId],
-    queryFn: () => fetchProfile(userId!),
-    enabled: !!userId,
-    refetchOnMount: 'always',
-  });
+  const { data: profile, isLoading: profileLoading } = useUserProfile(userId);
 
   const { data: lastImport } = useQuery({
     queryKey: ['last-cas-import', userId],

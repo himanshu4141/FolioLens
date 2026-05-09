@@ -21,9 +21,10 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
+import { useUserProfile, userProfileQueryKey } from '@/src/hooks/useUserProfile';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { DesktopFormFrame } from '@/src/components/responsive';
 import { AutoRefreshSetup } from '@/src/components/onboarding/AutoRefreshSetup';
@@ -49,6 +50,11 @@ import {
   saveOnboardingDraft,
 } from '@/src/utils/onboardingDraft';
 import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import {
+  isOnboardingMode,
+  pickOnboardingInitialStep,
+  type OnboardingMode,
+} from '@/src/utils/onboardingInitialStep';
 import { analytics } from '@/src/lib/analytics';
 
 type WizardStyles = ReturnType<typeof makeStyles>;
@@ -142,23 +148,6 @@ function maskDobInput(raw: string): string {
   return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`;
 }
 
-async function fetchSavedProfile(userId: string): Promise<SavedProfile | null> {
-  const { data, error } = await supabase
-    .from('user_profile')
-    .select('pan, dob, kfintech_email, cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) {
-    // The wizard's hydration depends on this row to decide the initial step
-    // and pre-fill PAN/DOB. A silently-swallowed error sends the user back
-    // through Welcome / Identity even when their profile is fully populated,
-    // which is exactly the broken behaviour we just spent a session debugging.
-    console.error('[onboarding:wizard] fetchSavedProfile failed', error);
-    throw error;
-  }
-  return data ?? null;
-}
-
 async function markAutoForwardSetupComplete(userId: string): Promise<void> {
   const { error } = await supabase
     .from('user_profile')
@@ -168,35 +157,6 @@ async function markAutoForwardSetupComplete(userId: string): Promise<void> {
     })
     .eq('user_id', userId);
   if (error) throw error;
-}
-
-interface SavedProfile {
-  pan: string | null;
-  dob: string | null;
-  kfintech_email: string | null;
-  cas_inbox_token: string | null;
-  cas_inbox_confirmation_url: string | null;
-  cas_auto_forward_setup_completed_at: string | null;
-}
-
-// Deep-link modes the wizard accepts via `?mode=` from Settings buttons. The
-// wizard maps each to (step, sub) so an existing user lands on the right
-// screen instead of being thrown back to Welcome / Identity.
-//
-// - `auto-refresh` — Settings → Portfolio import → "Set up auto-forward"
-//   should jump straight to the AutoRefresh setup screen (Import step,
-//   `autoRefresh` sub). Falls back to the Import step's chooser if the user
-//   doesn't yet have an inbox token (the AutoRefresh component is
-//   conditionally rendered).
-// - `request-cas` — same idea but for "Get a fresh CAS" entry points.
-//   Lands on the Import step's `request` sub.
-// - `identity`     — Settings → Account edits (PAN / DOB / KFintech email).
-//   Lands on Identity even when PAN+DOB are already saved, so the user can
-//   review the locked fields and trigger a correction.
-type OnboardingMode = 'auto-refresh' | 'request-cas' | 'identity';
-
-function isOnboardingMode(value: unknown): value is OnboardingMode {
-  return value === 'auto-refresh' || value === 'request-cas' || value === 'identity';
 }
 
 function OnboardingWizard() {
@@ -214,21 +174,14 @@ function OnboardingWizard() {
   // Pull saved PAN / DOB / email from `user_profile` so the wizard can
   // skip Welcome (when PAN saved) and Identity (when both PAN + DOB saved),
   // and lock any field already set so a returning user can't accidentally
-  // overwrite it.
-  const { data: profile } = useQuery<SavedProfile | null>({
-    queryKey: ['user-profile', session?.user.id],
-    queryFn: () => fetchSavedProfile(session!.user.id),
-    enabled: !!session?.user.id,
-    // Always refetch on mount. A cached `null` from a previous visit (or a
-    // different navigation stack that opened the wizard before the row was
-    // written) would otherwise look like "no row exists", and hydration
-    // would render the Identity form empty even when PAN + DOB are in DB.
-    refetchOnMount: 'always',
-  });
+  // overwrite it. Routed through the shared hook so the cache shape stays
+  // consistent across this screen, Settings → Account, and Settings →
+  // Portfolio import (they all share the `['user-profile', userId]` key).
+  const { data: profile } = useUserProfile(session?.user.id);
 
   useEffect(() => {
     // useQuery returns `data === undefined` while the fetch is in flight, and
-    // either `null` (no row) or the SavedProfile object once it settles.
+    // either `null` (no row) or the UserProfile object once it settles.
     // Hydrating before it settles dispatches the wizard into step='welcome'
     // with empty PAN/DOB, then `setHydrated(true)` flips and the user sees
     // the welcome screen. If they click Continue before the row arrives,
@@ -255,32 +208,15 @@ function OnboardingWizard() {
         email: profile?.kfintech_email || seed.email,
       };
 
-      // Decide initial step based on what's already saved on user_profile.
-      // PAN saved → skip Welcome. PAN + DOB saved → skip Identity too.
-      let initialStep: OnboardingStep = merged.step;
-      if (initialStep === 'welcome' && profile?.pan) {
-        initialStep = profile.dob ? 'import' : 'identity';
-      } else if (initialStep === 'identity' && profile?.pan && profile.dob) {
-        initialStep = 'import';
-      }
-
-      // Settings deep-links: a `?mode=` param expresses which screen the user
-      // *intended* to reach. If the wizard wants to gate them on Identity
-      // first (PAN/DOB missing) we leave that gate up; otherwise honour the
-      // requested target.
-      if (requestedMode === 'identity') {
-        // Always show Identity when the user explicitly asked to edit it.
-        initialStep = 'identity';
-      } else if (
-        (requestedMode === 'auto-refresh' || requestedMode === 'request-cas') &&
-        profile?.pan &&
-        profile.dob
-      ) {
-        // Existing user with PAN+DOB saved — skip straight to Import. The
-        // sub-screen (autoRefresh / request) is selected via `initialSub`
-        // passed into ImportStep below.
-        initialStep = 'import';
-      }
+      // Decide initial step based on what's already saved on user_profile
+      // and any `?mode=` deep-link from Settings. The picker is a pure
+      // helper so its rules can be unit-tested in isolation.
+      const initialStep: OnboardingStep = pickOnboardingInitialStep({
+        draftStep: merged.step,
+        pan: profile?.pan,
+        dob: profile?.dob,
+        requestedMode,
+      });
 
       console.log('[onboarding:wizard] hydrated', {
         platform: Platform.OS,
@@ -466,11 +402,11 @@ function OnboardingWizard() {
                 : 'choose'
             }
             onConfirmClicked={() => {
-              queryClient.invalidateQueries({ queryKey: ['user-profile', session?.user.id] });
+              queryClient.invalidateQueries({ queryKey: userProfileQueryKey(session?.user.id) });
             }}
             onAutoForwardCompleted={async () => {
               await markAutoForwardSetupComplete(session!.user.id);
-              await queryClient.invalidateQueries({ queryKey: ['user-profile', session?.user.id] });
+              await queryClient.invalidateQueries({ queryKey: userProfileQueryKey(session?.user.id) });
             }}
             styles={styles}
             cl={cl}
@@ -662,7 +598,7 @@ function IdentityStep({
       return;
     }
     console.log('[onboarding:identity] upsert_ok', { elapsed_ms: elapsedMs });
-    queryClient.invalidateQueries({ queryKey: ['user-profile', session.user.id] });
+    queryClient.invalidateQueries({ queryKey: userProfileQueryKey(session.user.id) });
     onContinue();
   }
 
