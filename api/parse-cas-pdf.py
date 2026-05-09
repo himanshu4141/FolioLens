@@ -12,8 +12,17 @@ from api._cdsl_nsdl_parser import HoldingsOnlyError
 
 
 PARSER_SECRET = os.environ.get("CAS_PARSER_SHARED_SECRET", "")
-POSTHOG_KEY = os.environ.get("POSTHOG_PROJECT_KEY", "")
-POSTHOG_HOST = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com")
+
+# PostHog config is shared with the Expo web bundle build that runs in the
+# same Vercel project. The `EXPO_PUBLIC_*` prefix is an Expo build-time
+# convention for inlining values into the client JS bundle; from a Vercel
+# serverless runtime's perspective, an env var is an env var. Reading the
+# same names here means a single Vercel project setting powers both the
+# build-step inline AND this Python function's runtime read — no
+# duplication. (Supabase Edge Functions still use `POSTHOG_PROJECT_KEY`
+# without the prefix because that runtime has no Expo concept.)
+POSTHOG_KEY = os.environ.get("EXPO_PUBLIC_POSTHOG_KEY", "")
+POSTHOG_HOST = os.environ.get("EXPO_PUBLIC_POSTHOG_HOST", "https://us.i.posthog.com")
 APP_ENVIRONMENT = os.environ.get("APP_ENVIRONMENT", "unknown")
 
 
