@@ -359,13 +359,54 @@ After the screen lands and the day-after cron has populated the new columns, the
 - [x] Branch `feat/compare-funds-deep-redesign` created off `main`
 - [x] Schema discovery — confirmed which fields MFData returns vs which we drop; identified `scheme_master` row-count gap (40 rows → needs broader backfill)
 - [x] M3v2 ExecPlan written (this file)
-- [ ] Plan reviewed by user; sign-off obtained
-- [ ] Migration written + applied to dev
-- [ ] `sync-fund-meta` extended + tests
-- [ ] `scheme_master` broader backfill seeded
-- [ ] `<UniversalFundPicker>` + `fundSearch.ts` + tests
-- [ ] `ClearLensCompareFundsScreen` rewrite + tests
-- [ ] PR raised against `main`
+- [x] Plan reviewed by user; sign-off obtained
+- [x] Migration written + applied to dev
+- [x] `sync-fund-meta` extended + deployed
+- [x] `scheme_master` broader backfill seeded (37,595 rows on dev via `seed-scheme-master` edge function)
+- [x] `<UniversalFundPicker>` + `fundSearch.ts` + tests
+- [x] `ClearLensCompareFundsScreen` rewrite + tests
+- [x] PR raised against `main` (#123, merged 2026-05-09)
 - [ ] Local QA pass
 - [ ] PR #100 closed (after this lands)
-- [ ] Past SIP Check picker swap raised as a separate PR
+- [x] Past SIP Check picker swap raised as a separate PR (#124, merged 2026-05-09)
+
+
+## Amendments
+
+The original plan called for an on-demand fetch only as a fallback for held funds without MFData. After PR #123 was reviewed in dev preview, two gaps surfaced that drove a meaningful expansion of scope before merge.
+
+### A1 — Two-layer hydration architecture (added on the same PR before merge)
+
+**Problem.** The original "on-demand fetch held funds without local NAV" only covered NAV history. For non-held picks the user got "—" across most tabs because:
+
+- `scheme_master` only had scheme_code + scheme_name from the AMFI seed (no metadata, no period_returns, no risk_ratios).
+- `fund_portfolio_composition` had no row at all.
+- `nav_history` had no rows.
+
+Even with the universal picker working, the screen reads of those Postgres tables returned empty. On-demand fetch at pick time would have meant a 1-2s spinner for every long-tail pick — bad first impression for the most ambitious scenario the redesign was supposed to enable.
+
+**Decision.** Layer the hydration:
+
+1. **Proactive backfill (primary).** A daily cron walks `scheme_master` oldest-first and hydrates metadata + composition + NAV for every scheme in the AMFI universe. Once seeded, all reads are sub-50ms cache hits in Postgres.
+2. **On-demand snapshot (safety net).** A new edge function fetches the same data for ONE scheme at pick time. Idempotent + cache-aware. Only un-seeded long-tail picks pay the 1-2s; everything the cron has touched is instant.
+
+**What shipped beyond the original plan:**
+
+- Migration `20260509000002_scheme_master_backfill_tracking.sql` adds `last_backfill_attempted_at`, `backfill_outcome`, `backfill_failure_count`, `is_inactive` columns + a partial index on the rotation read.
+- New edge function `supabase/functions/fetch-fund-snapshot/` — mirrors `syncMeta + syncComposition` for ONE scheme. Cache hits skip upstream fetches; full hydration falls back to category rules when `family_id` is missing.
+- New script `scripts/backfill-fund-universe.mjs` and workflow `.github/workflows/backfill-fund-universe.yml` — daily cron at 18:00 UTC against dev + prod, with `workflow_dispatch` for manual runs (configurable `batch_size`, `offset`, `skip_nav`). Default 600 schemes/run, ~30-50 min wall-time, mfdata-throttled. Full universe coverage in ~60 days at default cadence.
+- Marks dead AMFI codes as `is_inactive` after 5 consecutive failures so the cron stops attempting them.
+- Compare Funds screen invokes both `fetch-fund-snapshot` and `fetch-fund-nav` (PR #124) in parallel via `useQueries` on each scheme selection. On success the hydration mutation invalidates `['compare:schemes']`, `['compare:compositions']`, `['compare:navhistory']` so the screen rerenders with fresh rows.
+
+### A2 — NAV history is part of the universe cron (originally on-demand only)
+
+Original plan said "NAV history coverage is on-demand only." Reality: leaving NAV out of the cron meant the Returns + Risk tabs would still be empty for non-held picks (since the on-demand `fetch-fund-nav` is per-pick and slow). NAV is now a third stage in the universe cron alongside metadata + composition. Optional `BACKFILL_SKIP_NAV=1` env var for fast metadata-only runs when NAV isn't needed.
+
+### A3 — Plain-text minor changes during implementation
+
+- Default risk-free rate for Sharpe / Sortino set to `6.5%` (current Indian 1Y T-bill ballpark) — locked in `src/utils/computedFundMetrics.ts:DEFAULT_RISK_FREE_RATE`. Plan said "configurable"; shipped value matches the comment in the code.
+- The `fund` Postgres view was NOT updated to expose the new `scheme_master` columns. PR #125 (FundDetail enrichment) does a parallel `maybeSingle()` query against `scheme_master` for the new fields instead. Cheaper than a `DROP VIEW … CREATE VIEW` migration. If a future surface needs the same fields more broadly, the view should grow then.
+
+### A4 — Adjacent fix captured separately (PR #126, merged)
+
+The PostHog observability env vars (`EXPO_PUBLIC_POSTHOG_KEY`, `EXPO_PUBLIC_POSTHOG_HOST`) were missing from the production-release and main-deploy EAS Update steps, so all mobile events were silently no-oping since the original PostHog rollout (#119). Surfaced during M3v2 testing; fixed via #126 on a separate hotfix branch. Out of scope for M3v2 itself but called out here so future readers don't go looking for the fix in the M3v2 commit history.
