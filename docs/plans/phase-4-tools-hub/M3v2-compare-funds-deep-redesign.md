@@ -46,15 +46,36 @@ docs/plans/phase-4-tools-hub/
 
 ## Assumptions
 
-1. **Fund universe** — `scheme_master` is the catalog. The picker queries `scheme_master` directly, not `user_fund`. User's funds are surfaced via a "Your funds" section pinned at the top.
+1. **Fund universe** — `scheme_master` is the catalog. The picker queries `scheme_master` directly, not `user_fund`. User's funds are surfaced via a "Your funds" section pinned at the top. We seed `scheme_master` with the broader AMFI scheme list (~12k schemes) as part of this PR so the picker has results.
 2. **Up to 3 funds** — same cap as PR #100; 4+ columns are unreadable on a 390 px phone even in tabs.
 3. **Picker UX** — typeahead search by `scheme_name` (case-insensitive prefix + token match) plus filter chips for AMC and category. Debounced 250 ms. Returns first 25 matches; refines as user types.
-4. **MFData persistence** — we store what MFData returns *unchanged*. We don't re-derive Sharpe locally; we trust their numbers and surface them with a "source: MFData, as of YYYY-MM-DD" note.
-5. **Computed fallback for held funds without MFData** — when `period_returns` is null but we have NAV history, we compute trailing CAGR from `nav_history` (existing `computeTrailingReturn`). We do NOT compute Sharpe / Sortino / Beta locally — those are MFData-only. If MFData has nothing, the Risk tab shows a "data unavailable for this fund" state.
+4. **MFData persistence with guards (revised 2026-05-09)** — see "MFData accuracy decision" below. We store the raw `period_returns` and `risk_ratios` blocks but **do not surface them verbatim**. The screen prefers locally-computed numbers from `nav_history` and applies category-aware gating before surfacing risk ratios.
+5. **Computed-from-NAV is primary; MFData is fallback** — for any fund where we have NAV history, we compute 1Y / 3Y / 5Y CAGR locally (existing `computeTrailingReturn`) **and** compute Sharpe + Sortino + Std dev locally from monthly returns. MFData's `period_returns` is used only when local NAV history is too short or absent; MFData's Sharpe / Sortino / Alpha are never surfaced (they're sign-flipped on equity funds — see accuracy report). MFData's `beta`, `r_squared`, `std_deviation` are surfaced for **equity-only categories** with guards.
 6. **Plain-language metric labels** — every Sharpe / Sortino / Beta / Alpha gets a one-sentence "what this means" caption right under the value. Per the brand vision: dejargonify everything.
 7. **Tab persistence within a session** — the active tab persists when the user changes the fund selection; reset on screen unmount.
 8. **`toolsFlags.compareFunds`** — already true on PR #100. This branch flips it to true if PR #100 doesn't merge first.
-9. **Schema additions are additive** — every new column is nullable; no backfill block. The first daily cron after deploy populates the new columns for active schemes.
+9. **Schema additions are additive** — every new column is nullable; no backfill block.
+10. **NAV history coverage** — for held funds we already have NAV history. For non-held funds picked in Compare, we fetch NAV history on-demand from mfapi.in and persist to `nav_history`. First-time pick of an obscure fund has a 1–2 s loading state; subsequent picks are instant.
+
+## MFData accuracy decision (2026-05-09)
+
+A 16-fund comparison study (see `docs/research/mfdata-accuracy-comparison.md`) found:
+
+- **MFData 1Y returns** matched AMFI-computed within 0.5pp on only 3 of 14 funds. Systematic ~1-week stale snapshot biases them low by 1–3pp; one catastrophic outlier (Motilal Nasdaq 100 FoF: 31.46% reported vs 86.92% AMFI-computed).
+- **MFData Sharpe / Sortino** are sign-flipped on 11 of 14 equity funds (they appear to use a 1Y window where Indian equities trail the risk-free rate). Surfacing those numbers verbatim would be actively misleading.
+- **MFData beta on liquid / debt funds**: HDFC Liquid comes back with Beta = 1.4, Sortino = 21.1 — equity-style ratios applied blindly to a money-market fund. Need category gating.
+- **Prior debt-holdings corruption is fully active**: 6 of 16 funds inject benchmark-return rows as numeric strings in `holding_type` / `credit_rating`; 6 of 16 have `equity_pct + debt_pct > 105`. Existing `isDebtDataCorrupted` and `isEquityPctPlausible` guards earn their keep; we add a third (`equity + debt + other > 105` → reject).
+- **Reliable**: AUM, expense ratio, std-dev within 1.5pp (equity funds), beta on equity, category, benchmark, AMC metadata, Morningstar rating, launch_date, exit_load, plan_type.
+
+**Implications baked into this plan:**
+
+- The Returns tab uses **locally-computed CAGR** from `nav_history` for 1Y / 3Y / 5Y. MFData's `period_returns` is a fallback for when local NAV history is short.
+- The Risk tab shows **locally-computed** Sharpe + Sortino + Std dev for equity / hybrid funds. MFData's `risk_ratios.risk.beta` and `risk_ratios.risk.r_squared` are surfaced *only* for equity / hybrid categories — never for liquid / ultra_short / gilt / money_market / overnight / corporate_bond / credit_risk.
+- MFData's Alpha (Jensen's, Treynor) is **never surfaced**. Their methodology is opaque; we can't validate.
+- When in doubt the Risk tab shows "—" with an explainer. Better silent than wrong.
+- We add `isCompositionImplausible` (equity + debt + other > 105) alongside the existing two guards.
+
+The 4th recommended guard from the accuracy report ("label `launch_date == '2013-01-01'` as 'Direct plan since' not 'Fund inception'") is also implemented in the Other tab.
 
 ## Definitions
 
@@ -104,8 +125,8 @@ Prose summary — current insights (5 cards, brand voice)
 
 | Tab | Content | Source |
 |---|---|---|
-| **Returns** | Period table: 1M, 3M, 6M, 1Y, 3Y, 5Y, Inception. Each cell shows the absolute return; the leader's row is bolded. Below the table: category rank for each period (e.g. "DSP Nifty Next 50: rank 12 / 215 over 3Y"). | `period_returns` JSONB on `scheme_master` (NEW). Fallback: computed from `nav_history` for periods MFData lacks. |
-| **Risk** | Six metrics per fund: Sharpe, Sortino, Alpha, Beta, R², Std dev. Each metric has a 1-line plain-language caption and a category-average chip ("Cat avg 0.94") so the user sees relative position. Treynor + Information ratio hidden behind a "Show more metrics" toggle for the curious. | `risk_ratios` JSONB on `scheme_master` (NEW). MFData provides everything plus `category_averages`. |
+| **Returns** | Period table: 1Y, 3Y, 5Y CAGR (Inception only when MFData has it). Each cell shows the absolute return; the leader's row is bolded. Source labelled per-cell — "computed from NAV" or "from MFData". Category rank shown only when MFData provides it. | **Primary: `nav_history` + `computeTrailingReturn` (existing).** Fallback: `period_returns` JSONB on `scheme_master` (NEW). |
+| **Risk** | Three metrics per fund: Sharpe, Sortino, Std dev — locally computed from monthly returns over 3 years. Beta + R² shown only for equity / hybrid categories using MFData's values. Alpha and Treynor never surfaced (MFData methodology opaque + sign-flipped Sharpe shows their assumptions are off). Each metric has a 1-line plain-language caption. | **Primary: locally-computed from `nav_history`.** Beta + R² only: `risk_ratios.risk.beta` / `risk_ratios.risk.r_squared` from MFData, with category gating. |
 | **Asset mix** | Three rows: Equity / Debt / Cash split per fund (already stored). Below: Market-cap mix (Large / Mid / Small) per fund. | Existing `fund_portfolio_composition` columns. |
 | **Sectors** | Sector allocation table (top 10 sectors by weight, sorted by leader fund). Each cell shows the sector's weight in that fund. Includes a "Credit rating" sub-section for funds with debt — derived from `raw_debt_holdings[].credit_rating` aggregated by weight. | `sector_allocation`, `raw_debt_holdings` (already stored). |
 | **Holdings** | Two sub-tables: **Top equity holdings** (up to 25 names, weight per fund — empty cell if a fund doesn't hold the name) and **Top debt holdings** (when at least one fund is a debt / hybrid fund). | `top_holdings`, `raw_debt_holdings` (already stored). |
@@ -272,9 +293,10 @@ async function searchSchemes(term: string, limit = 25, offset = 0) {
 
 Confirm RLS on `scheme_master` is read-all-auth before relying on this.
 
-## Out of Scope (deferred)
+## Out of Scope (deferred to follow-up PRs)
 
-- **Past SIP Check picker swap.** Uses the new shared `<UniversalFundPicker>` — separate PR after this lands.
+- **PR B — Past SIP Check picker swap.** Replaces the held-funds-only picker with `<UniversalFundPicker>` and adds on-demand NAV fetch from mfapi.in for non-held funds. Branched off this PR.
+- **PR C — FundDetail screen enrichment.** Surfaces the new `scheme_master` fields (fund age, exit load, min lumpsum / additional / SIP, plan type, AMC, family, Morningstar rating) and the locally-computed period returns + risk ratios on the existing FundDetail screen. Branched off PR B for stack linearity.
 - **M4 cross-app additions.** Already deferred to M4b.
 - **Universal NAV history fetch on demand.** If a user picks a fund nobody else holds, we don't have NAV history for it locally. Mitigation: the Returns tab uses `period_returns` from `scheme_master` (covers 1M / 3M / 6M / 1Y / 3Y / 5Y / Inception via MFData even without local NAV). Risk ratios same source. Asset mix / sectors / holdings come from `fund_portfolio_composition`, which is keyed by scheme_code and exists for any scheme our backfill has touched. For schemes with no composition row, the relevant tabs render an "Insufficient data — sync hasn't covered this scheme yet" empty state.
 - **Per-day NAV chart in the Compare screen.** Out of scope for V1 — Past SIP Check covers SIP-aware growth comparison; Compare is for static metric comparison.
