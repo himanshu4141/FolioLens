@@ -12,9 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
-import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
+import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
@@ -30,15 +30,6 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
-
-async function fetchProfile(userId: string) {
-  const { data } = await supabase
-    .from('user_profile')
-    .select('pan, kfintech_email, dob')
-    .eq('user_id', userId)
-    .maybeSingle();
-  return data ?? null;
-}
 
 function formatDob(iso: string): string {
   const [yyyy, mm, dd] = iso.split('-');
@@ -67,17 +58,7 @@ export default function AccountScreen() {
   // user-feedback table as feature requests / bug reports.
   const [correctionField, setCorrectionField] = useState<'pan' | 'dob' | null>(null);
 
-  const { data: profile, isLoading } = useQuery({
-    queryKey: ['user-profile', userId],
-    queryFn: () => fetchProfile(userId!),
-    enabled: !!userId,
-    // Always refetch when the screen mounts. The wizard's IdentityStep
-    // upserts user_profile and invalidates this same query key, but if the
-    // Settings screen was opened in a *different* navigation stack the
-    // cached `null` from a first-run visit can outlive the upsert. Forcing
-    // a refetch on mount guarantees this row reflects the DB.
-    refetchOnMount: 'always',
-  });
+  const { data: profile, isLoading } = useUserProfile(userId);
 
   async function handleLinkGoogle() {
     setLinkError(null);
