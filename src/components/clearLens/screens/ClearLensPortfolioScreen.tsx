@@ -21,6 +21,7 @@ import {
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
   useInvestmentVsBenchmarkTimeline,
@@ -856,6 +857,7 @@ export function PortfolioEmptyState({ onImport }: { onImport: () => void }) {
 }
 
 export function ClearLensPortfolioScreen() {
+  useTrackInsightViewed('home');
   const { layout } = useResponsiveLayout();
   if (layout === 'desktop') return <ClearLensPortfolioScreenDesktop />;
   return <ClearLensPortfolioScreenMobile />;

@@ -22,6 +22,7 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useAppStore, type GoalReturnPreset } from '@/src/store/appStore';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import {
   buildGoalProjectionSeries,
   computeGoalPlan,
@@ -40,6 +41,7 @@ const TAB_OPTIONS: { value: TabKey; label: string }[] = [
 ];
 
 export function ClearLensGoalSummaryScreen() {
+  useTrackInsightViewed('goal_summary');
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { id } = useLocalSearchParams<{ id: string }>();

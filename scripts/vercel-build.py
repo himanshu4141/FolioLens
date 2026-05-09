@@ -56,9 +56,17 @@ def main() -> int:
     # project's tag-pushed deploy and the DEV project's main-merge deploy
     # (both report VERCEL_ENV=production). Per-PR previews on the DEV project
     # report VERCEL_ENV=preview and stay quiet.
+    #
+    # PostHog uses the same gate. On non-production builds we explicitly strip
+    # any EXPO_PUBLIC_POSTHOG_KEY / _HOST present in the env so a Vercel
+    # variable misscoped to "All Environments" can't leak a real key into a
+    # PR-preview bundle.
     build_env = os.environ.copy()
     if build_env.get("VERCEL_ENV") == "production":
         build_env["EXPO_PUBLIC_ENABLE_INSIGHTS"] = "1"
+    else:
+        build_env.pop("EXPO_PUBLIC_POSTHOG_KEY", None)
+        build_env.pop("EXPO_PUBLIC_POSTHOG_HOST", None)
 
     proc = subprocess.Popen(
         command,

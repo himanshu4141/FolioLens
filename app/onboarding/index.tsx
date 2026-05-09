@@ -49,6 +49,7 @@ import {
   saveOnboardingDraft,
 } from '@/src/utils/onboardingDraft';
 import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import { analytics } from '@/src/lib/analytics';
 
 type WizardStyles = ReturnType<typeof makeStyles>;
 type Cl = ClearLensTokens['colors'];
@@ -312,6 +313,39 @@ function OnboardingWizard() {
     if (!hydrated) return;
     void saveOnboardingDraft(draft);
   }, [draft, hydrated]);
+
+  // Analytics: onboarding funnel. Three events fire from this single effect
+  // so the wiring stays close to the state machine that drives them.
+  //   `onboarding_started` once, the first time the user sees a non-done step
+  //   `onboarding_step_completed` on each step→step transition (named after
+  //     the step the user is *leaving*, which is what funnel queries want)
+  //   `onboarding_completed` once, when the wizard reaches `done`
+  const onboardingStartedRef = useRef(false);
+  const previousStepRef = useRef<OnboardingStep | null>(null);
+  const onboardingCompletedRef = useRef(false);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const currentStep = draft.step;
+    if (!onboardingStartedRef.current && currentStep !== 'done') {
+      onboardingStartedRef.current = true;
+      analytics.track('onboarding_started', {
+        entry_point: profile?.pan ? 'returning_anon' : 'fresh_install',
+      });
+    }
+    const previous = previousStepRef.current;
+    if (previous && previous !== currentStep) {
+      analytics.track('onboarding_step_completed', {
+        step: previous,
+        step_index: STEP_ORDER.indexOf(previous),
+      });
+      if (currentStep === 'done' && !onboardingCompletedRef.current) {
+        onboardingCompletedRef.current = true;
+        analytics.track('onboarding_completed');
+      }
+    }
+    previousStepRef.current = currentStep;
+  }, [hydrated, draft.step, profile?.pan]);
 
   const currentIndex = STEP_ORDER.indexOf(draft.step);
 

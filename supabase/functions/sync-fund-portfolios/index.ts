@@ -21,6 +21,7 @@
 
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
+import { trackServerEventAwait } from '../_shared/analytics.ts';
 import {
   type CategoryComposition,
   isNumericString,
@@ -298,6 +299,7 @@ interface SchemeRow {
 // ---------------------------------------------------------------------------
 
 Deno.serve(async (req) => {
+  const startedAt = Date.now();
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
   console.log('[sync-fund-portfolios] invoked method=%s', req.method);
@@ -473,8 +475,23 @@ Deno.serve(async (req) => {
     }
   }
 
-  console.log('[sync-fund-portfolios] done — amfiSynced=%d categorySynced=%d errors=%d',
-    amfiSynced, categorySynced, amfiErrors.length);
+  const elapsedMs = Date.now() - startedAt;
+  console.log('[sync-fund-portfolios] done — amfiSynced=%d categorySynced=%d errors=%d, elapsed_ms=%d',
+    amfiSynced, categorySynced, amfiErrors.length, elapsedMs);
+
+  await trackServerEventAwait(
+    amfiErrors.length > 0 && amfiSynced === 0 ? 'sync_failed' : 'sync_completed',
+    {
+      job: 'sync-fund-portfolios',
+      schemes_processed: schemes.length,
+      amfi_synced: amfiSynced,
+      category_synced: categorySynced,
+      fresh_skipped: freshAmfiCodes.size,
+      errors_count: amfiErrors.length,
+      elapsed_ms: elapsedMs,
+    },
+    'system:sync-fund-portfolios',
+  );
 
   return json({
     success: true,

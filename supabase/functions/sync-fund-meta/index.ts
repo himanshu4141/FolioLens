@@ -19,6 +19,7 @@
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { trackServerEventAwait } from '../_shared/analytics.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -79,6 +80,7 @@ async function fetchMfapiIsin(schemeCode: number): Promise<string | null> {
 }
 
 Deno.serve(async (_req) => {
+  const startedAt = Date.now();
   console.log('[sync-fund-meta] invocation started');
 
   const { data: funds, error: fundsError } = await supabase
@@ -206,7 +208,21 @@ Deno.serve(async (_req) => {
     }
   }
 
-  console.log(`[sync-fund-meta] done — updated=${updated} failed=${failed} skipped=${freshCodes.size}`);
+  const elapsedMs = Date.now() - startedAt;
+  console.log(`[sync-fund-meta] done — updated=${updated} failed=${failed} skipped=${freshCodes.size} elapsed_ms=${elapsedMs}`);
+
+  await trackServerEventAwait(
+    failed > 0 && updated === 0 ? 'sync_failed' : 'sync_completed',
+    {
+      job: 'sync-fund-meta',
+      updated,
+      failed,
+      skipped: freshCodes.size,
+      elapsed_ms: elapsedMs,
+    },
+    'system:sync-fund-meta',
+  );
+
   return new Response(JSON.stringify({ updated, failed, skipped: freshCodes.size }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },

@@ -24,6 +24,7 @@ import { useFundComposition } from '@/src/hooks/useFundComposition';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
 import { useInvestmentVsBenchmarkTimeline } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { computeQuarterlyReturns } from '@/src/utils/quarterlyReturns';
 import { formatXirr } from '@/src/utils/xirr';
@@ -1636,6 +1637,7 @@ type ClearLensFundTab = 'performance' | 'nav' | 'composition';
 
 function ClearLensFundDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  useTrackInsightViewed('fund_detail', id ?? null);
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ClearLensFundTab>('performance');
   const { data, isLoading, isError } = useFundDetail(id);

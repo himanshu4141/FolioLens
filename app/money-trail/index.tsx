@@ -19,6 +19,7 @@ import {
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { ResponsiveRouteFrame, useIsDesktop } from '@/src/components/responsive';
 import { useAppStore } from '@/src/store/appStore';
 import {
@@ -799,6 +800,7 @@ function EmptyTransactions({ filtered, onPrimary }: { filtered: boolean; onPrima
 const SCROLL_TOP_THRESHOLD = 480;
 
 export default function MoneyTrailScreen() {
+  useTrackInsightViewed('money_trail');
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();

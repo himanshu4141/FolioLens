@@ -12,12 +12,14 @@
 
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
+import { trackServerEventAwait } from '../_shared/analytics.ts';
 
 const BATCH_SIZE = 500;
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 10_000; // abort per-scheme fetch if mfapi.in hangs
 
 Deno.serve(async (req) => {
+  const startedAt = Date.now();
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: CORS });
   }
@@ -139,9 +141,22 @@ Deno.serve(async (req) => {
     }
   }
 
+  const elapsedMs = Date.now() - startedAt;
   console.log(
-    '[sync-nav] done — schemes=%d, rows=%d, errors=%d',
-    schemeCodes.length, totalUpserted, errors.length,
+    '[sync-nav] done — schemes=%d, rows=%d, errors=%d, elapsed_ms=%d',
+    schemeCodes.length, totalUpserted, errors.length, elapsedMs,
+  );
+
+  await trackServerEventAwait(
+    errors.length > 0 && totalUpserted === 0 ? 'sync_failed' : 'sync_completed',
+    {
+      job: 'sync-nav',
+      schemes_processed: schemeCodes.length,
+      rows_upserted: totalUpserted,
+      errors_count: errors.length,
+      elapsed_ms: elapsedMs,
+    },
+    'system:sync-nav',
   );
 
   return json({

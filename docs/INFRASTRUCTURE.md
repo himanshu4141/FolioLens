@@ -215,6 +215,7 @@ All secrets are stored in **GitHub Actions repository secrets**.
 | `VERCEL_TOKEN` | `production-release.yml` | Personal access token from Vercel → Account → Tokens |
 | `VERCEL_ORG_ID` | `production-release.yml` | `team_HeMWH6xlqe2BOC0NpT85uZPV` |
 | `VERCEL_PROJECT_ID_PROD` | `production-release.yml` | `prj_mjY4K0rYmgNhoGMyJ5oC9xMLcTAi` |
+| `POSTHOG_PROJECT_KEY` | `sync-amfi-portfolios.yml` | Same `phc_...` token as the client SDKs and Edge Function runtime use. Optional; the workflow no-ops the PostHog step if unset. |
 
 
 On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the following are set per project:
@@ -229,6 +230,9 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `ROUTER_NOTIFY_URL` | (optional) Vercel cas-import-notify endpoint, defaults to `https://app.foliolens.in/api/cas-import-notify` | same |
 | `NOTIFY_ENVIRONMENT` | `dev` — picks the dev Resend template + dev From address at the router | `prod` — picks the prod Resend template + prod From address |
 | `VERCEL_PROTECTION_BYPASS_TOKEN` | only when Vercel protection is enabled | same |
+| `POSTHOG_PROJECT_KEY` | same `phc_...` as the client SDKs use; enables server-side `cas_parse_*` / `cas_inbound_*` / `sync_*` events | same |
+| `POSTHOG_HOST` | optional; defaults to `https://us.i.posthog.com`. Set to `https://eu.i.posthog.com` if the PostHog project is on EU Cloud | same |
+| `APP_ENVIRONMENT` | `dev` — tags every server-side event so dashboards can filter prod from dev when one PostHog project ingests both | `production` |
 
 **Removed in Issue #107**: `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`, `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, and `RESEND_NOTIFICATION_FROM` no longer live on Supabase. After deploying this PR, delete those four secrets from both DEV and PROD Supabase project dashboards. They moved to the Vercel project (see "Inbound router" section below).
 
@@ -307,9 +311,14 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 ## Observability
 
 
+- **PostHog** — single pane for product events and operational health, fed from every surface that runs FolioLens code:
+  - **Client (native + web)**: `onboarding_started` / `onboarding_step_completed` / `onboarding_completed` / `portfolio_imported` / `insight_viewed` / `app_started` / `app_returned` plus `$exception` from uncaught errors. Gated by `EXPO_PUBLIC_POSTHOG_KEY`.
+  - **Supabase Edge Functions**: `cas_parse_success` / `cas_parse_failed` (parse-cas-pdf), `cas_inbound_imported` / `cas_inbound_failed` / `cas_inbound_crashed` (cas-webhook-resend), `sync_completed` / `sync_failed` per cron job. Direct HTTP capture from the function — no JSR dep, no cold-start hit. Server env: `POSTHOG_PROJECT_KEY`, `POSTHOG_HOST`, `APP_ENVIRONMENT`.
+  - **Vercel Python parser**: `cas_parser_python_outcome` with `outcome ∈ {success, wrong_password, holdings_only, exception}`.
+  - **GitHub Actions AMFI sync**: `amfi_sync_completed` with `outcome ∈ {success, failure}` and a `workflow_run_url` so a failed monthly sync can be triaged in two clicks. Closes the alerting gap from the readiness audit.
+- **Vercel Speed Insights + Web Analytics** — Web Vitals (LCP / INP / CLS) per-route and infrastructure-side page views for the Vercel-served web build. Complements PostHog (which captures user-journey events but not Web Vitals).
 - **Supabase Logs** — Auth, Edge Function, and Database logs viewable in the dashboard. Auth log level is set to "errors only" by default; set to "info" temporarily when debugging sign-in flows.
 - **Vercel Logs** — only the dev project receives meaningful traffic; prod logs are sparse since the app is mostly RN with thin web shell.
-- **Expo Insights** — `expo-insights` is in the bundle. App-launch counts, OTA update reach, and version distribution show up at expo.dev → Project → Insights.
 - **Supabase Dashboard → Database → Cron Jobs** — confirms each pg_cron job is firing on schedule.
 - **Resend Dashboard → Logs** — outbound delivery and inbound webhook firing per email.
 
@@ -324,6 +333,7 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 - Cloudflare: free tier
 - Google OAuth: free
 - Vercel Python parser: deployed to the same `foliolens` Vercel project's Serverless Functions — counts toward Vercel's Hobby execution-time budget
+- PostHog: free tier (1M events / mo). Comfortably above closed-beta volume.
 
 
 ## Out of scope (for now)
