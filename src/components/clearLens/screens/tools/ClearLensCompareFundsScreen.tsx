@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import {
@@ -210,6 +210,7 @@ export function ClearLensCompareFundsScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { session } = useSession();
   const userId = session?.user.id ?? null;
+  const queryClient = useQueryClient();
 
   const [selectedCodes, setSelectedCodes] = useState<number[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -227,6 +228,44 @@ export function ClearLensCompareFundsScreen() {
       setSelectedCodes(userFundsQuery.data!.slice(0, MIN_FUNDS).map((f) => f.schemeCode));
     }
   }, [userFundsQuery.data, selectedCodes.length]);
+
+  // On-demand safety net for picks the universe-backfill cron hasn't covered
+  // yet. Idempotent — both edge functions are no-ops when the cache is fresh.
+  // We invalidate the dependent queries on success so the screen rerenders
+  // with the freshly-hydrated rows.
+  const hydrationQueries = useQueries({
+    queries: selectedCodes.flatMap((code) => [
+      {
+        queryKey: ['compare:hydrate-snapshot', code],
+        queryFn: async () => {
+          const { data, error } = await supabase.functions.invoke<{ status: string }>(
+            'fetch-fund-snapshot',
+            { body: { scheme_code: code } },
+          );
+          if (error) throw new Error(`fetch-fund-snapshot: ${error.message}`);
+          // Refresh the dependent queries — schemes and compositions tables
+          // were just touched.
+          queryClient.invalidateQueries({ queryKey: ['compare:schemes'] });
+          queryClient.invalidateQueries({ queryKey: ['compare:compositions'] });
+          return data;
+        },
+        staleTime: 5 * 60 * 1000,
+      },
+      {
+        queryKey: ['compare:hydrate-nav', code],
+        queryFn: async () => {
+          const { data, error } = await supabase.functions.invoke<{ status: string }>(
+            'fetch-fund-nav',
+            { body: { scheme_code: code } },
+          );
+          if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
+          queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
+          return data;
+        },
+        staleTime: 5 * 60 * 1000,
+      },
+    ]),
+  });
 
   const schemesQuery = useQuery({
     queryKey: ['compare:schemes', selectedCodes],
@@ -246,6 +285,10 @@ export function ClearLensCompareFundsScreen() {
     queryFn: () => fetchNavHistoryForCodes(selectedCodes),
     staleTime: 5 * 60 * 1000,
   });
+
+  // Surface a single "still hydrating" boolean — true when any on-demand
+  // safety-net query is in flight and its dependent screen data isn't there yet.
+  const isHydrating = hydrationQueries.some((q) => q.isFetching);
 
   // Order the schemes to match selection order.
   const schemes = useMemo<SchemeMasterRow[]>(() => {
@@ -317,7 +360,11 @@ export function ClearLensCompareFundsScreen() {
     );
   }
 
-  const isLoading = selectedCodes.length > 0 && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading);
+  // Show the spinner while either the Postgres reads OR the on-demand
+  // safety-net hydration is still in flight. For backfilled schemes the
+  // hydration finishes near-instantly (cache_hit on both functions).
+  const isLoading = selectedCodes.length > 0
+    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading || isHydrating);
 
   return (
     <ClearLensScreen>
