@@ -63,6 +63,14 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}
           EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_PROD }}
           EXPO_PUBLIC_APP_BASE_URL: ${{ secrets.EXPO_PUBLIC_APP_BASE_URL_PROD }}
+          # PostHog client key — Metro inlines EXPO_PUBLIC_* at bundle time, so
+          # this MUST be present in the env when `eas update` runs. Without it,
+          # src/lib/analytics.native.ts no-ops and zero events flow.
+          EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          # PostHog host — the project is on EU. Without this, the SDK falls
+          # back to the US default (us.i.posthog.com) and all events are
+          # silently dropped at the wrong cloud's ingest endpoint.
+          EXPO_PUBLIC_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           EAS_UPDATE_CHANNEL: foliolens-production
           EAS_UPDATE_MESSAGE: "Release: ${{ github.ref_name }}"
       - name: Trace OTA update IDs
