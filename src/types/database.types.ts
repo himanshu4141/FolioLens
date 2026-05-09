@@ -12,31 +12,6 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.4"
   }
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       benchmark_mapping: {
@@ -188,6 +163,8 @@ export type Database = {
           index_date: string
           index_name: string
           index_symbol: string
+          ntr_value: number | null
+          source: string
         }
         Insert: {
           close_value: number
@@ -196,6 +173,8 @@ export type Database = {
           index_date: string
           index_name: string
           index_symbol: string
+          ntr_value?: number | null
+          source?: string
         }
         Update: {
           close_value?: number
@@ -204,6 +183,8 @@ export type Database = {
           index_date?: string
           index_name?: string
           index_symbol?: string
+          ntr_value?: number | null
+          source?: string
         }
         Relationships: []
       }
@@ -233,61 +214,94 @@ export type Database = {
       }
       scheme_master: {
         Row: {
+          amc_name: string | null
+          amc_slug: string | null
           aum_cr: number | null
           benchmark_index: string | null
           benchmark_index_symbol: string | null
           created_at: string
           declared_benchmark_name: string | null
+          exit_load: string | null
           expense_ratio: number | null
+          family_name: string | null
           fund_meta_synced_at: string | null
           isin: string | null
+          launch_date: string | null
           mfdata_family_id: number | null
           mfdata_meta_synced_at: string | null
+          min_additional: number | null
+          min_lumpsum: number | null
           min_sip_amount: number | null
           morningstar_rating: number | null
+          option_type: string | null
+          period_returns: Json | null
+          plan_type: string | null
           related_variants: Json | null
           risk_label: string | null
-          scheme_category: string
+          risk_ratios: Json | null
+          scheme_category: string | null
           scheme_code: number
           scheme_name: string
           updated_at: string
         }
         Insert: {
+          amc_name?: string | null
+          amc_slug?: string | null
           aum_cr?: number | null
           benchmark_index?: string | null
           benchmark_index_symbol?: string | null
           created_at?: string
           declared_benchmark_name?: string | null
+          exit_load?: string | null
           expense_ratio?: number | null
+          family_name?: string | null
           fund_meta_synced_at?: string | null
           isin?: string | null
+          launch_date?: string | null
           mfdata_family_id?: number | null
           mfdata_meta_synced_at?: string | null
+          min_additional?: number | null
+          min_lumpsum?: number | null
           min_sip_amount?: number | null
           morningstar_rating?: number | null
+          option_type?: string | null
+          period_returns?: Json | null
+          plan_type?: string | null
           related_variants?: Json | null
           risk_label?: string | null
-          scheme_category: string
+          risk_ratios?: Json | null
+          scheme_category?: string | null
           scheme_code: number
           scheme_name: string
           updated_at?: string
         }
         Update: {
+          amc_name?: string | null
+          amc_slug?: string | null
           aum_cr?: number | null
           benchmark_index?: string | null
           benchmark_index_symbol?: string | null
           created_at?: string
           declared_benchmark_name?: string | null
+          exit_load?: string | null
           expense_ratio?: number | null
+          family_name?: string | null
           fund_meta_synced_at?: string | null
           isin?: string | null
+          launch_date?: string | null
           mfdata_family_id?: number | null
           mfdata_meta_synced_at?: string | null
+          min_additional?: number | null
+          min_lumpsum?: number | null
           min_sip_amount?: number | null
           morningstar_rating?: number | null
+          option_type?: string | null
+          period_returns?: Json | null
+          plan_type?: string | null
           related_variants?: Json | null
           risk_label?: string | null
-          scheme_category?: string
+          risk_ratios?: Json | null
+          scheme_category?: string | null
           scheme_code?: number
           scheme_name?: string
           updated_at?: string
@@ -357,6 +371,48 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      user_feedback: {
+        Row: {
+          app_version: string | null
+          attachment_path: string | null
+          body: string
+          created_at: string
+          id: string
+          status: string
+          title: string
+          type: string
+          update_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          app_version?: string | null
+          attachment_path?: string | null
+          body: string
+          created_at?: string
+          id?: string
+          status?: string
+          title: string
+          type: string
+          update_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          app_version?: string | null
+          attachment_path?: string | null
+          body?: string
+          created_at?: string
+          id?: string
+          status?: string
+          title?: string
+          type?: string
+          update_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       user_fund: {
         Row: {
@@ -429,48 +485,6 @@ export type Database = {
         }
         Relationships: []
       }
-      user_feedback: {
-        Row: {
-          app_version: string | null
-          attachment_path: string | null
-          body: string
-          created_at: string
-          id: string
-          status: string
-          title: string
-          type: string
-          update_id: string | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          app_version?: string | null
-          attachment_path?: string | null
-          body: string
-          created_at?: string
-          id?: string
-          status?: string
-          title: string
-          type: string
-          update_id?: string | null
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          app_version?: string | null
-          attachment_path?: string | null
-          body?: string
-          created_at?: string
-          id?: string
-          status?: string
-          title?: string
-          type?: string
-          update_id?: string | null
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
     }
     Views: {
       fund: {
@@ -509,7 +523,9 @@ export type Database = {
       }
     }
     Functions: {
-      [_ in never]: never
+      gen_cas_inbox_token: { Args: { p_user_id: string }; Returns: string }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
     }
     Enums: {
       import_source: "email" | "qr" | "pdf"
@@ -645,9 +661,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {
       import_source: ["email", "qr", "pdf"],

@@ -29,6 +29,7 @@ const config = {
     '!src/lib/analytics.web.ts',  // browser-only impl; covered by manual smoke
     '!src/lib/analytics.native.ts', // RN-only impl; covered by manual smoke
     '!src/lib/installGlobalErrorHandlers.ts', // RN/window globals; covered by manual smoke
+    '!src/utils/fundSearch.ts', // thin supabase query wrappers; not runnable in Node
   ],
   coverageThreshold: {
     // Functions threshold is the lowest of the four because the global

@@ -42,8 +42,23 @@ interface MFDataSchemePayload {
   risk_label?: string | null;
   aum?: number | null;
   min_sip?: number | null;
+  min_lumpsum?: number | null;
+  min_additional?: number | null;
+  exit_load?: string | null;
+  launch_date?: string | null;
+  plan_type?: string | null;
+  option_type?: string | null;
+  family_name?: string | null;
+  amc_name?: string | null;
+  amc_slug?: string | null;
   benchmark?: string | null;
   related_variants?: unknown[] | null;
+  // MFData also returns `returns` and `ratios` blocks. We persist them as
+  // raw JSONB on scheme_master.period_returns / scheme_master.risk_ratios.
+  // The screen does NOT trust these verbatim — see src/utils/mfdataGuards.ts
+  // for the category-aware gating + composition guards we apply at read time.
+  returns?: Record<string, unknown> | null;
+  ratios?: Record<string, unknown> | null;
 }
 
 interface MFDataSchemeResponse {
@@ -153,8 +168,19 @@ Deno.serve(async (_req) => {
       const aum_cr = toCrores(mfdata?.aum ?? null);
       const min_sip_amount =
         mfdata?.min_sip != null ? Math.round(Number(mfdata.min_sip)) : null;
+      const min_lumpsum =
+        mfdata?.min_lumpsum != null ? Math.round(Number(mfdata.min_lumpsum)) : null;
+      const min_additional =
+        mfdata?.min_additional != null ? Math.round(Number(mfdata.min_additional)) : null;
       const morningstar_rating =
         mfdata?.morningstar != null ? Math.round(Number(mfdata.morningstar)) : null;
+
+      // launch_date arrives as 'YYYY-MM-DD' or full ISO. Postgres will accept
+      // either via the date column; we just trim whitespace.
+      const launch_date =
+        typeof mfdata?.launch_date === 'string' && mfdata.launch_date.trim().length > 0
+          ? mfdata.launch_date.trim()
+          : null;
 
       if (
         !isin &&
@@ -179,6 +205,9 @@ Deno.serve(async (_req) => {
       if (expense_ratio != null) updatePayload.expense_ratio = expense_ratio;
       if (aum_cr != null) updatePayload.aum_cr = aum_cr;
       if (min_sip_amount != null) updatePayload.min_sip_amount = min_sip_amount;
+      if (min_lumpsum != null) updatePayload.min_lumpsum = min_lumpsum;
+      if (min_additional != null) updatePayload.min_additional = min_additional;
+      if (launch_date) updatePayload.launch_date = launch_date;
       if (mfdata) {
         updatePayload.mfdata_family_id = mfdata.family_id ?? null;
         updatePayload.declared_benchmark_name = mfdata.benchmark ?? null;
@@ -186,6 +215,16 @@ Deno.serve(async (_req) => {
         updatePayload.morningstar_rating = morningstar_rating;
         updatePayload.related_variants = mfdata.related_variants ?? null;
         updatePayload.mfdata_meta_synced_at = now;
+        // M3v2 (2026-05-09) — extended metadata. Stored as-received; the read
+        // path applies category gating + composition guards before surfacing.
+        updatePayload.exit_load = mfdata.exit_load ?? null;
+        updatePayload.plan_type = mfdata.plan_type ?? null;
+        updatePayload.option_type = mfdata.option_type ?? null;
+        updatePayload.family_name = mfdata.family_name ?? null;
+        updatePayload.amc_name = mfdata.amc_name ?? null;
+        updatePayload.amc_slug = mfdata.amc_slug ?? null;
+        updatePayload.period_returns = mfdata.returns ?? null;
+        updatePayload.risk_ratios = mfdata.ratios ?? null;
       }
 
       const { error: updateError } = await supabase
