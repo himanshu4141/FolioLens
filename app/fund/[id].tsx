@@ -901,6 +901,15 @@ function TechnicalDetailsCard({
   fundMetaSyncedAt,
   schemeCode,
   isin,
+  launchDate,
+  exitLoad,
+  minLumpsum,
+  minAdditional,
+  planType,
+  amcName,
+  morningstarRating,
+  riskLabel,
+  schemeCategory,
 }: {
   expenseRatio: number | null;
   aumCr: number | null;
@@ -908,6 +917,15 @@ function TechnicalDetailsCard({
   fundMetaSyncedAt: string | null;
   schemeCode: number;
   isin: string | null;
+  launchDate: string | null;
+  exitLoad: string | null;
+  minLumpsum: number | null;
+  minAdditional: number | null;
+  planType: 'direct' | 'regular' | null;
+  amcName: string | null;
+  morningstarRating: number | null;
+  riskLabel: string | null;
+  schemeCategory: string | null;
 }) {
   const { compatible: colors } = useClearLensTokens();
   const ts = useMemo(() => makeTechStyles(colors), [colors]);
@@ -922,10 +940,20 @@ function TechnicalDetailsCard({
     Linking.openURL(url);
   }
 
+  // Fund age — accounting for the SEBI direct-plan introduction-date gotcha.
+  const ageInfo = useMemo(() => formatFundAge(launchDate), [launchDate]);
+
+  // Star rating display
+  const stars = morningstarRating != null
+    ? `${'★'.repeat(morningstarRating)}${'☆'.repeat(Math.max(0, 5 - morningstarRating))}`
+    : null;
+
   return (
     <View style={[ts.card, ts.clearLensCard]}>
-      <Text style={ts.title}>Technical Details</Text>
+      <Text style={ts.title}>Fund details</Text>
       <Text style={ts.metaStatus}>{metaStatus}</Text>
+
+      {/* Top row — the three numbers users glance at most */}
       <View style={ts.row}>
         <View style={ts.cell}>
           <Text style={ts.label}>Expense Ratio</Text>
@@ -940,17 +968,96 @@ function TechnicalDetailsCard({
           </Text>
         </View>
         <View style={ts.cell}>
-          <Text style={ts.label}>Min SIP</Text>
-          <Text style={ts.value}>
-            {minSipAmount == null ? 'Unavailable' : `₹${minSipAmount.toLocaleString('en-IN')}`}
-          </Text>
+          <Text style={ts.label}>Fund age</Text>
+          <Text style={ts.value}>{ageInfo.value}</Text>
+          {ageInfo.caption ? (
+            <Text style={ts.captionSmall}>{ageInfo.caption}</Text>
+          ) : null}
         </View>
       </View>
+
+      {/* Second row — investment minimums + exit load */}
+      <View style={ts.row}>
+        <View style={ts.cell}>
+          <Text style={ts.label}>Min SIP</Text>
+          <Text style={ts.value}>
+            {minSipAmount == null ? '—' : `₹${minSipAmount.toLocaleString('en-IN')}`}
+          </Text>
+        </View>
+        <View style={ts.cell}>
+          <Text style={ts.label}>Min lumpsum</Text>
+          <Text style={ts.value}>
+            {minLumpsum == null ? '—' : `₹${minLumpsum.toLocaleString('en-IN')}`}
+          </Text>
+        </View>
+        <View style={ts.cell}>
+          <Text style={ts.label}>Exit load</Text>
+          <Text style={ts.value}>{exitLoad ?? '—'}</Text>
+        </View>
+      </View>
+
+      {/* Third row — plan type + AMC + Morningstar */}
+      <View style={ts.row}>
+        <View style={ts.cell}>
+          <Text style={ts.label}>Plan</Text>
+          <Text style={ts.value}>
+            {planType ? planType[0].toUpperCase() + planType.slice(1) : '—'}
+          </Text>
+        </View>
+        <View style={ts.cell}>
+          <Text style={ts.label}>AMC</Text>
+          <Text style={ts.valueSmall} numberOfLines={2}>{amcName ?? '—'}</Text>
+        </View>
+        <View style={ts.cell}>
+          <Text style={ts.label}>Morningstar</Text>
+          <Text style={ts.value}>{stars ?? '—'}</Text>
+        </View>
+      </View>
+
+      {/* Fourth row — category + risk label + min additional */}
+      {(schemeCategory || riskLabel || minAdditional != null) ? (
+        <View style={ts.row}>
+          <View style={ts.cell}>
+            <Text style={ts.label}>Category</Text>
+            <Text style={ts.valueSmall} numberOfLines={2}>{schemeCategory || '—'}</Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>Riskometer</Text>
+            <Text style={ts.valueSmall}>{riskLabel ?? '—'}</Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>Min addl</Text>
+            <Text style={ts.value}>
+              {minAdditional == null ? '—' : `₹${minAdditional.toLocaleString('en-IN')}`}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
       <TouchableOpacity onPress={openFactsheet} style={ts.sidLink}>
         <Text style={ts.sidLinkText}>View fund factsheet ↗</Text>
       </TouchableOpacity>
     </View>
   );
+}
+
+/**
+ * Format launch_date as a fund age string with a caption that disambiguates
+ * the SEBI direct-plan introduction date (2013-01-01 — when most direct
+ * plans were created, not when the underlying fund was launched).
+ */
+function formatFundAge(launchDate: string | null): { value: string; caption: string | null } {
+  if (!launchDate) return { value: '—', caption: null };
+  const d = new Date(launchDate);
+  if (Number.isNaN(d.getTime())) return { value: '—', caption: null };
+  const ms = Date.now() - d.getTime();
+  const years = ms / (365.25 * 24 * 60 * 60 * 1000);
+  const value = years < 1 ? `${Math.max(0, Math.round(years * 12))}m` : `${years.toFixed(1)}y`;
+  const isDirectPlanDate = launchDate.startsWith('2013-01-01');
+  const caption = isDirectPlanDate
+    ? 'direct plan since 2013'
+    : `since ${launchDate.slice(0, 10)}`;
+  return { value, caption };
 }
 
 function makeTechStyles(colors: ClearLensCompatibleTokens) {
@@ -1007,6 +1114,17 @@ function makeTechStyles(colors: ClearLensCompatibleTokens) {
       ...ClearLensTypography.body,
       color: colors.textPrimary,
       fontWeight: '600' as const,
+      textAlign: 'center',
+    },
+    valueSmall: {
+      ...ClearLensTypography.bodySmall,
+      color: colors.textPrimary,
+      fontWeight: '600' as const,
+      textAlign: 'center',
+    },
+    captionSmall: {
+      ...ClearLensTypography.caption,
+      color: colors.textTertiary,
       textAlign: 'center',
     },
     sidLink: {
@@ -1805,6 +1923,15 @@ function ClearLensFundDetailScreen() {
               fundMetaSyncedAt={data.fundMetaSyncedAt}
               schemeCode={data.schemeCode}
               isin={data.isin}
+              launchDate={data.launchDate}
+              exitLoad={data.exitLoad}
+              minLumpsum={data.minLumpsum}
+              minAdditional={data.minAdditional}
+              planType={data.planType}
+              amcName={data.amcName}
+              morningstarRating={data.morningstarRating}
+              riskLabel={data.riskLabel}
+              schemeCategory={data.schemeCategory}
             />
           </>
         )}

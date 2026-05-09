@@ -46,6 +46,21 @@ export interface FundDetailData {
   aumCr: number | null;
   minSipAmount: number | null;
   fundMetaSyncedAt: string | null;
+  // Extended scheme_master fields (M3v2 — Compare Funds deep redesign).
+  // Sourced via a parallel scheme_master query because the `fund` view
+  // doesn't yet expose them. Always nullable — sync-fund-meta backfills
+  // these on the daily cron.
+  launchDate: string | null;
+  exitLoad: string | null;
+  minLumpsum: number | null;
+  minAdditional: number | null;
+  planType: 'direct' | 'regular' | null;
+  amcName: string | null;
+  familyName: string | null;
+  morningstarRating: number | null;
+  riskLabel: string | null;
+  periodReturns: unknown;
+  riskRatios: unknown;
 }
 
 interface FundDetailRow {
@@ -89,6 +104,17 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     .single();
 
   if (fundError || !isFundDetailRow(fund)) return null;
+
+  // Parallel fetch: extended scheme_master fields not yet exposed by the
+  // `fund` view (M3v2 — Compare Funds redesign). All nullable; the FundDetail
+  // screen renders gracefully when sync-fund-meta hasn't backfilled yet.
+  const { data: extended } = await supabase
+    .from('scheme_master')
+    .select(
+      'launch_date, exit_load, min_lumpsum, min_additional, plan_type, amc_name, family_name, morningstar_rating, risk_label, period_returns, risk_ratios',
+    )
+    .eq('scheme_code', fund.scheme_code)
+    .maybeSingle();
 
   // Load transactions for this fund
   const { data: txs, error: txError } = await supabase
@@ -144,6 +170,17 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
       aumCr: fund.aum_cr ?? null,
       minSipAmount: fund.min_sip_amount ?? null,
       fundMetaSyncedAt: fund.fund_meta_synced_at ?? null,
+      launchDate: extended?.launch_date ?? null,
+      exitLoad: extended?.exit_load ?? null,
+      minLumpsum: extended?.min_lumpsum ?? null,
+      minAdditional: extended?.min_additional ?? null,
+      planType: (extended?.plan_type as 'direct' | 'regular' | null) ?? null,
+      amcName: extended?.amc_name ?? null,
+      familyName: extended?.family_name ?? null,
+      morningstarRating: extended?.morningstar_rating ?? null,
+      riskLabel: extended?.risk_label ?? null,
+      periodReturns: extended?.period_returns ?? null,
+      riskRatios: extended?.risk_ratios ?? null,
     };
   }
   const currentNav = navHistory[navHistory.length - 1].value;
@@ -193,6 +230,17 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     aumCr: fund.aum_cr ?? null,
     minSipAmount: fund.min_sip_amount ?? null,
     fundMetaSyncedAt: fund.fund_meta_synced_at ?? null,
+    launchDate: extended?.launch_date ?? null,
+    exitLoad: extended?.exit_load ?? null,
+    minLumpsum: extended?.min_lumpsum ?? null,
+    minAdditional: extended?.min_additional ?? null,
+    planType: (extended?.plan_type as 'direct' | 'regular' | null) ?? null,
+    amcName: extended?.amc_name ?? null,
+    familyName: extended?.family_name ?? null,
+    morningstarRating: extended?.morningstar_rating ?? null,
+    riskLabel: extended?.risk_label ?? null,
+    periodReturns: extended?.period_returns ?? null,
+    riskRatios: extended?.risk_ratios ?? null,
   };
 }
 
