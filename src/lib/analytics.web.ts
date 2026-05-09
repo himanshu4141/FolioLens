@@ -1,5 +1,6 @@
 import phClient from 'posthog-js';
 import type { AnalyticsClient } from './analytics';
+import { sanitizeProperties } from './analyticsSanitize';
 
 const KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY;
 const HOST = process.env.EXPO_PUBLIC_POSTHOG_HOST ?? 'https://us.i.posthog.com';
@@ -20,6 +21,14 @@ let initialized = false;
  *   - disable_session_recording: true   → recording is optional; we pay for
  *                                          it (network + privacy footprint)
  *                                          only when an investigation needs it
+ *   - sanitize_properties               → strips Supabase magic-link tokens
+ *                                          out of `$current_url` / `$referrer`
+ *                                          before any event is sent. Required
+ *                                          because the React tree renders
+ *                                          /auth/confirm with the access_token
+ *                                          in the hash long enough for the
+ *                                          SDK's auto-attached $current_url
+ *                                          to pick it up.
  */
 if (KEY && typeof window !== 'undefined') {
   phClient.init(KEY, {
@@ -28,6 +37,8 @@ if (KEY && typeof window !== 'undefined') {
     autocapture: false,
     disable_session_recording: true,
     persistence: 'localStorage+cookie',
+    sanitize_properties: (properties) =>
+      sanitizeProperties(properties as Record<string, unknown>) as typeof properties,
     loaded: () => {
       initialized = true;
     },
