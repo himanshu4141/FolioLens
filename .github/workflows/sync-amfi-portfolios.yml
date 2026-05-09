@@ -67,7 +67,7 @@ jobs:
               --arg outcome "$OUTCOME" \
               --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --arg trigger "${{ github.event_name }}" \
-              '{api_key: $key, event: "amfi_sync_completed", distinct_id: "system:amfi-sync-dev", properties: {$lib: "github-actions", environment: "dev", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')' \
+              '{api_key: $key, event: "amfi_sync_completed", distinct_id: "system:amfi-sync-dev", properties: {"$lib": "github-actions", environment: "dev", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')" \
             || echo "[posthog] capture failed; not failing the job"
 
   sync-prod:
@@ -110,5 +110,5 @@ jobs:
               --arg outcome "$OUTCOME" \
               --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               --arg trigger "${{ github.event_name }}" \
-              '{api_key: $key, event: "amfi_sync_completed", distinct_id: "system:amfi-sync-prod", properties: {$lib: "github-actions", environment: "production", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')' \
+              '{api_key: $key, event: "amfi_sync_completed", distinct_id: "system:amfi-sync-prod", properties: {"$lib": "github-actions", environment: "production", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')" \
             || echo "[posthog] capture failed; not failing the job"
