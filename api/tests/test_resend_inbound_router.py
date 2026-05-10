@@ -10,8 +10,11 @@ from unittest import mock
 from api._resend_inbound_router import (
     MissingConfigError,
     SignatureError,
+    UpstreamError,
+    build_feedback_email_body,
     choose_route,
     extract_recipients,
+    send_feedback_notification,
     sign_router_payload,
     verify_router_signature,
     verify_svix_signature,
@@ -294,6 +297,131 @@ class FoliolensRouterSignatureTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(MissingConfigError):
                 sign_router_payload(b"x")
+
+
+class FeedbackNotificationTest(unittest.TestCase):
+    BASE_PAYLOAD = {
+        "feedback_id": "fb_123",
+        "user_id": "u_456",
+        "type": "bug_report",
+        "title": "Crash on tap",
+        "body": "Tapping Compare crashes the app on iOS 17.4.",
+        "app_version": "0.0.4",
+        "update_id": "abcd1234",
+        "created_at": "2026-05-10T08:30:00.000Z",
+        "user_email": "user@example.com",
+    }
+
+    ENV = {
+        "MAIL_FORWARD_TO": "founder@example.com",
+        "MAIL_FORWARD_FROM": "FolioLens <noreply@foliolens.in>",
+    }
+
+    def test_subject_uses_human_type_label(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(self.BASE_PAYLOAD)
+        self.assertEqual(body["subject"], "[FolioLens · Bug report] Crash on tap")
+
+    def test_recipients_default_to_mail_forward_to(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(self.BASE_PAYLOAD)
+        self.assertEqual(body["to"], ["founder@example.com"])
+        self.assertEqual(body["from"], "FolioLens <noreply@foliolens.in>")
+
+    def test_includes_user_email_in_text_when_known(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(self.BASE_PAYLOAD)
+        self.assertIn("user@example.com (u_456)", body["text"])
+        self.assertEqual(body.get("reply_to"), "user@example.com")
+
+    def test_falls_back_when_user_email_missing(self):
+        payload = {**self.BASE_PAYLOAD}
+        payload.pop("user_email")
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(payload)
+        self.assertIn("(email unavailable)", body["text"])
+        self.assertNotIn("reply_to", body)
+
+    def test_renders_app_version_with_update_id(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(self.BASE_PAYLOAD)
+        self.assertIn("0.0.4  ·  update abcd1234", body["text"])
+
+    def test_renders_app_version_alone_without_update_id(self):
+        payload = {**self.BASE_PAYLOAD, "update_id": None}
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(payload)
+        self.assertIn("App version: 0.0.4", body["text"])
+        self.assertNotIn("· update", body["text"])
+
+    def test_renders_em_dash_when_app_version_missing(self):
+        payload = {**self.BASE_PAYLOAD, "app_version": None, "update_id": None}
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(payload)
+        self.assertIn("App version: —", body["text"])
+
+    def test_html_escapes_unsafe_characters(self):
+        payload = {
+            **self.BASE_PAYLOAD,
+            "title": 'Tapping <Compare> "fails"',
+            "body": "a & b < c",
+        }
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(payload)
+        self.assertIn("&lt;Compare&gt;", body["html"])
+        self.assertIn("&quot;fails&quot;", body["html"])
+        self.assertIn("a &amp; b &lt; c", body["html"])
+        # Subject is unescaped — Resend handles email-header escaping itself.
+        self.assertEqual(
+            body["subject"], '[FolioLens · Bug report] Tapping <Compare> "fails"'
+        )
+
+    def test_unknown_type_passes_through_verbatim(self):
+        payload = {**self.BASE_PAYLOAD, "type": "rant"}
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_feedback_email_body(payload)
+        self.assertEqual(body["subject"], "[FolioLens · rant] Crash on tap")
+
+    def test_missing_required_field_raises_400(self):
+        payload = {**self.BASE_PAYLOAD}
+        payload.pop("title")
+        with mock.patch.dict(os.environ, self.ENV):
+            with self.assertRaises(UpstreamError) as ctx:
+                build_feedback_email_body(payload)
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_empty_required_field_raises_400(self):
+        payload = {**self.BASE_PAYLOAD, "body": ""}
+        with mock.patch.dict(os.environ, self.ENV):
+            with self.assertRaises(UpstreamError) as ctx:
+                build_feedback_email_body(payload)
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_missing_mail_forward_to_raises_missing_config(self):
+        with mock.patch.dict(os.environ, {"MAIL_FORWARD_FROM": "x@example.com"}, clear=True):
+            with self.assertRaises(MissingConfigError):
+                build_feedback_email_body(self.BASE_PAYLOAD)
+
+    def test_send_feedback_notification_uses_idempotency_key(self):
+        captured: dict[str, object] = {}
+
+        def fake_request_json(method, path, body=None, idempotency_key=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["idempotency_key"] = idempotency_key
+            return {"id": "resend_email_id"}
+
+        with mock.patch.dict(os.environ, self.ENV):
+            with mock.patch(
+                "api._resend_inbound_router._request_json", side_effect=fake_request_json
+            ):
+                result = send_feedback_notification(self.BASE_PAYLOAD)
+
+        self.assertEqual(result, {"id": "resend_email_id"})
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/emails")
+        self.assertEqual(captured["idempotency_key"], "user-feedback/fb_123")
 
 
 if __name__ == "__main__":
