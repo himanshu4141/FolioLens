@@ -206,6 +206,12 @@ export function FundListItem({
             <Text style={styles.fundMeta} numberOfLines={1}>
               {fund.schemeCategory}{planBadge ? ` · ${planBadge}` : ''}
             </Text>
+            {stale.critical && (
+              <View style={styles.staleBadge}>
+                <Ionicons name="warning-outline" size={11} color={CLEAR_LENS_RED} />
+                <Text style={styles.staleBadgeText}>NAV stale · {stale.label}</Text>
+              </View>
+            )}
           </View>
           <View style={styles.valueBlock}>
             <Text style={styles.fundValue}>{fund.currentValue != null ? formatCurrency(fund.currentValue) : 'NAV pending'}</Text>
@@ -803,6 +809,25 @@ function makeStyles(tokens: ClearLensTokens) {
     ...ClearLensTypography.caption,
     fontFamily: ClearLensFonts.semiBold,
     color: cl.textTertiary,
+  },
+  staleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: ClearLensRadii.sm,
+    backgroundColor: CLEAR_LENS_RED + '14',
+    borderWidth: 1,
+    borderColor: CLEAR_LENS_RED + '55',
+  },
+  staleBadgeText: {
+    ...ClearLensTypography.caption,
+    fontFamily: ClearLensFonts.semiBold,
+    color: CLEAR_LENS_RED,
+    fontSize: 10,
   },
   valueBlock: {
     alignItems: 'flex-end',

@@ -25,6 +25,7 @@ describe('navStaleness()', () => {
     const r = navStaleness(null);
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
     expect(r.label).toBe('');
   });
 
@@ -32,6 +33,7 @@ describe('navStaleness()', () => {
     const r = navStaleness('2026-03-26');
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
     expect(r.label).toBe('today');
   });
 
@@ -39,23 +41,50 @@ describe('navStaleness()', () => {
     const r = navStaleness('2026-03-25');
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
   });
 
-  test('latestNavDate 2 days ago → stale but not veryStale', () => {
+  test('latestNavDate 2 days ago → stale but not veryStale or critical', () => {
     const r = navStaleness('2026-03-24');
     expect(r.stale).toBe(true);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
     expect(r.label).toContain('as of');
     expect(r.label).toContain('24');
     expect(r.label).toContain('Mar');
   });
 
-  test('latestNavDate 4 days ago → stale AND veryStale', () => {
+  test('latestNavDate 4 days ago → stale AND veryStale, but not critical', () => {
     const r = navStaleness('2026-03-22');
     expect(r.stale).toBe(true);
     expect(r.veryStale).toBe(true);
+    expect(r.critical).toBe(false);
     expect(r.label).toContain('as of');
     expect(r.label).toContain('22');
+  });
+
+  test('latestNavDate 60 business days ago → stale and veryStale but NOT critical (boundary)', () => {
+    // 60 business days ≈ 12 weeks back from 2026-03-26 (Thursday)
+    // 2026-03-26 minus 12 weeks = 2026-01-01 (Thursday). businessDaysBetween counts
+    // weekdays in (from, today] — 2026-01-01 to 2026-03-26 has exactly 60 weekdays.
+    const r = navStaleness('2026-01-01');
+    expect(r.stale).toBe(true);
+    expect(r.veryStale).toBe(true);
+    expect(r.critical).toBe(false);
+  });
+
+  test('latestNavDate 61 business days ago → critical (just past threshold)', () => {
+    // 2025-12-31 (Wed) is 61 weekdays before 2026-03-26 (Thu).
+    const r = navStaleness('2025-12-31');
+    expect(r.stale).toBe(true);
+    expect(r.veryStale).toBe(true);
+    expect(r.critical).toBe(true);
+    expect(r.label).toContain('Dec');
+  });
+
+  test('latestNavDate 6 months ago → critical (deep into broken-pipeline territory)', () => {
+    const r = navStaleness('2025-09-26');
+    expect(r.critical).toBe(true);
   });
 
   test('label uses correct month abbreviation', () => {
@@ -92,6 +121,7 @@ describe('navStaleness() — weekend business-day handling', () => {
     const r = navStaleness(FRIDAY_NAV);
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
   });
 
   test('Friday NAV viewed on Sunday → not stale (0 business days)', () => {
@@ -99,6 +129,7 @@ describe('navStaleness() — weekend business-day handling', () => {
     const r = navStaleness(FRIDAY_NAV);
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
   });
 
   test('Friday NAV viewed on Monday → not stale (1 business day)', () => {
@@ -106,6 +137,7 @@ describe('navStaleness() — weekend business-day handling', () => {
     const r = navStaleness(FRIDAY_NAV);
     expect(r.stale).toBe(false);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
   });
 
   test('Friday NAV viewed on Tuesday → stale (2 business days)', () => {
@@ -113,6 +145,7 @@ describe('navStaleness() — weekend business-day handling', () => {
     const r = navStaleness(FRIDAY_NAV);
     expect(r.stale).toBe(true);
     expect(r.veryStale).toBe(false);
+    expect(r.critical).toBe(false);
   });
 });
 
