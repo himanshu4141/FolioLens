@@ -666,6 +666,123 @@ def send_import_notification(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# ── Feedback notification (in-app feedback submissions) ──────────────────────
+
+_FEEDBACK_TYPE_LABELS = {
+    "feature_request": "Feature request",
+    "bug_report": "Bug report",
+}
+
+_FEEDBACK_REQUIRED_FIELDS = ("feedback_id", "user_id", "type", "title", "body")
+
+
+def _escape_html(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _feedback_recipients() -> list[str]:
+    """Founder inbox(es) for in-app feedback. Reuses MAIL_FORWARD_TO so feedback
+    lands in the same place hello@/support@/privacy@ already forward to —
+    rather than introducing a parallel destination env var."""
+    return _forward_recipients()
+
+
+def _feedback_from_address() -> str:
+    return os.environ.get(
+        "MAIL_FORWARD_FROM", "FolioLens Mail <noreply@foliolens.in>"
+    )
+
+
+def build_feedback_email_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compose the Resend `/emails` request body for an in-app feedback
+    submission. Pure — no network, no env reads beyond from/to. Extracted so
+    the message format can be unit-tested independently."""
+    for key in _FEEDBACK_REQUIRED_FIELDS:
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise UpstreamError(400, f"Missing or invalid feedback field: {key}")
+
+    type_label = _FEEDBACK_TYPE_LABELS.get(payload["type"], payload["type"])
+    title = payload["title"]
+    user_id = payload["user_id"]
+    user_email = payload.get("user_email") if isinstance(payload.get("user_email"), str) else None
+    app_version = payload.get("app_version") if isinstance(payload.get("app_version"), str) else None
+    update_id = payload.get("update_id") if isinstance(payload.get("update_id"), str) else None
+    submitted_at = payload.get("created_at") if isinstance(payload.get("created_at"), str) else None
+    body_text = payload["body"]
+
+    version_line = "—"
+    if app_version:
+        version_line = app_version
+        if update_id:
+            version_line = f"{version_line}  ·  update {update_id}"
+
+    user_line = f"{user_email or '(email unavailable)'} ({user_id})"
+    submitted_line = submitted_at or ""
+
+    text = "\n".join(
+        [
+            f"Type:        {type_label}",
+            f"Title:       {title}",
+            f"User:        {user_line}",
+            f"App version: {version_line}",
+            f"Submitted:   {submitted_line}",
+            "",
+            body_text,
+        ]
+    )
+
+    html = "".join(
+        [
+            '<table style="font-family: -apple-system, system-ui, sans-serif; font-size: 14px; line-height: 1.5;">',
+            f"<tr><td><b>Type</b></td><td>{_escape_html(type_label)}</td></tr>",
+            f"<tr><td><b>Title</b></td><td>{_escape_html(title)}</td></tr>",
+            f"<tr><td><b>User</b></td><td>{_escape_html(user_line)}</td></tr>",
+            f"<tr><td><b>App version</b></td><td>{_escape_html(version_line)}</td></tr>",
+            f"<tr><td><b>Submitted</b></td><td>{_escape_html(submitted_line)}</td></tr>",
+            "</table>",
+            (
+                '<p style="font-family: -apple-system, system-ui, sans-serif;'
+                ' font-size: 14px; white-space: pre-wrap; margin-top: 16px;">'
+                f"{_escape_html(body_text)}</p>"
+            ),
+        ]
+    )
+
+    body: dict[str, Any] = {
+        "from": _feedback_from_address(),
+        "to": _feedback_recipients(),
+        "subject": f"[FolioLens · {type_label}] {title}",
+        "text": text,
+        "html": html,
+        "tags": [
+            {"name": "category", "value": "user_feedback"},
+            {"name": "feedback_type", "value": payload["type"]},
+        ],
+    }
+    if user_email:
+        body["reply_to"] = user_email
+    return body
+
+
+def send_feedback_notification(payload: dict[str, Any]) -> dict[str, Any]:
+    """Send the in-app feedback notification email via Resend. Called from the
+    feedback-notify endpoint after Supabase POSTs a signed body. Idempotency-
+    keyed by feedback_id so a Supabase retry won't double-send."""
+    body = build_feedback_email_body(payload)
+    return _request_json(
+        "POST",
+        "/emails",
+        body,
+        idempotency_key=f"user-feedback/{payload['feedback_id']}",
+    )
+
+
 def _enrich_with_received_email(event: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch the full received email from Resend and merge its headers into the
     event so a second `choose_route()` pass can see the SMTP-envelope recipient.
