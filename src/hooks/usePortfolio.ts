@@ -24,7 +24,8 @@ import {
   type Cashflow,
 } from '@/src/utils/xirr';
 import { useSession } from '@/src/hooks/useSession';
-import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
+import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { PREVIEW_FUND_CARDS, PREVIEW_PORTFOLIO_SUMMARY } from '@/src/lib/previewData';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds, type UserFundRow } from '@/src/hooks/useUserFunds';
@@ -436,13 +437,17 @@ export async function fetchPortfolioData(
 
 export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   const { session } = useSession();
+  const previewMode = useAppStore((s) => s.previewMode);
   const userId = session?.user.id;
   const queryClient = useQueryClient();
 
   const query = useQuery({
-    queryKey: ['portfolio', userId, benchmarkSymbol],
-    enabled: !!userId,
-    queryFn: () => fetchPortfolioData(queryClient, userId!, benchmarkSymbol),
+    queryKey: previewMode ? ['portfolio', 'preview'] : ['portfolio', userId, benchmarkSymbol],
+    enabled: previewMode || !!userId,
+    queryFn: () =>
+      previewMode
+        ? Promise.resolve({ fundCards: PREVIEW_FUND_CARDS, summary: PREVIEW_PORTFOLIO_SUMMARY })
+        : fetchPortfolioData(queryClient, userId!, benchmarkSymbol),
     staleTime: STALE_TIMES.PORTFOLIO,
     placeholderData: keepPreviousData, // no jarring flash when switching benchmark
   });
@@ -453,9 +458,10 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   // option triggers a fresh fetch and the user waits ~hundreds of ms
   // before chart values update. Prefetching makes pill-switching feel
   // instant on the second tap, with no impact on initial load (the
-  // effect runs only after `query.data` is populated).
+  // effect runs only after `query.data` is populated). Skip in preview
+  // mode — the fixture data is the same shape regardless of benchmark.
   useEffect(() => {
-    if (!query.data || !userId) return;
+    if (!query.data || !userId || previewMode) return;
     for (const option of BENCHMARK_OPTIONS) {
       if (option.symbol === benchmarkSymbol) continue;
       queryClient.prefetchQuery({
@@ -464,7 +470,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
         staleTime: STALE_TIMES.PORTFOLIO,
       });
     }
-  }, [query.data, userId, benchmarkSymbol, queryClient]);
+  }, [query.data, userId, benchmarkSymbol, queryClient, previewMode]);
 
   return query;
 }

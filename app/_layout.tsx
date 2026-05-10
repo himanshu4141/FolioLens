@@ -26,7 +26,9 @@ import {
 } from '@/src/lib/queryClient';
 import { useSession } from '@/src/hooks/useSession';
 import { authClient } from '@/src/lib/auth';
+import { useAppStore } from '@/src/store/appStore';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
+import { PreviewBanner } from '@/src/components/PreviewBanner';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
@@ -73,6 +75,7 @@ function handleAuthDeepLink(url: string) {
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { session, loading } = useSession();
+  const previewMode = useAppStore((s) => s.previewMode);
   const segments = useSegments();
   const router = useRouter();
 
@@ -80,15 +83,21 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (loading) return;
 
     const inAuthGroup = segments[0] === 'auth';
+    const hasAccess = !!session || previewMode;
 
-    if (!session && !inAuthGroup) {
+    if (!hasAccess && !inAuthGroup) {
       router.replace('/auth');
-    } else if (session && inAuthGroup) {
+    } else if (hasAccess && inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [session, loading, segments, router]);
+  }, [session, loading, previewMode, segments, router]);
 
-  return <>{children}</>;
+  return (
+    <>
+      {previewMode && <PreviewBanner />}
+      {children}
+    </>
+  );
 }
 
 // Threshold for the `app_returned` event. Anything shorter than this is a

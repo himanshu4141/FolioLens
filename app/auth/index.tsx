@@ -16,6 +16,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { Ionicons } from '@expo/vector-icons';
 import { authClient } from '@/src/lib/auth';
 import { canShowDevAuthShortcut, getDevAuthCredentials } from '@/src/lib/devAuth';
+import { useAppStore } from '@/src/store/appStore';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
@@ -49,10 +50,20 @@ export default function SignInScreen() {
   const { layout } = useResponsiveLayout();
   const isDesktop = layout === 'desktop';
   const [email, setEmail] = useState('');
-  const [loadingMode, setLoadingMode] = useState<'magic' | 'google' | 'demo' | null>(null);
+  const [loadingMode, setLoadingMode] = useState<'magic' | 'google' | 'demo' | 'preview' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showMagicLinkInfo, setShowMagicLinkInfo] = useState(false);
   const showDevAuthShortcut = canShowDevAuthShortcut();
+  const enterPreviewMode = useAppStore((s) => s.enterPreviewMode);
+
+  function handlePreview() {
+    setError(null);
+    setLoadingMode('preview');
+    enterPreviewMode();
+    // AuthGate's effect runs after the store update and redirects to /(tabs).
+    // No router.replace here — letting the gate own routing keeps a single
+    // source of truth and avoids a brief two-screen flicker.
+  }
 
   async function handleSendMagicLink() {
     if (!email.trim()) {
@@ -235,6 +246,21 @@ export default function SignInScreen() {
                   <GoogleIcon size={20} />
                   <Text style={styles.googleButtonText}>Continue with Google</Text>
                 </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.previewButton, loadingMode !== null && styles.buttonDisabled]}
+              onPress={handlePreview}
+              disabled={loadingMode !== null}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Preview the app with sample data without signing up"
+            >
+              {loadingMode === 'preview' ? (
+                <ActivityIndicator color={cl.textSecondary} />
+              ) : (
+                <Text style={styles.previewButtonText}>Preview the app — sample portfolio</Text>
               )}
             </TouchableOpacity>
 
@@ -458,6 +484,20 @@ function makeStyles(tokens: ClearLensTokens) {
       ...ClearLensTypography.body,
       fontFamily: ClearLensFonts.semiBold,
       color: cl.navy,
+    },
+
+    previewButton: {
+      marginTop: ClearLensSpacing.xs,
+      height: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'transparent',
+    },
+    previewButtonText: {
+      ...ClearLensTypography.caption,
+      fontFamily: ClearLensFonts.semiBold,
+      color: cl.textSecondary,
+      textDecorationLine: 'underline',
     },
 
     devDividerRow: {

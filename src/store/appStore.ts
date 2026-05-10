@@ -349,6 +349,14 @@ export interface AppStore {
   setPortfolioChartWindow: (window: PortfolioChartWindow) => void;
   moneyTrailSortBy: MoneyTrailSortKey;
   setMoneyTrailSortBy: (sort: MoneyTrailSortKey) => void;
+  // Preview ("try the app without signing up") mode. Intentionally NOT
+  // persisted — every cold start drops back to /auth so previewers don't
+  // drift permanently into demo data. Consumed by AuthGate (treated as
+  // "logged in") and by data hooks that swap real Supabase queries for
+  // the fixtures in `src/lib/previewData.ts`.
+  previewMode: boolean;
+  enterPreviewMode: () => void;
+  exitPreviewMode: () => void;
 }
 
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
@@ -485,6 +493,9 @@ export const useAppStore = create<AppStore>()(
       moneyTrailSortBy: 'newest' as MoneyTrailSortKey,
       setMoneyTrailSortBy: (sort) =>
         set({ moneyTrailSortBy: sanitizeMoneyTrailSort(sort) }),
+      previewMode: false,
+      enterPreviewMode: () => set({ previewMode: true }),
+      exitPreviewMode: () => set({ previewMode: false }),
     }),
     {
       name: 'foliolens-app-store',

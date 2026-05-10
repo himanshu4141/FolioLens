@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { authClient } from '@/src/lib/auth';
+import { useAppStore } from '@/src/store/appStore';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -49,6 +51,9 @@ export function AppOverflowMenu({
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const cl = tokens.colors;
+  const router = useRouter();
+  const previewMode = useAppStore((s) => s.previewMode);
+  const exitPreviewMode = useAppStore((s) => s.exitPreviewMode);
 
   function dismissAnd(action: () => void) {
     return () => {
@@ -59,23 +64,33 @@ export function AppOverflowMenu({
 
   async function handleSignOut() {
     onClose();
+    if (previewMode) {
+      exitPreviewMode();
+      router.replace('/auth');
+      return;
+    }
     const { error } = await authClient.signOut();
     if (error) {
       Alert.alert('Sign out failed', error.message);
     }
   }
 
-  const dataActions: RowConfig[] = [
-    {
-      key: 'import',
-      icon: hasPortfolio ? 'refresh-outline' : 'cloud-upload-outline',
-      // First-time users land here with no holdings — show "Import" so the
-      // CTA matches the empty-state action. Returning users see "Refresh"
-      // since they'll mostly use this to pull in fresh CAS transactions.
-      label: hasPortfolio ? 'Refresh portfolio' : 'Import portfolio',
-      onPress: dismissAnd(onImport),
-    },
-  ];
+  // In preview mode the import action would push the user into a sign-up
+  // flow they haven't asked for — drop the row instead so the menu is
+  // honest about what's available without an account.
+  const dataActions: RowConfig[] = previewMode
+    ? []
+    : [
+        {
+          key: 'import',
+          icon: hasPortfolio ? 'refresh-outline' : 'cloud-upload-outline',
+          // First-time users land here with no holdings — show "Import" so the
+          // CTA matches the empty-state action. Returning users see "Refresh"
+          // since they'll mostly use this to pull in fresh CAS transactions.
+          label: hasPortfolio ? 'Refresh portfolio' : 'Import portfolio',
+          onPress: dismissAnd(onImport),
+        },
+      ];
 
   const navActions: RowConfig[] = [
     { key: 'trail', icon: 'trail-sign-outline', label: 'Money Trail', onPress: dismissAnd(onMoneyTrail) },
@@ -87,7 +102,7 @@ export function AppOverflowMenu({
     {
       key: 'signout',
       icon: 'log-out-outline',
-      label: 'Log out',
+      label: previewMode ? 'Exit preview' : 'Log out',
       onPress: handleSignOut,
       danger: true,
     },
@@ -100,13 +115,17 @@ export function AppOverflowMenu({
           <View style={styles.sheetHandle} />
           <Text style={styles.sheetTitle}>Quick actions</Text>
 
-          <RowGroup
-            rows={dataActions}
-            styles={styles}
-            dangerColor={cl.negative}
-            textColor={cl.textPrimary}
-          />
-          <View style={styles.groupDivider} />
+          {dataActions.length > 0 && (
+            <>
+              <RowGroup
+                rows={dataActions}
+                styles={styles}
+                dangerColor={cl.negative}
+                textColor={cl.textPrimary}
+              />
+              <View style={styles.groupDivider} />
+            </>
+          )}
           <RowGroup
             rows={navActions}
             styles={styles}
