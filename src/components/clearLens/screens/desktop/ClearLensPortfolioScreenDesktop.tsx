@@ -14,6 +14,7 @@ import {
 } from '@/src/components/clearLens/screens/ClearLensPortfolioScreen';
 import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 import { MoneyTrailPreviewCard } from '@/src/components/clearLens/MoneyTrailPreviewCard';
+import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
@@ -34,6 +35,7 @@ export function ClearLensPortfolioScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const userId = session?.user.id;
   const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol } = useAppStore();
@@ -75,7 +77,7 @@ export function ClearLensPortfolioScreenDesktop() {
   if (!summary || fundCards.length === 0) {
     return (
       <CenteredFrame>
-        <PortfolioEmptyState onImport={() => router.push('/onboarding')} />
+        <PortfolioEmptyState onImport={handleImportPress} />
       </CenteredFrame>
     );
   }

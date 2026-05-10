@@ -15,6 +15,8 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from '@/src/hooks/useSession';
+import { useAppStore } from '@/src/store/appStore';
+import { PREVIEW_MONEY_TRAIL } from '@/src/lib/previewData';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
@@ -97,13 +99,15 @@ export async function fetchMoneyTrailData(
 
 export function useMoneyTrail() {
   const { session } = useSession();
+  const previewMode = useAppStore((s) => s.previewMode);
   const userId = session?.user.id;
   const qc = useQueryClient();
 
   return useQuery({
-    queryKey: ['money-trail', userId],
-    enabled: !!userId,
-    queryFn: () => fetchMoneyTrailData(qc, userId!),
+    queryKey: previewMode ? ['money-trail', 'preview'] : ['money-trail', userId],
+    enabled: previewMode || !!userId,
+    queryFn: () =>
+      previewMode ? Promise.resolve(PREVIEW_MONEY_TRAIL) : fetchMoneyTrailData(qc, userId!),
     staleTime: STALE_TIMES.MONEY_TRAIL,
   });
 }

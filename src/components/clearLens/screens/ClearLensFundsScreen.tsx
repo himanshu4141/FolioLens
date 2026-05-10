@@ -20,6 +20,7 @@ import {
   ClearLensHeader,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
@@ -448,6 +449,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
@@ -556,7 +558,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
       <AppOverflowMenu
         visible={overflowOpen}
         onClose={() => setOverflowOpen(false)}
-        onImport={() => router.push('/onboarding')}
+        onImport={handleImportPress}
         onMoneyTrail={() => router.push('/money-trail')}
         onTools={() => router.push('/tools' as never)}
         onSettings={() => router.push('/(tabs)/settings')}

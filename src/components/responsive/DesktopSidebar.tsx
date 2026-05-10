@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useSegments } from 'expo-router';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useSession } from '@/src/hooks/useSession';
+import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -68,9 +69,10 @@ export function DesktopSidebar() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const cl = tokens.colors;
 
+  const handleImportPress = useImportPortfolioPress();
   function handleQuickAction(key: 'import' | 'trail' | 'tools') {
     if (key === 'import') {
-      router.push('/onboarding');
+      handleImportPress();
       return;
     }
     if (key === 'trail') return router.push('/money-trail');

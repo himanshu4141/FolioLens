@@ -15,8 +15,20 @@
  */
 
 import type { FundCardData, PortfolioSummary } from '@/src/hooks/usePortfolio';
+import type { MoneyTrailData } from '@/src/hooks/useMoneyTrail';
+import {
+  buildAnnualMoneyFlows,
+  buildMoneyTrailSummary,
+  buildMoneyTrailTransactions,
+  getUniqueAmcOptions,
+  getUniqueFundOptions,
+  type RawMoneyTrailTransaction,
+} from '@/src/utils/moneyTrail';
 
 export const PREVIEW_USER_ID = 'preview-user';
+// Pin "today" so the demo is identical regardless of clock skew. NAV history
+// and transaction dates both anchor to this date.
+const PREVIEW_TODAY = new Date('2026-05-09');
 
 /**
  * Synthesises a 30-day NAV history that ends at `currentNav` and starts
@@ -25,7 +37,7 @@ export const PREVIEW_USER_ID = 'preview-user';
  */
 function makeNavHistory30d(currentNav: number, schemeCode: number): { date: string; value: number }[] {
   const out: { date: string; value: number }[] = [];
-  const today = new Date('2026-05-09'); // pinned so the demo is identical regardless of clock skew
+  const today = PREVIEW_TODAY;
   for (let i = 29; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
@@ -186,3 +198,106 @@ export const PREVIEW_PORTFOLIO_SUMMARY: PortfolioSummary = {
 export function findPreviewFundById(id: string): FundCardData | undefined {
   return PREVIEW_FUND_CARDS.find((f) => f.id === id);
 }
+
+// ── Money Trail fixtures ─────────────────────────────────────────────────────
+//
+// Generates ~24 months of monthly SIPs per fund plus a single redemption for
+// the one fund whose seed has a non-zero realizedAmount. Sums match the seed
+// `investedAmount` exactly so the home portfolio numbers and the Money Trail
+// summary stay consistent.
+//
+// AMC name is derived from the first word of the scheme name — accurate enough
+// for the AMC filter pill to render plausibly without us hand-curating it.
+
+const SIP_MONTHS = 24;
+
+function isoDate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
+
+function deriveAmcName(schemeName: string): string {
+  // "Parag Parikh Flexi Cap Fund — Direct Growth" → "Parag Parikh"
+  // "Mirae Asset Large Cap Fund — Direct Growth" → "Mirae Asset"
+  // "HDFC Mid-Cap Opportunities Fund — Direct Growth" → "HDFC"
+  const cleaned = schemeName.split('—')[0].trim();
+  const words = cleaned.split(/\s+/);
+  if (words.length >= 2 && /^(asset|parikh)$/i.test(words[1])) {
+    return `${words[0]} ${words[1]}`;
+  }
+  return words[0] ?? schemeName;
+}
+
+function buildPreviewRawTransactions(): RawMoneyTrailTransaction[] {
+  const rows: RawMoneyTrailTransaction[] = [];
+  const today = PREVIEW_TODAY;
+
+  for (const seed of SEEDS) {
+    const totalSipAmount = seed.investedAmount + seed.realizedAmount;
+    const monthlySip = Math.round(totalSipAmount / SIP_MONTHS);
+    // Approximate per-SIP NAV by linearly fading from current NAV down to
+    // 80% of current — a believable upward path for a growing equity fund.
+    for (let i = 0; i < SIP_MONTHS; i++) {
+      const monthsAgo = SIP_MONTHS - 1 - i;
+      const txDate = new Date(today);
+      txDate.setMonth(today.getMonth() - monthsAgo);
+      txDate.setDate(5); // every SIP lands on the 5th
+      const navProgress = i / Math.max(1, SIP_MONTHS - 1);
+      const navAtTx = Math.round(seed.currentNav * (0.8 + 0.2 * navProgress) * 100) / 100;
+      const units = Math.round((monthlySip / navAtTx) * 1000) / 1000;
+      rows.push({
+        id: `preview-tx-${seed.id}-${i}`,
+        fund_id: seed.id,
+        fund_name: seed.schemeName,
+        scheme_category: seed.schemeCategory,
+        amc_name: deriveAmcName(seed.schemeName),
+        transaction_date: isoDate(txDate),
+        transaction_type: 'sip_purchase',
+        units,
+        amount: monthlySip,
+        nav_at_transaction: navAtTx,
+        folio_number: `${seed.schemeCode % 100000}/${seed.id.slice(-2).toUpperCase()}`,
+        cas_import_id: 'preview-import',
+        created_at: `${isoDate(txDate)}T10:00:00.000Z`,
+      });
+    }
+
+    // Partial redemption for the one seed that has realized amount.
+    if (seed.realizedAmount > 0 && seed.redeemedUnits > 0) {
+      const redemptionDate = new Date(today);
+      redemptionDate.setMonth(today.getMonth() - 4);
+      redemptionDate.setDate(20);
+      const navAtRedemption =
+        Math.round(((seed.realizedAmount / seed.redeemedUnits) || seed.currentNav) * 100) / 100;
+      rows.push({
+        id: `preview-tx-${seed.id}-redeem`,
+        fund_id: seed.id,
+        fund_name: seed.schemeName,
+        scheme_category: seed.schemeCategory,
+        amc_name: deriveAmcName(seed.schemeName),
+        transaction_date: isoDate(redemptionDate),
+        transaction_type: 'redemption',
+        units: -seed.redeemedUnits,
+        amount: -seed.realizedAmount,
+        nav_at_transaction: navAtRedemption,
+        folio_number: `${seed.schemeCode % 100000}/${seed.id.slice(-2).toUpperCase()}`,
+        cas_import_id: 'preview-import',
+        created_at: `${isoDate(redemptionDate)}T10:00:00.000Z`,
+      });
+    }
+  }
+
+  return rows;
+}
+
+const PREVIEW_RAW_TRANSACTIONS = buildPreviewRawTransactions();
+
+export const PREVIEW_MONEY_TRAIL: MoneyTrailData = (() => {
+  const transactions = buildMoneyTrailTransactions(PREVIEW_RAW_TRANSACTIONS);
+  return {
+    transactions,
+    annualFlows: buildAnnualMoneyFlows(transactions),
+    summary: buildMoneyTrailSummary(transactions),
+    fundOptions: getUniqueFundOptions(transactions),
+    amcOptions: getUniqueAmcOptions(transactions),
+  };
+})();
