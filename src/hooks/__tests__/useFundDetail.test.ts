@@ -8,9 +8,17 @@
 import { filterToWindow, indexTo100, type TimeWindow } from '@/src/utils/navUtils';
 import { fetchFundDetail } from '@/src/hooks/useFundDetail';
 import { supabase } from '@/src/lib/supabase';
+import { fetchCachedIndexRows, fetchCachedNavRows } from '@/src/lib/referenceDataCache';
 
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/src/lib/referenceDataCache', () => ({
+  REFERENCE_HISTORY_START_DATE: '1900-01-01',
+  REFERENCE_QUERY_GC_TIME_MS: 86_400_000,
+  REFERENCE_QUERY_STALE_TIME_MS: 1_800_000,
+  fetchCachedIndexRows: jest.fn(),
+  fetchCachedNavRows: jest.fn(),
+}));
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -324,6 +332,8 @@ function makeChain(response: { data: unknown; error: unknown }): any {
 }
 
 const mockFrom = supabase.from as jest.Mock;
+const mockFetchCachedIndexRows = fetchCachedIndexRows as jest.MockedFunction<typeof fetchCachedIndexRows>;
+const mockFetchCachedNavRows = fetchCachedNavRows as jest.MockedFunction<typeof fetchCachedNavRows>;
 
 const MOCK_FUND = {
   id: 'fund-1', scheme_code: 12345, scheme_name: 'Test Equity Fund',
@@ -344,7 +354,21 @@ const MOCK_INDEX = [
 ];
 
 describe('fetchFundDetail()', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFetchCachedNavRows.mockImplementation(async () => {
+      const response = mockFrom('nav_history') as { data?: unknown };
+      return ((response.data ?? []) as { nav_date: string; nav: number }[]).map((row) => ({
+        scheme_code: MOCK_FUND.scheme_code,
+        nav_date: row.nav_date,
+        nav: row.nav,
+      }));
+    });
+    mockFetchCachedIndexRows.mockImplementation(async () => {
+      const response = mockFrom('index_history') as { data?: unknown };
+      return (response.data ?? []) as Awaited<ReturnType<typeof fetchCachedIndexRows>>;
+    });
+  });
 
   test('returns null when fund is not found', async () => {
     mockFrom.mockImplementation(() => makeChain({ data: null, error: { message: 'not found' } }));

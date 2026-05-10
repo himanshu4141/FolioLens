@@ -1,8 +1,15 @@
 import { fetchPortfolioData } from '../usePortfolio';
 import { supabase } from '@/src/lib/supabase';
+import { fetchCachedIndexRows, fetchCachedNavRows } from '@/src/lib/referenceDataCache';
 
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn(), keepPreviousData: undefined }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/src/lib/referenceDataCache', () => ({
+  REFERENCE_QUERY_GC_TIME_MS: 86_400_000,
+  REFERENCE_QUERY_STALE_TIME_MS: 1_800_000,
+  fetchCachedIndexRows: jest.fn(),
+  fetchCachedNavRows: jest.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,6 +36,8 @@ function makeChain(response: { data: unknown; error: unknown }): any {
 }
 
 const mockFrom = supabase.from as jest.Mock;
+const mockFetchCachedIndexRows = fetchCachedIndexRows as jest.MockedFunction<typeof fetchCachedIndexRows>;
+const mockFetchCachedNavRows = fetchCachedNavRows as jest.MockedFunction<typeof fetchCachedNavRows>;
 
 const MOCK_FUNDS = [
   {
@@ -62,6 +71,14 @@ const MOCK_INDEX = [
 describe('fetchPortfolioData()', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetchCachedNavRows.mockImplementation(async () => {
+      const response = mockFrom('nav_history') as { data?: unknown };
+      return (response.data ?? []) as Awaited<ReturnType<typeof fetchCachedNavRows>>;
+    });
+    mockFetchCachedIndexRows.mockImplementation(async () => {
+      const response = mockFrom('index_history') as { data?: unknown };
+      return (response.data ?? []) as Awaited<ReturnType<typeof fetchCachedIndexRows>>;
+    });
   });
 
   it('returns empty fundCards and null summary when user has no funds', async () => {

@@ -1,6 +1,11 @@
-import { useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
+import {
+  REFERENCE_QUERY_GC_TIME_MS,
+  REFERENCE_QUERY_STALE_TIME_MS,
+  fetchCachedIndexRows,
+  fetchCachedNavRows,
+} from '@/src/lib/referenceDataCache';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterToWindow, type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
@@ -9,7 +14,6 @@ import {
   filterReversedTransactionPairs,
   simulateBenchmarkInvestment,
 } from '@/src/utils/xirr';
-import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 
 export interface InvestmentVsBenchmarkPoint {
   date: string;
@@ -251,8 +255,8 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   const navStartDate = windowStart ? laterDate(firstTxDate, windowStart) : firstTxDate;
 
   const [navRows, idxRows] = await Promise.all([
-    fetchAllNavRows(schemeCodes, navStartDate),
-    fetchAllIndexRows(benchmarkSymbol, firstTxDate),
+    fetchCachedNavRows(schemeCodes, navStartDate),
+    fetchCachedIndexRows(benchmarkSymbol, firstTxDate),
   ]);
 
   return computeInvestmentVsBenchmarkTimeline(
@@ -282,42 +286,6 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
   return rows;
 }
 
-async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promise<RawNavRow[]> {
-  const rows: RawNavRow[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('nav_history')
-      .select('scheme_code, nav_date, nav')
-      .in('scheme_code', schemeCodes)
-      .gte('nav_date', startDate)
-      .order('nav_date', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as RawNavRow[]));
-    if ((data ?? []).length < PAGE_SIZE) break;
-  }
-  return rows;
-}
-
-async function fetchAllIndexRows(benchmarkSymbol: string, startDate: string): Promise<RawIdxRow[]> {
-  const rows: RawIdxRow[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('index_history')
-      .select('index_date, close_value')
-      .eq('index_symbol', benchmarkSymbol)
-      .gte('index_date', startDate)
-      .order('index_date', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as RawIdxRow[]));
-    if ((data ?? []).length < PAGE_SIZE) break;
-  }
-  return rows;
-}
-
 export function useInvestmentVsBenchmarkTimeline(
   funds: FundRef[],
   userId: string | undefined,
@@ -325,34 +293,14 @@ export function useInvestmentVsBenchmarkTimeline(
   window: TimeWindow,
 ): InvestmentVsBenchmarkTimeline {
   const fundKey = funds.map((fund) => fund.id).sort().join(',');
-  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
     enabled: funds.length > 0 && !!userId,
     queryFn: () => fetchInvestmentVsBenchmarkTimeline(funds, userId!, benchmarkSymbol, window),
-    staleTime: 5 * 60 * 1000,
+    staleTime: REFERENCE_QUERY_STALE_TIME_MS,
+    gcTime: REFERENCE_QUERY_GC_TIME_MS,
+    refetchOnWindowFocus: false,
   });
-
-  // Once the active benchmark/window combo is in cache, prefetch the
-  // other benchmarks for the same window in the background. This
-  // covers the common case where the user lands on a fund detail and
-  // then taps a different benchmark pill — the second tap hits a warm
-  // cache. We deliberately do NOT prefetch every (benchmark x window)
-  // combination: that would multiply by ~5 windows and burn server
-  // round-trips for combos most users never look at. Window switching
-  // remains a cold fetch.
-  useEffect(() => {
-    if (!data || !userId || funds.length === 0) return;
-    for (const option of BENCHMARK_OPTIONS) {
-      if (option.symbol === benchmarkSymbol) continue;
-      queryClient.prefetchQuery({
-        queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, option.symbol, window],
-        queryFn: () =>
-          fetchInvestmentVsBenchmarkTimeline(funds, userId, option.symbol, window),
-        staleTime: 5 * 60 * 1000,
-      });
-    }
-  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient]);
 
   return {
     points: data?.points ?? [],

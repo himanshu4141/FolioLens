@@ -14,10 +14,16 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
+import {
+  REFERENCE_HISTORY_START_DATE,
+  REFERENCE_QUERY_GC_TIME_MS,
+  REFERENCE_QUERY_STALE_TIME_MS,
+  fetchCachedIndexRows,
+  fetchCachedNavRows,
+} from '@/src/lib/referenceDataCache';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { resolveTRI } from '@/src/utils/benchmarkSymbolMap';
-import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -109,7 +115,7 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   // Parallel fetch: extended scheme_master fields not yet exposed by the
   // `fund` view (M3v2 — Compare Funds redesign). All nullable; the FundDetail
   // screen renders gracefully when sync-fund-meta hasn't backfilled yet.
-  const { data: extended } = await supabase
+  const extendedPromise = supabase
     .from('scheme_master')
     .select(
       'launch_date, exit_load, min_lumpsum, min_additional, plan_type, amc_name, family_name, morningstar_rating, risk_label, period_returns, risk_ratios',
@@ -117,12 +123,23 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     .eq('scheme_code', fund.scheme_code)
     .maybeSingle();
 
-  // Load transactions for this fund
-  const { data: txs, error: txError } = await supabase
+  const txPromise = supabase
     .from('transaction')
     .select('transaction_date, transaction_type, units, amount')
     .eq('fund_id', fundId)
     .order('transaction_date', { ascending: true });
+
+  const navPromise = fetchCachedNavRows([fund.scheme_code], REFERENCE_HISTORY_START_DATE);
+  const indexPromise = fund.benchmark_index_symbol
+    ? fetchCachedIndexRows(resolveTRI(fund.benchmark_index_symbol), REFERENCE_HISTORY_START_DATE)
+    : Promise.resolve([]);
+
+  const [{ data: extended }, { data: txs, error: txError }, navRows, idxRows] = await Promise.all([
+    extendedPromise,
+    txPromise,
+    navPromise,
+    indexPromise,
+  ]);
 
   if (txError) throw txError;
 
@@ -130,20 +147,6 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   const { historicalCashflows: cashflows, netUnits, investedAmount } =
     buildCashflowsFromTransactions(txs ?? [], 0, new Date());
   const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs ?? []);
-
-  // Page through NAV history — Supabase REST caps responses at 1000 rows
-  // and a 13-year-old direct plan has ~3,300 NAVs. Without pagination the
-  // older "descending then reverse" workaround silently dropped everything
-  // beyond the most recent ~4 years, so trailing-CAGR / All-window charts
-  // showed truncated history.
-  const navRows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
-    (from, to) => supabase
-      .from('nav_history')
-      .select('nav_date, nav')
-      .eq('scheme_code', fund.scheme_code)
-      .order('nav_date', { ascending: true })
-      .range(from, to),
-  );
 
   const navHistory: NavPoint[] = navRows.map((r) => ({
     date: r.nav_date,
@@ -195,23 +198,9 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   const { xirrCashflows } = buildCashflowsFromTransactions(txs ?? [], currentValue, new Date());
   const fundXirr = cashflows.length > 0 ? xirr(xirrCashflows) : NaN;
 
-  // Load benchmark index history (if available). Resolve to TRI symbol so the
-  // chart compares fund NAV (already total-return) against the matching TRI
-  // series — see Phase 8 PRD for the rationale. Paginated for the same
-  // 1000-row reason as NAV history above.
-  let indexHistory: NavPoint[] = [];
-  if (fund.benchmark_index_symbol) {
-    const triSymbol = resolveTRI(fund.benchmark_index_symbol);
-    const idxRows = await paginateRangeQuery<{ index_date: string; close_value: number }>(
-      (from, to) => supabase
-        .from('index_history')
-        .select('index_date, close_value')
-        .eq('index_symbol', triSymbol)
-        .order('index_date', { ascending: true })
-        .range(from, to),
-    );
-    indexHistory = idxRows.map((r) => ({ date: r.index_date, value: Number(r.close_value) }));
-  }
+  // Benchmark index history is resolved to TRI so the chart compares fund NAV
+  // (already total-return) against the matching total-return index series.
+  const indexHistory: NavPoint[] = idxRows.map((r) => ({ date: r.index_date, value: Number(r.close_value) }));
 
   return {
     id: fund.id,
@@ -254,6 +243,8 @@ export function useFundDetail(fundId: string) {
     queryKey: ['fund-detail', fundId],
     enabled: !!fundId,
     queryFn: () => fetchFundDetail(fundId),
-    staleTime: 0, // always fetch fresh so current value matches portfolio
+    staleTime: REFERENCE_QUERY_STALE_TIME_MS,
+    gcTime: REFERENCE_QUERY_GC_TIME_MS,
+    refetchOnWindowFocus: false,
   });
 }

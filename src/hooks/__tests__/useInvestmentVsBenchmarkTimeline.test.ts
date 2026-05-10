@@ -2,6 +2,12 @@ import { computeInvestmentVsBenchmarkTimeline } from '../useInvestmentVsBenchmar
 
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/src/lib/referenceDataCache', () => ({
+  REFERENCE_QUERY_GC_TIME_MS: 86_400_000,
+  REFERENCE_QUERY_STALE_TIME_MS: 1_800_000,
+  fetchCachedIndexRows: jest.fn(),
+  fetchCachedNavRows: jest.fn(),
+}));
 jest.mock('@/src/hooks/usePerformanceTimeline', () => ({
   buildXAxisLabels: (dates: string[]) => dates.map((date) => date.slice(5)),
 }));

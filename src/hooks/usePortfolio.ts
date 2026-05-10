@@ -12,9 +12,15 @@
  *  - vsMarket: portfolio XIRR vs selected benchmark XIRR over same period
  */
 
-import { useEffect } from 'react';
-import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
+import {
+  REFERENCE_HISTORY_START_DATE,
+  REFERENCE_QUERY_GC_TIME_MS,
+  REFERENCE_QUERY_STALE_TIME_MS,
+  fetchCachedIndexRows,
+  fetchCachedNavRows,
+} from '@/src/lib/referenceDataCache';
 import {
   xirr,
   buildCashflowsFromTransactions,
@@ -24,7 +30,8 @@ import {
   type Cashflow,
 } from '@/src/utils/xirr';
 import { useSession } from '@/src/hooks/useSession';
-import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
+
+const PORTFOLIO_NAV_LOOKBACK_DAYS = 45;
 
 export interface FundCardData {
   id: string;
@@ -77,6 +84,45 @@ function isPortfolioFundRow(
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
+function isoDateDaysAgo(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date.toISOString().split('T')[0];
+}
+
+function buildLatestNavByScheme(
+  navRows: { scheme_code: number; nav_date: string; nav: number }[],
+): Map<number, { current: number; previous: number; date: string }> {
+  const navByScheme = new Map<number, { current: number; previous: number; date: string }>();
+  for (const row of [...navRows].sort((a, b) => String(b.nav_date).localeCompare(String(a.nav_date)))) {
+    const code = row.scheme_code as number;
+    const existing = navByScheme.get(code);
+    if (!existing) {
+      navByScheme.set(code, { current: row.nav as number, previous: row.nav as number, date: row.nav_date as string });
+    } else if (existing.current === existing.previous) {
+      // second row = previous trading day's NAV
+      navByScheme.set(code, { ...existing, previous: row.nav as number });
+    }
+  }
+  return navByScheme;
+}
+
+function buildNavHistoryByScheme(
+  navRows: { scheme_code: number; nav_date: string; nav: number }[],
+): Map<number, { date: string; value: number }[]> {
+  const navHistoryByScheme = new Map<number, { date: string; value: number }[]>();
+  for (const row of [...navRows].sort((a, b) => String(b.nav_date).localeCompare(String(a.nav_date)))) {
+    const code = row.scheme_code as number;
+    const pts = navHistoryByScheme.get(code) ?? [];
+    pts.push({ date: row.nav_date as string, value: row.nav as number });
+    navHistoryByScheme.set(code, pts);
+  }
+  for (const [code, pts] of navHistoryByScheme) {
+    navHistoryByScheme.set(code, [...pts].reverse());
+  }
+  return navHistoryByScheme;
+}
+
 export async function fetchPortfolioData(userId: string, benchmarkSymbol: string) {
   // Load active funds
   const { data: funds, error: fundsError } = await supabase
@@ -91,13 +137,24 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
   const validFunds = funds.filter(isPortfolioFundRow);
   if (!validFunds.length) return { fundCards: [], summary: null };
 
-  // Load all transactions for this user (for XIRR)
-  const { data: allTxs, error: txError } = await supabase
-    .from('transaction')
-    .select('fund_id, transaction_date, transaction_type, units, amount')
-    .eq('user_id', userId)
-    .order('transaction_date', { ascending: true });
+  const schemeCodes = validFunds.map((f) => f.scheme_code);
+  const navCutoff30d = isoDateDaysAgo(30);
+  const navFetchStart = isoDateDaysAgo(PORTFOLIO_NAV_LOOKBACK_DAYS);
 
+  const [txResult, recentNavRows] = await Promise.all([
+    // Load all transactions for this user (for XIRR)
+    supabase
+      .from('transaction')
+      .select('fund_id, transaction_date, transaction_type, units, amount')
+      .eq('user_id', userId)
+      .order('transaction_date', { ascending: true }),
+    // Current/previous NAV and fund-card sparklines only need recent rows. The
+    // persistent cache keeps this cheap after first load and asks Supabase only
+    // for rows newer than the cached latest date.
+    fetchCachedNavRows(schemeCodes, navFetchStart),
+  ]);
+
+  const { data: allTxs, error: txError } = txResult;
   if (txError) throw txError;
 
   // Group transactions by fund_id
@@ -108,63 +165,32 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
     txByFund.set(tx.fund_id, existing);
   }
 
-  const schemeCodes = validFunds.map((f) => f.scheme_code);
-
-  // Load full NAV history for each scheme, most-recent first.
-  // No date cutoff — we always want the closest available NAV to today, regardless of
-  // how recently the sync ran.  The navByScheme loop below takes only the first 2 rows
-  // per scheme (current + previous) so the extra rows are cheap to process.
-  const { data: navRows, error: navError } = await supabase
-    .from('nav_history')
-    .select('scheme_code, nav_date, nav')
-    .in('scheme_code', schemeCodes)
-    .order('nav_date', { ascending: false });
-
-  if (navError) throw navError;
-
-  // Build map: scheme_code → { current, previous } using the two most-recent rows.
-  const navByScheme = new Map<number, { current: number; previous: number; date: string }>();
-  for (const row of [...(navRows ?? [])].sort((a, b) =>
-    String(b.nav_date).localeCompare(String(a.nav_date)),
-  )) {
-    const code = row.scheme_code as number;
-    const existing = navByScheme.get(code);
-    if (!existing) {
-      navByScheme.set(code, { current: row.nav as number, previous: row.nav as number, date: row.nav_date as string });
-    } else if (existing.current === existing.previous) {
-      // second row = previous trading day's NAV
-      navByScheme.set(code, { ...existing, previous: row.nav as number });
-    }
+  let navRows = recentNavRows;
+  let navByScheme = buildLatestNavByScheme(navRows ?? []);
+  const schemesWithoutRecentNav = schemeCodes.filter((schemeCode) => !navByScheme.has(schemeCode));
+  if (schemesWithoutRecentNav.length > 0) {
+    const fallbackRows = await fetchCachedNavRows(schemesWithoutRecentNav, REFERENCE_HISTORY_START_DATE);
+    navRows = [...(navRows ?? []), ...fallbackRows];
+    navByScheme = buildLatestNavByScheme(navRows);
   }
 
   // Build sparkline history map (rows came descending — reverse to ascending for rendering)
-  const navHistoryByScheme = new Map<number, { date: string; value: number }[]>();
-  for (const row of [...(navRows ?? [])].sort((a, b) =>
-    String(b.nav_date).localeCompare(String(a.nav_date)),
-  )) {
-    const code = row.scheme_code as number;
-    const pts = navHistoryByScheme.get(code) ?? [];
-    pts.push({ date: row.nav_date as string, value: row.nav as number });
-    navHistoryByScheme.set(code, pts);
-  }
-  for (const [code, pts] of navHistoryByScheme) {
-    navHistoryByScheme.set(code, [...pts].reverse());
-  }
+  const navHistoryByScheme = buildNavHistoryByScheme(navRows ?? []);
 
   // Slice sparkline data to the last 30 days (rows are now ascending; keep only recent)
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const navCutoff30d = thirtyDaysAgo.toISOString().split('T')[0];
   for (const [code, pts] of navHistoryByScheme) {
     navHistoryByScheme.set(code, pts.filter((p) => p.date >= navCutoff30d));
   }
 
-  // Load benchmark index history for market comparison
-  const { data: benchmarkRows } = await supabase
-    .from('index_history')
-    .select('index_date, close_value')
-    .eq('index_symbol', benchmarkSymbol)
-    .order('index_date', { ascending: false });
+  let benchmarkRows: { index_date: string; close_value: number }[] = [];
+  const firstTxDate = (allTxs ?? [])[0]?.transaction_date;
+  if (firstTxDate) {
+    try {
+      benchmarkRows = await fetchCachedIndexRows(benchmarkSymbol, firstTxDate);
+    } catch (error) {
+      console.warn('[usePortfolio] benchmark history fetch failed', error);
+    }
+  }
 
   const benchmarkMap = new Map<string, number>();
   for (const row of benchmarkRows ?? []) {
@@ -327,34 +353,14 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
 export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   const { session } = useSession();
   const userId = session?.user.id;
-  const queryClient = useQueryClient();
 
-  const query = useQuery({
+  return useQuery({
     queryKey: ['portfolio', userId, benchmarkSymbol],
     enabled: !!userId,
     queryFn: () => fetchPortfolioData(userId!, benchmarkSymbol),
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: REFERENCE_QUERY_STALE_TIME_MS,
+    gcTime: REFERENCE_QUERY_GC_TIME_MS,
+    refetchOnWindowFocus: false,
     placeholderData: keepPreviousData, // no jarring flash when switching benchmark
   });
-
-  // Once the active benchmark's data is in cache, prefetch the other
-  // benchmarks in the background. The benchmark pill on Portfolio shows
-  // 3 options; without this prefetch, switching to either non-default
-  // option triggers a fresh fetch and the user waits ~hundreds of ms
-  // before chart values update. Prefetching makes pill-switching feel
-  // instant on the second tap, with no impact on initial load (the
-  // effect runs only after `query.data` is populated).
-  useEffect(() => {
-    if (!query.data || !userId) return;
-    for (const option of BENCHMARK_OPTIONS) {
-      if (option.symbol === benchmarkSymbol) continue;
-      queryClient.prefetchQuery({
-        queryKey: ['portfolio', userId, option.symbol],
-        queryFn: () => fetchPortfolioData(userId, option.symbol),
-        staleTime: 5 * 60 * 1000,
-      });
-    }
-  }, [query.data, userId, benchmarkSymbol, queryClient]);
-
-  return query;
 }
