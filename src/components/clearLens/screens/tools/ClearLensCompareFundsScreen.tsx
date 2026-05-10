@@ -12,7 +12,7 @@
  * screen and the M3v2 ExecPlan
  * (docs/plans/phase-4-tools-hub/M3v2-compare-funds-deep-redesign.md).
  */
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -55,6 +55,7 @@ import {
 } from '@/src/utils/mfdataGuards';
 import { computeHoldingOverlap } from '@/src/utils/holdingOverlap';
 import { formatCurrency } from '@/src/utils/formatting';
+import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import type { NavPoint } from '@/src/utils/navUtils';
 
 // ---------------------------------------------------------------------------
@@ -188,16 +189,26 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
 async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<number, NavPoint[]>> {
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
-  const { data, error } = await supabase
-    .from('nav_history')
-    .select('scheme_code, nav_date, nav')
-    .in('scheme_code', schemeCodes)
-    .order('nav_date', { ascending: true });
-  if (error) throw new Error(`fetchNavHistory: ${error.message}`);
-  for (const row of data ?? []) {
-    const list = out.get(row.scheme_code) ?? [];
-    list.push({ date: row.nav_date, value: Number(row.nav) });
-    out.set(row.scheme_code, list);
+  // Page through the result set — Supabase REST caps at 1000 rows per
+  // response, and 3 schemes × ~3,300 rows of NAV history each = ~10k rows.
+  // Without pagination the ascending order silently truncated to the oldest
+  // ~333 NAVs per scheme, leaving the trailing-CAGR / risk-metric math
+  // running against 2013-era prices.
+  // Fetch each scheme separately so a scheme with a long history doesn't
+  // crowd the others off the first page.
+  for (const code of schemeCodes) {
+    const rows = await paginateRangeQuery<{ scheme_code: number; nav_date: string; nav: number }>(
+      (from, to) => supabase
+        .from('nav_history')
+        .select('scheme_code, nav_date, nav')
+        .eq('scheme_code', code)
+        .order('nav_date', { ascending: true })
+        .range(from, to),
+    );
+    out.set(
+      code,
+      rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) })),
+    );
   }
   return out;
 }
@@ -219,7 +230,15 @@ export function ClearLensCompareFundsScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('returns');
 
-  // Auto-seed selection with the user's first two held funds.
+  // One-shot seed flag — flips true the first time we either auto-seed or
+  // the user makes any change to the selection. Without this, removing all
+  // chips would re-trigger the useEffect below and the screen would silently
+  // re-pick the user's first two holdings, making it impossible to clear out
+  // the defaults to start a fresh comparison.
+  const hasSeededRef = useRef(false);
+
+  // Auto-seed selection with the user's first two held funds — only on the
+  // initial render, never again after the user has interacted.
   const userFundsQuery = useQuery({
     queryKey: ['compare:user-held-seed', userId],
     enabled: !!userId,
@@ -227,10 +246,12 @@ export function ClearLensCompareFundsScreen() {
     staleTime: 5 * 60 * 1000,
   });
   useEffect(() => {
-    if (selectedCodes.length === 0 && (userFundsQuery.data?.length ?? 0) >= MIN_FUNDS) {
+    if (hasSeededRef.current) return;
+    if ((userFundsQuery.data?.length ?? 0) >= MIN_FUNDS) {
       setSelectedCodes(userFundsQuery.data!.slice(0, MIN_FUNDS).map((f) => f.schemeCode));
+      hasSeededRef.current = true;
     }
-  }, [userFundsQuery.data, selectedCodes.length]);
+  }, [userFundsQuery.data]);
 
   // On-demand safety net for picks the universe-backfill cron hasn't covered
   // yet. Idempotent — both edge functions are no-ops when the cache is fresh.
@@ -347,11 +368,19 @@ export function ClearLensCompareFundsScreen() {
   );
 
   const handleToggle = (scheme: SchemeSearchResult) => {
+    // Any explicit user pick (or unpick) blocks the auto-seed effect — the
+    // user has signalled they want their own selection.
+    hasSeededRef.current = true;
     setSelectedCodes((prev) => {
       if (prev.includes(scheme.schemeCode)) return prev.filter((c) => c !== scheme.schemeCode);
       if (prev.length >= MAX_FUNDS) return prev;
       return [...prev, scheme.schemeCode];
     });
+  };
+
+  const handleRemove = (schemeCode: number) => {
+    hasSeededRef.current = true;
+    setSelectedCodes((prev) => prev.filter((c) => c !== schemeCode));
   };
 
   if (!userId) {
@@ -393,7 +422,7 @@ export function ClearLensCompareFundsScreen() {
                   {shortSchemeName(scheme.schemeName)}
                 </Text>
                 <TouchableOpacity
-                  onPress={() => setSelectedCodes((prev) => prev.filter((c) => c !== scheme.schemeCode))}
+                  onPress={() => handleRemove(scheme.schemeCode)}
                   hitSlop={8}
                 >
                   <Ionicons name="close-circle" size={18} color={tokens.colors.textTertiary} />
@@ -805,89 +834,112 @@ function RiskTab({
 }) {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
+  // Per-fund derived data. Doing this once outside the row loop keeps each
+  // cell renderer cheap.
+  const perFund = schemes.map((scheme) => ({
+    scheme,
+    metrics: metricsByCode.get(scheme.schemeCode) ?? null,
+    beta: readMfdataBeta(scheme.riskRatios, scheme.schemeCategory),
+    r2: readMfdataRSquared(scheme.riskRatios, scheme.schemeCategory),
+  }));
+
+  type Row = {
+    key: 'std' | 'sharpe' | 'sortino' | 'beta' | 'r2';
+    label: string;
+    hint: string;
+    cell: (f: typeof perFund[number]) => string;
+    visible: boolean;
+  };
+  const anyBetaOrR2 = perFund.some((f) => f.beta != null || f.r2 != null);
+  const rows: Row[] = [
+    {
+      key: 'std',
+      label: 'Std deviation',
+      hint: 'How wildly returns swing month to month. Lower = smoother ride.',
+      cell: (f) => (f.metrics?.stdDev != null ? `${(f.metrics.stdDev * 100).toFixed(1)}%` : '—'),
+      visible: true,
+    },
+    {
+      key: 'sharpe',
+      label: 'Sharpe',
+      hint: 'Return per unit of risk. Higher = more reward for the bumps.',
+      cell: (f) => (f.metrics?.sharpe != null ? f.metrics.sharpe.toFixed(2) : '—'),
+      visible: true,
+    },
+    {
+      key: 'sortino',
+      label: 'Sortino',
+      hint: 'Like Sharpe, but counts only downside swings as risk. Higher = better at avoiding losses.',
+      cell: (f) => (f.metrics?.sortino != null ? f.metrics.sortino.toFixed(2) : '—'),
+      visible: true,
+    },
+    {
+      key: 'beta',
+      label: 'Beta',
+      hint: 'How much the fund moves with the market. 1 = in step. < 1 = steadier.',
+      cell: (f) => (f.beta != null ? f.beta.toFixed(2) : '—'),
+      visible: anyBetaOrR2,
+    },
+    {
+      key: 'r2',
+      label: 'R²',
+      hint: 'How closely the fund tracks its benchmark. 100% = identical movement.',
+      cell: (f) => (f.r2 != null ? `${f.r2.toFixed(0)}%` : '—'),
+      visible: anyBetaOrR2,
+    },
+  ];
+  const visibleRows = rows.filter((r) => r.visible);
+
+  // Per-fund footnote: short window for risk metrics. Build once so the
+  // footer below the table can list "DSP Mid Cap (12 months), HDFC Mid Cap (8 months)".
+  const shortWindowNotes = perFund
+    .filter((f) => (f.metrics?.monthlyObservations ?? 0) < 36)
+    .map((f) => `${shortSchemeName(f.scheme.schemeName)} (${f.metrics?.monthlyObservations ?? 0} months)`);
+
   return (
     <View style={styles.tabCard}>
       <Text style={styles.tabIntro}>
         Risk metrics over the trailing 3 years. Computed locally from monthly returns;
         Beta and R² come from MFData and only show for equity / hybrid funds.
       </Text>
-      {schemes.map((scheme, idx) => {
-        const m = metricsByCode.get(scheme.schemeCode);
-        const beta = readMfdataBeta(scheme.riskRatios, scheme.schemeCategory);
-        const r2 = readMfdataRSquared(scheme.riskRatios, scheme.schemeCategory);
-        return (
-          <View key={scheme.schemeCode} style={[styles.fundBlock, idx > 0 && styles.fundBlockDividerTop]}>
-            <Text style={styles.fundBlockTitle} numberOfLines={2}>{shortSchemeName(scheme.schemeName)}</Text>
-            <View style={styles.metricRow}>
-              <MetricCell
-                label="Std deviation"
-                value={m?.stdDev != null ? `${(m.stdDev * 100).toFixed(1)}%` : '—'}
-                hint="How wildly returns swing month to month. Lower = smoother ride."
-                tokens={tokens}
-              />
-              <MetricCell
-                label="Sharpe"
-                value={m?.sharpe != null ? m.sharpe.toFixed(2) : '—'}
-                hint="Return per unit of risk. Higher = more reward for the bumps."
-                tokens={tokens}
-              />
-              <MetricCell
-                label="Sortino"
-                value={m?.sortino != null ? m.sortino.toFixed(2) : '—'}
-                hint="Like Sharpe, but counts only downside swings as risk. Higher = better at avoiding losses."
-                tokens={tokens}
-              />
-            </View>
-            {beta != null || r2 != null ? (
-              <View style={styles.metricRow}>
-                <MetricCell
-                  label="Beta"
-                  value={beta != null ? beta.toFixed(2) : '—'}
-                  hint="How much the fund moves with the market. 1 = in step. < 1 = steadier."
-                  tokens={tokens}
-                />
-                <MetricCell
-                  label="R²"
-                  value={r2 != null ? `${r2.toFixed(0)}%` : '—'}
-                  hint="How closely the fund tracks its benchmark. 100% = identical movement."
-                  tokens={tokens}
-                />
-                <MetricCell label="" value="" hint="" tokens={tokens} />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View>
+          <View style={styles.tableHeaderRow}>
+            <View style={styles.cellLabelWide} />
+            {schemes.map((s) => (
+              <View key={s.schemeCode} style={styles.cell}>
+                <Text style={styles.cellHeader} numberOfLines={2}>
+                  {shortSchemeName(s.schemeName)}
+                </Text>
               </View>
-            ) : (
-              <Text style={styles.tabFootnote}>
-                Beta and R² aren&apos;t shown for {scheme.schemeCategory ?? 'this category'} — they apply to equity/hybrid funds.
-              </Text>
-            )}
-            {(m?.monthlyObservations ?? 0) < 36 ? (
-              <Text style={styles.tabFootnote}>
-                Risk metrics computed from {m?.monthlyObservations ?? 0} months of returns — fewer than 36 means a shorter window.
-              </Text>
-            ) : null}
+            ))}
           </View>
-        );
-      })}
-    </View>
-  );
-}
-
-function MetricCell({
-  label,
-  value,
-  hint,
-  tokens,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  return (
-    <View style={styles.metricCell}>
-      {label ? <Text style={styles.metricLabel}>{label}</Text> : null}
-      {value ? <Text style={styles.metricValue}>{value}</Text> : null}
-      {hint ? <Text style={styles.metricHint}>{hint}</Text> : null}
+          {visibleRows.map((row, idx) => (
+            <View key={row.key} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
+              <View style={styles.cellLabelWide}>
+                <Text style={styles.cellLabelText}>{row.label}</Text>
+                <Text style={styles.cellLabelHint}>{row.hint}</Text>
+              </View>
+              {perFund.map((f) => (
+                <View key={f.scheme.schemeCode} style={styles.cell}>
+                  <Text style={styles.cellValue}>{row.cell(f)}</Text>
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+      {!anyBetaOrR2 ? (
+        <Text style={styles.tabFootnote}>
+          Beta and R² aren&apos;t shown for these categories — they apply to equity / hybrid funds.
+        </Text>
+      ) : null}
+      {shortWindowNotes.length > 0 ? (
+        <Text style={styles.tabFootnote}>
+          Short risk-metric window: {shortWindowNotes.join('; ')}. Anything under 36 months of returns
+          means a shorter sample than the standard 3-year benchmark.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -1577,6 +1629,12 @@ function makeStyles(tokens: ClearLensTokens) {
       ...ClearLensTypography.bodySmall,
       color: cl.textSecondary,
     },
+    cellLabelHint: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      lineHeight: 15,
+      paddingTop: 2,
+    },
     cell: {
       width: 130,
       paddingRight: ClearLensSpacing.xs,
@@ -1599,45 +1657,6 @@ function makeStyles(tokens: ClearLensTokens) {
     cellSource: {
       ...ClearLensTypography.caption,
       color: cl.textTertiary,
-    },
-
-    fundBlock: {
-      gap: ClearLensSpacing.xs,
-      paddingVertical: ClearLensSpacing.xs,
-    },
-    fundBlockDividerTop: {
-      borderTopWidth: 1,
-      borderTopColor: cl.borderLight,
-      marginTop: ClearLensSpacing.xs,
-      paddingTop: ClearLensSpacing.sm,
-    },
-    fundBlockTitle: {
-      ...ClearLensTypography.h3,
-      color: cl.navy,
-    },
-    metricRow: {
-      flexDirection: 'row',
-      gap: ClearLensSpacing.sm,
-    },
-    metricCell: {
-      flex: 1,
-      gap: 2,
-      minWidth: 80,
-    },
-    metricLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textTertiary,
-      letterSpacing: 0.3,
-    },
-    metricValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 16,
-      color: cl.navy,
-    },
-    metricHint: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      lineHeight: 15,
     },
 
     errorBox: {

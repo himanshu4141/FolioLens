@@ -55,6 +55,7 @@ import {
 } from '@/src/utils/pastSipCheck';
 import { formatCurrency } from '@/src/utils/formatting';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
+import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import type { NavPoint } from '@/src/utils/navUtils';
 
 // String-only key the segmented control accepts (it's generic over T extends
@@ -74,6 +75,25 @@ function formatCustomLabel(months: number): string {
   return `${y}y ${m}m`;
 }
 
+/**
+ * For 1Y / 3Y / 5Y the duration label already tells the user the window —
+ * we don't repeat it. But "All" and Custom hide the actual span, and a
+ * 13-year DSP TIGER chart looks identical to a 3-year newer-fund chart
+ * unless we spell out the dates in prose.
+ */
+function shouldShowWindowInProse(duration: PastSipDuration): boolean {
+  if (typeof duration === 'object') return true;
+  return duration === 'All';
+}
+
+/** "2013-04-15" → "Apr 2013". Empty string for missing input. */
+function formatMonthYear(dateStr: string | null): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
 interface PickedScheme {
   schemeCode: number;
   schemeName: string;
@@ -84,15 +104,22 @@ interface PickedScheme {
  * Direct fetch of nav_history by scheme_code — works for any scheme, not
  * just held funds. Returns ascending date order so simulatePastSip can walk
  * forward through it.
+ *
+ * Pages through the response — Supabase REST caps at 1000 rows per call, so
+ * a scheme with 13 years of history (~3,300 NAVs) would otherwise truncate
+ * to the oldest 1000 rows and the simulation would chart 2013–2017 against
+ * "today" — exactly the stale-data bug seen on DSP TIGER.
  */
 async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
-  const { data, error } = await supabase
-    .from('nav_history')
-    .select('nav_date, nav')
-    .eq('scheme_code', schemeCode)
-    .order('nav_date', { ascending: true });
-  if (error) throw new Error(`fetchNavSeries: ${error.message}`);
-  return (data ?? []).map((row) => ({ date: row.nav_date, value: Number(row.nav) }));
+  const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
+    (from, to) => supabase
+      .from('nav_history')
+      .select('nav_date, nav')
+      .eq('scheme_code', schemeCode)
+      .order('nav_date', { ascending: true })
+      .range(from, to),
+  );
+  return rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) }));
 }
 
 /**
@@ -365,6 +392,7 @@ export function ClearLensPastSipCheckScreen() {
               benchmarkResult={benchmarkResult}
               chartPoints={chartPoints}
               chartWidth={chartWidth}
+              duration={duration}
             />
           ) : fundResult ? (
             <View style={styles.errorBox}>
@@ -421,6 +449,7 @@ function ResultSection({
   benchmarkResult,
   chartPoints,
   chartWidth,
+  duration,
 }: {
   fundName: string;
   benchmarkLabel: string;
@@ -428,6 +457,7 @@ function ResultSection({
   benchmarkResult: ReturnType<typeof simulatePastSip> | null;
   chartPoints: PastSipChartPoint[];
   chartWidth: number;
+  duration: PastSipDuration;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -468,14 +498,23 @@ function ResultSection({
 
       {/* Hero — leads with the answer. The number that matters most is the
           terminal value; the supporting line carries the rest of the math
-          (invested, SIP count, gain) so the user doesn't have to scan a
-          separate stats card to get the same facts. */}
+          (invested, SIP count, window, gain) so the user doesn't have to
+          scan a separate stats card to get the same facts. The window is
+          spelled out explicitly for All / Custom durations — without it,
+          a user looking at the chart can't tell whether "All" means 3 years
+          or 13 years of history. */}
       <View style={styles.banner}>
         <Text style={styles.bannerLabel}>Worth today</Text>
         <Text style={styles.bannerValue}>{formatCurrency(fundResult.currentValue)}</Text>
         <Text style={styles.bannerSubtitle}>
           {formatCurrency(fundResult.totalInvested)} invested across{' '}
-          {fundResult.installments.length} monthly SIPs ·{' '}
+          {fundResult.installments.length} monthly SIPs
+          {shouldShowWindowInProse(duration) ? (
+            <Text>
+              {' '}from {formatMonthYear(fundResult.startDate)} to {formatMonthYear(fundResult.endDate)}
+            </Text>
+          ) : null}
+          {' '}·{' '}
           <Text style={fundResult.gain >= 0 ? styles.bannerGainUp : styles.bannerGainDown}>
             {fundResult.gain >= 0 ? '+' : ''}
             {formatCurrency(fundResult.gain)} ({fundResult.gainPct >= 0 ? '+' : ''}
