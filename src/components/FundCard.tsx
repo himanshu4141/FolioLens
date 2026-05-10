@@ -80,10 +80,16 @@ export function FundCard({
             ) : (
               <>
                 <Text style={styles.fundValue}>{formatCurrency(fund.currentValue!)}</Text>
-                <View style={styles.dailyChangePill}>
-                  <Text style={[styles.fundDailyChange, { color: isPositiveDay ? colors.positive : colors.negative }]}>
-                    {fund.dailyChangePct! >= 0 ? '+' : ''}{fund.dailyChangePct!.toFixed(2)}%{' '}
-                    {cardStaleness.stale ? cardStaleness.label : 'today'}
+                <View style={[styles.dailyChangePill, cardStaleness.critical && styles.dailyChangePillCritical]}>
+                  <Text
+                    style={[
+                      styles.fundDailyChange,
+                      { color: cardStaleness.critical ? colors.negative : isPositiveDay ? colors.positive : colors.negative },
+                    ]}
+                  >
+                    {cardStaleness.critical
+                      ? `Stale · ${cardStaleness.label}`
+                      : `${fund.dailyChangePct! >= 0 ? '+' : ''}${fund.dailyChangePct!.toFixed(2)}% ${cardStaleness.stale ? cardStaleness.label : 'today'}`}
                   </Text>
                 </View>
                 {isFinite(fund.returnXirr) && (
@@ -181,6 +187,11 @@ function makeStyles(colors: ClearLensCompatibleTokens) {
       paddingHorizontal: 6,
       paddingVertical: 2,
       borderRadius: 6,
+    },
+    dailyChangePillCritical: {
+      backgroundColor: colors.negative + '14',
+      borderWidth: 1,
+      borderColor: colors.negative + '55',
     },
     fundDailyChange: { fontSize: 12, fontWeight: '600' as const },
     fundXirr: { fontSize: 11, fontWeight: '700' as const },

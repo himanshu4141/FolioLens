@@ -66,16 +66,24 @@ function businessDaysBetween(fromDateStr: string, toDateStr: string): number {
  *
  * stale:     >1 business day since last NAV (missed a trading day)
  * veryStale: >3 business days since last NAV
+ * critical:  >60 business days since last NAV (~3 calendar months — almost
+ *            certainly a broken NAV ingestion or a delisted scheme; warrants
+ *            a loud red visual rather than the subtle gray "as of …" label)
  */
-export function navStaleness(latestNavDate: string | null): { label: string; stale: boolean; veryStale: boolean } {
-  if (!latestNavDate) return { label: '', stale: false, veryStale: false };
+export function navStaleness(latestNavDate: string | null): {
+  label: string;
+  stale: boolean;
+  veryStale: boolean;
+  critical: boolean;
+} {
+  if (!latestNavDate) return { label: '', stale: false, veryStale: false, critical: false };
   const today = new Date().toISOString().split('T')[0];
-  if (latestNavDate >= today) return { label: 'today', stale: false, veryStale: false };
+  if (latestNavDate >= today) return { label: 'today', stale: false, veryStale: false, critical: false };
   const bizDays = businessDaysBetween(latestNavDate, today);
   const [, month, day] = latestNavDate.split('-');
   const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const label = `as of ${parseInt(day, 10)} ${MONTH_ABBR[parseInt(month, 10) - 1]}`;
-  return { label, stale: bizDays > 1, veryStale: bizDays > 3 };
+  return { label, stale: bizDays > 1, veryStale: bizDays > 3, critical: bizDays > 60 };
 }
 
 /** Index a series to 100 at its first point (for relative comparison charts) */
