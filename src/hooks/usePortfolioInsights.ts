@@ -12,6 +12,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { parseFundName } from '@/src/utils/fundName';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { PERSIST_MAX_AGE_MS } from '@/src/lib/queryClient';
 import type { FundCardData } from '@/src/hooks/usePortfolio';
 import type {
   PortfolioInsights,
@@ -275,8 +277,8 @@ export function usePortfolioInsights(fundCards: FundCardData[]) {
     queryKey: ['portfolio-composition', schemeCodes],
     queryFn: () => fetchCompositions(schemeCodes),
     enabled: schemeCodes.length > 0,
-    staleTime: 1000 * 60 * 60, // 1 hour — composition changes monthly
-    gcTime: 1000 * 60 * 60 * 24,
+    staleTime: STALE_TIMES.PORTFOLIO_COMPOSITION,
+    gcTime: PERSIST_MAX_AGE_MS,
   });
 
   const syncMutation = useMutation({

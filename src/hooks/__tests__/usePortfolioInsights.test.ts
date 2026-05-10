@@ -6,6 +6,16 @@ jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(),
   useMutation: jest.fn(),
   useQueryClient: jest.fn(),
+  // QueryClient is constructed inside `src/lib/queryClient.ts`, which is
+  // imported transitively by `usePortfolioInsights` (for `PERSIST_MAX_AGE_MS`).
+  QueryClient: jest.fn().mockImplementation(() => ({})),
+}));
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: { getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() },
+}));
+jest.mock('@tanstack/query-async-storage-persister', () => ({
+  createAsyncStoragePersister: jest.fn(() => ({})),
 }));
 jest.mock('@/src/lib/supabase', () => ({
   supabase: {

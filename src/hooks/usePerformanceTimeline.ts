@@ -12,6 +12,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { filterToWindow, type TimeWindow, type NavPoint } from '@/src/utils/navUtils';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
 export interface TimelineEntry {
   type: 'fund' | 'index';
@@ -137,7 +138,7 @@ export function usePerformanceTimeline(
     queryKey: ['performance-timeline', fundKey, indexKey],
     enabled: fundItems.length + indexItems.length > 0,
     queryFn: () => fetchPerformanceTimeline(fundItems, indexItems),
-    staleTime: 5 * 60 * 1000,
+    staleTime: STALE_TIMES.PERFORMANCE_TIMELINE,
   });
 }
 

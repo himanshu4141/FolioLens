@@ -17,12 +17,18 @@ function makeChain(response: { data: unknown; error: unknown }): any {
     in: jest.fn(),
     gte: jest.fn(),
     order: jest.fn(),
+    range: jest.fn(),
     single: jest.fn(),
     maybeSingle: jest.fn(),
   };
   ['select', 'eq', 'in', 'gte', 'order'].forEach((m) =>
     (chain as Record<string, jest.Mock>)[m].mockReturnValue(chain),
   );
+  // `.range()` is the terminal call for the paginated NAV / index
+  // fetchers (`fetchNavHistoryDirect` / `fetchIndexHistoryDirect`).
+  // Returning the response directly lets a single-page mock satisfy the
+  // pagination loop's `rows.length < PAGE_SIZE` exit condition.
+  chain.range.mockReturnValue(response);
   chain.single.mockReturnValue(response);
   chain.maybeSingle.mockReturnValue(response);
   return chain;
