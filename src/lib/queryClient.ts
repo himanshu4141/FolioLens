@@ -18,11 +18,22 @@
  * The `__BUSTER__` constant is the manual escape hatch: bump it whenever
  * a query's row shape changes or a migration backfills history rows, so
  * persisted entries are discarded on next start.
+ *
+ * Auth-error handler: a global QueryCache + MutationCache `onError` runs
+ * `isAuthSessionInvalidError` on every rejection. When a query / mutation
+ * fails because the session is dead (revoked Google token, expired JWT,
+ * 401 from PostgREST, etc.) we sign the user out and AuthGate's
+ * null-session redirect drops them to /auth — instead of leaving them
+ * looking at error toasts on every screen. Single-flight via
+ * `inFlightSignOut` so 50 in-flight 401s only sign out once.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { QueryClient, type QueryKey } from '@tanstack/react-query';
+import { MutationCache, QueryCache, QueryClient, type QueryKey } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { supabase } from '@/src/lib/supabase';
+import { analytics } from '@/src/lib/analytics';
+import { isAuthSessionInvalidError } from '@/src/lib/authError';
 
 // Bump this when a query's row shape changes or a migration backfills
 // history rows. Persisted entries are discarded on next start.
@@ -30,12 +41,46 @@ export const __BUSTER__ = 'v1';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+let inFlightSignOut: Promise<void> | null = null;
+
+function handleAuthError(error: unknown): void {
+  if (!isAuthSessionInvalidError(error)) return;
+
+  if (inFlightSignOut) return;
+  inFlightSignOut = (async () => {
+    try {
+      analytics.track('auth_session_invalidated');
+      await supabase.auth.signOut();
+    } catch {
+      // signOut errors are non-fatal — AuthGate watches session state.
+    } finally {
+      // Reset after a small delay so a fresh re-login can also trigger a
+      // future invalidation (otherwise this session-bound flag would block
+      // the next handler for the lifetime of the JS context).
+      setTimeout(() => {
+        inFlightSignOut = null;
+      }, 5000);
+    }
+  })();
+}
+
 export const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error) => handleAuthError(error),
+  }),
+  mutationCache: new MutationCache({
+    onError: (error) => handleAuthError(error),
+  }),
   defaultOptions: {
     queries: {
       staleTime: STALE_TIMES.DEFAULT,
       gcTime: PERSIST_MAX_AGE_MS,
-      retry: 2,
+      // Don't burn retries on auth-dead errors — fail-fast so the global
+      // handler can sign the user out promptly.
+      retry: (failureCount, error) => {
+        if (isAuthSessionInvalidError(error)) return false;
+        return failureCount < 2;
+      },
     },
   },
 });
