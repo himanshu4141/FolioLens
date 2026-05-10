@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import {
   buildAnnualMoneyFlows,
   buildMoneyTrailSummary,
@@ -117,6 +118,6 @@ export function useMoneyTrail() {
     queryKey: ['money-trail', userId],
     enabled: !!userId,
     queryFn: () => fetchMoneyTrailData(userId!),
-    staleTime: 5 * 60 * 1000,
+    staleTime: STALE_TIMES.MONEY_TRAIL,
   });
 }

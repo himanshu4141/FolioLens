@@ -25,7 +25,6 @@ const config = {
     '!src/**/*.test.ts',
     '!src/types/**',          // pure type declarations — nothing executable to cover
     '!src/lib/supabase.ts',   // React Native + Supabase bootstrap — not runnable in Node
-    '!src/lib/queryClient.ts',// trivial config object
     '!src/lib/analytics.web.ts',  // browser-only impl; covered by manual smoke
     '!src/lib/analytics.native.ts', // RN-only impl; covered by manual smoke
     '!src/lib/installGlobalErrorHandlers.ts', // RN/window globals; covered by manual smoke

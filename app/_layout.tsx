@@ -6,7 +6,7 @@ import * as SystemUI from 'expo-system-ui';
 import * as Updates from 'expo-updates';
 import ExpoConstants from 'expo-constants';
 import { Stack, useRouter, useSegments } from 'expo-router';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -17,7 +17,13 @@ import {
   Inter_700Bold,
   Inter_800ExtraBold,
 } from '@expo-google-fonts/inter';
-import { queryClient } from '@/src/lib/queryClient';
+import {
+  PERSIST_MAX_AGE_MS,
+  __BUSTER__,
+  persister,
+  queryClient,
+  shouldPersistQueryKey,
+} from '@/src/lib/queryClient';
 import { useSession } from '@/src/hooks/useSession';
 import { supabase } from '@/src/lib/supabase';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
@@ -117,7 +123,16 @@ function useAnalyticsLifecycle() {
     };
 
     supabase.auth.getSession().then(({ data: { session } }) => identify(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evt, session) => identify(session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      identify(session);
+      if (event === 'SIGNED_OUT') {
+        // The persisted React Query cache holds the previous user's
+        // portfolio data. Drop the on-disk copy and the in-memory copy
+        // before the next sign-in could possibly read either.
+        queryClient.clear();
+        void persister.removeClient();
+      }
+    });
 
     const onAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'active') {
@@ -172,12 +187,22 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister,
+          buster: __BUSTER__,
+          maxAge: PERSIST_MAX_AGE_MS,
+          dehydrateOptions: {
+            shouldDehydrateQuery: (query) => shouldPersistQueryKey(query.queryKey),
+          },
+        }}
+      >
         <ThemeProvider>
           <ThemedAppShell />
           <VercelInsights />
         </ThemeProvider>
-      </QueryClientProvider>
+      </PersistQueryClientProvider>
     </ErrorBoundary>
   );
 }

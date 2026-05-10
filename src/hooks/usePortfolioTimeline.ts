@@ -17,6 +17,7 @@ import { supabase } from '@/src/lib/supabase';
 import { filterToWindow, indexTo100, type TimeWindow, type NavPoint } from '@/src/utils/navUtils';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterReversedTransactionPairs } from '@/src/utils/xirr';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
 export interface FundRef {
   id: string;         // fund table UUID
@@ -236,7 +237,7 @@ export function usePortfolioTimeline(
     queryKey: ['portfolioTimeline', userId, fundKey, benchmarkSymbol, window],
     enabled: funds.length > 0 && !!userId,
     queryFn: () => fetchPortfolioTimeline(funds, userId!, benchmarkSymbol, window),
-    staleTime: 5 * 60 * 1000,
+    staleTime: STALE_TIMES.PORTFOLIO_TIMELINE,
   });
 
   return {
