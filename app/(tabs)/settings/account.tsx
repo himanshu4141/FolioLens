@@ -18,6 +18,7 @@ import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
+import { DeleteAccountSheet } from '@/src/components/DeleteAccountSheet';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
 import { parseOAuthCode } from '@/src/utils/authUtils';
 import { maskPan } from './index';
@@ -49,6 +50,7 @@ export default function AccountScreen() {
 
   const [linkingGoogle, setLinkingGoogle] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
 
   // PAN and DOB are write-once during onboarding so a typo can't accidentally
   // attach someone else's CAS data. Correcting them needs human review, so
@@ -242,7 +244,33 @@ export default function AccountScreen() {
             These accounts are used to sign in to FolioLens.
           </Text>
         </View>
+
+        {/* Account actions — destructive zone, kept at the bottom so it can't
+            be tapped by accident while scanning identity rows. */}
+        <Text style={styles.sectionLabel}>Account actions</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.deleteRow}
+            onPress={() => setDeleteSheetOpen(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="trash-outline" size={18} color={tokens.colors.negative} />
+            <View style={styles.deleteRowText}>
+              <Text style={styles.deleteRowLabel}>Delete account</Text>
+              <Text style={styles.rowSub}>
+                Permanently removes your profile, portfolio, and feedback history.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
+          </TouchableOpacity>
+        </View>
       </ScrollView>
+
+      <DeleteAccountSheet
+        visible={deleteSheetOpen}
+        email={session?.user.email ?? null}
+        onClose={() => setDeleteSheetOpen(false)}
+      />
 
       <FeedbackSheet
         visible={correctionField !== null}
@@ -384,6 +412,19 @@ function makeStyles(tokens: ClearLensTokens) {
       ...ClearLensTypography.bodySmall,
       color: cl.textTertiary,
       flex: 1,
+    },
+
+    deleteRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingVertical: 14,
+      gap: ClearLensSpacing.md,
+    },
+    deleteRowText: { flex: 1, gap: 3 },
+    deleteRowLabel: {
+      ...ClearLensTypography.h3,
+      color: cl.negative,
     },
   });
 }

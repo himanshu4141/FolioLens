@@ -24,6 +24,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import {
   ClearLensFonts,
@@ -35,6 +36,7 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { shortSchemeName } from '@/src/utils/schemeName';
@@ -205,6 +207,7 @@ async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<numbe
 // ---------------------------------------------------------------------------
 
 export function ClearLensCompareFundsScreen() {
+  useTrackInsightViewed('compare_funds');
   const router = useRouter();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -505,6 +508,8 @@ export function ClearLensCompareFundsScreen() {
               comes from the latest disclosed scheme details. Past performance is not indicative
               of future returns. We don&apos;t recommend or rate funds.
             </Text>
+
+            <PortfolioDisclaimer />
           </>
         )}
       </ScrollView>

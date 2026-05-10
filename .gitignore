@@ -27,6 +27,11 @@ ios/
 *.mobileprovision
 *.orig.*
 
+# Store-submission credentials — never commit these. The path is referenced
+# from eas.json and the file is loaded at submission time only.
+play-store-key.json
+apple-api-key*.p8
+
 # Environment variables
 .env
 .env.local

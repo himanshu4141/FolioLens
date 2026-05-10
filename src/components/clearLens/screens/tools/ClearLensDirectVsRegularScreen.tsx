@@ -21,6 +21,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -31,6 +32,7 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
+import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
 import {
   buildPlanBreakdown,
@@ -121,6 +123,7 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
 }
 
 export function ClearLensDirectVsRegularScreen() {
+  useTrackInsightViewed('direct_vs_regular');
   const router = useRouter();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -372,6 +375,8 @@ export function ClearLensDirectVsRegularScreen() {
                 the difference comes only from the expense ratio gap. Past performance is not indicative of future returns.
                 We don&apos;t advise switching — your platform or advisor is the right place for that.
               </Text>
+
+              <PortfolioDisclaimer />
             </>
           )}
         </ScrollView>

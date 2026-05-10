@@ -26,6 +26,7 @@ import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile, userProfileQueryKey } from '@/src/hooks/useUserProfile';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { DesktopFormFrame } from '@/src/components/responsive';
 import { AutoRefreshSetup } from '@/src/components/onboarding/AutoRefreshSetup';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
@@ -486,6 +487,8 @@ function WelcomeStep({
       <View style={styles.footerSpace} />
 
       <PrimaryButton label="Get started" onPress={onContinue} styles={styles} cl={cl} />
+
+      <PortfolioDisclaimer />
     </ScrollView>
   );
 }

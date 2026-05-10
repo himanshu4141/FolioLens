@@ -9,7 +9,10 @@ export type InsightSurface =
   | 'wealth_journey'
   | 'tools'
   | 'goal_summary'
-  | 'money_trail';
+  | 'money_trail'
+  | 'past_sip_check'
+  | 'compare_funds'
+  | 'direct_vs_regular';
 
 /**
  * Emits a single `insight_viewed` event the first time the screen mounts.

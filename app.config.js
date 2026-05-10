@@ -44,6 +44,9 @@ module.exports = ({ config }) => {
     icon: './assets/images/icon.png',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
+    description:
+      'FolioLens is a mutual fund portfolio analysis tool for Indian investors. Import your CAS to see allocation, fund overlap, sector concentration, and performance against benchmarks. Not investment advice.',
+    privacy: 'public',
     runtimeVersion: {
       policy: 'appVersion',
     },
@@ -57,6 +60,16 @@ module.exports = ({ config }) => {
         light: './assets/images/icon.png',
         dark: './assets/images/icon-dark.png',
         tinted: './assets/images/icon-tinted.png',
+      },
+      // Required usage strings — without these iOS crashes the moment the
+      // user taps the "Attach screenshot" affordance in the feedback sheet.
+      // The library / camera pickers in expo-image-picker fall through to
+      // these system prompts before they will hand back the URI.
+      infoPlist: {
+        NSPhotoLibraryUsageDescription:
+          'FolioLens reads images from your photo library only when you choose one to attach to feedback.',
+        NSCameraUsageDescription:
+          'FolioLens uses the camera only when you choose to capture a screenshot to attach to feedback.',
       },
     },
     android: {

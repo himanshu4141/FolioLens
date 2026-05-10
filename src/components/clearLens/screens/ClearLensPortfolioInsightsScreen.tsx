@@ -15,6 +15,7 @@ import {
   ClearLensHeader,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
@@ -437,6 +438,8 @@ export function ClearLensPortfolioInsightsScreen() {
             )}
           </>
         )}
+
+        <PortfolioDisclaimer />
       </ScrollView>
     </ClearLensScreen>
   );

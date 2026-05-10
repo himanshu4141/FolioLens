@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -156,6 +157,8 @@ export function ClearLensGoalSummaryScreen() {
         <Text style={styles.disclaimer}>
           Results are estimates only. Assumed return: {returnAssumptions[goal.returnPreset]}% p.a. ({presetLabel}). Past performance is not indicative of future returns.
         </Text>
+
+        <PortfolioDisclaimer />
       </ScrollView>
     </ClearLensScreen>
   );

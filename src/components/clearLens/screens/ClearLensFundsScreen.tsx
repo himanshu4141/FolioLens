@@ -45,6 +45,7 @@ import {
 } from '@/src/utils/clearLensFormat';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensFundsScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensFundsScreenDesktop';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import type { FundsSortOption } from '@/src/store/appStore';
 
 // Re-export the canonical type so consumers can keep using the local name.
@@ -607,6 +608,8 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
               onOpenTransactions={() => router.push(`/money-trail?fundId=${fund.id}`)}
             />
           ))}
+
+          <PortfolioDisclaimer />
         </ScrollView>
       )}
       {!insideTab && <FundsBottomNav />}

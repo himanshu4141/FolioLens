@@ -17,6 +17,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '@/src/lib/supabase';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -28,6 +29,8 @@ import {
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 
 const HELP_URL = 'https://foliolens.in/faq.html';
+const PRIVACY_URL = 'https://foliolens.in/privacy.html';
+const TERMS_URL = 'https://foliolens.in/terms.html';
 
 type InfoRowProps = {
   label: string;
@@ -93,6 +96,19 @@ export default function AboutScreen() {
     } catch (error) {
       Alert.alert(
         'Could not open Help',
+        error instanceof Error ? error.message : 'Please try again.',
+      );
+    }
+  }
+
+  async function openLegalUrl(url: string, label: string) {
+    try {
+      await WebBrowser.openBrowserAsync(url, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
+      });
+    } catch (error) {
+      Alert.alert(
+        `Could not open ${label}`,
         error instanceof Error ? error.message : 'Please try again.',
       );
     }
@@ -180,6 +196,22 @@ export default function AboutScreen() {
           <LinkRow icon="alert-circle-outline" label="Report an issue" onPress={() => setFeedbackKind('bug_report')} isLast />
         </View>
 
+        {/* Legal — required by both Play Store and App Store reviewers, who
+            need to find privacy + terms in-app, not just on the listing. */}
+        <View style={styles.card}>
+          <LinkRow
+            icon="document-text-outline"
+            label="Privacy Policy"
+            onPress={() => openLegalUrl(PRIVACY_URL, 'Privacy Policy')}
+          />
+          <LinkRow
+            icon="reader-outline"
+            label="Terms of Use"
+            onPress={() => openLegalUrl(TERMS_URL, 'Terms of Use')}
+            isLast
+          />
+        </View>
+
         {/* Sign out */}
         <View style={styles.card}>
           <TouchableOpacity style={styles.signOutRow} onPress={handleSignOut} activeOpacity={0.7}>
@@ -187,6 +219,8 @@ export default function AboutScreen() {
             <Text style={styles.signOutText}>Sign out</Text>
           </TouchableOpacity>
         </View>
+
+        <PortfolioDisclaimer />
       </ScrollView>
 
       <FeedbackSheet
