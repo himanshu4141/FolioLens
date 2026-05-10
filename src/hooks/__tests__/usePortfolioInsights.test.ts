@@ -6,9 +6,13 @@ jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(),
   useMutation: jest.fn(),
   useQueryClient: jest.fn(),
-  // QueryClient is constructed inside `src/lib/queryClient.ts`, which is
-  // imported transitively by `usePortfolioInsights` (for `PERSIST_MAX_AGE_MS`).
+  // QueryClient / QueryCache / MutationCache are constructed inside
+  // `src/lib/queryClient.ts`, which is imported transitively by
+  // `usePortfolioInsights` (for `PERSIST_MAX_AGE_MS` and the global
+  // auth-error handler wired in PR #132).
   QueryClient: jest.fn().mockImplementation(() => ({})),
+  QueryCache: jest.fn().mockImplementation(() => ({})),
+  MutationCache: jest.fn().mockImplementation(() => ({})),
 }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
