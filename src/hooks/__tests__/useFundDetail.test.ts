@@ -307,12 +307,17 @@ function makeChain(response: { data: unknown; error: unknown }): any {
     in: jest.fn(),
     gte: jest.fn(),
     order: jest.fn(),
+    range: jest.fn(),
     single: jest.fn(),
     maybeSingle: jest.fn(),
   };
   ['select', 'eq', 'in', 'gte', 'order'].forEach((m) =>
     (chain as Record<string, jest.Mock>)[m].mockReturnValue(chain),
   );
+  // .range() is the terminal call for paginated reads — return a Promise
+  // that resolves to the same response. paginateRangeQuery sees a short page
+  // (data.length < pageSize) and stops after one round-trip.
+  chain.range.mockImplementation(() => Promise.resolve(response));
   chain.single.mockReturnValue(response);
   chain.maybeSingle.mockReturnValue(response);
   return chain;

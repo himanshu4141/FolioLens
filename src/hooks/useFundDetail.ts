@@ -17,6 +17,7 @@ import { supabase } from '@/src/lib/supabase';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { resolveTRI } from '@/src/utils/benchmarkSymbolMap';
+import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -130,20 +131,24 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     buildCashflowsFromTransactions(txs ?? [], 0, new Date());
   const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs ?? []);
 
-  // Load NAV history descending so the most-recent rows always fall within
-  // Supabase's default 1000-row API limit. Then reverse to ascending for charting.
-  const { data: navRows, error: navError } = await supabase
-    .from('nav_history')
-    .select('nav_date, nav')
-    .eq('scheme_code', fund.scheme_code)
-    .order('nav_date', { ascending: false });
+  // Page through NAV history — Supabase REST caps responses at 1000 rows
+  // and a 13-year-old direct plan has ~3,300 NAVs. Without pagination the
+  // older "descending then reverse" workaround silently dropped everything
+  // beyond the most recent ~4 years, so trailing-CAGR / All-window charts
+  // showed truncated history.
+  const navRows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
+    (from, to) => supabase
+      .from('nav_history')
+      .select('nav_date, nav')
+      .eq('scheme_code', fund.scheme_code)
+      .order('nav_date', { ascending: true })
+      .range(from, to),
+  );
 
-  if (navError) throw navError;
-
-  const navHistory: NavPoint[] = [...(navRows ?? [])]
-    .sort((a, b) => String(b.nav_date).localeCompare(String(a.nav_date)))
-    .map((r) => ({ date: r.nav_date as string, value: r.nav as number }))
-    .reverse(); // ascending for chart rendering
+  const navHistory: NavPoint[] = navRows.map((r) => ({
+    date: r.nav_date,
+    value: Number(r.nav),
+  }));
 
   if (navHistory.length === 0) {
     // NAV sync hasn't run yet for this scheme — return zeroed data so the UI
@@ -192,20 +197,20 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
 
   // Load benchmark index history (if available). Resolve to TRI symbol so the
   // chart compares fund NAV (already total-return) against the matching TRI
-  // series — see Phase 8 PRD for the rationale.
+  // series — see Phase 8 PRD for the rationale. Paginated for the same
+  // 1000-row reason as NAV history above.
   let indexHistory: NavPoint[] = [];
   if (fund.benchmark_index_symbol) {
     const triSymbol = resolveTRI(fund.benchmark_index_symbol);
-    const { data: idxRows } = await supabase
-      .from('index_history')
-      .select('index_date, close_value')
-      .eq('index_symbol', triSymbol)
-      .order('index_date', { ascending: false });
-
-    indexHistory = (idxRows ?? []).map((r) => ({
-      date: r.index_date as string,
-      value: r.close_value as number,
-    }));
+    const idxRows = await paginateRangeQuery<{ index_date: string; close_value: number }>(
+      (from, to) => supabase
+        .from('index_history')
+        .select('index_date, close_value')
+        .eq('index_symbol', triSymbol)
+        .order('index_date', { ascending: true })
+        .range(from, to),
+    );
+    indexHistory = idxRows.map((r) => ({ date: r.index_date, value: Number(r.close_value) }));
   }
 
   return {
