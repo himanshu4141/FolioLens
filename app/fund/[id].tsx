@@ -186,7 +186,13 @@ function PerformanceTab({
   }, []);
 
   const { data: indexRows } = useQuery({
-    queryKey: ['index-history', selectedSymbol],
+    // Namespaced separately from any other consumer reading `index_history`
+    // so the cache shape can't be poisoned by a fetcher that stores rows
+    // as `{ index_date, close_value }[]` rather than this hook's
+    // `{ date, value }[]`. Cross-contamination through the persister was
+    // responsible for the Nifty 500 TRI chart-vanish on the Portfolio
+    // screen — see Phase 9 M3 follow-up notes.
+    queryKey: ['fund-detail-index', selectedSymbol],
     queryFn: async () => {
       // ascending: false → most-recent 1000 rows (avoids returning only pre-2021 data
       // for long-history indexes like BSE Sensex). Reversed back to ascending for chart use.
@@ -269,7 +275,12 @@ function PerformanceTab({
   // chart body width = total width passed to LineChart minus y-axis label area
   const PERF_Y_AXIS_W = 32;
   const perfChartBodyW = liveChartWidth - 32 - PERF_Y_AXIS_W; // 32 = card padding (16×2)
-  const perfSpacing = sampledNav.length > 1 ? Math.max(8, (perfChartBodyW - 16) / (sampledNav.length - 1)) : 20;
+  // No min floor on spacing: with 60 samples in a ~320px iPhone body the
+  // natural spacing is ~5px, but a `Math.max(8, …)` clamp pushed total
+  // chart width to ~488px and clipped the right ~40% off-canvas (the
+  // "chart ends in 2017 on the All range" bug). The chart now exactly
+  // fills the available width; spacing scales down on narrow screens.
+  const perfSpacing = sampledNav.length > 1 ? Math.max(1, (perfChartBodyW - 16) / (sampledNav.length - 1)) : 20;
 
   const labelInterval = Math.max(1, Math.floor(sampledNav.length / 5));
   const xLabels = sampledNav.map((p, i) =>
@@ -439,8 +450,9 @@ function PerformanceTab({
     const actualChartRange = Math.max(1, actualChartTop - actualChartBottom);
     const ACTUAL_Y_AXIS_W = 54;
     const actualChartW = liveChartWidth - 32 - ACTUAL_Y_AXIS_W - 8;
+    // See perfSpacing for why the floor is 1 not 8.
     const actualSpacing =
-      points.length > 1 ? Math.max(8, (actualChartW - 16) / (points.length - 1)) : 20;
+      points.length > 1 ? Math.max(1, (actualChartW - 16) / (points.length - 1)) : 20;
     const actualLabelInterval = Math.max(1, Math.floor(points.length / 5));
     const actualXLabels =
       investmentTimeline.xAxisLabels.length === points.length
@@ -785,7 +797,8 @@ function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: numb
 
   const NAV_Y_AXIS_W = 44;
   const navChartBodyW = liveChartWidth - 32 - NAV_Y_AXIS_W;
-  const navSpacing = sampledFiltered.length > 1 ? Math.max(8, (navChartBodyW - 16) / (sampledFiltered.length - 1)) : 20;
+  // See perfSpacing for why the floor is 1 not 8.
+  const navSpacing = sampledFiltered.length > 1 ? Math.max(1, (navChartBodyW - 16) / (sampledFiltered.length - 1)) : 20;
   const formatNavYLabel = useCallback((v: string) => {
     const n = Number(v);
     if (n >= 1000) return `₹${(n / 1000).toFixed(1)}K`;

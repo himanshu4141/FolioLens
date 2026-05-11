@@ -13,12 +13,7 @@
  */
 
 import { useEffect } from 'react';
-import {
-  useQuery,
-  useQueryClient,
-  keepPreviousData,
-  type QueryClient,
-} from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import {
   xirr,
@@ -31,14 +26,17 @@ import {
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
-import {
-  fetchIndexHistoryDirect,
-  fetchIndexHistoryWithCache,
-  fetchNavHistoryDirect,
-  fetchNavHistoryWithCache,
-  type IndexRow,
-  type NavRow,
-} from '@/src/lib/sharedHistoryCache';
+
+interface NavRow {
+  scheme_code: number;
+  nav_date: string;
+  nav: number;
+}
+
+interface IndexRow {
+  index_date: string;
+  close_value: number;
+}
 
 export interface FundCardData {
   id: string;
@@ -91,11 +89,7 @@ function isPortfolioFundRow(
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
-export async function fetchPortfolioData(
-  userId: string,
-  benchmarkSymbol: string,
-  qc?: QueryClient,
-) {
+export async function fetchPortfolioData(userId: string, benchmarkSymbol: string) {
   // Load active funds
   const { data: funds, error: fundsError } = await supabase
     .from('fund')
@@ -128,14 +122,28 @@ export async function fetchPortfolioData(
 
   const schemeCodes = validFunds.map((f) => f.scheme_code);
 
-  // Load full NAV history. When a `QueryClient` is provided (the live
-  // hook path), this routes through the shared `nav-history` cache so a
-  // page reload returns rows from `localStorage` and a stale revalidation
-  // only delta-fetches new rows. Tests that call this fetcher directly
-  // pass `qc=undefined` and get the legacy full-history behaviour.
-  const navRows: NavRow[] = qc
-    ? await fetchNavHistoryWithCache(qc, userId, schemeCodes)
-    : await fetchNavHistoryDirect(schemeCodes);
+  // Load *recent* NAV history. The portfolio screen only uses the most-
+  // recent NAV (for current value), the previous trading day's NAV (for
+  // daily change), and the last 30 days for sparklines. 90 days of buffer
+  // covers long weekends and holidays so the "previous NAV" always
+  // resolves to the prior trading day even after an Indian market break.
+  //
+  // An earlier iteration of this hook pulled *full* history through a
+  // shared cache layer to enable delta-fetch — that turned out to be a
+  // cold-load regression (~12,500 rows over 13 paginated round trips for
+  // a 10-fund / 5-year portfolio). The window-bounded SELECT here is
+  // ~300 rows in a single round trip.
+  const navCutoff = new Date();
+  navCutoff.setDate(navCutoff.getDate() - 90);
+  const navCutoffIso = navCutoff.toISOString().split('T')[0];
+  const { data: navRowsRaw, error: navError } = await supabase
+    .from('nav_history')
+    .select('scheme_code, nav_date, nav')
+    .in('scheme_code', schemeCodes)
+    .gte('nav_date', navCutoffIso)
+    .order('nav_date', { ascending: false });
+  if (navError) throw navError;
+  const navRows: NavRow[] = (navRowsRaw ?? []) as NavRow[];
 
   // Build map: scheme_code → { current, previous } using the two most-recent rows.
   const navByScheme = new Map<number, { current: number; previous: number; date: string }>();
@@ -174,10 +182,23 @@ export async function fetchPortfolioData(
     navHistoryByScheme.set(code, pts.filter((p) => p.date >= navCutoff30d));
   }
 
-  // Benchmark index history — same shared cache + delta path as NAVs.
-  const benchmarkRows: IndexRow[] = qc
-    ? await fetchIndexHistoryWithCache(qc, benchmarkSymbol)
-    : await fetchIndexHistoryDirect(benchmarkSymbol);
+  // Benchmark index history — for the market-XIRR comparison we need
+  // every index close from the user's first transaction onward (so the
+  // benchmark cashflows simulate every buy/sell at the right price). We
+  // bound the SELECT by `firstTxDate` rather than fetch all-time history.
+  const firstTxDate = (allTxs?.[0]?.transaction_date as string | undefined) ?? null;
+  let benchmarkRows: IndexRow[] = [];
+  if (benchmarkSymbol) {
+    let benchmarkQuery = supabase
+      .from('index_history')
+      .select('index_date, close_value')
+      .eq('index_symbol', benchmarkSymbol)
+      .order('index_date', { ascending: false });
+    if (firstTxDate) benchmarkQuery = benchmarkQuery.gte('index_date', firstTxDate);
+    const { data, error } = await benchmarkQuery;
+    if (error) throw error;
+    benchmarkRows = (data ?? []) as IndexRow[];
+  }
 
   const benchmarkMap = new Map<string, number>();
   for (const row of benchmarkRows) {
@@ -345,7 +366,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   const query = useQuery({
     queryKey: ['portfolio', userId, benchmarkSymbol],
     enabled: !!userId,
-    queryFn: () => fetchPortfolioData(userId!, benchmarkSymbol, queryClient),
+    queryFn: () => fetchPortfolioData(userId!, benchmarkSymbol),
     staleTime: STALE_TIMES.PORTFOLIO,
     placeholderData: keepPreviousData, // no jarring flash when switching benchmark
   });
@@ -363,7 +384,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
       if (option.symbol === benchmarkSymbol) continue;
       queryClient.prefetchQuery({
         queryKey: ['portfolio', userId, option.symbol],
-        queryFn: () => fetchPortfolioData(userId, option.symbol, queryClient),
+        queryFn: () => fetchPortfolioData(userId, option.symbol),
         staleTime: STALE_TIMES.PORTFOLIO,
       });
     }

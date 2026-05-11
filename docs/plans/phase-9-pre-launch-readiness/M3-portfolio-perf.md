@@ -305,3 +305,30 @@ Numerical:
 ### Decision Log Amendment — 2026-05-10
 
 Implementation took the simpler "cache-aware fetcher" path rather than building dedicated `useNavHistory` / `useIndexHistory` hooks as originally sketched. The shared layer (`fetchNavHistoryWithCache` / `fetchIndexHistoryWithCache`) wraps `qc.fetchQuery`, which gives multi-consumer cache sharing without a hook-shaped public API. Both `usePortfolio` and `useInvestmentVsBenchmarkTimeline` keep their existing `useQuery` cache keys; the NAV / index fetch is delegated to the shared layer inside their `queryFn`. This minimised the surface area of the change (existing tests for `fetchPortfolioData` only needed a mock-chain `.range()` addition; no consumer logic was rewritten).
+
+
+### Post-merge bug report — 2026-05-11
+
+Testing on the `foliolens-main` OTA build surfaced three issues that the original PR missed:
+
+1. **`fetchIndexHistoryWithCache` shape collision.** `app/fund/[id].tsx:188-203` runs its own `useQuery` against the *same* cache key (`['index-history', selectedSymbol]`) that my shared layer wrote to, but stores rows in `{ date, value }[]` shape — not the `{ index_date, close_value }[]` shape my fetcher expects. When the user visited Fund Detail with Nifty 500 TRI selected, the wrong-shape payload landed in the persister. On the next Portfolio mount, the timeline's `fetchIndexHistoryWithCache` call hit the cached value via `qc.fetchQuery` (data not stale per `staleTime: 5min`), and the downstream `.filter(row => row.index_date >= firstTxDate)` dropped every row because `index_date` was undefined. The Investment-vs-Benchmark chart's `points.length < 2` guard then unmounted the entire chart section — but *only when the active benchmark matched what the user had previously opened in Fund Detail*. Switching to Nifty 50 / Nifty 100 worked because those keys had no cross-contamination. This is the exact same cache-shape-collision pattern fixed in PR #127 for `user-profile`.
+
+2. **Cold-load regression on Portfolio and Timeline.** The previous code paths fetched window-bounded data (`.gte('nav_date', windowStart)`, `.gte('index_date', firstTxDate)`). My shared layer fetches *full* history regardless of window because the cache is keyed by `(userId, schemeCodes)` and has to hold every row anyone might ever ask for. For a user with 10 funds and an `^NIFTY500TRI` benchmark, the cold-load now paginates ~12,500 NAV rows + 7,769 index rows through 1000-row pages — ~15 round trips, ~8s on the user's connection. The persister doesn't help on the *first* launch after the OTA bundle drops (cache is empty), so the user genuinely felt the regression. Wins only appear from the second relaunch onward.
+
+3. **Fund Detail chart clipping.** Pre-existing bug, surfaced by the user's iPhone testing in this round. The NAV history, Performance %, and "How your money grew" `LineChart`s on `app/fund/[id].tsx` all compute `spacing = Math.max(8, (chartBodyWidth - 16) / (samplePoints - 1))`. On a narrow viewport with 60–90 sampled points, the natural spacing computes to ~4px but is clamped to 8px. The chart then extends ~2× wider than its canvas and the right half is clipped by `react-native-gifted-charts` (which doesn't enable scroll-on-overflow by default). Worst on the "All" range. Not caused by this milestone but in scope for the follow-up since the user reported it together.
+
+### Follow-up plan — 2026-05-11
+
+1. **Strategic retreat on the shared NAV/index cache.** Drop the `qc.fetchQuery` indirection in `fetchPortfolioData` and `fetchInvestmentVsBenchmarkTimeline`. Each consumer fetches what it actually needs:
+    - `fetchPortfolioData`: only the last 90 days of NAVs (sparkline is 30 days; the extra 60 days are buffer for weekends + lookback so the "previous NAV" exists even after a holiday weekend).
+    - `fetchInvestmentVsBenchmarkTimeline`: window-bounded as before. Keeps the original `fetchAllNavRows` / `fetchAllIndexRows` shape.
+    - `app/fund/[id].tsx`: keeps its existing `{ date, value }[]` shape; cache key is renamed to `['fund-detail-index', selectedSymbol]` so it can't collide with anything in `src/lib/sharedHistoryCache.ts` even if a future caller is added.
+    - `sharedHistoryCache.ts` stays in the tree as future-tooling but no live consumer uses its `*WithCache` wrappers after this PR. Its `*Direct` functions remain only as the pagination implementation underneath the inline fetches.
+
+2. **Fund Detail chart fits the viewport.** Cap sample count by chart-body width so spacing stays ≥ 4px without needing a `Math.max` clamp that pushes content off-canvas. Apply the same helper to all three `LineChart`s.
+
+3. **Persister restore observability.** Wire `onSuccess` and `onError` on `PersistQueryClientProvider`. Both call `analytics.track` (already in the bundle) and `console.log` with elapsed ms + persisted-bytes so the user can confirm in PostHog (or device logs) that the OTA bundle actually restored the cache.
+
+4. **Keep the wins from M3.1:** persister wiring, `gcTime: 24h`, `STALE_TIMES`, `__BUSTER__`, sign-out clear. Those are correct and untouched.
+
+The trade-off: delta-fetch (M3.2's specific user ask) is set aside until the cache architecture is solid. The persister-backed cache of *computed* results (`['portfolio', userId, benchmarkSymbol]` and `['investmentVsBenchmarkTimeline', ...]`) is what actually delivers the user-visible "page reload paints instantly" win — and it survives this revert.
