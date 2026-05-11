@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { authClient } from '@/src/lib/auth';
 import { canShowDevAuthShortcut, getDevAuthCredentials } from '@/src/lib/devAuth';
 import { useAppStore } from '@/src/store/appStore';
+import { DemoSignupSheet } from '@/src/components/clearLens/DemoSignupSheet';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
@@ -53,11 +54,17 @@ export default function SignInScreen() {
   const [loadingMode, setLoadingMode] = useState<'magic' | 'google' | 'demo' | 'preview' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showMagicLinkInfo, setShowMagicLinkInfo] = useState(false);
+  const [demoSheetOpen, setDemoSheetOpen] = useState(false);
   const showDevAuthShortcut = canShowDevAuthShortcut();
   const enterPreviewMode = useAppStore((s) => s.enterPreviewMode);
 
   function handlePreview() {
     setError(null);
+    setDemoSheetOpen(true);
+  }
+
+  function handleDemoSignupSuccess() {
+    setDemoSheetOpen(false);
     setLoadingMode('preview');
     enterPreviewMode();
     // AuthGate's effect runs after the store update and redirects to /(tabs).
@@ -260,7 +267,7 @@ export default function SignInScreen() {
               {loadingMode === 'preview' ? (
                 <ActivityIndicator color={cl.textSecondary} />
               ) : (
-                <Text style={styles.previewButtonText}>Preview the app — sample portfolio</Text>
+                <Text style={styles.previewButtonText}>Try with sample data — early access list</Text>
               )}
             </TouchableOpacity>
 
@@ -320,6 +327,11 @@ export default function SignInScreen() {
           </View>
         </View>
       </ScrollView>
+      <DemoSignupSheet
+        visible={demoSheetOpen}
+        onClose={() => setDemoSheetOpen(false)}
+        onSuccess={handleDemoSignupSuccess}
+      />
     </KeyboardAvoidingView>
   );
 }
