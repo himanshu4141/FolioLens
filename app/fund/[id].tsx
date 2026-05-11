@@ -13,9 +13,10 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart, PieChart } from 'react-native-gifted-charts';
 import Svg, { G, Line as SvgLine, Rect as SvgRect, Text as SvgText } from 'react-native-svg';
-import { useQuery } from '@tanstack/react-query';
+import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import {
   useFundDetail,
+  useFundNavHistory,
   filterToWindow,
   indexTo100,
   type TimeWindow,
@@ -1773,12 +1774,23 @@ function ClearLensFundDetailScreen() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ClearLensFundTab>('performance');
   const { data, isLoading, isError } = useFundDetail(id);
+  // Full NAV history is fetched in parallel as a background query. The
+  // header card / metadata / XIRR render off `data` (small fetch), and
+  // the charts gate on `navHistory.length > 1` so they show their own
+  // empty/skeleton state until the paginated history arrives.
+  const { data: navHistoryFull } = useFundNavHistory(data?.schemeCode);
+  const navHistory = navHistoryFull ?? data?.navHistory ?? [];
+  // See ClearLensPortfolioScreen for rationale — `useIsRestoring` keeps
+  // the "Couldn't load fund data" / spinner branches from racing the
+  // persister rehydrate.
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const { session } = useSession();
   const userId = session?.user.id;
   const tokens = useClearLensTokens();
   const clearDetailStyles = useMemo(() => makeClearDetailStyles(tokens), [tokens]);
 
-  if (isLoading) {
+  if (showFirstLoad) {
     return (
       <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
         <ClearLensHeader onPressBack={() => router.back()} />
@@ -1789,7 +1801,7 @@ function ClearLensFundDetailScreen() {
     );
   }
 
-  if (isError || !data) {
+  if (isError) {
     return (
       <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
         <ClearLensHeader onPressBack={() => router.back()} />
@@ -1800,8 +1812,11 @@ function ClearLensFundDetailScreen() {
       </ClearLensScreen>
     );
   }
+  // Defensive: `showFirstLoad` already gates on `data === undefined`, so
+  // the remainder of this component can treat `data` as defined.
+  if (!data) return null;
 
-  const latestNavDate = data.navHistory[data.navHistory.length - 1]?.date ?? null;
+  const latestNavDate = navHistory[navHistory.length - 1]?.date ?? null;
   const todayIso = new Date().toISOString().split('T')[0];
   const navIsStale = latestNavDate !== null && latestNavDate !== todayIso;
   const gain = data.currentValue !== null ? data.currentValue - data.investedAmount : null;
@@ -1917,19 +1932,19 @@ function ClearLensFundDetailScreen() {
         {activeTab === 'performance' && (
           <>
             <PerformanceTab
-              navHistory={data.navHistory}
+              navHistory={navHistory}
               fundBenchmarkIndex={data.benchmarkIndex ?? null}
               fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
               fundRef={{ id: data.id, schemeCode: data.schemeCode }}
               userId={userId}
             />
-            <GrowthConsistencyChart navHistory={data.navHistory} />
+            <GrowthConsistencyChart navHistory={navHistory} />
           </>
         )}
 
         {activeTab === 'nav' && (
           <>
-            <NavHistoryTab navHistory={data.navHistory} />
+            <NavHistoryTab navHistory={navHistory} />
             <TechnicalDetailsCard
               expenseRatio={data.expenseRatio}
               aumCr={data.aumCr}

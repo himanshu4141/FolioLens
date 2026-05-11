@@ -16,8 +16,8 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
 import type { NavPoint } from '@/src/utils/navUtils';
-import { resolveTRI } from '@/src/utils/benchmarkSymbolMap';
 import { paginateRangeQuery } from '@/src/utils/supabasePagination';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -39,8 +39,12 @@ export interface FundDetailData {
   realizedAmount: number;
   redeemedUnits: number;
   fundXirr: number;
-  navHistory: NavPoint[];      // ascending by date
-  indexHistory: NavPoint[];    // ascending by date (benchmark)
+  // Two most-recent NAV rows (latest first, oldest second). Just enough
+  // for the header card's "current NAV" + "as of" — the full chart
+  // history is loaded separately via `useFundNavHistory` so the screen
+  // can paint immediately without waiting for the paginated history
+  // fetch to finish.
+  navHistory: NavPoint[];      // ascending by date, length ≤ 2
   // Technical metadata — populated by sync-fund-meta edge function
   isin: string | null;
   expenseRatio: number | null;
@@ -131,19 +135,21 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     buildCashflowsFromTransactions(txs ?? [], 0, new Date());
   const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs ?? []);
 
-  // Page through NAV history — Supabase REST caps responses at 1000 rows
-  // and a 13-year-old direct plan has ~3,300 NAVs. Without pagination the
-  // older "descending then reverse" workaround silently dropped everything
-  // beyond the most recent ~4 years, so trailing-CAGR / All-window charts
-  // showed truncated history.
-  const navRows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
-    (from, to) => supabase
-      .from('nav_history')
-      .select('nav_date, nav')
-      .eq('scheme_code', fund.scheme_code)
-      .order('nav_date', { ascending: true })
-      .range(from, to),
-  );
+  // Light NAV fetch — just the two most-recent rows. Enough for the
+  // header card (current NAV, previous NAV, "as of" date). The full
+  // history needed by the charts is loaded in parallel via
+  // `useFundNavHistory`, so the screen stops blocking on a 2,000-row
+  // paginated fetch before painting the value / XIRR / metadata.
+  const { data: navRowsDesc, error: navError } = await supabase
+    .from('nav_history')
+    .select('nav_date, nav')
+    .eq('scheme_code', fund.scheme_code)
+    .order('nav_date', { ascending: false })
+    .limit(2);
+  if (navError) throw navError;
+  const navRows = (navRowsDesc ?? [])
+    .map((r) => ({ nav_date: r.nav_date as string, nav: Number(r.nav) }))
+    .reverse(); // ascending — matches the legacy contract
 
   const navHistory: NavPoint[] = navRows.map((r) => ({
     date: r.nav_date,
@@ -169,7 +175,6 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
       redeemedUnits,
       fundXirr: NaN,
       navHistory: [],
-      indexHistory: [],
       isin: fund.isin ?? null,
       expenseRatio: fund.expense_ratio ?? null,
       aumCr: fund.aum_cr ?? null,
@@ -195,23 +200,9 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   const { xirrCashflows } = buildCashflowsFromTransactions(txs ?? [], currentValue, new Date());
   const fundXirr = cashflows.length > 0 ? xirr(xirrCashflows) : NaN;
 
-  // Load benchmark index history (if available). Resolve to TRI symbol so the
-  // chart compares fund NAV (already total-return) against the matching TRI
-  // series — see Phase 8 PRD for the rationale. Paginated for the same
-  // 1000-row reason as NAV history above.
-  let indexHistory: NavPoint[] = [];
-  if (fund.benchmark_index_symbol) {
-    const triSymbol = resolveTRI(fund.benchmark_index_symbol);
-    const idxRows = await paginateRangeQuery<{ index_date: string; close_value: number }>(
-      (from, to) => supabase
-        .from('index_history')
-        .select('index_date, close_value')
-        .eq('index_symbol', triSymbol)
-        .order('index_date', { ascending: true })
-        .range(from, to),
-    );
-    indexHistory = idxRows.map((r) => ({ date: r.index_date, value: Number(r.close_value) }));
-  }
+  // Benchmark index history is loaded by the screen via its own
+  // `['fund-detail-index', symbol]` useQuery (see `app/fund/[id].tsx`)
+  // so we don't paginate it here.
 
   return {
     id: fund.id,
@@ -229,7 +220,6 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     redeemedUnits,
     fundXirr,
     navHistory,
-    indexHistory,
     isin: fund.isin ?? null,
     expenseRatio: fund.expense_ratio ?? null,
     aumCr: fund.aum_cr ?? null,
@@ -255,5 +245,33 @@ export function useFundDetail(fundId: string) {
     enabled: !!fundId,
     queryFn: () => fetchFundDetail(fundId),
     staleTime: 0, // always fetch fresh so current value matches portfolio
+  });
+}
+
+/**
+ * Full NAV history for a scheme — paginated through Supabase. Split off
+ * from `useFundDetail` so the Fund Detail screen can paint its header
+ * card / metadata / XIRR within the first network round-trip, and the
+ * 1,000–3,300-row paginated history populates the chart components in
+ * the background.
+ */
+export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[]> {
+  const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
+    (from, to) => supabase
+      .from('nav_history')
+      .select('nav_date, nav')
+      .eq('scheme_code', schemeCode)
+      .order('nav_date', { ascending: true })
+      .range(from, to),
+  );
+  return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
+}
+
+export function useFundNavHistory(schemeCode: number | null | undefined) {
+  return useQuery({
+    queryKey: ['fund-nav-history', schemeCode],
+    enabled: schemeCode != null,
+    queryFn: () => fetchFundNavHistory(schemeCode!),
+    staleTime: STALE_TIMES.NAV_HISTORY,
   });
 }

@@ -41,6 +41,7 @@ describe('shouldPersistQueryKey()', () => {
       ['money-trail', ['money-trail', 'user-1']],
       ['fund-detail', ['fund-detail', 'fund-1']],
       ['fund-detail-index', ['fund-detail-index', '^NSEI']],
+      ['fund-nav-history', ['fund-nav-history', 12345]],
       ['portfolio-timeline', ['portfolio-timeline', 'user-1']],
       ['performance-timeline', ['performance-timeline', 'fund-1']],
       ['user-funds', ['user-funds', 'user-1']],

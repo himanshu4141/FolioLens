@@ -20,6 +20,7 @@ import {
   ClearLensPill,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { useIsRestoring } from '@tanstack/react-query';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
@@ -876,6 +877,15 @@ function ClearLensPortfolioScreenMobile() {
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const { data, isLoading, isError, refetch, isRefetching } = usePortfolio(defaultBenchmarkSymbol);
+  // `useIsRestoring` is true while the `PersistQueryClientProvider`
+  // rehydrates the cache from AsyncStorage. During that window React
+  // Query pauses fetching (`fetchStatus: 'paused'`), so `isLoading` is
+  // false even though we have no data yet — the chain below was falling
+  // through to the empty-state branch and flashing the "Import CAS"
+  // button before the real data landed. Gating on this flag closes that
+  // 0.5–1s flicker window.
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
   const fundRefs: FundRef[] = useMemo(
@@ -901,7 +911,7 @@ function ClearLensPortfolioScreenMobile() {
         onTools={() => router.push('/tools' as never)}
       />
 
-      {isLoading ? (
+      {showFirstLoad ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={tokens.colors.emerald} />
         </View>

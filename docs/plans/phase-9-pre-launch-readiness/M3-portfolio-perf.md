@@ -332,3 +332,28 @@ Testing on the `foliolens-main` OTA build surfaced three issues that the origina
 4. **Keep the wins from M3.1:** persister wiring, `gcTime: 24h`, `STALE_TIMES`, `__BUSTER__`, sign-out clear. Those are correct and untouched.
 
 The trade-off: delta-fetch (M3.2's specific user ask) is set aside until the cache architecture is solid. The persister-backed cache of *computed* results (`['portfolio', userId, benchmarkSymbol]` and `['investmentVsBenchmarkTimeline', ...]`) is what actually delivers the user-visible "page reload paints instantly" win — and it survives this revert.
+
+
+### Round-2 follow-up — 2026-05-11 (still on PR #135)
+
+Field testing the bug-fix bundle on the foliolens-main Android OTA surfaced a fresh symptom the persister hadn't fixed: **the Portfolio screen flashed "Import CAS" before showing the spinner before painting cards**. Three-state flicker, not the two-state load we expected. Root cause: `PersistQueryClientProvider` puts queries into `fetchStatus: 'paused'` while it rehydrates, and in React Query v5 `isLoading` is `(isPending && fetchStatus === 'fetching')` — so during the paused window `isLoading` is **false** and `data` is `undefined`. The Portfolio screen's render chain (`isLoading ? spinner : empty? "Import CAS" : cards`) fell through to the empty-state branch and rendered the "Import CAS" button for the ~0.5–1s rehydrate window before the cached payload arrived. Same flicker on Fund Detail.
+
+In addition, three user-journey complaints needed direct attention:
+
+1. **Just finished onboarding → tap Done → land on Portfolio.** Wizard's `handleFinish` invalidated every query and navigated, but no prefetch — Portfolio mounted cold and spun another 2–3s while the post-import fetch ran. The user had already waited for the CAS parser; another spinner felt punishing.
+
+2. **Same-day reopen.** Persister was restoring fine but the flicker above made it look like loading even when the cached payload was about to arrive.
+
+3. **Fund Detail cold-load.** `useFundDetail` did a full paginated NAV history fetch (1k–3k rows) and a full paginated index history fetch *before* its `useQuery` resolved — so the entire fund-detail page stayed on a spinner until both finished, despite the header card / metadata / XIRR only needing one short SELECT.
+
+### Round-2 fixes in this PR
+
+- **`useIsRestoring` gate on Portfolio (mobile + desktop) and Fund Detail.** A new `showFirstLoad = isRestoring || isLoading || data === undefined` collapses the three-state flicker to a clean spinner during rehydrate and switches to the real page (or genuinely-empty state) only once we have data on hand or have confirmed there is none.
+
+- **Prefetch in onboarding `handleFinish`.** After invalidating, fire a `queryClient.prefetchQuery({ queryKey: ['portfolio', userId, benchmarkSymbol], … })` so the network request overlaps with the React Native navigation animation. The user lands on Portfolio with a populated (or near-populated) cache instead of triggering a fresh fetch from a cold mount.
+
+- **Split Fund Detail's NAV history into a deferred query.** `fetchFundDetail` now SELECTs only the two most-recent NAV rows (enough for "current NAV" + "as of"). The full paginated history is exposed via a separate `useFundNavHistory(schemeCode)` hook that runs in parallel; the screen passes its result to the chart components, which gate on `navHistory.length > 1` to show their own empty/loading state until it lands. `useFundDetail.indexHistory` was also dropped from the response shape because the screen's `['fund-detail-index', symbol]` query already owns the benchmark series. Net effect: fund detail's header card paints from a single round-trip-and-a-bit, charts fill in 1–2s later.
+
+- **`'fund-nav-history'` added to the persist allowlist** so the deferred fetch survives across reloads.
+
+Tests: 991 still passing. The `useFundDetail` test mocks gained a `.limit()` chain method (now the terminal call for the light SELECT) and a tighter `MOCK_NAV` fixture in descending order; the obsolete `MOCK_INDEX` block and the period-return assertion that depended on full `data.navHistory` were dropped — full-history assertions belong on `useFundNavHistory` once we add tests for it.

@@ -112,6 +112,7 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   'performance-timeline',
   'fund-detail',
   'fund-detail-index',
+  'fund-nav-history',
   'money-trail',
   // Auxiliary user-scoped lookups.
   'user-funds',
