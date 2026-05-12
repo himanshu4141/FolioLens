@@ -1,9 +1,25 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { fetchPortfolioData } from '../usePortfolio';
 import { supabase } from '@/src/lib/supabase';
+import { __setDbForTests } from '@/src/lib/db/db';
+// Jest auto-mocks `expo-sqlite` via `__mocks__/expo-sqlite.ts`; the
+// real module's `.d.ts` doesn't declare these test-only exports, so we
+// import them with a typed require to keep TS happy.
+const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
+  __resetAllForTests: () => void;
+};
 
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn(), keepPreviousData: undefined }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+
+// Reset the in-memory SQLite mock + the db.ts singleton before every
+// test so rows written in one test don't leak into the next. The
+// fetcher paths fall through to Supabase when SQLite is empty, which
+// matches the cold-start contract the production code relies on.
+beforeEach(() => {
+  __resetAllForTests();
+  __setDbForTests(null);
+});
 
 // Stand-in QueryClient that just runs the queryFn — the real client would
 // add cache lookups, but in unit tests we want every fetch to hit the

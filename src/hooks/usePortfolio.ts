@@ -30,6 +30,8 @@ import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds, type UserFundRow } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions, type UserTransactionRow } from '@/src/hooks/useUserTransactions';
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
+import * as navRepo from '@/src/lib/db/nav';
+import * as idxRepo from '@/src/lib/db/idx';
 
 interface NavRow {
   scheme_code: number;
@@ -134,24 +136,44 @@ export async function fetchPortfolioData(
   // covers long weekends and holidays so the "previous NAV" always
   // resolves to the prior trading day even after an Indian market break.
   //
-  // An earlier iteration of this hook pulled *full* history through a
-  // shared cache layer to enable delta-fetch — that turned out to be a
-  // cold-load regression (~12,500 rows over 13 paginated round trips for
-  // a 10-fund / 5-year portfolio). The window-bounded SELECT here is
-  // ~300 rows in a single round trip.
+  // Read-through SQLite — the on-device cache holds full history when
+  // the bootstrap has run, and the 90-day window is a cheap
+  // `BETWEEN`-style SELECT against the local index. On a cold start
+  // (cache empty for this scheme) we fall through to Supabase, write
+  // the response into SQLite, and continue.
   const navCutoff = new Date();
   navCutoff.setDate(navCutoff.getDate() - 90);
   const navCutoffIso = navCutoff.toISOString().split('T')[0];
   perfStart('query:portfolio:nav');
-  const { data: navRowsRaw, error: navError } = await supabase
-    .from('nav_history')
-    .select('scheme_code, nav_date, nav')
-    .in('scheme_code', schemeCodes)
-    .gte('nav_date', navCutoffIso)
-    .order('nav_date', { ascending: false });
-  perfEnd('query:portfolio:nav', { rows: navRowsRaw?.length ?? 0 });
-  if (navError) throw navError;
-  const navRows: NavRow[] = (navRowsRaw ?? []) as NavRow[];
+  let navRows: NavRow[] = [];
+  let navSource: 'sqlite' | 'supabase' = 'sqlite';
+  try {
+    navRows = await navRepo.readBySchemeCodes(schemeCodes, {
+      sinceDate: navCutoffIso,
+      orderDesc: true,
+    });
+  } catch (err) {
+    console.warn('[usePortfolio] sqlite nav read failed; falling back', err);
+  }
+  if (navRows.length === 0) {
+    navSource = 'supabase';
+    const { data: navRowsRaw, error: navError } = await supabase
+      .from('nav_history')
+      .select('scheme_code, nav_date, nav')
+      .in('scheme_code', schemeCodes)
+      .gte('nav_date', navCutoffIso)
+      .order('nav_date', { ascending: false });
+    if (navError) throw navError;
+    navRows = (navRowsRaw ?? []) as NavRow[];
+    if (navRows.length > 0) {
+      try {
+        await navRepo.bulkInsert(navRows);
+      } catch (err) {
+        console.warn('[usePortfolio] sqlite nav write failed', err);
+      }
+    }
+  }
+  perfEnd('query:portfolio:nav', { rows: navRows.length, source: navSource });
 
   // Build map: scheme_code → { current, previous } using the two most-recent rows.
   const navByScheme = new Map<number, { current: number; previous: number; date: string }>();
@@ -193,17 +215,54 @@ export async function fetchPortfolioData(
   // Benchmark index history — for the market-XIRR comparison we need
   // every index close from the user's first transaction onward (so the
   // benchmark cashflows simulate every buy/sell at the right price).
-  // Reads through `fetchIndexHistory` (Phase 9 M5): CDN-served daily
-  // snapshot first, paginated `index_history` SELECT on fallback. The
-  // snapshot is the full history; we filter to `>= firstTxDate` in JS
-  // since the payload is already on hand.
+  //
+  // Three-tier read order:
+  //   1. SQLite local repo (instant, offline-capable)
+  //   2. CDN snapshot via `fetchIndexHistory` (Phase 9 M5)
+  //   3. Paginated `index_history` SELECT (M5's own fallback inside
+  //      `fetchIndexHistory`)
+  // On a cold start, the CDN path warms SQLite via write-back so the
+  // next mount is purely local.
   const firstTxDate = allTxs[0]?.transaction_date ?? null;
   let benchmarkRows: IndexRow[] = [];
+  let benchmarkSource: 'sqlite' | 'snapshot' = 'sqlite';
   if (benchmarkSymbol) {
     perfStart('query:portfolio:index');
-    const points = await fetchIndexHistory(benchmarkSymbol, firstTxDate);
-    perfEnd('query:portfolio:index', { rows: points.length, symbol: benchmarkSymbol });
-    benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
+    try {
+      const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
+        sinceDate: firstTxDate ?? undefined,
+        orderDesc: true,
+      });
+      benchmarkRows = localRows.map((r) => ({
+        index_date: r.index_date,
+        close_value: r.close_value,
+      }));
+    } catch (err) {
+      console.warn('[usePortfolio] sqlite idx read failed; falling back', err);
+    }
+    if (benchmarkRows.length === 0) {
+      benchmarkSource = 'snapshot';
+      const points = await fetchIndexHistory(benchmarkSymbol, firstTxDate);
+      benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
+      if (benchmarkRows.length > 0) {
+        try {
+          await idxRepo.bulkInsert(
+            benchmarkRows.map((r) => ({
+              index_symbol: benchmarkSymbol,
+              index_date: r.index_date,
+              close_value: r.close_value,
+            })),
+          );
+        } catch (err) {
+          console.warn('[usePortfolio] sqlite idx write failed', err);
+        }
+      }
+    }
+    perfEnd('query:portfolio:index', {
+      rows: benchmarkRows.length,
+      symbol: benchmarkSymbol,
+      source: benchmarkSource,
+    });
   }
 
   const benchmarkMap = new Map<string, number>();
