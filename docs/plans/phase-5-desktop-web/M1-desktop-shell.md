@@ -504,6 +504,21 @@ The Growth Consistency chart additionally uses an equal-slot bar layout
 (`plotWidth / bars.length` per slot) so bars span the full plot rather than
 clustering at the left edge on wide viewports.
 
+### Desktop width tiers — 760 list default bumped to 960; `DesktopShell` + `DesktopContainer` retired
+
+The plan called for a single `ClearLensScreen.desktopMaxWidth` (default 760) for every non-dashboard screen, with Portfolio + Funds desktop variants capping at `MaxContentWidth = 1200`. In practice the 760 column felt cramped on a 1440+ display and Settings sub-pages had no cap at all — they stretched edge-to-edge of the sidebar shell's content slot. The 920 override on Fund Detail and the 760 default created a step-function of three visible widths (760 / 920 / 1200) plus an unbounded fourth (Settings sub-pages), which read as jarring when navigating between screens.
+
+This was reconciled into an explicit two-tier system:
+
+- **List tier (960 px)** — `ClearLensScreen.desktopMaxWidth` default. Used by Settings hub + sub-pages, Wealth Journey, Money Trail, Tools, Compare Funds, Past SIP Check, Goal Planner, Direct vs Regular. Settings sub-pages now wrap their ScrollView body in a centered `frame` view to apply the cap (matching Settings hub's pattern). Past SIP + Wealth Journey chart-width clamps bumped from `min(viewport, 760)` to `min(viewport, 960)` so SVGs fill the new container.
+- **Dashboard tier (1200 px)** — `MaxContentWidth`. Used by Portfolio + Funds desktop variants. Unchanged.
+
+`DesktopShell` and `DesktopContainer` had been dead code since the PR #112 resize-bug fix retired the `<DesktopShell framed={false}>` wrapper from `ResponsiveRouteFrame` — zero call sites for ~weeks. Both files are now deleted along with their re-exports in `src/components/responsive/index.ts`. The stale comment in `ResponsiveRouteFrame` that referenced the historical `<DesktopShell>` wrapper was refreshed so the topology-invariant rationale is still legible without naming a component that no longer exists.
+
+Multi-fund / multi-column content uses the flex-stretch pattern `flex: 1, minWidth: N` (Funds dashboard grid, Settings rows, Money Trail rows). Compare Funds was the only outlier left — fund-column cells were fixed at `width: 130` and left ~540 px of dead space at 2-fund comparisons in the 960 frame. Cells now use `flex: 1, minWidth: 130, maxWidth: 220` so the table fills the card. The `maxWidth` cap prevents 2-fund comparisons from stretching each cell to ~400 px (where the single number per cell would feel lost).
+
+Fund Detail's historical `FUND_DETAIL_DESKTOP_MAX = 920` override was dropped in the same PR. Pre-bump it was 160 px *wider* than the 760 default (chart-heavy intent); post-bump it would have been 40 px *narrower* than the list tier — backward inconsistency. The screen now uses the 960 default (no `desktopMaxWidth` prop), and the chart-width calcs centralise on a `FUND_DETAIL_CHART_MAX = 960` constant that matches.
+
 ### `FundDesktopCard` and `FundListItem` deliberately stay separate
 
 We attempted to consolidate the two — exporting `FundListItem` and using it on desktop —

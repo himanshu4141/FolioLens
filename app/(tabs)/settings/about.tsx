@@ -168,6 +168,7 @@ export default function AboutScreen() {
       <UtilityHeader title="About & support" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.frame}>
         {/* Version info — OTA / channel rows are mobile-only;
             on web there is no EAS update channel and no OTA bundle. */}
         <View style={styles.card}>
@@ -221,6 +222,7 @@ export default function AboutScreen() {
         </View>
 
         <PortfolioDisclaimer />
+        </View>
       </ScrollView>
 
       <FeedbackSheet
@@ -236,7 +238,13 @@ function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
-    content: { padding: ClearLensSpacing.md, gap: ClearLensSpacing.sm, paddingBottom: ClearLensSpacing.xxl },
+    content: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      alignItems: 'center',
+    },
+    frame: { width: '100%', maxWidth: 960, gap: ClearLensSpacing.sm },
 
     card: {
       backgroundColor: cl.surface,

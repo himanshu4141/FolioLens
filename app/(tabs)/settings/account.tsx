@@ -98,6 +98,7 @@ export default function AccountScreen() {
       <UtilityHeader title="Account" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.frame}>
         {/* Profile */}
         <Text style={styles.sectionLabel}>Profile</Text>
         <View style={styles.card}>
@@ -264,6 +265,7 @@ export default function AccountScreen() {
             <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
           </TouchableOpacity>
         </View>
+        </View>
       </ScrollView>
 
       <DeleteAccountSheet
@@ -299,7 +301,16 @@ function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
-    content: { padding: ClearLensSpacing.md, gap: ClearLensSpacing.sm, paddingBottom: ClearLensSpacing.xxl },
+    // Cap inner column at 960 on desktop (mirrors Settings hub) so sub-pages
+    // don't stretch edge-to-edge of the content slot. Mobile-side: width:'100%'
+    // wins and the layout is unchanged.
+    content: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      alignItems: 'center',
+    },
+    frame: { width: '100%', maxWidth: 960, gap: ClearLensSpacing.sm },
 
     sectionLabel: {
       ...ClearLensTypography.label,

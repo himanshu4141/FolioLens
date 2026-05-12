@@ -28,6 +28,7 @@
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { CORS, json } from '../_shared/cors.ts';
 import {
   type CategoryComposition,
   isDebtDataCorrupted,
@@ -495,9 +496,9 @@ function buildPortfolio(holdings: MfdataHoldings, schemeCategory: string): Built
 // ---------------------------------------------------------------------------
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204 });
+  if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
+    return json({ error: 'Method not allowed' }, { status: 405 });
   }
 
   let schemeCode: number;
@@ -507,7 +508,7 @@ Deno.serve(async (req) => {
     if (!Number.isFinite(code) || code <= 0) throw new Error('invalid scheme_code');
     schemeCode = code;
   } catch (err) {
-    return new Response(JSON.stringify({ error: `bad request: ${String(err)}` }), { status: 400 });
+    return json({ error: `bad request: ${String(err)}` }, { status: 400 });
   }
 
   const startedAt = Date.now();
@@ -533,13 +534,10 @@ Deno.serve(async (req) => {
     schemeCode, metaResult.status, compositionResult.status, elapsedMs,
   );
 
-  return new Response(JSON.stringify({
+  return json({
     scheme_code: schemeCode,
     meta_status: metaResult.status,
     composition_status: compositionResult.status,
     elapsed_ms: elapsedMs,
-  }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
   });
 });
