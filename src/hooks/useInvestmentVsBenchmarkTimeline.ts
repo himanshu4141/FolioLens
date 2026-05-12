@@ -12,6 +12,7 @@ import {
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
+import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 
 export interface InvestmentVsBenchmarkPoint {
   date: string;
@@ -335,21 +336,11 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
 
 async function fetchAllIndexRows(benchmarkSymbol: string, startDate: string): Promise<RawIdxRow[]> {
   if (!benchmarkSymbol) return [];
-  const rows: RawIdxRow[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('index_history')
-      .select('index_date, close_value')
-      .eq('index_symbol', benchmarkSymbol)
-      .gte('index_date', startDate)
-      .order('index_date', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as RawIdxRow[]));
-    if ((data ?? []).length < PAGE_SIZE) break;
-  }
-  return rows;
+  // Read-through Phase 9 M5: CDN-served daily snapshot first, paginated
+  // `index_history` SELECT on fallback. The snapshot is the full
+  // history; `fetchIndexHistory` filters to `>= startDate` in JS.
+  const points = await fetchIndexHistory(benchmarkSymbol, startDate);
+  return points.map((p) => ({ index_date: p.date, close_value: p.value }));
 }
 
 export function useInvestmentVsBenchmarkTimeline(
