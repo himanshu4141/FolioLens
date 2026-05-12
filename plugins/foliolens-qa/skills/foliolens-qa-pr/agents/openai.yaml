@@ -2,6 +2,6 @@ interface:
   display_name: "FolioLens PR QA"
   short_description: "Validate PR previews against production."
   brand_color: "#047857"
-  default_prompt: "Use $qa-pr to QA PR #135 against its Vercel preview."
+  default_prompt: "Use $foliolens-qa-pr to QA PR #135 against its Vercel preview."
 policy:
   allow_implicit_invocation: true

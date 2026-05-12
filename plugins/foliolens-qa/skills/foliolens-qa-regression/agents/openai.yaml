@@ -2,6 +2,6 @@ interface:
   display_name: "FolioLens Regression QA"
   short_description: "Run the full web regression pass."
   brand_color: "#047857"
-  default_prompt: "Use $qa-regression to run a full FolioLens regression pass."
+  default_prompt: "Use $foliolens-qa-regression to run a full FolioLens regression pass."
 policy:
   allow_implicit_invocation: true

@@ -30,9 +30,9 @@
     ],
     "websiteURL": "https://foliolens.in",
     "defaultPrompt": [
-      "Use $qa-pr to QA PR #135 against its Vercel preview.",
-      "Use $qa-smoke to verify FolioLens production after release.",
-      "Use $qa-regression to run a full FolioLens regression pass."
+      "Use $foliolens-qa-pr to QA PR #135 against its Vercel preview.",
+      "Use $foliolens-qa-smoke to verify FolioLens production.",
+      "Use $foliolens-qa-regression to run full FolioLens QA."
     ],
     "brandColor": "#047857"
   }

@@ -1,5 +1,5 @@
 ---
-name: qa-pr
+name: foliolens-qa-pr
 description: Run a full Codex QA pass on a FolioLens pull request or Vercel preview. Verifies claimed PR changes, walks the main regression surfaces, compares preview with production, checks themes, cache health, responsive layout, and console errors. Use when the user asks to QA a PR, test a FolioLens preview, validate a deploy, or review a foliolens Vercel URL.
 ---
 
@@ -10,7 +10,7 @@ Run a QA pass that answers two questions:
 1. Does this PR do what it claims?
 2. Did it break any important FolioLens screen, theme, cache flow, or layout?
 
-Load `../references/app-reference.md` before starting. It contains the route map, expected screen behavior, cache keys, bug taxonomy, and report template.
+Load `../../../../docs/qa/foliolens-app-reference.md` before starting. It is the canonical shared reference for both the Codex plugin and the Claude-style QA skill bundle.
 
 ## Inputs
 
@@ -43,7 +43,7 @@ Find missing PR context with the GitHub app or `gh pr view`. Find the Vercel pre
 
 ## Report Requirements
 
-Use the PR QA template in `../references/app-reference.md`. Include:
+Use the PR QA template in `../../../../docs/qa/foliolens-app-reference.md`. Include:
 
 - PR number, title, branch, preview URL, production URL, date, and viewport sizes tested.
 - Targeted verification results for each PR claim.

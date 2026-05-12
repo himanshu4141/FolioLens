@@ -1,5 +1,5 @@
 ---
-name: qa-smoke
+name: foliolens-qa-smoke
 description: Run a fast post-release smoke test on FolioLens production. Covers critical screens, theme toggle, cross-screen data consistency, cache restoration, and console health. Use when the user asks to smoke test production, verify a release, check the deploy, or confirm app.foliolens.in is healthy.
 ---
 
@@ -7,7 +7,7 @@ description: Run a fast post-release smoke test on FolioLens production. Covers 
 
 Run a fast critical-path check against `https://app.foliolens.in`. This is not pixel-perfect QA; it is a production health pass that catches crashes, blank screens, broken routes, data mismatches, and console errors.
 
-Load `../references/app-reference.md` before starting.
+Load `../../../../docs/qa/foliolens-app-reference.md` before starting. It is the canonical shared reference for both the Codex plugin and the Claude-style QA skill bundle.
 
 ## Inputs
 
@@ -29,7 +29,7 @@ Load `../references/app-reference.md` before starting.
 
 ## Report Format
 
-Use the compact smoke template in `../references/app-reference.md`. Include:
+Use the compact smoke template in `../../../../docs/qa/foliolens-app-reference.md`. Include:
 
 - URL and time tested.
 - Verdict: `PASS`, `FAIL`, or `PASS WITH OBSERVATIONS`.

@@ -1,10 +1,20 @@
 # FolioLens QA Reference
 
-Use this reference from the `qa-pr`, `qa-smoke`, and `qa-regression` skills when you need route details, expected behavior, cache keys, theme rules, common bug classes, or report templates.
+Use this canonical reference from the Codex `foliolens-qa-pr`, `foliolens-qa-smoke`, and `foliolens-qa-regression` skills and from the external Claude-style `qa-pr`, `qa-smoke`, and `qa-regression` skill bundle. Keep FolioLens routes, screen expectations, cache keys, theme rules, common bug classes, and report templates here instead of copying them into tool-specific plugins.
 
 ## Product Context
 
 FolioLens is an Indian mutual fund portfolio tracker for novice investors. Users import CAS files and should immediately understand daily portfolio movement, portfolio versus benchmark performance, fund versus benchmark performance, fund versus fund comparison, and SIP-aware XIRR.
+
+## Tech Stack
+
+- Framework: Expo Router with React Native across native and web.
+- State: React Query v5 with `PersistQueryClientProvider`.
+- Persistence: `localStorage` on web and AsyncStorage on native.
+- Backend: Supabase PostgreSQL and Edge Functions.
+- Web hosting: Vercel static export. Production lives at `https://app.foliolens.in`.
+- Native delivery: EAS OTA channels for production, preview-main, and preview-pr.
+- Design system: Clear Lens tokens in `src/constants/clearLensTheme.ts`.
 
 Core product principles:
 

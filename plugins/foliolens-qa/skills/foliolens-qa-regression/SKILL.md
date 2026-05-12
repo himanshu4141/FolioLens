@@ -1,5 +1,5 @@
 ---
-name: qa-regression
+name: foliolens-qa-regression
 description: Run the deepest FolioLens regression pass across every primary screen, state, theme, cache behavior, responsive breakpoint, and console signal. Use before major releases, after large refactors, or when the user asks to test everything, run deep QA, or perform full regression.
 ---
 
@@ -7,7 +7,7 @@ description: Run the deepest FolioLens regression pass across every primary scre
 
 Run the most thorough web QA pass available for FolioLens. This covers every primary screen, shared financial data, loading and error states where practical, light and dark themes, cache behavior, responsive layout, and final console health.
 
-Load `../references/app-reference.md` before starting.
+Load `../../../../docs/qa/foliolens-app-reference.md` before starting. It is the canonical shared reference for both the Codex plugin and the Claude-style QA skill bundle.
 
 ## Inputs
 
@@ -19,7 +19,7 @@ Load `../references/app-reference.md` before starting.
 
 1. Create a detailed task list for setup, route walkthrough, data consistency, theming, UX principles, state coverage, cache/performance, responsive layout, console audit, and report.
 2. Open the target URL or URLs in Browser or Playwright. Start console monitoring before the first route load.
-3. Visit every screen listed in `../references/app-reference.md`. Fund Detail must be checked for at least three funds, and every time window must render.
+3. Visit every screen listed in `../../../../docs/qa/foliolens-app-reference.md`. Fund Detail must be checked for at least three funds, and every time window must render.
 4. Exercise interactions: benchmark pills, fund navigation, filters, transaction detail, top holdings pagination, tool forms, theme toggle, and Data Sync when safe.
 5. Verify cross-screen consistency for portfolio value, XIRR, overall gain, per-fund values, benchmark direction, and transaction totals.
 6. Test light mode across all screens. Then switch to dark mode and repeat the full route walk. Finally check system theme behavior if the environment supports it.
@@ -31,7 +31,7 @@ Load `../references/app-reference.md` before starting.
 
 ## Report Requirements
 
-Use the full report template in `../references/app-reference.md`. Include:
+Use the full report template in `../../../../docs/qa/foliolens-app-reference.md`. Include:
 
 - Target URL or URLs, auth state, date, viewport sizes, and browser/tool used.
 - Area-by-area result table with clear `PASS`, `FAIL`, `OBSERVATION`, or `NOT TESTED` statuses.

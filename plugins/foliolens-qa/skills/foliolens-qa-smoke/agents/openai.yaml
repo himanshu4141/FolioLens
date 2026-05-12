@@ -2,6 +2,6 @@ interface:
   display_name: "FolioLens Smoke QA"
   short_description: "Check production after a release."
   brand_color: "#047857"
-  default_prompt: "Use $qa-smoke to verify FolioLens production after release."
+  default_prompt: "Use $foliolens-qa-smoke to verify FolioLens production after release."
 policy:
   allow_implicit_invocation: true
