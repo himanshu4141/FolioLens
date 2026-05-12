@@ -23,7 +23,7 @@
  * consumers.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const DB_NAME = 'foliolens.db';
 
 const NOT_SUPPORTED_ERROR = new Error(

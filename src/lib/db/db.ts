@@ -22,7 +22,13 @@
  */
 import * as SQLite from 'expo-sqlite';
 
-export const SCHEMA_VERSION = 1;
+// v2 (2026-05-12): widen `tx` to mirror the 10 columns now returned by
+// `fetchUserTransactions` (PR #142). The v1 schema stored only the 5 PK
+// columns, so `tx.readAll()` returned rows that were missing the extras
+// that Money Trail + Wealth Journey rely on (`id`, `nav_at_transaction`,
+// `folio_number`, `cas_import_id`, `created_at`). Bumping forces a clean
+// re-sync from Supabase on next launch.
+export const SCHEMA_VERSION = 2;
 export const DB_NAME = 'foliolens.db';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -34,6 +40,11 @@ const DDL: readonly string[] = [
     transaction_type TEXT NOT NULL,
     units REAL NOT NULL,
     amount REAL NOT NULL,
+    id TEXT NOT NULL,
+    nav_at_transaction REAL,
+    folio_number TEXT,
+    cas_import_id TEXT,
+    created_at TEXT,
     PRIMARY KEY (fund_id, transaction_date, transaction_type, units, amount)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tx_fund_date ON tx (fund_id, transaction_date)`,
