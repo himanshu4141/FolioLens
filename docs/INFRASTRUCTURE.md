@@ -87,24 +87,32 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function.
 
 
-### One-time per-project bootstrap: `app.supabase_functions_base_url`
+### One-time per-project bootstrap: `public.app_config`
 
 
-Cron migrations introduced from Phase 9 M5 onwards build their target URL from `current_setting('app.supabase_functions_base_url')` instead of hardcoding a project ref, so the same migration file applies cleanly to dev and prod.
+Cron migrations and trigger functions read their target Edge Function URL from a `public.app_config` table (created by migration `20260513000001_app_config_table.sql`) so the same migration file applies cleanly to dev and prod. An earlier iteration of this pattern used `ALTER DATABASE postgres SET app.supabase_functions_base_url = …`, but Supabase managed Postgres locks down `ALTER DATABASE … SET` for arbitrary GUCs from the SQL Editor, so the bootstrap step was unrunnable. A regular table works inside that privilege model.
 
-Each Supabase project needs the setting populated **once**, via the Dashboard SQL Editor (or any `psql` session as the `postgres` role):
+Each Supabase project needs the row populated **once**, via the Dashboard SQL Editor (or any `psql` session as the `postgres` role):
 
     -- DEV project
-    ALTER DATABASE postgres
-      SET app.supabase_functions_base_url = 'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1';
+    INSERT INTO public.app_config (key, value)
+    VALUES (
+      'supabase_functions_base_url',
+      'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1'
+    )
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 
     -- PROD project (run from the PROD project's SQL editor only)
-    ALTER DATABASE postgres
-      SET app.supabase_functions_base_url = 'https://ohcaaioabjvzewfysqgh.supabase.co/functions/v1';
+    INSERT INTO public.app_config (key, value)
+    VALUES (
+      'supabase_functions_base_url',
+      'https://ohcaaioabjvzewfysqgh.supabase.co/functions/v1'
+    )
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
 
-Re-running is safe; `ALTER DATABASE … SET` overwrites the existing value. If the setting is missing the cron job logs `unrecognized configuration parameter "app.supabase_functions_base_url"` at execution time — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
+Re-running is safe; the `ON CONFLICT` upsert overwrites the existing value. If the row is missing the call sites' `NULL || '/sync-nav'` evaluates to NULL and `net.http_post` errors loudly — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
 
-All current pg_net call sites — the four cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`) and the `notify_feedback_inserted` trigger function — use this parameterised pattern (retrofitted in migration `20260513000000_parameterise_existing_cron_urls.sql`). Any new pg_net call site added going forward should follow the same `current_setting('app.supabase_functions_base_url')` lookup rather than hardcoding a project ref.
+All current pg_net call sites — the four cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`), the M5 `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
 
 `notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
 
