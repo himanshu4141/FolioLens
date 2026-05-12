@@ -23,9 +23,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
+import { useResponsiveLayout } from '@/src/components/responsive';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -69,6 +71,32 @@ const MAX_FUNDS = 3;
 const MIN_FUNDS = 2;
 
 type TabKey = 'returns' | 'risk' | 'asset_mix' | 'sectors' | 'holdings' | 'other';
+
+/**
+ * Wraps each comparison-table block. On mobile we keep a horizontal
+ * ScrollView so a 3-fund row that exceeds the phone width can scroll.
+ * On desktop the 3-fund table (label 160 + 3 × cell) always fits inside
+ * the list-tier 960 frame, so we drop the scroller and use a plain View
+ * with `width: '100%'` — that gives the flex cells (`flex: 1`) an actual
+ * parent width to flex against, which makes the table fill the card
+ * rather than collapse to its natural left-aligned width.
+ */
+function TableScrollHost({ children }: { children: ReactNode }) {
+  const { layout } = useResponsiveLayout();
+  if (layout === 'desktop') {
+    return <View style={{ width: '100%' }}>{children}</View>;
+  }
+  // Multi-line JSX form so a bulk rename of the call-site single-line
+  // shape doesn't sweep this internal usage.
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+    >
+      {children}
+    </ScrollView>
+  );
+}
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'returns', label: 'Returns' },
@@ -420,10 +448,19 @@ export function ClearLensCompareFundsScreen() {
     setSelectedCodes((prev) => prev.filter((c) => c !== schemeCode));
   };
 
+  // On web, direct-URL loads (or a deep link) leave the navigation stack
+  // empty — `router.back()` then resolves to a no-op and the chevron looks
+  // broken. Fall back to the Tools hub so the chevron always goes somewhere
+  // sensible.
+  const handleBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/tools');
+  };
+
   if (!userId) {
     return (
       <ClearLensScreen>
-        <ClearLensHeader onPressBack={() => router.back()} />
+        <ClearLensHeader onPressBack={handleBack} />
         <View style={styles.center}><Text style={styles.emptyTitle}>Sign in to use this tool</Text></View>
       </ClearLensScreen>
     );
@@ -810,7 +847,7 @@ function ReturnsTab({
       <Text style={styles.tabIntro}>
         Annualised return per period. Computed from NAV history when we have ≥{`${period(periods[0].key)}`}; otherwise from MFData (which can be a few weeks stale).
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <TableScrollHost>
         <View>
           <View style={styles.tableHeaderRow}>
             <View style={styles.cellLabel} />
@@ -852,7 +889,7 @@ function ReturnsTab({
             );
           })}
         </View>
-      </ScrollView>
+      </TableScrollHost>
       <Text style={styles.tabFootnote}>
         Bolded: leader for the period (when ≥2 funds have data and there&apos;s a clear leader).
       </Text>
@@ -947,7 +984,7 @@ function RiskTab({
         Risk metrics over the trailing 3 years. Computed locally from monthly returns;
         Beta and R² come from MFData and only show for equity / hybrid funds.
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <TableScrollHost>
         <View>
           <View style={styles.tableHeaderRow}>
             <View style={styles.cellLabelWide} />
@@ -973,7 +1010,7 @@ function RiskTab({
             </View>
           ))}
         </View>
-      </ScrollView>
+      </TableScrollHost>
       {!anyBetaOrR2 ? (
         <Text style={styles.tabFootnote}>
           Beta and R² aren&apos;t shown for these categories — they apply to equity / hybrid funds.
@@ -1034,7 +1071,7 @@ function AssetMixTab({
       <Text style={styles.tabIntro}>
         Where each fund parks its money. Cap mix is shown when a fund has equity exposure.
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <TableScrollHost>
         <View>
           {headerCells}
           {rows.map((r, idx) => (
@@ -1052,10 +1089,10 @@ function AssetMixTab({
             </View>
           ))}
         </View>
-      </ScrollView>
+      </TableScrollHost>
 
       <Text style={styles.subhead}>Market cap mix</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <TableScrollHost>
         <View>
           {headerCells}
           {capRows.map((r, idx) => (
@@ -1073,7 +1110,7 @@ function AssetMixTab({
             </View>
           ))}
         </View>
-      </ScrollView>
+      </TableScrollHost>
     </View>
   );
 }
@@ -1162,7 +1199,7 @@ function SectorsTab({
           <Text style={styles.tabIntro}>
             Top sector exposures across the selected funds (aggregated from disclosed holdings).
           </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <TableScrollHost>
             <View>
               {headerCells}
               {topSectors.map((sectorName, idx) => (
@@ -1180,7 +1217,7 @@ function SectorsTab({
                 </View>
               ))}
             </View>
-          </ScrollView>
+          </TableScrollHost>
         </>
       ) : (
         <Text style={styles.tabIntro}>
@@ -1191,7 +1228,7 @@ function SectorsTab({
       {hasAnyCredit ? (
         <>
           <Text style={styles.subhead}>Credit rating mix</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <TableScrollHost>
             <View>
               {headerCells}
               {orderedRatings.map((rating, idx) => (
@@ -1209,7 +1246,7 @@ function SectorsTab({
                 </View>
               ))}
             </View>
-          </ScrollView>
+          </TableScrollHost>
           <Text style={styles.tabFootnote}>
             SOV = government securities. AAA / AA / A grades indicate corporate credit quality (high to lower).
           </Text>
@@ -1289,7 +1326,7 @@ function HoldingsTab({
           <Text style={styles.tabIntro}>
             Top 25 equity holdings across the selected funds. Empty cell = the fund doesn&apos;t hold the name.
           </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <TableScrollHost>
             <View>
               {headerCells}
               {topEquityNames.map((name, idx) => (
@@ -1311,14 +1348,14 @@ function HoldingsTab({
                 </View>
               ))}
             </View>
-          </ScrollView>
+          </TableScrollHost>
         </>
       ) : null}
 
       {topDebtNames.length > 0 ? (
         <>
           <Text style={styles.subhead}>Top debt holdings</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <TableScrollHost>
             <View>
               {headerCells}
               {topDebtNames.map((name, idx) => (
@@ -1340,7 +1377,7 @@ function HoldingsTab({
                 </View>
               ))}
             </View>
-          </ScrollView>
+          </TableScrollHost>
         </>
       ) : null}
 
@@ -1421,7 +1458,7 @@ function OtherTab({
       <Text style={styles.tabIntro}>
         Scheme metadata. Some fields fill in 24h after a fund is added — sync runs daily.
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <TableScrollHost>
         <View>
           {headerCells}
           {rows.map((r, idx) => (
@@ -1435,7 +1472,7 @@ function OtherTab({
             </View>
           ))}
         </View>
-      </ScrollView>
+      </TableScrollHost>
     </View>
   );
 }
