@@ -17,14 +17,26 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 export interface UserTransactionRow {
+  // PK columns Portfolio / Fund Detail / xirr math need.
   fund_id: string;
   transaction_date: string;
   transaction_type: string;
   units: number;
   amount: number;
+  // Extra columns Money Trail + Wealth Journey use for ordering,
+  // display, and folio-level breakdowns. Included here so every
+  // screen reads from the same `['user-transactions', userId]` cache
+  // entry instead of issuing its own SELECT with a different shape
+  // (which was the class of bug that bit PR #134's persister).
+  id: string;
+  nav_at_transaction: number | null;
+  folio_number: string | null;
+  cas_import_id: string | null;
+  created_at: string | null;
 }
 
-const TX_COLUMNS = 'fund_id, transaction_date, transaction_type, units, amount';
+const TX_COLUMNS =
+  'id, fund_id, transaction_date, transaction_type, units, amount, nav_at_transaction, folio_number, cas_import_id, created_at';
 const PAGE_SIZE = 1000;
 
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
