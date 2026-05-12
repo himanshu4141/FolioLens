@@ -25,6 +25,7 @@ import { useFundComposition } from '@/src/hooks/useFundComposition';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
 import { useInvestmentVsBenchmarkTimeline } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
+import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { computeQuarterlyReturns } from '@/src/utils/quarterlyReturns';
@@ -50,7 +51,6 @@ import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
-import { supabase } from '@/src/lib/supabase';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import {
   BENCHMARK_DISCLOSURE,
@@ -193,19 +193,12 @@ function PerformanceTab({
     // `{ date, value }[]`. Cross-contamination through the persister was
     // responsible for the Nifty 500 TRI chart-vanish on the Portfolio
     // screen — see Phase 9 M3 follow-up notes.
+    //
+    // Reads through `fetchIndexHistory` (Phase 9 M5): tries the daily
+    // CDN snapshot first, falls back to the paginated `index_history`
+    // SELECT on miss. Same `{ date, value }[]` shape either way.
     queryKey: ['fund-detail-index', selectedSymbol],
-    queryFn: async () => {
-      // ascending: false → most-recent 1000 rows (avoids returning only pre-2021 data
-      // for long-history indexes like BSE Sensex). Reversed back to ascending for chart use.
-      const { data } = await supabase
-        .from('index_history')
-        .select('index_date, close_value')
-        .eq('index_symbol', selectedSymbol)
-        .order('index_date', { ascending: false });
-      return (data ?? [])
-        .map((r) => ({ date: r.index_date as string, value: r.close_value as number }))
-        .reverse();
-    },
+    queryFn: () => fetchIndexHistory(selectedSymbol),
     staleTime: 5 * 60_000,
   });
 

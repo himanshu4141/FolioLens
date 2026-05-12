@@ -29,6 +29,7 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds, type UserFundRow } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions, type UserTransactionRow } from '@/src/hooks/useUserTransactions';
+import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 
 interface NavRow {
   scheme_code: number;
@@ -191,22 +192,18 @@ export async function fetchPortfolioData(
 
   // Benchmark index history — for the market-XIRR comparison we need
   // every index close from the user's first transaction onward (so the
-  // benchmark cashflows simulate every buy/sell at the right price). We
-  // bound the SELECT by `firstTxDate` rather than fetch all-time history.
+  // benchmark cashflows simulate every buy/sell at the right price).
+  // Reads through `fetchIndexHistory` (Phase 9 M5): CDN-served daily
+  // snapshot first, paginated `index_history` SELECT on fallback. The
+  // snapshot is the full history; we filter to `>= firstTxDate` in JS
+  // since the payload is already on hand.
   const firstTxDate = allTxs[0]?.transaction_date ?? null;
   let benchmarkRows: IndexRow[] = [];
   if (benchmarkSymbol) {
     perfStart('query:portfolio:index');
-    let benchmarkQuery = supabase
-      .from('index_history')
-      .select('index_date, close_value')
-      .eq('index_symbol', benchmarkSymbol)
-      .order('index_date', { ascending: false });
-    if (firstTxDate) benchmarkQuery = benchmarkQuery.gte('index_date', firstTxDate);
-    const { data, error } = await benchmarkQuery;
-    perfEnd('query:portfolio:index', { rows: data?.length ?? 0, symbol: benchmarkSymbol });
-    if (error) throw error;
-    benchmarkRows = (data ?? []) as IndexRow[];
+    const points = await fetchIndexHistory(benchmarkSymbol, firstTxDate);
+    perfEnd('query:portfolio:index', { rows: points.length, symbol: benchmarkSymbol });
+    benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
   }
 
   const benchmarkMap = new Map<string, number>();

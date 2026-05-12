@@ -120,6 +120,11 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   // Per-scheme metadata — shared between Fund Detail and Compare via
   // a single producer / single cache key (`['scheme-master', code]`).
   'scheme-master',
+  // CDN-served daily snapshot of `index_history` for tracked benchmarks
+  // (Phase 9 M5). The HTTP cache fronts most reads; persisting here is
+  // the in-app belt-and-braces so a navigation past the React Query
+  // gcTime doesn't trigger an unnecessary CDN GET.
+  'index-snapshot',
 ];
 
 export function shouldPersistQueryKey(queryKey: QueryKey): boolean {
