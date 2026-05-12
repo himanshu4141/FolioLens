@@ -1,0 +1,39 @@
+{
+  "name": "foliolens-qa",
+  "version": "0.1.0",
+  "description": "Codex QA workflows for FolioLens pull requests, production smoke checks, and full regression passes.",
+  "author": {
+    "name": "FolioLens",
+    "email": "support@foliolens.in",
+    "url": "https://foliolens.in"
+  },
+  "homepage": "https://github.com/himanshu4141/FolioLens",
+  "repository": "https://github.com/himanshu4141/FolioLens",
+  "license": "UNLICENSED",
+  "keywords": [
+    "foliolens",
+    "qa",
+    "regression",
+    "smoke-test"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "FolioLens QA",
+    "shortDescription": "PR, smoke, and regression QA for FolioLens.",
+    "longDescription": "FolioLens QA packages Codex skills for validating pull request previews, checking production after release, and running deep regression passes across screens, themes, cache behavior, responsive layout, and console health.",
+    "developerName": "FolioLens",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://foliolens.in",
+    "defaultPrompt": [
+      "Use $qa-pr to QA PR #135 against its Vercel preview.",
+      "Use $qa-smoke to verify FolioLens production after release.",
+      "Use $qa-regression to run a full FolioLens regression pass."
+    ],
+    "brandColor": "#047857"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "foliolens-local",
+  "interface": {
+    "displayName": "FolioLens Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "foliolens-qa",
+      "source": {
+        "source": "local",
+        "path": "./plugins/foliolens-qa"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
