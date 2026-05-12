@@ -41,6 +41,7 @@ The repo did not already contain `.agents/plugins/marketplace.json` or a `plugin
 - Add `plugins/foliolens-qa/.codex-plugin/plugin.json`.
 - Add repo marketplace metadata at `.agents/plugins/marketplace.json`.
 - Convert the three Claude QA skills into namespaced Codex skills under `plugins/foliolens-qa/skills/`.
+- Add the original Claude-style skill bundle under `qa/claude/foliolens-qa-skill/` with its `qa-pr`, `qa-smoke`, and `qa-regression` names preserved.
 - Add a shared `docs/qa/foliolens-app-reference.md` for routes, expected behavior, cache keys, theme rules, known bug classes, and report templates.
 - Update README to mention the new repo-local QA plugin capability.
 
@@ -66,6 +67,7 @@ Use the system `plugin-creator` scaffold to create a repo-local plugin and marke
 - Home-local plugin under `~/plugins`: rejected because the user asked for a PR and repo review.
 - One large `qa` skill: rejected because PR QA, smoke QA, and regression QA have different scope and should trigger independently.
 - Copying the full desktop QA script verbatim: rejected because Codex skills should stay concise and use progressive disclosure through a shared reference.
+- Renaming the Claude-style skills: rejected because the user asked to include those files as-is; only repo-relative reference pointers were adjusted so they do not embed temporary local paths.
 
 ## Milestones
 
@@ -81,6 +83,9 @@ Use the system `plugin-creator` scaffold to create a repo-local plugin and marke
 4. Update repository documentation.
    - Expected outcome: README mentions the plugin in "What works now".
    - Validation: review the documentation diff.
+5. Add the Claude-style skill bundle.
+   - Expected outcome: `qa/claude/foliolens-qa-skill/` contains `qa-pr`, `qa-smoke`, `qa-regression`, and a reference pointer.
+   - Validation: run the skill quick validator on each Claude-style skill directory.
 
 ## Validation
 
@@ -91,6 +96,9 @@ Run:
     python3 /Users/hyadav/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/foliolens-qa/skills/foliolens-qa-regression
     python3 -m json.tool plugins/foliolens-qa/.codex-plugin/plugin.json >/tmp/foliolens-plugin.json
     python3 -m json.tool .agents/plugins/marketplace.json >/tmp/foliolens-marketplace.json
+    python3 /Users/hyadav/.codex/skills/.system/skill-creator/scripts/quick_validate.py qa/claude/foliolens-qa-skill/qa-pr
+    python3 /Users/hyadav/.codex/skills/.system/skill-creator/scripts/quick_validate.py qa/claude/foliolens-qa-skill/qa-smoke
+    python3 /Users/hyadav/.codex/skills/.system/skill-creator/scripts/quick_validate.py qa/claude/foliolens-qa-skill/qa-regression
 
 Expected output: all quick validators print `Skill is valid!`; both JSON commands exit successfully.
 
@@ -114,12 +122,14 @@ Because this change only adds plugin and documentation files, the app TypeScript
 
 - The implemented plugin omits hooks, MCP server config, app config, icons, and screenshots from `plugin.json` because version 0.1.0 only ships skills and a shared reference. This avoids dangling placeholder paths while keeping the plugin installable.
 - The shared reference moved from `plugins/foliolens-qa/skills/references/app-reference.md` to `docs/qa/foliolens-app-reference.md` so multiple QA bundles can point at one update location.
+- The Claude-style source bundle is now checked in under `qa/claude/foliolens-qa-skill/`. Its skill names and QA workflow wording are preserved, while its reference file is a repo-relative pointer to the canonical shared reference.
 
 ## Progress
 
 - [x] Read repository guidance and source QA materials.
 - [x] Scaffold the plugin and marketplace entry.
 - [x] Convert PR, smoke, and regression workflows into Codex skills.
+- [x] Add the Claude-style skill bundle to the repo.
 - [x] Add shared FolioLens QA reference.
 - [x] Update README.
 - [x] Run validation commands.
