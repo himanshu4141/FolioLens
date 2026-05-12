@@ -95,8 +95,13 @@ async function uploadSnapshot(
 ): Promise<{ path: string; bytes: number }> {
   const body = JSON.stringify(payload);
   const path = objectPathFor(symbol);
+  // contentType must exact-match the bucket's `allowed_mime_types`
+  // allowlist (`['application/json']` per the bucket migration). Anything
+  // with charset / boundary parameters gets rejected with a generic
+  // "mime type … is not supported" before the upload even starts.
+  // UTF-8 is JSON's implicit encoding (RFC 8259 §8.1) so this is lossless.
   const { error } = await supabase.storage.from(BUCKET).upload(path, body, {
-    contentType: 'application/json; charset=utf-8',
+    contentType: 'application/json',
     upsert: true,
     cacheControl: 'public, max-age=3600, stale-while-revalidate=86400',
   });
