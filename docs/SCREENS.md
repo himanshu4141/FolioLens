@@ -103,7 +103,7 @@ Clear Lens Fund Detail includes:
 - Composition asset mix, market-cap mix, sectors, top holdings, and disclosure footer
 - Portfolio Weight card (caps at 460 px wide on desktop so the donut + info pair doesn't drift in whitespace)
 
-On desktop the screen renders inside the sidebar shell with `desktopMaxWidth={920}` — a historical override that pre-dates the 760 → 960 list-tier bump. It's now narrower than the list tier by 40 px; flagged as a known orphan in `DESIGN.md` to drop or align on the next touch. All charts (Performance, NAV, Growth Consistency) read width from `useWindowDimensions` and clamp to `FUND_DETAIL_DESKTOP_MAX` so they grow as the window does. The Growth Consistency bars use equal-slot positioning (`plotWidth / bars.length` per slot) so they span the full plot rather than clustering at the left edge.
+On desktop the screen renders inside the sidebar shell at the list-tier 960 px (the `ClearLensScreen` default). All charts (Performance, NAV, Growth Consistency) read width from `useWindowDimensions` and clamp to `FUND_DETAIL_CHART_MAX = 960` so they fill the card and grow as the window does. The Growth Consistency bars use equal-slot positioning (`plotWidth / bars.length` per slot) so they span the full plot rather than clustering at the left edge.
 
 ### 5. Money Trail
 

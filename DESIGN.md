@@ -124,17 +124,15 @@ Desktop screens fall into two tiers:
 
 | Tier | Width | Used by |
 |---|---|---|
-| **List** | **960 px** | `ClearLensScreen`-wrapped screens — Settings hub + sub-pages, Wealth Journey, Money Trail, Tools, Fund Detail (`desktopMaxWidth={920}` historical override — see below), Compare Funds, Past SIP Check, Goal Planner, Direct vs Regular |
+| **List** | **960 px** | `ClearLensScreen`-wrapped screens — Settings hub + sub-pages, Wealth Journey, Money Trail, Tools, Fund Detail, Compare Funds, Past SIP Check, Goal Planner, Direct vs Regular |
 | **Dashboard** | **1200 px** | Portfolio + Funds desktop variants — grid-heavy screens whose dedicated `*Desktop.tsx` components bypass `ClearLensScreen` and use `MaxContentWidth` directly |
 
 Pick the tier by content density. Reading-style screens (single-column lists, charts, forms) go on the list tier; grid- or multi-column dashboards go on the dashboard tier. Settings sub-pages historically had no cap and stretched edge-to-edge of the content slot — they now apply the 960 cap via a wrapping `frame` View (see `app/(tabs)/settings/*.tsx`).
 
-> **Known orphan**: `app/fund/[id].tsx` still hardcodes `FUND_DETAIL_DESKTOP_MAX = 920`, which predates the 760 → 960 bump and is now 40 px narrower than the list tier. Drop the override or align it on the next touch — charts already derive width from `FUND_DETAIL_DESKTOP_MAX` in three places, so just bumping the constant carries them along.
-
 Layout rules:
 
 - The single `<Tabs>` navigator stays mounted in both layouts. Desktop hides the bottom bar with `display: none` and the sidebar renders as a row sibling — resizing across the breakpoint preserves the active route.
-- Charts that need a width should read `useWindowDimensions().width` and clamp to the screen's max-width (`960` for the list tier, the dashboard variants own their own value). Past SIP and Wealth Journey use `Math.min(windowWidth, 960)` for their growth-path SVGs. The legacy module-scope `CHART_WIDTH` constant is captured once at JS load and breaks on resize — don't reintroduce it.
+- Charts that need a width should read `useWindowDimensions().width` and clamp to the screen's max-width (`960` for the list tier, the dashboard variants own their own value). Past SIP and Wealth Journey use `Math.min(windowWidth, 960)` for their growth-path SVGs; Fund Detail centralises the same value in `FUND_DETAIL_CHART_MAX = 960` and uses it in three chart-width calcs. The legacy module-scope `CHART_WIDTH` constant is captured once at JS load and breaks on resize — don't reintroduce it.
 - Multi-column / multi-fund content (Compare Funds cells, Funds grid) uses the flex-stretch pattern `flex: 1, minWidth: N` so columns fill the available width. Add `maxWidth` only when the per-cell content is too sparse to scale gracefully (Compare Funds caps cells at 220 to keep a single number from feeling lost in 400 px of cell).
 - Quick Actions menu (`AppOverflowMenu`) requires `onMoneyTrail` and `onTools` at the type level so all call sites surface the same items. The desktop sidebar exposes the same actions natively.
 

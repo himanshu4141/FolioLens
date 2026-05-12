@@ -58,14 +58,14 @@ import {
 } from '@/src/utils/benchmarkSymbolMap';
 import { ResponsiveRouteFrame } from '@/src/components/responsive';
 
-// On desktop the screen sits inside a centered max-width frame (see
-// ClearLensScreen.desktopMaxWidth, set to 920 below). Charts cap their
-// own width to this constant so they don't overflow the column.
-// Each chart derives its live width from useWindowDimensions inside its
-// component so that resizing the browser updates the chart in real time —
-// the old module-scope CHART_WIDTH constant captured the viewport once at
-// JS load time and left the chart stuck at the original size.
-const FUND_DETAIL_DESKTOP_MAX = 920;
+// Fund Detail follows the list-tier desktop frame (960 px). Charts cap
+// their own width to the same value so they don't overflow the column
+// and they fill the card with no right-edge gap. Each chart derives its
+// live width from useWindowDimensions inside its component so that
+// resizing the browser updates the chart in real time — the old
+// module-scope CHART_WIDTH constant captured the viewport once at JS
+// load time and left the chart stuck at the original size.
+const FUND_DETAIL_CHART_MAX = 960;
 
 const TIME_WINDOWS: TimeWindow[] = ['1M', '3M', '6M', '1Y', '3Y', 'All'];
 
@@ -148,7 +148,7 @@ function PerformanceTab({
   // load time, so on web it would leave the chart at the original size when
   // the window is resized. Recompute against the current viewport instead.
   const { width: viewportWidth } = useWindowDimensions();
-  const liveChartWidth = Math.min(viewportWidth, FUND_DETAIL_DESKTOP_MAX) - 32;
+  const liveChartWidth = Math.min(viewportWidth, FUND_DETAIL_CHART_MAX) - 32;
   const benchmarkColor = tokens.colors.slate;
   const positiveMetricColor = tokens.colors.emerald;
   const negativeMetricColor = tokens.colors.negative;
@@ -758,7 +758,7 @@ function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: numb
   const { compatible: colors } = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   const { width: viewportWidth } = useWindowDimensions();
-  const liveChartWidth = Math.min(viewportWidth, FUND_DETAIL_DESKTOP_MAX) - 32;
+  const liveChartWidth = Math.min(viewportWidth, FUND_DETAIL_CHART_MAX) - 32;
   const [window, setWindow] = useState<TimeWindow>('1Y');
   const filtered = filterToWindow(navHistory, window);
 
@@ -1160,7 +1160,7 @@ function GrowthConsistencyChart({ navHistory }: { navHistory: { date: string; va
   // afterwards leaves the chart rendered at the stale (often desktop) width
   // and bars get clipped by the mobile viewport.
   const { width: viewportWidth } = useWindowDimensions();
-  const chartWidth = Math.min(viewportWidth, FUND_DETAIL_DESKTOP_MAX) - 32 - 64;
+  const chartWidth = Math.min(viewportWidth, FUND_DETAIL_CHART_MAX) - 32 - 64;
   const bars = computeQuarterlyReturns(navHistory, colors.positive, colors.negative);
   if (bars.length < 2) return null;
 
@@ -1785,7 +1785,7 @@ function ClearLensFundDetailScreen() {
 
   if (showFirstLoad) {
     return (
-      <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
+      <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
         <View style={clearDetailStyles.centered}>
           <ActivityIndicator size="large" color={tokens.colors.emerald} />
@@ -1796,7 +1796,7 @@ function ClearLensFundDetailScreen() {
 
   if (isError) {
     return (
-      <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
+      <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
         <View style={clearDetailStyles.centered}>
           <Ionicons name="alert-circle-outline" size={40} color={tokens.colors.textTertiary} />
@@ -1818,7 +1818,7 @@ function ClearLensFundDetailScreen() {
   const hasRealizedActivity = data.realizedAmount > 0 || data.redeemedUnits > 0;
 
   return (
-    <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
+    <ClearLensScreen>
       <ClearLensHeader onPressBack={() => router.back()} />
       <ScrollView contentContainerStyle={clearDetailStyles.scroll} showsVerticalScrollIndicator={false}>
         <ClearLensCard style={clearDetailStyles.heroCard}>

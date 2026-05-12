@@ -517,7 +517,7 @@ This was reconciled into an explicit two-tier system:
 
 Multi-fund / multi-column content uses the flex-stretch pattern `flex: 1, minWidth: N` (Funds dashboard grid, Settings rows, Money Trail rows). Compare Funds was the only outlier left — fund-column cells were fixed at `width: 130` and left ~540 px of dead space at 2-fund comparisons in the 960 frame. Cells now use `flex: 1, minWidth: 130, maxWidth: 220` so the table fills the card. The `maxWidth` cap prevents 2-fund comparisons from stretching each cell to ~400 px (where the single number per cell would feel lost).
 
-> Known orphan: `app/fund/[id].tsx` still hardcodes `FUND_DETAIL_DESKTOP_MAX = 920`, which is now 40 px narrower than the list tier. Pre-bump it was *wider*; post-bump it's *narrower*. Documented in `DESIGN.md` to drop or align on the next touch.
+Fund Detail's historical `FUND_DETAIL_DESKTOP_MAX = 920` override was dropped in the same PR. Pre-bump it was 160 px *wider* than the 760 default (chart-heavy intent); post-bump it would have been 40 px *narrower* than the list tier — backward inconsistency. The screen now uses the 960 default (no `desktopMaxWidth` prop), and the chart-width calcs centralise on a `FUND_DETAIL_CHART_MAX = 960` constant that matches.
 
 ### `FundDesktopCard` and `FundListItem` deliberately stay separate
 
