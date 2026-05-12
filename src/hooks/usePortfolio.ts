@@ -13,7 +13,7 @@
  */
 
 import { useEffect } from 'react';
-import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData, type QueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import {
   xirr,
@@ -27,6 +27,8 @@ import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
+import { fetchUserFunds, type UserFundRow } from '@/src/hooks/useUserFunds';
+import { fetchUserTransactions, type UserTransactionRow } from '@/src/hooks/useUserTransactions';
 
 interface NavRow {
   scheme_code: number;
@@ -78,56 +80,46 @@ interface PortfolioFundRow {
   benchmark_index_symbol: string | null;
 }
 
-function isPortfolioFundRow(
-  row: {
-    id: string | null;
-    scheme_code: number | null;
-    scheme_name: string | null;
-    scheme_category: string | null;
-    benchmark_index_symbol: string | null;
-  } | null | undefined,
-): row is PortfolioFundRow {
+function isPortfolioFundRow(row: UserFundRow): row is UserFundRow & PortfolioFundRow {
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
-export async function fetchPortfolioData(userId: string, benchmarkSymbol: string) {
+export async function fetchPortfolioData(
+  qc: QueryClient,
+  userId: string,
+  benchmarkSymbol: string,
+) {
   perfStart('query:portfolio');
 
-  // Load active funds
-  perfStart('query:portfolio:funds');
-  const { data: funds, error: fundsError } = await supabase
-    .from('fund')
-    .select('id, scheme_code, scheme_name, scheme_category, benchmark_index_symbol')
-    .eq('user_id', userId)
-    .eq('is_active', true);
-  perfEnd('query:portfolio:funds', { rows: funds?.length ?? 0 });
+  // Shared user-funds and user-transactions caches. Other screens (Fund
+  // Detail, Money Trail, etc.) read from these same keys, so once one
+  // screen has loaded them, the others paint without a network round-
+  // trip. `fetchQuery` is a cache-or-fetch operation: if the entry is
+  // fresh per its staleTime, it returns instantly from memory.
+  const [allFunds, allTxs] = await Promise.all([
+    qc.fetchQuery({
+      queryKey: ['user-funds', userId],
+      queryFn: () => fetchUserFunds(userId),
+      staleTime: STALE_TIMES.USER_FUNDS,
+    }),
+    qc.fetchQuery({
+      queryKey: ['user-transactions', userId],
+      queryFn: () => fetchUserTransactions(userId),
+      staleTime: STALE_TIMES.USER_TRANSACTIONS,
+    }),
+  ]);
 
-  if (fundsError) throw fundsError;
-  if (!funds?.length) {
-    perfEnd('query:portfolio', { funds: 0, txs: 0, navs: 0, idxs: 0 });
-    return { fundCards: [], summary: null };
-  }
-
-  const validFunds = funds.filter(isPortfolioFundRow);
+  // Portfolio renders active funds only; inactive rows still live in the
+  // shared cache for Money Trail / historical views.
+  const validFunds = allFunds.filter((f) => f.is_active === true).filter(isPortfolioFundRow);
   if (!validFunds.length) {
     perfEnd('query:portfolio', { funds: 0, txs: 0, navs: 0, idxs: 0 });
     return { fundCards: [], summary: null };
   }
 
-  // Load all transactions for this user (for XIRR)
-  perfStart('query:portfolio:txs');
-  const { data: allTxs, error: txError } = await supabase
-    .from('transaction')
-    .select('fund_id, transaction_date, transaction_type, units, amount')
-    .eq('user_id', userId)
-    .order('transaction_date', { ascending: true });
-  perfEnd('query:portfolio:txs', { rows: allTxs?.length ?? 0 });
-
-  if (txError) throw txError;
-
   // Group transactions by fund_id
-  const txByFund = new Map<string, typeof allTxs>();
-  for (const tx of allTxs ?? []) {
+  const txByFund = new Map<string, UserTransactionRow[]>();
+  for (const tx of allTxs) {
     const existing = txByFund.get(tx.fund_id) ?? [];
     existing.push(tx);
     txByFund.set(tx.fund_id, existing);
@@ -201,7 +193,7 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
   // every index close from the user's first transaction onward (so the
   // benchmark cashflows simulate every buy/sell at the right price). We
   // bound the SELECT by `firstTxDate` rather than fetch all-time history.
-  const firstTxDate = (allTxs?.[0]?.transaction_date as string | undefined) ?? null;
+  const firstTxDate = allTxs[0]?.transaction_date ?? null;
   let benchmarkRows: IndexRow[] = [];
   if (benchmarkSymbol) {
     perfStart('query:portfolio:index');
@@ -348,7 +340,7 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
         value: row.close_value,
       })),
     );
-    const allTransactions = (allTxs ?? []).filter((tx) =>
+    const allTransactions = allTxs.filter((tx) =>
       validFunds.some((f) => f.id === tx.fund_id),
     );
     marketXirr = computeBenchmarkXirr({
@@ -374,7 +366,7 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
 
   perfEnd('query:portfolio', {
     fund_cards: fundCards.length,
-    txs: allTxs?.length ?? 0,
+    txs: allTxs.length,
     navs: navRows.length,
     idxs: benchmarkRows.length,
   });
@@ -389,7 +381,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   const query = useQuery({
     queryKey: ['portfolio', userId, benchmarkSymbol],
     enabled: !!userId,
-    queryFn: () => fetchPortfolioData(userId!, benchmarkSymbol),
+    queryFn: () => fetchPortfolioData(queryClient, userId!, benchmarkSymbol),
     staleTime: STALE_TIMES.PORTFOLIO,
     placeholderData: keepPreviousData, // no jarring flash when switching benchmark
   });
@@ -407,7 +399,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
       if (option.symbol === benchmarkSymbol) continue;
       queryClient.prefetchQuery({
         queryKey: ['portfolio', userId, option.symbol],
-        queryFn: () => fetchPortfolioData(userId, option.symbol),
+        queryFn: () => fetchPortfolioData(queryClient, userId, option.symbol),
         staleTime: STALE_TIMES.PORTFOLIO,
       });
     }

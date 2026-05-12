@@ -342,7 +342,7 @@ function OnboardingWizard() {
         const benchmarkSymbol = useAppStore.getState().defaultBenchmarkSymbol;
         queryClient.prefetchQuery({
           queryKey: ['portfolio', userId, benchmarkSymbol],
-          queryFn: () => fetchPortfolioData(userId, benchmarkSymbol),
+          queryFn: () => fetchPortfolioData(queryClient, userId, benchmarkSymbol),
         });
       }
     }

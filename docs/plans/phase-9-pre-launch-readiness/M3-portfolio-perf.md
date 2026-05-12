@@ -356,4 +356,25 @@ In addition, three user-journey complaints needed direct attention:
 
 - **`'fund-nav-history'` added to the persist allowlist** so the deferred fetch survives across reloads.
 
+
+### Round-3 follow-up — 2026-05-12 (still on PR #135)
+
+After OTA-testing Round-2, the user shared `[perf]` logs from a warm-cache restart that revealed Fund Detail was *still* re-fetching transactions, NAV, and index history on each open — even though Portfolio had just loaded them seconds earlier. The persister cached the *computed* results (`['portfolio', userId, …]` and `['fund-detail', fundId]`), but each query's `queryFn` re-issued its own raw SELECTs against `fund` / `transaction` / `nav_history`. Inputs were not shared across screens.
+
+Diagnosis: the raw rows live inside the closures of each queryFn and are GC'd as soon as the computed result is stored. There is one consumer per cache key, but each consumer has its own SELECT shape — so re-using the same key across screens isn't safe (cf. the cache-shape-collision bugs we already fixed twice in this PR). The clean answer is to give each raw input its **own** React Query cache entry with a single producer.
+
+### Round-3 fixes in this PR
+
+- **`useUserFunds` (`['user-funds', userId]`)** — one paginated SELECT against `fund` with a fixed column set (every column any downstream consumer needs). One producer, one shape — collision-proof. Persist-allowlisted.
+- **`useUserTransactions` (`['user-transactions', userId]`)** — same pattern for `transaction`. Paginated, append-only, safe to cache with a 5 min staleTime since the CAS import flow invalidates it.
+- **`fetchPortfolioData` and `fetchFundDetail` now take a `QueryClient`.** Both call `qc.fetchQuery` to read funds and transactions from the shared keys; React Query dedupes inflight requests, so a navigation from Portfolio → Fund Detail mid-fetch shares the same Promise instead of issuing parallel SELECTs.
+- **`fetchFundDetail`'s remaining two SELECTs (scheme_master + nav_history limit 2) run in parallel via `Promise.all`.** Previously they were sequential (extended-metadata, then transactions, then NAV); transactions are now free from the shared cache, so the only network cost is the parallel pair.
+- **Portfolio chart window** already defaults to `'1Y'` in the store (`appStore.ts:482`); no code change. Existing users who manually picked `'All'` keep their choice.
+
+Expected user-felt impact when Portfolio is already in cache:
+- Fund Detail header card paints in **one round-trip's worth of latency** (the parallel scheme_master + nav-limit-2), versus today's four sequential SELECTs.
+- The 1,000-page-cap pagination loops in both hooks are now ammortised across all screens — each user-funds / user-transactions fetch happens at most once per staleTime per app session.
+
+Tests: 991 still passing. New hooks are covered transitively via `fetchPortfolioData` / `fetchFundDetail` fixtures (the data-fetching layer is 100% line-covered; the hook wrappers themselves stay un-mocked since they're thin `useQuery` calls).
+
 Tests: 991 still passing. The `useFundDetail` test mocks gained a `.limit()` chain method (now the terminal call for the light SELECT) and a tighter `MOCK_NAV` fixture in descending order; the obsolete `MOCK_INDEX` block and the period-return assertion that depended on full `data.navHistory` were dropped — full-history assertions belong on `useFundNavHistory` once we add tests for it.

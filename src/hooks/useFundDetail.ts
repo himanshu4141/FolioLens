@@ -12,13 +12,16 @@
  *  - xirr: fund-level XIRR
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
+import { useSession } from '@/src/hooks/useSession';
+import { fetchUserFunds } from '@/src/hooks/useUserFunds';
+import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -84,74 +87,93 @@ interface FundDetailRow {
 }
 
 function isFundDetailRow(
-  row: {
-    id: string | null;
-    scheme_code: number | null;
-    scheme_name: string | null;
-    scheme_category: string | null;
-    benchmark_index: string | null;
-    benchmark_index_symbol: string | null;
-    isin: string | null;
-    expense_ratio: number | null;
-    aum_cr: number | null;
-    min_sip_amount: number | null;
-    fund_meta_synced_at: string | null;
-  } | null | undefined,
+  row:
+    | {
+        id: string | null;
+        scheme_code: number | null;
+        scheme_name: string | null;
+        scheme_category: string | null;
+        benchmark_index: string | null;
+        benchmark_index_symbol: string | null;
+        isin: string | null;
+        expense_ratio: number | null;
+        aum_cr: number | null;
+        min_sip_amount: number | null;
+        fund_meta_synced_at: string | null;
+      }
+    | null
+    | undefined,
 ): row is FundDetailRow {
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
-export async function fetchFundDetail(fundId: string): Promise<FundDetailData | null> {
+export async function fetchFundDetail(
+  qc: QueryClient,
+  userId: string,
+  fundId: string,
+): Promise<FundDetailData | null> {
   perfStart('query:fundDetail');
-  // Load fund metadata
-  const { data: fund, error: fundError } = await supabase
-    .from('fund')
-    .select('id, scheme_code, scheme_name, scheme_category, benchmark_index, benchmark_index_symbol, isin, expense_ratio, aum_cr, min_sip_amount, fund_meta_synced_at')
-    .eq('id', fundId)
-    .single();
 
-  if (fundError || !isFundDetailRow(fund)) {
+  // Read fund + transactions from the shared per-user caches that
+  // Portfolio also populates. Once Portfolio has loaded, Fund Detail
+  // resolves both in zero network round-trips — the heavy lifting is
+  // already in memory.
+  const [allFunds, allTxs] = await Promise.all([
+    qc.fetchQuery({
+      queryKey: ['user-funds', userId],
+      queryFn: () => fetchUserFunds(userId),
+      staleTime: STALE_TIMES.USER_FUNDS,
+    }),
+    qc.fetchQuery({
+      queryKey: ['user-transactions', userId],
+      queryFn: () => fetchUserTransactions(userId),
+      staleTime: STALE_TIMES.USER_TRANSACTIONS,
+    }),
+  ]);
+
+  const fund = allFunds.find((f) => f.id === fundId);
+  if (!isFundDetailRow(fund)) {
     perfEnd('query:fundDetail', { found: false });
     return null;
   }
 
-  // Parallel fetch: extended scheme_master fields not yet exposed by the
-  // `fund` view (M3v2 — Compare Funds redesign). All nullable; the FundDetail
-  // screen renders gracefully when sync-fund-meta hasn't backfilled yet.
-  const { data: extended } = await supabase
-    .from('scheme_master')
-    .select(
-      'launch_date, exit_load, min_lumpsum, min_additional, plan_type, amc_name, family_name, morningstar_rating, risk_label, period_returns, risk_ratios',
-    )
-    .eq('scheme_code', fund.scheme_code)
-    .maybeSingle();
+  const txs = allTxs.filter((tx) => tx.fund_id === fundId);
 
-  // Load transactions for this fund
-  const { data: txs, error: txError } = await supabase
-    .from('transaction')
-    .select('transaction_date, transaction_type, units, amount')
-    .eq('fund_id', fundId)
-    .order('transaction_date', { ascending: true });
-
-  if (txError) throw txError;
+  // Parallel fetch: the remaining two SELECTs that aren't shared with
+  // Portfolio — scheme_master extended fields and the two most-recent
+  // NAV rows. Running them concurrently halves the cold-load latency on
+  // Fund Detail when the user-level caches are warm.
+  perfStart('query:fundDetail:extras');
+  const [extendedResult, navResult] = await Promise.all([
+    supabase
+      .from('scheme_master')
+      .select(
+        'launch_date, exit_load, min_lumpsum, min_additional, plan_type, amc_name, family_name, morningstar_rating, risk_label, period_returns, risk_ratios',
+      )
+      .eq('scheme_code', fund.scheme_code)
+      .maybeSingle(),
+    supabase
+      .from('nav_history')
+      .select('nav_date, nav')
+      .eq('scheme_code', fund.scheme_code)
+      .order('nav_date', { ascending: false })
+      .limit(2),
+  ]);
+  perfEnd('query:fundDetail:extras');
+  const extended = extendedResult.data;
+  const navRowsDesc = navResult.data;
+  if (navResult.error) throw navResult.error;
 
   // Compute net units and cashflows
   const { historicalCashflows: cashflows, netUnits, investedAmount } =
-    buildCashflowsFromTransactions(txs ?? [], 0, new Date());
-  const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs ?? []);
+    buildCashflowsFromTransactions(txs, 0, new Date());
+  const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs);
 
   // Light NAV fetch — just the two most-recent rows. Enough for the
   // header card (current NAV, previous NAV, "as of" date). The full
   // history needed by the charts is loaded in parallel via
   // `useFundNavHistory`, so the screen stops blocking on a 2,000-row
   // paginated fetch before painting the value / XIRR / metadata.
-  const { data: navRowsDesc, error: navError } = await supabase
-    .from('nav_history')
-    .select('nav_date, nav')
-    .eq('scheme_code', fund.scheme_code)
-    .order('nav_date', { ascending: false })
-    .limit(2);
-  if (navError) throw navError;
   const navRows = (navRowsDesc ?? [])
     .map((r) => ({ nav_date: r.nav_date as string, nav: Number(r.nav) }))
     .reverse(); // ascending — matches the legacy contract
@@ -203,7 +225,7 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   const currentValue = netUnits * currentNav;
 
   // XIRR
-  const { xirrCashflows } = buildCashflowsFromTransactions(txs ?? [], currentValue, new Date());
+  const { xirrCashflows } = buildCashflowsFromTransactions(txs, currentValue, new Date());
   const fundXirr = cashflows.length > 0 ? xirr(xirrCashflows) : NaN;
 
   // Benchmark index history is loaded by the screen via its own
@@ -214,7 +236,7 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     found: true,
     navs: navHistory.length,
     has_current_nav: true,
-    txs: txs?.length ?? 0,
+    txs: txs.length,
   });
   return {
     id: fund.id,
@@ -252,10 +274,13 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
 }
 
 export function useFundDetail(fundId: string) {
+  const { session } = useSession();
+  const userId = session?.user.id;
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ['fund-detail', fundId],
-    enabled: !!fundId,
-    queryFn: () => fetchFundDetail(fundId),
+    enabled: !!fundId && !!userId,
+    queryFn: () => fetchFundDetail(qc, userId!, fundId),
     staleTime: 0, // always fetch fresh so current value matches portfolio
   });
 }

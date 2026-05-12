@@ -1,8 +1,16 @@
+import type { QueryClient } from '@tanstack/react-query';
 import { fetchPortfolioData } from '../usePortfolio';
 import { supabase } from '@/src/lib/supabase';
 
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn(), keepPreviousData: undefined }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+
+// Stand-in QueryClient that just runs the queryFn — the real client would
+// add cache lookups, but in unit tests we want every fetch to hit the
+// supabase mock so the existing fixtures keep covering the SQL paths.
+const fakeQc = {
+  fetchQuery: <T,>({ queryFn }: { queryFn: () => Promise<T> }) => queryFn(),
+} as unknown as QueryClient;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,10 +47,18 @@ const mockFrom = supabase.from as jest.Mock;
 const MOCK_FUNDS = [
   {
     id: 'fund-1',
+    user_id: 'user-1',
     scheme_code: 12345,
     scheme_name: 'Test Equity Fund',
     scheme_category: 'Equity',
+    benchmark_index: 'NIFTY 50',
     benchmark_index_symbol: '^NSEI',
+    isin: null,
+    expense_ratio: null,
+    aum_cr: null,
+    min_sip_amount: null,
+    fund_meta_synced_at: null,
+    is_active: true,
   },
 ];
 
@@ -76,7 +92,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(0);
     expect(result.summary).toBeNull();
   });
@@ -85,7 +101,7 @@ describe('fetchPortfolioData()', () => {
     mockFrom.mockImplementation(() =>
       makeChain({ data: null, error: { message: 'DB error' } }),
     );
-    await expect(fetchPortfolioData('user-1', '^NSEI')).rejects.toMatchObject({ message: 'DB error' });
+    await expect(fetchPortfolioData(fakeQc, 'user-1', '^NSEI')).rejects.toMatchObject({ message: 'DB error' });
   });
 
   it('returns structured fund cards for a valid portfolio', async () => {
@@ -97,7 +113,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(1);
 
     const card = result.fundCards[0];
@@ -120,7 +136,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
     expect(result.summary!.totalValue).toBeCloseTo(150 * 140, 5);
     expect(result.summary!.totalInvested).toBe(16000);
@@ -153,7 +169,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
 
     expect(result.fundCards).toHaveLength(0);
     expect(result.summary).toMatchObject({
@@ -171,7 +187,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(0);
   });
 
@@ -185,7 +201,7 @@ describe('fetchPortfolioData()', () => {
     });
 
     // Should not throw — fund appears as a pending card with null nav fields
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(1);
     const card = result.fundCards[0];
     expect(card.navUnavailable).toBe(true);
@@ -217,7 +233,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const card = result.fundCards[0];
     // Only the 2 recent rows should be in navHistory30d (older ones are filtered)
     card.navHistory30d.forEach((p) => {
@@ -248,7 +264,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
     expect(isFinite(result.summary!.marketXirr)).toBe(true);
   });
@@ -266,7 +282,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const card = result.fundCards[0];
     expect(isFinite(card.returnXirr)).toBe(true);
     // A decimal fraction: 15% = 0.15, not 15. Values above 100× are implausible.
@@ -307,7 +323,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const marketXirr = result.summary!.marketXirr;
     expect(isFinite(marketXirr)).toBe(true);
 
@@ -329,7 +345,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
     expect(isNaN(result.summary!.marketXirr)).toBe(true);
   });
@@ -344,7 +360,7 @@ describe('fetchPortfolioData()', () => {
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchPortfolioData('user-1', '^NSEI');
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     // MOCK_TXS: 10000 + 6000 = 16000 total invested
     expect(result.summary!.totalInvested).toBe(16000);
     // Gain = totalValue - totalInvested: totalValue = 150 units * 140 NAV = 21000
