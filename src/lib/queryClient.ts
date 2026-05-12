@@ -43,7 +43,15 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // layer uses but with `{ date, value }` rows instead of `{ index_date,
 // close_value }`. The mismatch made the Nifty 500 TRI chart vanish on
 // Portfolio. Bumping the buster guarantees existing devices start clean.
-export const __BUSTER__ = 'v2';
+//
+// v3 (2026-05-12): `useUserTransactions` now selects five extra columns
+// (`id`, `nav_at_transaction`, `folio_number`, `cas_import_id`,
+// `created_at`) so Money Trail + Wealth Journey can read the user's
+// transactions from the same shared cache as Portfolio + Fund Detail.
+// The existing v2 cache rows lack those columns; on an OTA, screens
+// that depend on them would see `undefined` until staleTime expiry.
+// Bumping the buster forces a fresh fetch on first launch post-OTA.
+export const __BUSTER__ = 'v3';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

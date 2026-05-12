@@ -16,7 +16,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
@@ -40,7 +42,6 @@ import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { usePortfolio } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
-import { supabase } from '@/src/lib/supabase';
 import {
   useAppStore,
   type WealthJourneyReturnPreset,
@@ -580,6 +581,7 @@ export function ClearLensWealthJourneyScreen() {
   const { width: viewportWidth } = useWindowDimensions();
   const { session } = useSession();
   const userId = session?.user.id;
+  const queryClient = useQueryClient();
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -637,23 +639,42 @@ export function ClearLensWealthJourneyScreen() {
     return date.toISOString().split('T')[0];
   }, []);
 
+  // Read the user's transactions through the shared
+  // `['user-transactions', userId]` cache (same key Portfolio and
+  // Money Trail populate). The wealth-journey window (last 6 months)
+  // is applied in JS off the full set — that's cheap because the
+  // payload is already in memory after Portfolio has loaded.
   const { data: transactions } = useQuery({
-    queryKey: ['wealth-journey-transactions', userId],
+    queryKey: ['wealth-journey-transactions', userId, sixMonthsAgo],
     enabled: !!userId,
     queryFn: async () => {
       perfStart('query:wealthJourney:transactions');
-      const { data, error } = await supabase
-        .from('transaction')
-        .select('transaction_date, amount, transaction_type, fund_id')
-        .eq('user_id', userId!)
-        .gte('transaction_date', sixMonthsAgo)
-        .order('transaction_date', { ascending: false });
-
-      perfEnd('query:wealthJourney:transactions', { rows: data?.length ?? 0, since: sixMonthsAgo });
-      if (error) throw error;
-      return data ?? [];
+      const all = await queryClient.fetchQuery({
+        queryKey: ['user-transactions', userId],
+        queryFn: () => fetchUserTransactions(userId!),
+        staleTime: STALE_TIMES.USER_TRANSACTIONS,
+      });
+      const filtered = all
+        .filter((tx) => tx.transaction_date >= sixMonthsAgo)
+        // Wealth Journey iterates newest-first to detect the most-recent
+        // SIP cadence; preserve that order even though the shared
+        // cache stores rows ascending by date.
+        .slice()
+        .reverse()
+        .map((tx) => ({
+          transaction_date: tx.transaction_date,
+          amount: tx.amount,
+          transaction_type: tx.transaction_type,
+          fund_id: tx.fund_id,
+        }));
+      perfEnd('query:wealthJourney:transactions', {
+        rows: filtered.length,
+        since: sixMonthsAgo,
+        total_cached: all.length,
+      });
+      return filtered;
     },
-    staleTime: 5 * 60 * 1000,
+    staleTime: STALE_TIMES.USER_TRANSACTIONS,
   });
 
   const detectedSipDetails = useMemo(
