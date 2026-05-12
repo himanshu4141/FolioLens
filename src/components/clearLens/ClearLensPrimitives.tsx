@@ -24,11 +24,15 @@ import { useResponsiveLayout } from '@/src/components/responsive/useResponsiveLa
  * When `desktopMaxWidth` is set and the viewport is desktop, the screen content
  * is constrained to that width and centered horizontally so screens that share
  * a single mobile-style column don't stretch across the desktop content area.
- * Defaults to 760 (a comfortable single-column reading width).
+ *
+ * Defaults to 960 — the "list" / single-column tier. Dashboard-style screens
+ * (Portfolio, Funds) use their own desktop variants capped at MaxContentWidth
+ * (1200) for grid-heavy layouts. 960 sits comfortably between a phone-width
+ * reading column and a full dashboard frame.
  */
 export function ClearLensScreen({
   children,
-  desktopMaxWidth = 760,
+  desktopMaxWidth = 960,
 }: {
   children: ReactNode;
   desktopMaxWidth?: number;
