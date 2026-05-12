@@ -300,7 +300,7 @@ Numerical:
 - [x] M3.2 — `src/utils/navHistoryDelta.ts` (pure helpers) + `src/lib/sharedHistoryCache.ts` (cache-aware fetchers) with tests; 100% line coverage on the pure helper, 89% on the cache layer (uncovered lines are the `qc.fetchQuery` wrappers, which need a live query client to test)
 - [x] M3.3 — `usePortfolio` + `useInvestmentVsBenchmarkTimeline` route NAV / index reads through `fetchNavHistoryWithCache` / `fetchIndexHistoryWithCache`; the inline `fetchAllNavRows` / `fetchAllIndexRows` helpers in the timeline hook were removed
 - [x] M3.4 — `STALE_TIMES` constants applied across `usePortfolio`, `useInvestmentVsBenchmarkTimeline`, `usePortfolioTimeline`, `usePerformanceTimeline`, `useMoneyTrail`, `usePortfolioInsights`, `useFundComposition`, `sharedHistoryCache`. The only remaining `5 * 60 * 1000` literal is `useFundDetail`'s `staleTime: 0` (intentional)
-- [ ] M3.5 — smoke verified on web + native; PR open
+- [x] M3.5 — smoke verified on web + native; PR #135 open with full QA pass on Vercel preview (12 May)
 
 ### Decision Log Amendment — 2026-05-10
 
@@ -378,3 +378,41 @@ Expected user-felt impact when Portfolio is already in cache:
 Tests: 991 still passing. New hooks are covered transitively via `fetchPortfolioData` / `fetchFundDetail` fixtures (the data-fetching layer is 100% line-covered; the hook wrappers themselves stay un-mocked since they're thin `useQuery` calls).
 
 Tests: 991 still passing. The `useFundDetail` test mocks gained a `.limit()` chain method (now the terminal call for the light SELECT) and a tighter `MOCK_NAV` fixture in descending order; the obsolete `MOCK_INDEX` block and the period-return assertion that depended on full `data.navHistory` were dropped — full-history assertions belong on `useFundNavHistory` once we add tests for it.
+
+
+### Round-4 follow-up — 2026-05-12 (still on PR #135)
+
+Field `[perf]` logs from the foliolens-pr OTA build confirmed the Round-3 wins on Portfolio ↔ Fund Detail navigation but surfaced that **Compare Funds was still slow** — its `query:compare:navHistory` consistently took 1.3–1.8s per click, and `query:compare:schemes` 200–700ms, even when the user had just opened those exact funds on Fund Detail. Each Compare query had its own private cache key (`['compare:schemes', codes]`, `['compare:navhistory', codes]`) and re-fetched from Supabase.
+
+The fix mirrors Round-3's pattern: replace Compare's per-array fetchers with per-scheme reads against the shared cache keys Fund Detail already populates.
+
+### Round-4 fixes in this PR
+
+- **New `src/hooks/useSchemeMaster.ts`** exposes `fetchSchemeMaster(code)` + `useSchemeMaster` wrapper. Cache key: `['scheme-master', code]`. Persist-allowlisted.
+- **`fetchFundDetail` refactored** — the inline `supabase.from('scheme_master').…maybeSingle()` call is now `qc.fetchQuery({ queryKey: ['scheme-master', fund.scheme_code], queryFn: () => fetchSchemeMaster(...) })`. Same SELECT shape (the full column set every consumer needs), but now one producer instead of two.
+- **`ClearLensCompareFundsScreen` refactored** —
+    - `fetchSchemes(qc, codes)` now does `Promise.all(codes.map(code => qc.fetchQuery(['scheme-master', code], …)))`. Per-scheme cache sharing.
+    - `fetchNavHistoryForCodes(qc, codes)` now uses `Promise.all(codes.map(code => qc.fetchQuery(['fund-nav-history', code], () => fetchFundNavHistory(code))))`. Same key Fund Detail's `useFundNavHistory` populates.
+    - Hydration safety net (`fetch-fund-snapshot`, `fetch-fund-nav`) updated to invalidate the new shared keys (`['scheme-master', code]`, `['fund-nav-history', code]`) alongside the Compare-derived wrapper keys so other screens pick up backfilled data.
+- **Compositions left as-is** — Compare's `fetchCompositionsForCodes` SELECTs `raw_debt_holdings` which `fetchCompositions` (the shared composition fetcher used by Portfolio Insights / Fund Detail) does not. Aligning the shape across all consumers is a separate refactor; for now the Compare composition fetch stays private.
+
+Expected field impact: Compare → Fund Detail (or vice versa) for the same scheme pays **zero** network cost for the shared parts. Cold Compare load still takes the hydration-safety-net path (5–10s per missing scheme) unless those hit cache_hit, but for any scheme already in our DB the data queries complete in <1s.
+
+
+### Round-5 follow-up — 2026-05-12 (still on PR #135)
+
+Web QA pass on the Vercel preview build confirmed all primary fixes verified working but flagged five additional bugs. All five are pre-existing — none caused by the shared-cache work — but bundling the fixes keeps the QA cycle in one PR.
+
+### Round-5 fixes in this PR
+
+- **Past SIP Check renders blank for zero-NAV funds** (Bugs #1 + #3 from QA). When `fetchNavSeries` returned `[]` (matured FMP, recently-listed scheme not yet covered by the daily AMFI sync, or broken upstream series), the render gating fell through to `: null}` — the user saw the form with no result, no error. Added an explicit empty-state branch keyed on `fundNavSeries.length === 0`.
+
+- **React #418 hydration error on Data Sync** (Bug #2). The static Vercel export pre-renders the page; server-rendered HTML showed `'—'` for "Last sync" while the client picked up the persisted date after rehydrate. React detected the mismatch and bailed to full client rendering for the entire root. Fix: gate the displayed value on `useIsRestoring()` so both sides emit the same `'—'` fallback until rehydration completes.
+
+- **"Last sync" date stays stale after manual sync** (Bug #4). Edge functions (`sync-nav`, `sync-index`) return success before the new `nav_history` row is committed; the immediate invalidate refetched the pre-sync row. Fix: poll the freshness query for up to ~6s (4 attempts × 1.5s) after sync completes, and additionally invalidate downstream caches that depend on the new NAVs (`['portfolio']`, `['fund-detail']`, `['fund-nav-history']`, `['fund-detail-index']`, `['investmentVsBenchmarkTimeline']`, `['performance-timeline']`, `['portfolio-timeline']`, `['money-trail']`) so "as of" dates flow through.
+
+- **Compare Funds cold load ~15s** (Bug #5). Hydration safety-net queries (`fetch-fund-snapshot`, `fetch-fund-nav`) were blocking the result UI even for funds whose data was already in our DB. Dropped `isHydrating` from the loading gate — data queries render as soon as SQL reads complete (<1s typical), and any rows the edge functions write later flow in through their existing `invalidateQueries` calls.
+
+- **"All" window log Y-axis** (Bug #6) — pre-existing UX choice, left alone. Flagged as a follow-up UI polish ticket.
+
+Tests: still 991 passing. The persist allowlist gained `'scheme-master'` to cover the new shared cache key; no other queryClient changes.
