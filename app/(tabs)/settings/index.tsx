@@ -166,16 +166,16 @@ function makeHubStyles(tokens: ClearLensTokens) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
     // Cap inner column width so on desktop the cards don't stretch
-    // edge-to-edge of the content area. 760 px matches
+    // edge-to-edge of the content area. 960 px matches the list-tier
     // ClearLensScreen.desktopMaxWidth used by the other single-column
-    // screens (Wealth Journey, Money Trail, etc.).
+    // screens (Wealth Journey, Money Trail, sub-pages, etc.).
     content: {
       padding: ClearLensSpacing.md,
       alignItems: 'center',
     },
     frame: {
       width: '100%',
-      maxWidth: 760,
+      maxWidth: 960,
       gap: ClearLensSpacing.md,
     },
     header: { gap: 4, paddingVertical: ClearLensSpacing.sm },

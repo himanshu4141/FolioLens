@@ -279,9 +279,10 @@ export function ClearLensPastSipCheckScreen() {
     [fundResult, benchmarkResult],
   );
 
-  // ClearLensScreen caps content at 760px on desktop; clamp the chart so the SVG
-  // doesn't overflow the card on wide viewports.
-  const chartWidth = Math.min(windowWidth, 760) - ClearLensSpacing.md * 2;
+  // ClearLensScreen caps content at 960px on desktop (list tier); clamp the
+  // chart so the SVG doesn't overflow the card on wide viewports and so it
+  // fills the card rather than leaving a gap on the right.
+  const chartWidth = Math.min(windowWidth, 960) - ClearLensSpacing.md * 2;
 
   // -------------------------------------------------------------------------
   // Empty / loading states
