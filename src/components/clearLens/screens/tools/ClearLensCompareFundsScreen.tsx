@@ -1680,8 +1680,17 @@ function makeStyles(tokens: ClearLensTokens) {
       lineHeight: 15,
       paddingTop: 2,
     },
+    // Fund-column cells grow to fill the available width inside the card —
+    // same flex-stretch pattern Funds dashboard cards / Money Trail rows /
+    // Settings rows use. `minWidth: 130` preserves the original column width
+    // as the floor on phone-width viewports; `maxWidth: 220` prevents
+    // 1- or 2-fund comparisons on a desktop 960-frame from over-stretching
+    // each cell to ~400 px (which would make the single number per cell
+    // feel lost).
     cell: {
-      width: 130,
+      flex: 1,
+      minWidth: 130,
+      maxWidth: 220,
       paddingRight: ClearLensSpacing.xs,
       gap: 2,
     },
