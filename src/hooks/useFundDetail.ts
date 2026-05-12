@@ -20,6 +20,8 @@ import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { useSession } from '@/src/hooks/useSession';
+import { useAppStore } from '@/src/store/appStore';
+import { buildPreviewFundDetail } from '@/src/lib/previewData';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
@@ -299,11 +301,20 @@ export async function fetchFundDetail(
 export function useFundDetail(fundId: string) {
   const { session } = useSession();
   const userId = session?.user.id;
+  const previewMode = useAppStore((s) => s.previewMode);
   const qc = useQueryClient();
   return useQuery({
-    queryKey: ['fund-detail', fundId],
-    enabled: !!fundId && !!userId,
-    queryFn: () => fetchFundDetail(qc, userId!, fundId),
+    queryKey: previewMode
+      ? ['fund-detail', 'preview', fundId]
+      : ['fund-detail', fundId],
+    // Preview mode swaps the Supabase fetch for an in-memory fixture so
+    // the Fund Detail screen paints immediately instead of sitting on a
+    // spinner waiting for queries that can't resolve (no real session).
+    enabled: !!fundId && (previewMode || !!userId),
+    queryFn: () =>
+      previewMode
+        ? Promise.resolve(buildPreviewFundDetail(fundId))
+        : fetchFundDetail(qc, userId!, fundId),
     staleTime: 0, // always fetch fresh so current value matches portfolio
   });
 }
