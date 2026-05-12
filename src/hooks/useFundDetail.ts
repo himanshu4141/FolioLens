@@ -22,6 +22,7 @@ import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { useSession } from '@/src/hooks/useSession';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
+import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -139,19 +140,18 @@ export async function fetchFundDetail(
 
   const txs = allTxs.filter((tx) => tx.fund_id === fundId);
 
-  // Parallel fetch: the remaining two SELECTs that aren't shared with
-  // Portfolio — scheme_master extended fields and the two most-recent
-  // NAV rows. Running them concurrently halves the cold-load latency on
-  // Fund Detail when the user-level caches are warm.
+  // Parallel fetch: the remaining two reads — scheme_master (shared
+  // with Compare via the `['scheme-master', code]` cache key) and the
+  // two most-recent NAV rows. Running them concurrently halves the
+  // cold-load latency on Fund Detail when the user-level caches are
+  // warm.
   perfStart('query:fundDetail:extras');
-  const [extendedResult, navResult] = await Promise.all([
-    supabase
-      .from('scheme_master')
-      .select(
-        'launch_date, exit_load, min_lumpsum, min_additional, plan_type, amc_name, family_name, morningstar_rating, risk_label, period_returns, risk_ratios',
-      )
-      .eq('scheme_code', fund.scheme_code)
-      .maybeSingle(),
+  const [extended, navResult] = await Promise.all([
+    qc.fetchQuery({
+      queryKey: ['scheme-master', fund.scheme_code],
+      queryFn: () => fetchSchemeMaster(fund.scheme_code),
+      staleTime: STALE_TIMES.NAV_HISTORY,
+    }),
     supabase
       .from('nav_history')
       .select('nav_date, nav')
@@ -160,7 +160,6 @@ export async function fetchFundDetail(
       .limit(2),
   ]);
   perfEnd('query:fundDetail:extras');
-  const extended = extendedResult.data;
   const navRowsDesc = navResult.data;
   if (navResult.error) throw navResult.error;
 

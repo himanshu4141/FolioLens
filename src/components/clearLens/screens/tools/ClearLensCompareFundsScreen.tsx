@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
@@ -56,8 +56,10 @@ import {
 } from '@/src/utils/mfdataGuards';
 import { computeHoldingOverlap } from '@/src/utils/holdingOverlap';
 import { formatCurrency } from '@/src/utils/formatting';
-import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import type { NavPoint } from '@/src/utils/navUtils';
+import { fetchFundNavHistory } from '@/src/hooks/useFundDetail';
+import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,20 +120,31 @@ interface CompositionRow {
 // Data fetchers
 // ---------------------------------------------------------------------------
 
-async function fetchSchemes(schemeCodes: number[]): Promise<SchemeMasterRow[]> {
+async function fetchSchemes(
+  qc: QueryClient,
+  schemeCodes: number[],
+): Promise<SchemeMasterRow[]> {
   if (schemeCodes.length === 0) return [];
   perfStart('query:compare:schemes');
-  const { data, error } = await supabase
-    .from('scheme_master')
-    .select(
-      'scheme_code, scheme_name, scheme_category, benchmark_index, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, morningstar_rating, risk_label, period_returns, risk_ratios',
-    )
-    .in('scheme_code', schemeCodes);
-  perfEnd('query:compare:schemes', { rows: data?.length ?? 0, codes: schemeCodes.length });
-  if (error) throw new Error(`fetchSchemes: ${error.message}`);
-  return (data ?? []).map((row) => ({
+  // Each scheme is fetched through the shared `['scheme-master', code]`
+  // cache that Fund Detail also uses. Navigating Compare → Fund Detail
+  // (or vice versa) on the same scheme hits the warm cache.
+  const rows = await Promise.all(
+    schemeCodes.map((code) =>
+      qc.fetchQuery({
+        queryKey: ['scheme-master', code],
+        queryFn: () => fetchSchemeMaster(code),
+        staleTime: STALE_TIMES.NAV_HISTORY,
+      }),
+    ),
+  );
+  const present = rows.filter(
+    (r): r is NonNullable<typeof r> => r != null && r.scheme_name != null,
+  );
+  perfEnd('query:compare:schemes', { rows: present.length, codes: schemeCodes.length });
+  return present.map((row) => ({
     schemeCode: row.scheme_code,
-    schemeName: row.scheme_name,
+    schemeName: row.scheme_name as string,
     schemeCategory: row.scheme_category,
     benchmark: row.benchmark_index,
     expenseRatio: row.expense_ratio,
@@ -191,31 +204,36 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
   }));
 }
 
-async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<number, NavPoint[]>> {
+async function fetchNavHistoryForCodes(
+  qc: QueryClient,
+  schemeCodes: number[],
+): Promise<Map<number, NavPoint[]>> {
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
   perfStart('query:compare:navHistory');
-  // Page through the result set — Supabase REST caps at 1000 rows per
-  // response, and 3 schemes × ~3,300 rows of NAV history each = ~10k rows.
-  // Without pagination the ascending order silently truncated to the oldest
-  // ~333 NAVs per scheme, leaving the trailing-CAGR / risk-metric math
-  // running against 2013-era prices.
-  // Fetch each scheme separately so a scheme with a long history doesn't
-  // crowd the others off the first page.
+  // Per-scheme reads go through the shared `['fund-nav-history', code]`
+  // cache — the same key Fund Detail's `useFundNavHistory` populates. A
+  // user who opened a fund's detail page first and then lands on Compare
+  // pays zero network cost for that scheme's NAV history.
+  //
+  // `fetchFundNavHistory` paginates internally; previously this function
+  // duplicated that pagination loop. Routing through the shared fetcher
+  // keeps a single source of truth for "give me one scheme's NAV
+  // history" and means future caching layers (SQLite read-through, etc.)
+  // only need to plug in once.
+  const entries = await Promise.all(
+    schemeCodes.map(async (code) => {
+      const rows = await qc.fetchQuery({
+        queryKey: ['fund-nav-history', code],
+        queryFn: () => fetchFundNavHistory(code),
+        staleTime: STALE_TIMES.NAV_HISTORY,
+      });
+      return [code, rows] as const;
+    }),
+  );
   let totalRows = 0;
-  for (const code of schemeCodes) {
-    const rows = await paginateRangeQuery<{ scheme_code: number; nav_date: string; nav: number }>(
-      (from, to) => supabase
-        .from('nav_history')
-        .select('scheme_code, nav_date, nav')
-        .eq('scheme_code', code)
-        .order('nav_date', { ascending: true })
-        .range(from, to),
-    );
-    out.set(
-      code,
-      rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) })),
-    );
+  for (const [code, rows] of entries) {
+    out.set(code, rows);
     totalRows += rows.length;
   }
   perfEnd('query:compare:navHistory', { rows: totalRows, codes: schemeCodes.length });
@@ -276,8 +294,12 @@ export function ClearLensCompareFundsScreen() {
             { body: { scheme_code: code } },
           );
           if (error) throw new Error(`fetch-fund-snapshot: ${error.message}`);
-          // Refresh the dependent queries — schemes and compositions tables
-          // were just touched.
+          // Refresh the dependent queries — scheme_master and the
+          // composition table were just touched. Invalidate both the
+          // shared per-scheme entry (`['scheme-master', code]`) so any
+          // other screen reading it picks up the new row, and the
+          // Compare-derived wrapper so this screen re-renders.
+          queryClient.invalidateQueries({ queryKey: ['scheme-master', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:schemes'] });
           queryClient.invalidateQueries({ queryKey: ['compare:compositions'] });
           return data;
@@ -292,6 +314,9 @@ export function ClearLensCompareFundsScreen() {
             { body: { scheme_code: code } },
           );
           if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
+          // Invalidate the shared per-scheme NAV cache (shared with
+          // Fund Detail) and the Compare-derived wrapper.
+          queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
           return data;
         },
@@ -303,7 +328,7 @@ export function ClearLensCompareFundsScreen() {
   const schemesQuery = useQuery({
     queryKey: ['compare:schemes', selectedCodes],
     enabled: selectedCodes.length > 0,
-    queryFn: () => fetchSchemes(selectedCodes),
+    queryFn: () => fetchSchemes(queryClient, selectedCodes),
     staleTime: 60 * 1000,
   });
   const compositionsQuery = useQuery({
@@ -315,7 +340,7 @@ export function ClearLensCompareFundsScreen() {
   const navHistoryQuery = useQuery({
     queryKey: ['compare:navhistory', selectedCodes],
     enabled: selectedCodes.length > 0,
-    queryFn: () => fetchNavHistoryForCodes(selectedCodes),
+    queryFn: () => fetchNavHistoryForCodes(queryClient, selectedCodes),
     staleTime: 5 * 60 * 1000,
   });
 

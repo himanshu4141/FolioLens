@@ -117,6 +117,9 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   // Auxiliary user-scoped lookups.
   'user-funds',
   'user-transactions',
+  // Per-scheme metadata — shared between Fund Detail and Compare via
+  // a single producer / single cache key (`['scheme-master', code]`).
+  'scheme-master',
 ];
 
 export function shouldPersistQueryKey(queryKey: QueryKey): boolean {
