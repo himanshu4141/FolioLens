@@ -519,16 +519,22 @@ export function ClearLensCompareFundsScreen() {
               </View>
             )}
 
-            {/* Key differences (prose) */}
+            {/* Key differences — one structured tile per insight */}
             {keyDifferences.length > 0 ? (
-              <View style={styles.proseCard}>
-                <Text style={styles.proseTitle}>Key differences</Text>
-                {keyDifferences.map((line, idx) => (
-                  <Text key={idx} style={styles.proseLine}>
-                    <Text style={styles.proseLabel}>{line.label}: </Text>
-                    {line.body}
-                  </Text>
-                ))}
+              <View style={styles.insightsSection}>
+                <View style={styles.insightsHeader}>
+                  <Text style={styles.insightsEyebrow}>What sets them apart</Text>
+                  <Text style={styles.insightsTitle}>Key differences</Text>
+                </View>
+                <View style={styles.insightsList}>
+                  {keyDifferences.map((insight, idx) => (
+                    <KeyDifferenceCard
+                      key={`${insight.kind}-${idx}`}
+                      insight={insight}
+                      tokens={tokens}
+                    />
+                  ))}
+                </View>
               </View>
             ) : null}
 
@@ -658,17 +664,29 @@ function deriveHero(
   return null;
 }
 
-interface KeyDiffLine {
-  label: string;
-  body: string;
+/**
+ * Structured insight tile — drives both the data derivation and the
+ * `KeyDifferenceCard` render. Splitting `headline` (the one number that
+ * matters) from `subject` (the fund or pair it applies to) and
+ * `caption` (the comparison or context) is what makes the new card
+ * layout scannable instead of a paragraph blob.
+ */
+type KeyDiffKind = 'cost' | 'volatility' | 'overlap' | 'asset_mix';
+
+interface KeyDiffInsight {
+  kind: KeyDiffKind;
+  eyebrow: string;          // small-caps label — "LOWEST COST", "STEADIER RIDE", etc.
+  headline: string;         // the hero metric — "0.65%/yr", "11.2%", "42%"
+  subject: string;          // who the headline applies to — fund name or pair
+  caption?: string;         // optional supporting context line
 }
 
 function deriveKeyDifferences(
   schemes: SchemeMasterRow[],
   compositionsByCode: Map<number, CompositionRow>,
   metricsByCode: Map<number, { sharpe: number | null; stdDev: number | null }>,
-): KeyDiffLine[] {
-  const out: KeyDiffLine[] = [];
+): KeyDiffInsight[] {
+  const out: KeyDiffInsight[] = [];
   if (schemes.length < MIN_FUNDS) return out;
 
   // 1. Cost (lowest expense ratio)
@@ -681,13 +699,18 @@ function deriveKeyDifferences(
     const priciest = erEntries[erEntries.length - 1];
     if (priciest.er - cheapest.er >= 0.1) {
       out.push({
-        label: 'Lowest cost',
-        body: `${cheapest.name} (${cheapest.er.toFixed(2)}%/yr), vs ${priciest.name} at ${priciest.er.toFixed(2)}%/yr.`,
+        kind: 'cost',
+        eyebrow: 'Lowest cost',
+        headline: `${cheapest.er.toFixed(2)}%/yr`,
+        subject: cheapest.name,
+        caption: `vs ${priciest.name} at ${priciest.er.toFixed(2)}%/yr`,
       });
     } else {
       out.push({
-        label: 'Cost',
-        body: `Similar across all ${schemes.length} (${cheapest.er.toFixed(2)}–${priciest.er.toFixed(2)}%/yr).`,
+        kind: 'cost',
+        eyebrow: 'Cost',
+        headline: `${cheapest.er.toFixed(2)}–${priciest.er.toFixed(2)}%/yr`,
+        subject: `Similar across all ${schemes.length}`,
       });
     }
   }
@@ -705,8 +728,11 @@ function deriveKeyDifferences(
     const wildest = stdEntries[stdEntries.length - 1];
     if ((wildest.stdDev - calmest.stdDev) * 100 >= 2) {
       out.push({
-        label: 'Steadier ride',
-        body: `${calmest.name} (${(calmest.stdDev * 100).toFixed(1)}% volatility), vs ${wildest.name} at ${(wildest.stdDev * 100).toFixed(1)}%.`,
+        kind: 'volatility',
+        eyebrow: 'Steadier ride',
+        headline: `${(calmest.stdDev * 100).toFixed(1)}%`,
+        subject: calmest.name,
+        caption: `vs ${wildest.name} at ${(wildest.stdDev * 100).toFixed(1)}%`,
       });
     }
   }
@@ -732,18 +758,27 @@ function deriveKeyDifferences(
     const top = overlaps[0];
     if (top.pct >= 25) {
       out.push({
-        label: 'Highest holding overlap',
-        body: `${top.pct.toFixed(0)}% between ${top.aName} and ${top.bName} — meaningful share of the same names.`,
+        kind: 'overlap',
+        eyebrow: 'Highest holding overlap',
+        headline: `${top.pct.toFixed(0)}%`,
+        subject: `${top.aName} ↔ ${top.bName}`,
+        caption: 'Meaningful share of the same names',
       });
     } else if (top.pct >= 5) {
       out.push({
-        label: 'Holding overlap',
-        body: `Modest — at most ${top.pct.toFixed(0)}% (${top.aName} ↔ ${top.bName}). Each fund mostly picks its own.`,
+        kind: 'overlap',
+        eyebrow: 'Holding overlap',
+        headline: `${top.pct.toFixed(0)}%`,
+        subject: `Peak: ${top.aName} ↔ ${top.bName}`,
+        caption: 'Each fund mostly picks its own names',
       });
     } else {
       out.push({
-        label: 'Holding overlap',
-        body: `Low across the board (peak ${top.pct.toFixed(0)}%). Each fund stakes out different names.`,
+        kind: 'overlap',
+        eyebrow: 'Holding overlap',
+        headline: `${top.pct.toFixed(0)}%`,
+        subject: 'Low across the board',
+        caption: 'Each fund stakes out different names',
       });
     }
   }
@@ -761,13 +796,62 @@ function deriveKeyDifferences(
     const leastEquity = equitySplit[equitySplit.length - 1];
     if (mostEquity.equity - leastEquity.equity >= 15) {
       out.push({
-        label: 'Asset mix',
-        body: `${mostEquity.name} runs ${mostEquity.equity.toFixed(0)}% equity vs ${leastEquity.name}'s ${leastEquity.equity.toFixed(0)}%.`,
+        kind: 'asset_mix',
+        eyebrow: 'Asset mix',
+        headline: `${mostEquity.equity.toFixed(0)}% vs ${leastEquity.equity.toFixed(0)}%`,
+        subject: `${mostEquity.name} vs ${leastEquity.name}`,
+        caption: 'Equity allocation',
       });
     }
   }
 
   return out;
+}
+
+const INSIGHT_ICONS: Record<KeyDiffKind, keyof typeof Ionicons.glyphMap> = {
+  cost: 'cash-outline',
+  volatility: 'pulse-outline',
+  overlap: 'git-network-outline',
+  asset_mix: 'pie-chart-outline',
+};
+
+/**
+ * Card render for a single Key-differences insight. Layout (top → bottom):
+ *
+ *   [icon] EYEBROW         ← row, emerald accent
+ *   headline metric         ← hero size, navy
+ *   subject                 ← body, secondary text
+ *   caption (optional)      ← caption, tertiary text
+ *
+ * A thin emerald left stripe visually groups the four insights without
+ * needing a bordered outer card. Each insight breathes inside its own
+ * `surfaceSoft`-tinted tile.
+ */
+function KeyDifferenceCard({
+  insight,
+  tokens,
+}: {
+  insight: KeyDiffInsight;
+  tokens: ClearLensTokens;
+}) {
+  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const cl = tokens.colors;
+  return (
+    <View style={styles.insightCard}>
+      <View style={styles.insightAccent} />
+      <View style={styles.insightBody}>
+        <View style={styles.insightEyebrowRow}>
+          <Ionicons name={INSIGHT_ICONS[insight.kind]} size={14} color={cl.emerald} />
+          <Text style={styles.insightEyebrow}>{insight.eyebrow}</Text>
+        </View>
+        <Text style={styles.insightHeadline}>{insight.headline}</Text>
+        <Text style={styles.insightSubject}>{insight.subject}</Text>
+        {insight.caption ? (
+          <Text style={styles.insightCaption}>{insight.caption}</Text>
+        ) : null}
+      </View>
+    </View>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1566,31 +1650,72 @@ function makeStyles(tokens: ClearLensTokens) {
       fontFamily: ClearLensFonts.semiBold,
     },
 
-    proseCard: {
-      backgroundColor: cl.surface,
+    // Key differences — section wrapper. No outer border or shadow: each
+    // insight tile carries its own visual weight so the section reads as a
+    // panel of cards rather than a paragraph inside a card.
+    insightsSection: {
+      gap: ClearLensSpacing.sm,
+      paddingTop: ClearLensSpacing.xs,
+    },
+    insightsHeader: {
+      gap: 2,
+    },
+    insightsEyebrow: {
+      ...ClearLensTypography.label,
+      color: cl.emerald,
+      textTransform: 'uppercase',
+      letterSpacing: 0.6,
+    },
+    insightsTitle: {
+      ...ClearLensTypography.h2,
+      color: cl.navy,
+    },
+    insightsList: {
+      gap: ClearLensSpacing.sm,
+    },
+    insightCard: {
+      flexDirection: 'row',
+      backgroundColor: cl.surfaceSoft,
       borderRadius: ClearLensRadii.lg,
-      borderWidth: 1,
-      borderColor: cl.border,
-      ...ClearLensShadow,
+      overflow: 'hidden',
+    },
+    insightAccent: {
+      width: 3,
+      backgroundColor: cl.emerald,
+    },
+    insightBody: {
+      flex: 1,
       paddingHorizontal: ClearLensSpacing.md,
       paddingVertical: ClearLensSpacing.sm,
-      gap: ClearLensSpacing.xs,
+      gap: 4,
     },
-    proseTitle: {
-      ...ClearLensTypography.h3,
-      color: cl.navy,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.xs,
-    },
-    proseLine: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-      lineHeight: 22,
+    insightEyebrowRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
       paddingBottom: 2,
     },
-    proseLabel: {
-      color: cl.navy,
+    insightEyebrow: {
+      ...ClearLensTypography.label,
+      color: cl.emerald,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
       fontFamily: ClearLensFonts.semiBold,
+    },
+    insightHeadline: {
+      ...ClearLensTypography.h2,
+      color: cl.navy,
+      fontFamily: ClearLensFonts.extraBold,
+    },
+    insightSubject: {
+      ...ClearLensTypography.body,
+      color: cl.textSecondary,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    insightCaption: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      paddingTop: 2,
     },
 
     tabBar: {
