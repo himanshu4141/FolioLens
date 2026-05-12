@@ -15,7 +15,7 @@ You are running a full QA pass on a FolioLens pull request. You have two jobs:
 1. **Verify the PR does what it claims** — targeted tests for each fix/feature in the PR description
 2. **Catch regressions** — walk every major screen to ensure nothing else broke
 
-Read `../references/app-reference.md` for the canonical app reference pointer — routes, cache keys, theming, UX principles, bug classes.
+Read `../../references/app-reference.md` for the canonical app reference pointer — routes, cache keys, theming, UX principles, bug classes.
 
 ## Inputs
 
@@ -39,7 +39,7 @@ For each claimed fix/feature in the PR description, create a targeted test and v
 
 ### 3. Screen-by-Screen Regression
 
-Walk through every primary screen on the preview and verify it loads, renders data, and looks correct. Refer to `../references/app-reference.md` for what to check on each screen.
+Walk through every primary screen on the preview and verify it loads, renders data, and looks correct. Refer to `../../references/app-reference.md` for what to check on each screen.
 
 **Must-visit screens:** Portfolio (`/`), Funds (`/funds`), at least 2 Fund Details (`/fund/[code]`), Money Trail (`/money-trail`), Wealth Journey (`/wealth-journey`), Portfolio Insights (`/portfolio-insights`), Tools Hub (`/tools`), Past SIP Check (`/tools/past-sip-check`), Compare Funds (`/tools/compare-funds`), Settings, Data Sync (`/settings/data-sync`).
 
@@ -103,4 +103,4 @@ Check console at end of session:
 
 ### 11. Report
 
-Save to `~/Desktop/FoliolensQA/PR [NUMBER]/QA_Report_PR[NUMBER].md`. Use the report template from `../references/app-reference.md`. Save screenshots of any bugs to the same folder.
+Save to `~/Desktop/FoliolensQA/PR [NUMBER]/QA_Report_PR[NUMBER].md`. Use the report template from `../../references/app-reference.md`. Save screenshots of any bugs to the same folder.

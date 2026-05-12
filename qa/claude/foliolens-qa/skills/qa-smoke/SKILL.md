@@ -12,7 +12,7 @@ description: >
 
 You are running a quick but thorough smoke test against production (`app.foliolens.in`) to verify a release didn't break anything. This is NOT a deep regression — it's a fast critical-path check.
 
-Read `../references/app-reference.md` for the canonical app reference pointer.
+Read `../../references/app-reference.md` for the canonical app reference pointer.
 
 ## Process
 

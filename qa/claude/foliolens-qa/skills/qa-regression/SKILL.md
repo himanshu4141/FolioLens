@@ -13,7 +13,7 @@ description: >
 
 You are running the most thorough QA pass possible on FolioLens. This tests the entire app surface — every screen, every state, both themes, all UX principles, full cache architecture, and responsive layout.
 
-Read `../references/app-reference.md` for the canonical app reference pointer — routes, cache keys, theming, UX principles, bug classes.
+Read `../../references/app-reference.md` for the canonical app reference pointer — routes, cache keys, theming, UX principles, bug classes.
 
 ## Input
 
@@ -30,7 +30,7 @@ Read `../references/app-reference.md` for the canonical app reference pointer �
 
 ### 2. Screen-by-Screen Walkthrough
 
-Visit EVERY screen and verify it loads, renders data, and handles interactions. Refer to `../references/app-reference.md` for what to check on each.
+Visit EVERY screen and verify it loads, renders data, and handles interactions. Refer to `../../references/app-reference.md` for what to check on each.
 
 **Full screen list:**
 1. Portfolio (`/`) — hero card, benchmark pills (all 3), chart, fund cards
@@ -156,4 +156,4 @@ Final check — should have been monitoring throughout:
 
 ### 10. Report
 
-Save to `~/Desktop/FoliolensQA/regression-[YYYY-MM-DD]/regression_report.md`. Use the full report template from `../references/app-reference.md`. Include screenshots of any issues.
+Save to `~/Desktop/FoliolensQA/regression-[YYYY-MM-DD]/regression_report.md`. Use the full report template from `../../references/app-reference.md`. Include screenshots of any issues.
