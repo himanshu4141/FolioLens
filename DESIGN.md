@@ -129,6 +129,11 @@ Desktop screens fall into two tiers:
 
 Pick the tier by content density. Reading-style screens (single-column lists, charts, forms) go on the list tier; grid- or multi-column dashboards go on the dashboard tier. Settings sub-pages historically had no cap and stretched edge-to-edge of the content slot — they now apply the 960 cap via a wrapping `frame` View (see `app/(tabs)/settings/*.tsx`).
 
+**Out-of-shell exceptions (not aligned to the two-tier scheme):**
+
+- **Auth** ([app/auth/index.tsx](app/auth/index.tsx)) — pre-login, no sidebar. The 920 px width is the rounded hero-plus-form card centered on a navy background, not a content column inside the shell. Tier mismatch is intentional and visually less jarring because the user hasn't entered the shell yet.
+- **Onboarding wizard** ([DesktopFormFrame.tsx](src/components/responsive/DesktopFormFrame.tsx), default `maxWidth: 720`) — still legacy. The 720 px form column predates the two-tier scheme and won't be aligned in this pass; expected to be redesigned wholesale in the next onboarding revamp.
+
 Layout rules:
 
 - The single `<Tabs>` navigator stays mounted in both layouts. Desktop hides the bottom bar with `display: none` and the sidebar renders as a row sibling — resizing across the breakpoint preserves the active route.
