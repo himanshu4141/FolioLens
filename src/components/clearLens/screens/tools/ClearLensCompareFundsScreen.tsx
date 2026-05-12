@@ -344,9 +344,12 @@ export function ClearLensCompareFundsScreen() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Surface a single "still hydrating" boolean — true when any on-demand
-  // safety-net query is in flight and its dependent screen data isn't there yet.
-  const isHydrating = hydrationQueries.some((q) => q.isFetching);
+  // We still declare `hydrationQueries` above for its side effect —
+  // each entry's `queryFn` invokes the on-demand edge function and
+  // invalidates the dependent data queries when it lands. The UI is no
+  // longer gated on whether those are still in flight (see the
+  // `isLoading` computation below), so the variable isn't read here.
+  void hydrationQueries;
 
   // Order the schemes to match selection order.
   const schemes = useMemo<SchemeMasterRow[]>(() => {
@@ -426,11 +429,19 @@ export function ClearLensCompareFundsScreen() {
     );
   }
 
-  // Show the spinner while either the Postgres reads OR the on-demand
-  // safety-net hydration is still in flight. For backfilled schemes the
-  // hydration finishes near-instantly (cache_hit on both functions).
+  // Show the spinner only while the Postgres reads are in flight. The
+  // on-demand hydration queries (`fetch-fund-snapshot`, `fetch-fund-nav`)
+  // run in parallel and call `invalidateQueries` when they land, so any
+  // freshly-backfilled rows flow into the data queries automatically.
+  //
+  // Previously this gate also waited on `isHydrating`, which meant cold
+  // loads paid the full 5–10s edge-function latency before showing
+  // anything — even when every scheme was already in our DB. Now the
+  // UI paints as soon as the SQL reads complete (typically <1s) and
+  // any later refetch from a hydration write just refreshes the cards
+  // in place.
   const isLoading = selectedCodes.length > 0
-    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading || isHydrating);
+    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading);
 
   return (
     <ClearLensScreen>

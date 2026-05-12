@@ -406,6 +406,19 @@ export function ClearLensPastSipCheckScreen() {
                 duration or pick a different fund.
               </Text>
             </View>
+          ) : fundNavSeries && fundNavSeries.length === 0 ? (
+            // Fund exists in scheme_master but has zero rows in nav_history —
+            // typical for matured FMPs, recently-listed schemes the AMFI cron
+            // hasn't covered, or funds whose AMFI series is broken upstream.
+            // Without this branch the render chain falls through to `null`
+            // and the user is left staring at the form with no feedback.
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>
+                No NAV history is available for this fund yet. This usually means the scheme is
+                very new, matured, or hasn&apos;t been picked up by the daily NAV sync. Try a
+                different fund.
+              </Text>
+            </View>
           ) : null}
 
           <Text style={styles.disclaimer}>
