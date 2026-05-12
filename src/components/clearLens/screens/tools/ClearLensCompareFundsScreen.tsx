@@ -38,6 +38,7 @@ import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { shortSchemeName } from '@/src/utils/schemeName';
 import {
@@ -119,12 +120,14 @@ interface CompositionRow {
 
 async function fetchSchemes(schemeCodes: number[]): Promise<SchemeMasterRow[]> {
   if (schemeCodes.length === 0) return [];
+  perfStart('query:compare:schemes');
   const { data, error } = await supabase
     .from('scheme_master')
     .select(
       'scheme_code, scheme_name, scheme_category, benchmark_index, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, morningstar_rating, risk_label, period_returns, risk_ratios',
     )
     .in('scheme_code', schemeCodes);
+  perfEnd('query:compare:schemes', { rows: data?.length ?? 0, codes: schemeCodes.length });
   if (error) throw new Error(`fetchSchemes: ${error.message}`);
   return (data ?? []).map((row) => ({
     schemeCode: row.scheme_code,
@@ -152,6 +155,7 @@ async function fetchSchemes(schemeCodes: number[]): Promise<SchemeMasterRow[]> {
 
 async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<CompositionRow[]> {
   if (schemeCodes.length === 0) return [];
+  perfStart('query:compare:compositions');
   // Get the latest composition row per scheme.
   const { data, error } = await supabase
     .from('fund_portfolio_composition')
@@ -160,6 +164,7 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
     )
     .in('scheme_code', schemeCodes)
     .order('portfolio_date', { ascending: false });
+  perfEnd('query:compare:compositions', { rows: data?.length ?? 0, codes: schemeCodes.length });
   if (error) throw new Error(`fetchCompositions: ${error.message}`);
   // Pick the first (= latest) per scheme_code, preferring `amfi` source.
   const latest = new Map<number, typeof data[number]>();
@@ -189,6 +194,7 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
 async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<number, NavPoint[]>> {
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
+  perfStart('query:compare:navHistory');
   // Page through the result set — Supabase REST caps at 1000 rows per
   // response, and 3 schemes × ~3,300 rows of NAV history each = ~10k rows.
   // Without pagination the ascending order silently truncated to the oldest
@@ -196,6 +202,7 @@ async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<numbe
   // running against 2013-era prices.
   // Fetch each scheme separately so a scheme with a long history doesn't
   // crowd the others off the first page.
+  let totalRows = 0;
   for (const code of schemeCodes) {
     const rows = await paginateRangeQuery<{ scheme_code: number; nav_date: string; nav: number }>(
       (from, to) => supabase
@@ -209,7 +216,9 @@ async function fetchNavHistoryForCodes(schemeCodes: number[]): Promise<Map<numbe
       code,
       rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) })),
     );
+    totalRows += rows.length;
   }
+  perfEnd('query:compare:navHistory', { rows: totalRows, codes: schemeCodes.length });
   return out;
 }
 

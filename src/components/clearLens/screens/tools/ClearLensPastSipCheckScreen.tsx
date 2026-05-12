@@ -41,6 +41,7 @@ import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { supabase } from '@/src/lib/supabase';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { fetchPerformanceTimeline } from '@/src/hooks/usePerformanceTimeline';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
@@ -111,6 +112,7 @@ interface PickedScheme {
  * "today" — exactly the stale-data bug seen on DSP TIGER.
  */
 async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
+  perfStart('query:sipCheck:nav');
   const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
     (from, to) => supabase
       .from('nav_history')
@@ -119,6 +121,7 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
       .order('nav_date', { ascending: true })
       .range(from, to),
   );
+  perfEnd('query:sipCheck:nav', { rows: rows.length, scheme_code: schemeCode });
   return rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) }));
 }
 
@@ -128,9 +131,11 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
  * this on every scheme change is safe.
  */
 async function ensureNavCached(schemeCode: number): Promise<{ status: string }> {
+  perfStart('query:sipCheck:backfill');
   const { data, error } = await supabase.functions.invoke<{ status: string }>('fetch-fund-nav', {
     body: { scheme_code: schemeCode },
   });
+  perfEnd('query:sipCheck:backfill', { status: data?.status ?? 'unknown', scheme_code: schemeCode });
   if (error) throw new Error(`fetch-fund-nav failed: ${error.message}`);
   return data ?? { status: 'unknown' };
 }
