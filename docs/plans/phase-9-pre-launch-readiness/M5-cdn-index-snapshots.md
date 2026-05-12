@@ -187,12 +187,19 @@ Deployed via the MCP `deploy_edge_function` tool (per memory rule — CLI deploy
 Outcome: manual invoke from the dashboard regenerates all three files. `curl <bucket>/index/nseitri.json` returns parseable JSON.
 
 
-### M5.3 — pg_cron schedule
+### M5.3 — pg_cron schedule (env-parameterised)
 
 
-Scope: migration `<timestamp>_regenerate_index_snapshots_cron.sql` that adds the schedule.
+Scope: migration `<timestamp>_regenerate_index_snapshots_cron.sql` that adds the schedule. The URL is built from `current_setting('app.supabase_functions_base_url')` so the same migration file applies cleanly to both dev and prod — no project-ref hardcoding.
 
-Outcome: `cron.job` table shows the new entry. Manually `select net.http_post(...)` confirms invocation works.
+Each Supabase project needs a one-time bootstrap via the Dashboard SQL Editor:
+
+    ALTER DATABASE postgres
+      SET app.supabase_functions_base_url = 'https://<project-ref>.supabase.co/functions/v1';
+
+Documented in `docs/INFRASTRUCTURE.md` under "One-time per-project bootstrap". Missing setting → cron job fails loudly at execution time rather than silently calling the wrong project's edge function.
+
+Outcome: `cron.job` table shows the new entry. After the per-project bootstrap, manually `select net.http_post(...)` (with the same `current_setting` expression) confirms invocation works.
 
 
 ### M5.4 — App-side helper + tests

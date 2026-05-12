@@ -86,6 +86,26 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 
 All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function.
 
+
+### One-time per-project bootstrap: `app.supabase_functions_base_url`
+
+
+Cron migrations introduced from Phase 9 M5 onwards build their target URL from `current_setting('app.supabase_functions_base_url')` instead of hardcoding a project ref, so the same migration file applies cleanly to dev and prod.
+
+Each Supabase project needs the setting populated **once**, via the Dashboard SQL Editor (or any `psql` session as the `postgres` role):
+
+    -- DEV project
+    ALTER DATABASE postgres
+      SET app.supabase_functions_base_url = 'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1';
+
+    -- PROD project (run from the PROD project's SQL editor only)
+    ALTER DATABASE postgres
+      SET app.supabase_functions_base_url = 'https://ohcaaioabjvzewfysqgh.supabase.co/functions/v1';
+
+Re-running is safe; `ALTER DATABASE … SET` overwrites the existing value. If the setting is missing the cron job logs `unrecognized configuration parameter "app.supabase_functions_base_url"` at execution time — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
+
+Existing cron migrations (`sync-nav`, `sync-index`, `sync-fund-meta`, `sync-fund-portfolios`, `notify-feedback`) still hardcode the dev URL — they pre-date the parameterised pattern and will need to be retrofitted in a follow-up. Until then, prod's cron jobs that were registered from those migrations still point at the dev project; the practical impact is limited because prod's cron table is typically empty (the project's first deploy via the workflow does not re-run already-applied migrations).
+
 `notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
 
 The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`, `MAIL_FORWARD_TO` (founder inbox), and `MAIL_FORWARD_FROM` (verified sender) env vars — same ones that already power human-alias forwarding and CAS import notifications. **No new Vercel env vars are required.**
