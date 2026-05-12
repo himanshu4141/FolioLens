@@ -24,6 +24,7 @@ import { fetchUserFunds } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import * as navRepo from '@/src/lib/db/nav';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -146,12 +147,12 @@ export async function fetchFundDetail(
   // rows. NAV uses the read-through pattern: try local SQLite, fall
   // through to Supabase and write-back on a cache miss.
   perfStart('query:fundDetail:extras');
-  const navFromRepo = navRepo
-    .readBySchemeCode(fund.scheme_code, { orderDesc: true, limit: 2 })
-    .catch((err) => {
-      console.warn('[useFundDetail] sqlite nav read failed; falling back', err);
-      return [] as Awaited<ReturnType<typeof navRepo.readBySchemeCode>>;
-    });
+  const navFromRepo = SQLITE_AVAILABLE
+    ? navRepo.readBySchemeCode(fund.scheme_code, { orderDesc: true, limit: 2 }).catch((err) => {
+        console.warn('[useFundDetail] sqlite nav read failed; falling back', err);
+        return [] as Awaited<ReturnType<typeof navRepo.readBySchemeCode>>;
+      })
+    : Promise.resolve([] as Awaited<ReturnType<typeof navRepo.readBySchemeCode>>);
   const [extended, localNavRows] = await Promise.all([
     qc.fetchQuery({
       queryKey: ['scheme-master', fund.scheme_code],
@@ -174,7 +175,7 @@ export async function fetchFundDetail(
       .limit(2);
     if (error) throw error;
     navRowsDesc = (data ?? []) as { nav_date: string; nav: number }[];
-    if (navRowsDesc.length > 0) {
+    if (navRowsDesc.length > 0 && SQLITE_AVAILABLE) {
       try {
         await navRepo.bulkInsert(
           navRowsDesc.map((r) => ({
@@ -327,11 +328,13 @@ export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[
   perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
   let source: 'sqlite' | 'supabase' = 'sqlite';
-  try {
-    const local = await navRepo.readBySchemeCode(schemeCode);
-    rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
-  } catch (err) {
-    console.warn('[fetchFundNavHistory] sqlite read failed; falling back', err);
+  if (SQLITE_AVAILABLE) {
+    try {
+      const local = await navRepo.readBySchemeCode(schemeCode);
+      rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+    } catch (err) {
+      console.warn('[fetchFundNavHistory] sqlite read failed; falling back', err);
+    }
   }
   if (rows.length === 0) {
     source = 'supabase';
@@ -344,7 +347,7 @@ export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[
           .order('nav_date', { ascending: true })
           .range(from, to),
     );
-    if (rows.length > 0) {
+    if (rows.length > 0 && SQLITE_AVAILABLE) {
       try {
         await navRepo.bulkInsert(
           rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),

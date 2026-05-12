@@ -32,6 +32,7 @@ import { fetchUserTransactions, type UserTransactionRow } from '@/src/hooks/useU
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import * as navRepo from '@/src/lib/db/nav';
 import * as idxRepo from '@/src/lib/db/idx';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 
 interface NavRow {
   scheme_code: number;
@@ -147,13 +148,15 @@ export async function fetchPortfolioData(
   perfStart('query:portfolio:nav');
   let navRows: NavRow[] = [];
   let navSource: 'sqlite' | 'supabase' = 'sqlite';
-  try {
-    navRows = await navRepo.readBySchemeCodes(schemeCodes, {
-      sinceDate: navCutoffIso,
-      orderDesc: true,
-    });
-  } catch (err) {
-    console.warn('[usePortfolio] sqlite nav read failed; falling back', err);
+  if (SQLITE_AVAILABLE) {
+    try {
+      navRows = await navRepo.readBySchemeCodes(schemeCodes, {
+        sinceDate: navCutoffIso,
+        orderDesc: true,
+      });
+    } catch (err) {
+      console.warn('[usePortfolio] sqlite nav read failed; falling back', err);
+    }
   }
   if (navRows.length === 0) {
     navSource = 'supabase';
@@ -165,7 +168,7 @@ export async function fetchPortfolioData(
       .order('nav_date', { ascending: false });
     if (navError) throw navError;
     navRows = (navRowsRaw ?? []) as NavRow[];
-    if (navRows.length > 0) {
+    if (navRows.length > 0 && SQLITE_AVAILABLE) {
       try {
         await navRepo.bulkInsert(navRows);
       } catch (err) {
@@ -228,23 +231,25 @@ export async function fetchPortfolioData(
   let benchmarkSource: 'sqlite' | 'snapshot' = 'sqlite';
   if (benchmarkSymbol) {
     perfStart('query:portfolio:index');
-    try {
-      const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
-        sinceDate: firstTxDate ?? undefined,
-        orderDesc: true,
-      });
-      benchmarkRows = localRows.map((r) => ({
-        index_date: r.index_date,
-        close_value: r.close_value,
-      }));
-    } catch (err) {
-      console.warn('[usePortfolio] sqlite idx read failed; falling back', err);
+    if (SQLITE_AVAILABLE) {
+      try {
+        const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
+          sinceDate: firstTxDate ?? undefined,
+          orderDesc: true,
+        });
+        benchmarkRows = localRows.map((r) => ({
+          index_date: r.index_date,
+          close_value: r.close_value,
+        }));
+      } catch (err) {
+        console.warn('[usePortfolio] sqlite idx read failed; falling back', err);
+      }
     }
     if (benchmarkRows.length === 0) {
       benchmarkSource = 'snapshot';
       const points = await fetchIndexHistory(benchmarkSymbol, firstTxDate);
       benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
-      if (benchmarkRows.length > 0) {
+      if (benchmarkRows.length > 0 && SQLITE_AVAILABLE) {
         try {
           await idxRepo.bulkInsert(
             benchmarkRows.map((r) => ({

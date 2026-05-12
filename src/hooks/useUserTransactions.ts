@@ -23,6 +23,7 @@ import { useSession } from '@/src/hooks/useSession';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import * as txRepo from '@/src/lib/db/tx';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 
 export interface UserTransactionRow {
   // PK columns Portfolio / Fund Detail / xirr math need.
@@ -66,21 +67,23 @@ async function fetchFromSupabase(userId: string): Promise<UserTransactionRow[]> 
 
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
   perfStart('query:userTransactions');
-  try {
-    const local = await txRepo.readAll();
-    if (local.length > 0) {
-      perfEnd('query:userTransactions', { rows: local.length, source: 'sqlite' });
-      return local;
+  if (SQLITE_AVAILABLE) {
+    try {
+      const local = await txRepo.readAll();
+      if (local.length > 0) {
+        perfEnd('query:userTransactions', { rows: local.length, source: 'sqlite' });
+        return local;
+      }
+    } catch (err) {
+      // SQLite open / read failure — log and fall through to Supabase
+      // so the user still sees their data. The bootstrap pipeline will
+      // log this via analytics.
+      console.warn('[useUserTransactions] sqlite read failed; falling back', err);
     }
-  } catch (err) {
-    // SQLite open / read failure — log and fall through to Supabase
-    // so the user still sees their data. The bootstrap pipeline will
-    // log this via analytics.
-    console.warn('[useUserTransactions] sqlite read failed; falling back', err);
   }
 
   const fresh = await fetchFromSupabase(userId);
-  if (fresh.length > 0) {
+  if (fresh.length > 0 && SQLITE_AVAILABLE) {
     try {
       await txRepo.bulkInsert(fresh);
     } catch (err) {
