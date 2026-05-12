@@ -33,6 +33,7 @@ import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
+import { bootstrapForUser, clearAll as clearLocalDb } from '@/src/lib/db/sync';
 
 // Required for expo-web-browser openAuthSessionAsync to complete on Android.
 // When Chrome Custom Tabs redirects to the app's active scheme, Android opens the app via
@@ -123,15 +124,44 @@ function useAnalyticsLifecycle() {
       }
     };
 
-    supabase.auth.getSession().then(({ data: { session } }) => identify(session));
+    // SQLite read cache is native-only — web falls through to the
+    // React Query persister + Supabase fallback path. Gating here
+    // (rather than letting the throw-on-web stub in `db.web.ts`
+    // bubble up) keeps the console clean and avoids firing a useless
+    // network round-trip during web bootstrap.
+    const sqliteSupported = Platform.OS !== 'web';
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      identify(session);
+      if (sqliteSupported && session?.user.id) {
+        // Kick off the offline-first bootstrap. Idempotent — if the
+        // local SQLite cache is already populated for this user, this
+        // resolves quickly via watermark checks.
+        void bootstrapForUser(session.user.id).catch((err) => {
+          console.warn('[db/sync] bootstrap failed', err);
+        });
+      }
+    });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       identify(session);
+      if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
+        void bootstrapForUser(session.user.id).catch((err) => {
+          console.warn('[db/sync] bootstrap failed', err);
+        });
+      }
       if (event === 'SIGNED_OUT') {
         // The persisted React Query cache holds the previous user's
         // portfolio data. Drop the on-disk copy and the in-memory copy
         // before the next sign-in could possibly read either.
         queryClient.clear();
         void persister.removeClient();
+        if (sqliteSupported) {
+          // Wipe the SQLite read cache too — PII (transactions) must
+          // not survive a sign-out.
+          void clearLocalDb().catch((err) => {
+            console.warn('[db/sync] clearAll failed', err);
+          });
+        }
       }
     });
 

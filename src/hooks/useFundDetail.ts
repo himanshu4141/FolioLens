@@ -23,6 +23,7 @@ import { useSession } from '@/src/hooks/useSession';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
 import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
+import * as navRepo from '@/src/lib/db/nav';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -140,28 +141,54 @@ export async function fetchFundDetail(
 
   const txs = allTxs.filter((tx) => tx.fund_id === fundId);
 
-  // Parallel fetch: the remaining two reads — scheme_master (shared
-  // with Compare via the `['scheme-master', code]` cache key) and the
-  // two most-recent NAV rows. Running them concurrently halves the
-  // cold-load latency on Fund Detail when the user-level caches are
-  // warm.
+  // Parallel fetch: scheme_master (shared with Compare via the
+  // `['scheme-master', code]` cache key) and the two most-recent NAV
+  // rows. NAV uses the read-through pattern: try local SQLite, fall
+  // through to Supabase and write-back on a cache miss.
   perfStart('query:fundDetail:extras');
-  const [extended, navResult] = await Promise.all([
+  const navFromRepo = navRepo
+    .readBySchemeCode(fund.scheme_code, { orderDesc: true, limit: 2 })
+    .catch((err) => {
+      console.warn('[useFundDetail] sqlite nav read failed; falling back', err);
+      return [] as Awaited<ReturnType<typeof navRepo.readBySchemeCode>>;
+    });
+  const [extended, localNavRows] = await Promise.all([
     qc.fetchQuery({
       queryKey: ['scheme-master', fund.scheme_code],
       queryFn: () => fetchSchemeMaster(fund.scheme_code),
       staleTime: STALE_TIMES.NAV_HISTORY,
     }),
-    supabase
+    navFromRepo,
+  ]);
+
+  let navRowsDesc: { nav_date: string; nav: number }[] = localNavRows.map((r) => ({
+    nav_date: r.nav_date,
+    nav: r.nav,
+  }));
+  if (navRowsDesc.length === 0) {
+    const { data, error } = await supabase
       .from('nav_history')
       .select('nav_date, nav')
       .eq('scheme_code', fund.scheme_code)
       .order('nav_date', { ascending: false })
-      .limit(2),
-  ]);
+      .limit(2);
+    if (error) throw error;
+    navRowsDesc = (data ?? []) as { nav_date: string; nav: number }[];
+    if (navRowsDesc.length > 0) {
+      try {
+        await navRepo.bulkInsert(
+          navRowsDesc.map((r) => ({
+            scheme_code: fund.scheme_code,
+            nav_date: r.nav_date,
+            nav: Number(r.nav),
+          })),
+        );
+      } catch (err) {
+        console.warn('[useFundDetail] sqlite nav write failed', err);
+      }
+    }
+  }
   perfEnd('query:fundDetail:extras');
-  const navRowsDesc = navResult.data;
-  if (navResult.error) throw navResult.error;
 
   // Compute net units and cashflows
   const { historicalCashflows: cashflows, netUnits, investedAmount } =
@@ -285,23 +312,49 @@ export function useFundDetail(fundId: string) {
 }
 
 /**
- * Full NAV history for a scheme — paginated through Supabase. Split off
- * from `useFundDetail` so the Fund Detail screen can paint its header
- * card / metadata / XIRR within the first network round-trip, and the
- * 1,000–3,300-row paginated history populates the chart components in
- * the background.
+ * Full NAV history for a scheme — read-through SQLite. The on-device
+ * cache holds full history after bootstrap; this hook reads the local
+ * rows directly. On a cache miss (cold start before bootstrap, or a
+ * scheme the user just added), we paginate from Supabase and write the
+ * result into SQLite so the next mount is free.
+ *
+ * Split off from `useFundDetail` so the Fund Detail screen can paint
+ * its header card / metadata / XIRR within the first round-trip, and
+ * the 1,000–3,300-row history populates the chart components in the
+ * background.
  */
 export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[]> {
   perfStart('query:fundNavHistory');
-  const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
-    (from, to) => supabase
-      .from('nav_history')
-      .select('nav_date, nav')
-      .eq('scheme_code', schemeCode)
-      .order('nav_date', { ascending: true })
-      .range(from, to),
-  );
-  perfEnd('query:fundNavHistory', { rows: rows.length, scheme_code: schemeCode });
+  let rows: { nav_date: string; nav: number }[] = [];
+  let source: 'sqlite' | 'supabase' = 'sqlite';
+  try {
+    const local = await navRepo.readBySchemeCode(schemeCode);
+    rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+  } catch (err) {
+    console.warn('[fetchFundNavHistory] sqlite read failed; falling back', err);
+  }
+  if (rows.length === 0) {
+    source = 'supabase';
+    rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
+      (from, to) =>
+        supabase
+          .from('nav_history')
+          .select('nav_date, nav')
+          .eq('scheme_code', schemeCode)
+          .order('nav_date', { ascending: true })
+          .range(from, to),
+    );
+    if (rows.length > 0) {
+      try {
+        await navRepo.bulkInsert(
+          rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
+        );
+      } catch (err) {
+        console.warn('[fetchFundNavHistory] sqlite write failed', err);
+      }
+    }
+  }
+  perfEnd('query:fundNavHistory', { rows: rows.length, scheme_code: schemeCode, source });
   return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
 }
 

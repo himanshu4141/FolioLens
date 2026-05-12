@@ -9,12 +9,27 @@ import type { QueryClient } from '@tanstack/react-query';
 import { filterToWindow, indexTo100, type TimeWindow } from '@/src/utils/navUtils';
 import { fetchFundDetail } from '@/src/hooks/useFundDetail';
 import { supabase } from '@/src/lib/supabase';
+import { __setDbForTests } from '@/src/lib/db/db';
+// Auto-mocked via `__mocks__/expo-sqlite.ts`; pull the test helper via
+// a typed require since the real `.d.ts` doesn't declare it.
+const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
+  __resetAllForTests: () => void;
+};
 
 jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(),
   useQueryClient: jest.fn(),
 }));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+
+// Per-test reset for the SQLite mock — same pattern as the portfolio
+// hook tests. Each test runs against an empty `tx` / `nav` / `idx`
+// repo, which forces the read-through fetchers to fall through to
+// Supabase (where the existing makeChain fixtures already cover).
+beforeEach(() => {
+  __resetAllForTests();
+  __setDbForTests(null);
+});
 
 // Stand-in QueryClient that bypasses caching and runs the queryFn —
 // `fetchFundDetail` now reads `user-funds` / `user-transactions` via
