@@ -17,6 +17,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { AppOverflowMenu } from '@/src/components/AppOverflowMenu';
@@ -640,6 +641,7 @@ export function ClearLensWealthJourneyScreen() {
     queryKey: ['wealth-journey-transactions', userId],
     enabled: !!userId,
     queryFn: async () => {
+      perfStart('query:wealthJourney:transactions');
       const { data, error } = await supabase
         .from('transaction')
         .select('transaction_date, amount, transaction_type, fund_id')
@@ -647,6 +649,7 @@ export function ClearLensWealthJourneyScreen() {
         .gte('transaction_date', sixMonthsAgo)
         .order('transaction_date', { ascending: false });
 
+      perfEnd('query:wealthJourney:transactions', { rows: data?.length ?? 0, since: sixMonthsAgo });
       if (error) throw error;
       return data ?? [];
     },

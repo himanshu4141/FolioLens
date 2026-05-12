@@ -300,8 +300,119 @@ Numerical:
 - [x] M3.2 — `src/utils/navHistoryDelta.ts` (pure helpers) + `src/lib/sharedHistoryCache.ts` (cache-aware fetchers) with tests; 100% line coverage on the pure helper, 89% on the cache layer (uncovered lines are the `qc.fetchQuery` wrappers, which need a live query client to test)
 - [x] M3.3 — `usePortfolio` + `useInvestmentVsBenchmarkTimeline` route NAV / index reads through `fetchNavHistoryWithCache` / `fetchIndexHistoryWithCache`; the inline `fetchAllNavRows` / `fetchAllIndexRows` helpers in the timeline hook were removed
 - [x] M3.4 — `STALE_TIMES` constants applied across `usePortfolio`, `useInvestmentVsBenchmarkTimeline`, `usePortfolioTimeline`, `usePerformanceTimeline`, `useMoneyTrail`, `usePortfolioInsights`, `useFundComposition`, `sharedHistoryCache`. The only remaining `5 * 60 * 1000` literal is `useFundDetail`'s `staleTime: 0` (intentional)
-- [ ] M3.5 — smoke verified on web + native; PR open
+- [x] M3.5 — smoke verified on web + native; PR #135 open with full QA pass on Vercel preview (12 May)
 
 ### Decision Log Amendment — 2026-05-10
 
 Implementation took the simpler "cache-aware fetcher" path rather than building dedicated `useNavHistory` / `useIndexHistory` hooks as originally sketched. The shared layer (`fetchNavHistoryWithCache` / `fetchIndexHistoryWithCache`) wraps `qc.fetchQuery`, which gives multi-consumer cache sharing without a hook-shaped public API. Both `usePortfolio` and `useInvestmentVsBenchmarkTimeline` keep their existing `useQuery` cache keys; the NAV / index fetch is delegated to the shared layer inside their `queryFn`. This minimised the surface area of the change (existing tests for `fetchPortfolioData` only needed a mock-chain `.range()` addition; no consumer logic was rewritten).
+
+
+### Post-merge bug report — 2026-05-11
+
+Testing on the `foliolens-main` OTA build surfaced three issues that the original PR missed:
+
+1. **`fetchIndexHistoryWithCache` shape collision.** `app/fund/[id].tsx:188-203` runs its own `useQuery` against the *same* cache key (`['index-history', selectedSymbol]`) that my shared layer wrote to, but stores rows in `{ date, value }[]` shape — not the `{ index_date, close_value }[]` shape my fetcher expects. When the user visited Fund Detail with Nifty 500 TRI selected, the wrong-shape payload landed in the persister. On the next Portfolio mount, the timeline's `fetchIndexHistoryWithCache` call hit the cached value via `qc.fetchQuery` (data not stale per `staleTime: 5min`), and the downstream `.filter(row => row.index_date >= firstTxDate)` dropped every row because `index_date` was undefined. The Investment-vs-Benchmark chart's `points.length < 2` guard then unmounted the entire chart section — but *only when the active benchmark matched what the user had previously opened in Fund Detail*. Switching to Nifty 50 / Nifty 100 worked because those keys had no cross-contamination. This is the exact same cache-shape-collision pattern fixed in PR #127 for `user-profile`.
+
+2. **Cold-load regression on Portfolio and Timeline.** The previous code paths fetched window-bounded data (`.gte('nav_date', windowStart)`, `.gte('index_date', firstTxDate)`). My shared layer fetches *full* history regardless of window because the cache is keyed by `(userId, schemeCodes)` and has to hold every row anyone might ever ask for. For a user with 10 funds and an `^NIFTY500TRI` benchmark, the cold-load now paginates ~12,500 NAV rows + 7,769 index rows through 1000-row pages — ~15 round trips, ~8s on the user's connection. The persister doesn't help on the *first* launch after the OTA bundle drops (cache is empty), so the user genuinely felt the regression. Wins only appear from the second relaunch onward.
+
+3. **Fund Detail chart clipping.** Pre-existing bug, surfaced by the user's iPhone testing in this round. The NAV history, Performance %, and "How your money grew" `LineChart`s on `app/fund/[id].tsx` all compute `spacing = Math.max(8, (chartBodyWidth - 16) / (samplePoints - 1))`. On a narrow viewport with 60–90 sampled points, the natural spacing computes to ~4px but is clamped to 8px. The chart then extends ~2× wider than its canvas and the right half is clipped by `react-native-gifted-charts` (which doesn't enable scroll-on-overflow by default). Worst on the "All" range. Not caused by this milestone but in scope for the follow-up since the user reported it together.
+
+### Follow-up plan — 2026-05-11
+
+1. **Strategic retreat on the shared NAV/index cache.** Drop the `qc.fetchQuery` indirection in `fetchPortfolioData` and `fetchInvestmentVsBenchmarkTimeline`. Each consumer fetches what it actually needs:
+    - `fetchPortfolioData`: only the last 90 days of NAVs (sparkline is 30 days; the extra 60 days are buffer for weekends + lookback so the "previous NAV" exists even after a holiday weekend).
+    - `fetchInvestmentVsBenchmarkTimeline`: window-bounded as before. Keeps the original `fetchAllNavRows` / `fetchAllIndexRows` shape.
+    - `app/fund/[id].tsx`: keeps its existing `{ date, value }[]` shape; cache key is renamed to `['fund-detail-index', selectedSymbol]` so it can't collide with anything in `src/lib/sharedHistoryCache.ts` even if a future caller is added.
+    - `sharedHistoryCache.ts` stays in the tree as future-tooling but no live consumer uses its `*WithCache` wrappers after this PR. Its `*Direct` functions remain only as the pagination implementation underneath the inline fetches.
+
+2. **Fund Detail chart fits the viewport.** Cap sample count by chart-body width so spacing stays ≥ 4px without needing a `Math.max` clamp that pushes content off-canvas. Apply the same helper to all three `LineChart`s.
+
+3. **Persister restore observability.** Wire `onSuccess` and `onError` on `PersistQueryClientProvider`. Both call `analytics.track` (already in the bundle) and `console.log` with elapsed ms + persisted-bytes so the user can confirm in PostHog (or device logs) that the OTA bundle actually restored the cache.
+
+4. **Keep the wins from M3.1:** persister wiring, `gcTime: 24h`, `STALE_TIMES`, `__BUSTER__`, sign-out clear. Those are correct and untouched.
+
+The trade-off: delta-fetch (M3.2's specific user ask) is set aside until the cache architecture is solid. The persister-backed cache of *computed* results (`['portfolio', userId, benchmarkSymbol]` and `['investmentVsBenchmarkTimeline', ...]`) is what actually delivers the user-visible "page reload paints instantly" win — and it survives this revert.
+
+
+### Round-2 follow-up — 2026-05-11 (still on PR #135)
+
+Field testing the bug-fix bundle on the foliolens-main Android OTA surfaced a fresh symptom the persister hadn't fixed: **the Portfolio screen flashed "Import CAS" before showing the spinner before painting cards**. Three-state flicker, not the two-state load we expected. Root cause: `PersistQueryClientProvider` puts queries into `fetchStatus: 'paused'` while it rehydrates, and in React Query v5 `isLoading` is `(isPending && fetchStatus === 'fetching')` — so during the paused window `isLoading` is **false** and `data` is `undefined`. The Portfolio screen's render chain (`isLoading ? spinner : empty? "Import CAS" : cards`) fell through to the empty-state branch and rendered the "Import CAS" button for the ~0.5–1s rehydrate window before the cached payload arrived. Same flicker on Fund Detail.
+
+In addition, three user-journey complaints needed direct attention:
+
+1. **Just finished onboarding → tap Done → land on Portfolio.** Wizard's `handleFinish` invalidated every query and navigated, but no prefetch — Portfolio mounted cold and spun another 2–3s while the post-import fetch ran. The user had already waited for the CAS parser; another spinner felt punishing.
+
+2. **Same-day reopen.** Persister was restoring fine but the flicker above made it look like loading even when the cached payload was about to arrive.
+
+3. **Fund Detail cold-load.** `useFundDetail` did a full paginated NAV history fetch (1k–3k rows) and a full paginated index history fetch *before* its `useQuery` resolved — so the entire fund-detail page stayed on a spinner until both finished, despite the header card / metadata / XIRR only needing one short SELECT.
+
+### Round-2 fixes in this PR
+
+- **`useIsRestoring` gate on Portfolio (mobile + desktop) and Fund Detail.** A new `showFirstLoad = isRestoring || isLoading || data === undefined` collapses the three-state flicker to a clean spinner during rehydrate and switches to the real page (or genuinely-empty state) only once we have data on hand or have confirmed there is none.
+
+- **Prefetch in onboarding `handleFinish`.** After invalidating, fire a `queryClient.prefetchQuery({ queryKey: ['portfolio', userId, benchmarkSymbol], … })` so the network request overlaps with the React Native navigation animation. The user lands on Portfolio with a populated (or near-populated) cache instead of triggering a fresh fetch from a cold mount.
+
+- **Split Fund Detail's NAV history into a deferred query.** `fetchFundDetail` now SELECTs only the two most-recent NAV rows (enough for "current NAV" + "as of"). The full paginated history is exposed via a separate `useFundNavHistory(schemeCode)` hook that runs in parallel; the screen passes its result to the chart components, which gate on `navHistory.length > 1` to show their own empty/loading state until it lands. `useFundDetail.indexHistory` was also dropped from the response shape because the screen's `['fund-detail-index', symbol]` query already owns the benchmark series. Net effect: fund detail's header card paints from a single round-trip-and-a-bit, charts fill in 1–2s later.
+
+- **`'fund-nav-history'` added to the persist allowlist** so the deferred fetch survives across reloads.
+
+
+### Round-3 follow-up — 2026-05-12 (still on PR #135)
+
+After OTA-testing Round-2, the user shared `[perf]` logs from a warm-cache restart that revealed Fund Detail was *still* re-fetching transactions, NAV, and index history on each open — even though Portfolio had just loaded them seconds earlier. The persister cached the *computed* results (`['portfolio', userId, …]` and `['fund-detail', fundId]`), but each query's `queryFn` re-issued its own raw SELECTs against `fund` / `transaction` / `nav_history`. Inputs were not shared across screens.
+
+Diagnosis: the raw rows live inside the closures of each queryFn and are GC'd as soon as the computed result is stored. There is one consumer per cache key, but each consumer has its own SELECT shape — so re-using the same key across screens isn't safe (cf. the cache-shape-collision bugs we already fixed twice in this PR). The clean answer is to give each raw input its **own** React Query cache entry with a single producer.
+
+### Round-3 fixes in this PR
+
+- **`useUserFunds` (`['user-funds', userId]`)** — one paginated SELECT against `fund` with a fixed column set (every column any downstream consumer needs). One producer, one shape — collision-proof. Persist-allowlisted.
+- **`useUserTransactions` (`['user-transactions', userId]`)** — same pattern for `transaction`. Paginated, append-only, safe to cache with a 5 min staleTime since the CAS import flow invalidates it.
+- **`fetchPortfolioData` and `fetchFundDetail` now take a `QueryClient`.** Both call `qc.fetchQuery` to read funds and transactions from the shared keys; React Query dedupes inflight requests, so a navigation from Portfolio → Fund Detail mid-fetch shares the same Promise instead of issuing parallel SELECTs.
+- **`fetchFundDetail`'s remaining two SELECTs (scheme_master + nav_history limit 2) run in parallel via `Promise.all`.** Previously they were sequential (extended-metadata, then transactions, then NAV); transactions are now free from the shared cache, so the only network cost is the parallel pair.
+- **Portfolio chart window** already defaults to `'1Y'` in the store (`appStore.ts:482`); no code change. Existing users who manually picked `'All'` keep their choice.
+
+Expected user-felt impact when Portfolio is already in cache:
+- Fund Detail header card paints in **one round-trip's worth of latency** (the parallel scheme_master + nav-limit-2), versus today's four sequential SELECTs.
+- The 1,000-page-cap pagination loops in both hooks are now ammortised across all screens — each user-funds / user-transactions fetch happens at most once per staleTime per app session.
+
+Tests: 991 still passing. New hooks are covered transitively via `fetchPortfolioData` / `fetchFundDetail` fixtures (the data-fetching layer is 100% line-covered; the hook wrappers themselves stay un-mocked since they're thin `useQuery` calls).
+
+Tests: 991 still passing. The `useFundDetail` test mocks gained a `.limit()` chain method (now the terminal call for the light SELECT) and a tighter `MOCK_NAV` fixture in descending order; the obsolete `MOCK_INDEX` block and the period-return assertion that depended on full `data.navHistory` were dropped — full-history assertions belong on `useFundNavHistory` once we add tests for it.
+
+
+### Round-4 follow-up — 2026-05-12 (still on PR #135)
+
+Field `[perf]` logs from the foliolens-pr OTA build confirmed the Round-3 wins on Portfolio ↔ Fund Detail navigation but surfaced that **Compare Funds was still slow** — its `query:compare:navHistory` consistently took 1.3–1.8s per click, and `query:compare:schemes` 200–700ms, even when the user had just opened those exact funds on Fund Detail. Each Compare query had its own private cache key (`['compare:schemes', codes]`, `['compare:navhistory', codes]`) and re-fetched from Supabase.
+
+The fix mirrors Round-3's pattern: replace Compare's per-array fetchers with per-scheme reads against the shared cache keys Fund Detail already populates.
+
+### Round-4 fixes in this PR
+
+- **New `src/hooks/useSchemeMaster.ts`** exposes `fetchSchemeMaster(code)` + `useSchemeMaster` wrapper. Cache key: `['scheme-master', code]`. Persist-allowlisted.
+- **`fetchFundDetail` refactored** — the inline `supabase.from('scheme_master').…maybeSingle()` call is now `qc.fetchQuery({ queryKey: ['scheme-master', fund.scheme_code], queryFn: () => fetchSchemeMaster(...) })`. Same SELECT shape (the full column set every consumer needs), but now one producer instead of two.
+- **`ClearLensCompareFundsScreen` refactored** —
+    - `fetchSchemes(qc, codes)` now does `Promise.all(codes.map(code => qc.fetchQuery(['scheme-master', code], …)))`. Per-scheme cache sharing.
+    - `fetchNavHistoryForCodes(qc, codes)` now uses `Promise.all(codes.map(code => qc.fetchQuery(['fund-nav-history', code], () => fetchFundNavHistory(code))))`. Same key Fund Detail's `useFundNavHistory` populates.
+    - Hydration safety net (`fetch-fund-snapshot`, `fetch-fund-nav`) updated to invalidate the new shared keys (`['scheme-master', code]`, `['fund-nav-history', code]`) alongside the Compare-derived wrapper keys so other screens pick up backfilled data.
+- **Compositions left as-is** — Compare's `fetchCompositionsForCodes` SELECTs `raw_debt_holdings` which `fetchCompositions` (the shared composition fetcher used by Portfolio Insights / Fund Detail) does not. Aligning the shape across all consumers is a separate refactor; for now the Compare composition fetch stays private.
+
+Expected field impact: Compare → Fund Detail (or vice versa) for the same scheme pays **zero** network cost for the shared parts. Cold Compare load still takes the hydration-safety-net path (5–10s per missing scheme) unless those hit cache_hit, but for any scheme already in our DB the data queries complete in <1s.
+
+
+### Round-5 follow-up — 2026-05-12 (still on PR #135)
+
+Web QA pass on the Vercel preview build confirmed all primary fixes verified working but flagged five additional bugs. All five are pre-existing — none caused by the shared-cache work — but bundling the fixes keeps the QA cycle in one PR.
+
+### Round-5 fixes in this PR
+
+- **Past SIP Check renders blank for zero-NAV funds** (Bugs #1 + #3 from QA). When `fetchNavSeries` returned `[]` (matured FMP, recently-listed scheme not yet covered by the daily AMFI sync, or broken upstream series), the render gating fell through to `: null}` — the user saw the form with no result, no error. Added an explicit empty-state branch keyed on `fundNavSeries.length === 0`.
+
+- **React #418 hydration error on Data Sync** (Bug #2). The static Vercel export pre-renders the page; server-rendered HTML showed `'—'` for "Last sync" while the client picked up the persisted date after rehydrate. React detected the mismatch and bailed to full client rendering for the entire root. Fix: gate the displayed value on `useIsRestoring()` so both sides emit the same `'—'` fallback until rehydration completes.
+
+- **"Last sync" date stays stale after manual sync** (Bug #4). Edge functions (`sync-nav`, `sync-index`) return success before the new `nav_history` row is committed; the immediate invalidate refetched the pre-sync row. Fix: poll the freshness query for up to ~6s (4 attempts × 1.5s) after sync completes, and additionally invalidate downstream caches that depend on the new NAVs (`['portfolio']`, `['fund-detail']`, `['fund-nav-history']`, `['fund-detail-index']`, `['investmentVsBenchmarkTimeline']`, `['performance-timeline']`, `['portfolio-timeline']`, `['money-trail']`) so "as of" dates flow through.
+
+- **Compare Funds cold load ~15s** (Bug #5). Hydration safety-net queries (`fetch-fund-snapshot`, `fetch-fund-nav`) were blocking the result UI even for funds whose data was already in our DB. Dropped `isHydrating` from the loading gate — data queries render as soon as SQL reads complete (<1s typical), and any rows the edge functions write later flow in through their existing `invalidateQueries` calls.
+
+- **"All" window log Y-axis** (Bug #6) — pre-existing UX choice, left alone. Flagged as a follow-up UI polish ticket.
+
+Tests: still 991 passing. The persist allowlist gained `'scheme-master'` to cover the new shared cache key; no other queryClient changes.

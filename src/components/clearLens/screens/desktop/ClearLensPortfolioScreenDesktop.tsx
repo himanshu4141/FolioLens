@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useIsRestoring } from '@tanstack/react-query';
 import {
   AssetAllocationPreview,
   BenchmarkComparisonCard,
@@ -38,6 +39,11 @@ export function ClearLensPortfolioScreenDesktop() {
   const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol } = useAppStore();
 
   const { data, isLoading, isError, refetch } = usePortfolio(defaultBenchmarkSymbol);
+  // See mobile variant for the rationale — `useIsRestoring` keeps the
+  // empty-state branch from flashing during the persister rehydration
+  // window.
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
   const fundRefs: FundRef[] = useMemo(
@@ -47,7 +53,7 @@ export function ClearLensPortfolioScreenDesktop() {
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
 
-  if (isLoading) {
+  if (showFirstLoad) {
     return (
       <CenteredFrame>
         <ActivityIndicator size="large" color={tokens.colors.emerald} />

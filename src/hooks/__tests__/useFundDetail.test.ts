@@ -5,12 +5,24 @@
  * are deterministic regardless of when the tests are run.
  */
 
+import type { QueryClient } from '@tanstack/react-query';
 import { filterToWindow, indexTo100, type TimeWindow } from '@/src/utils/navUtils';
 import { fetchFundDetail } from '@/src/hooks/useFundDetail';
 import { supabase } from '@/src/lib/supabase';
 
-jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
+jest.mock('@tanstack/react-query', () => ({
+  useQuery: jest.fn(),
+  useQueryClient: jest.fn(),
+}));
 jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+
+// Stand-in QueryClient that bypasses caching and runs the queryFn —
+// `fetchFundDetail` now reads `user-funds` / `user-transactions` via
+// `qc.fetchQuery`; tests still want every fetch to land on the supabase
+// mock so the fixture-driven SQL paths stay exercised.
+const fakeQc = {
+  fetchQuery: <T,>({ queryFn }: { queryFn: () => Promise<T> }) => queryFn(),
+} as unknown as QueryClient;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -308,6 +320,7 @@ function makeChain(response: { data: unknown; error: unknown }): any {
     gte: jest.fn(),
     order: jest.fn(),
     range: jest.fn(),
+    limit: jest.fn(),
     single: jest.fn(),
     maybeSingle: jest.fn(),
   };
@@ -318,6 +331,11 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   // that resolves to the same response. paginateRangeQuery sees a short page
   // (data.length < pageSize) and stops after one round-trip.
   chain.range.mockImplementation(() => Promise.resolve(response));
+  // .limit() is the terminal call for the light NAV fetch in
+  // `fetchFundDetail`. Awaiting the chain itself resolves to the
+  // response object (chain carries `data` / `error`), so returning
+  // chain here is enough.
+  chain.limit.mockReturnValue(chain);
   chain.single.mockReturnValue(response);
   chain.maybeSingle.mockReturnValue(response);
   return chain;
@@ -326,46 +344,57 @@ function makeChain(response: { data: unknown; error: unknown }): any {
 const mockFrom = supabase.from as jest.Mock;
 
 const MOCK_FUND = {
-  id: 'fund-1', scheme_code: 12345, scheme_name: 'Test Equity Fund',
-  scheme_category: 'Equity', benchmark_index: 'Nifty 50', benchmark_index_symbol: '^NSEI',
+  id: 'fund-1',
+  user_id: 'user-1',
+  scheme_code: 12345,
+  scheme_name: 'Test Equity Fund',
+  scheme_category: 'Equity',
+  benchmark_index: 'Nifty 50',
+  benchmark_index_symbol: '^NSEI',
+  isin: null,
+  expense_ratio: null,
+  aum_cr: null,
+  min_sip_amount: null,
+  fund_meta_synced_at: null,
+  is_active: true,
 };
 const MOCK_TXS = [
-  { transaction_date: '2023-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
-  { transaction_date: '2023-06-01', transaction_type: 'purchase', units: 50, amount: 6000 },
+  { fund_id: 'fund-1', transaction_date: '2023-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+  { fund_id: 'fund-1', transaction_date: '2023-06-01', transaction_type: 'purchase', units: 50, amount: 6000 },
 ];
+// `fetchFundDetail` now only requests the two most-recent NAV rows
+// (`.order(desc).limit(2)`) for the header card; the full history lives
+// behind `fetchFundNavHistory`. Fixtures are descending to match what
+// the SELECT would return from PostgREST.
 const MOCK_NAV = [
-  { nav_date: '2023-01-01', nav: 100 },
-  { nav_date: '2023-06-01', nav: 120 },
   { nav_date: '2024-01-01', nav: 140 },
-];
-const MOCK_INDEX = [
-  { index_date: '2023-01-01', close_value: 17000 },
-  { index_date: '2024-01-01', close_value: 21000 },
+  { nav_date: '2023-06-01', nav: 120 },
 ];
 
 describe('fetchFundDetail()', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  test('returns null when fund is not found', async () => {
-    mockFrom.mockImplementation(() => makeChain({ data: null, error: { message: 'not found' } }));
-    expect(await fetchFundDetail('missing-id')).toBeNull();
+  test('returns null when fund is not in the shared user-funds cache', async () => {
+    // fetchUserFunds returns an empty roster — caller asked for a fundId that
+    // doesn't belong to this user.
+    mockFrom.mockImplementation(() => makeChain({ data: [], error: null }));
+    expect(await fetchFundDetail(fakeQc, 'user-1', 'missing-id')).toBeNull();
   });
 
   test('returns null when fund query returns no data', async () => {
     mockFrom.mockImplementation(() => makeChain({ data: null, error: null }));
-    expect(await fetchFundDetail('fund-1')).toBeNull();
+    expect(await fetchFundDetail(fakeQc, 'user-1', 'fund-1')).toBeNull();
   });
 
   test('returns structured fund detail for a valid fund', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUND, error: null });
+      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
       if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
       if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
       return makeChain({ data: [], error: null });
     });
 
-    const result = await fetchFundDetail('fund-1');
+    const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result).not.toBeNull();
     expect(result!.id).toBe('fund-1');
     expect(result!.schemeName).toBe('Test Equity Fund');
@@ -373,72 +402,49 @@ describe('fetchFundDetail()', () => {
     expect(result!.currentUnits).toBe(150);
     expect(result!.investedAmount).toBe(16000);
     expect(result!.currentValue).toBeCloseTo(150 * 140, 5);
-    expect(result!.navHistory).toHaveLength(3);
-    expect(result!.indexHistory).toHaveLength(2);
+    // `navHistory` is now just the two most-recent rows; the full history
+    // is served by `fetchFundNavHistory`.
+    expect(result!.navHistory).toHaveLength(2);
     expect(isFinite(result!.fundXirr)).toBe(true);
-  });
-
-  test('returns empty indexHistory when fund has no benchmark symbol', async () => {
-    const fundWithoutBenchmark = { ...MOCK_FUND, benchmark_index_symbol: null };
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: fundWithoutBenchmark, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      return makeChain({ data: [], error: null });
-    });
-    const result = await fetchFundDetail('fund-1');
-    expect(result!.indexHistory).toHaveLength(0);
   });
 
   test('handles empty transaction list (zero units, NaN XIRR)', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUND, error: null });
+      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
       if (table === 'transaction') return makeChain({ data: [], error: null });
       if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
       return makeChain({ data: [], error: null });
     });
-    const result = await fetchFundDetail('fund-1');
+    const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentUnits).toBe(0);
     expect(result!.currentValue).toBe(0);
     expect(result!.fundXirr).toBeNaN();
   });
 
-  // ── Fix 7: period return comparison must use navHistory, not XIRR ────────────
-  // PerformanceTab now shows navReturn / benchmarkReturn (window-scoped NAV returns)
-  // rather than XIRR. These tests verify the hook provides the raw data needed for
-  // that comparison and that fundXirr is separate from the window-based returns.
-  test('fundXirr is a finite number separate from window-based NAV return', async () => {
+  // ── Fix 7: fundXirr is a finite, distinct annualised metric ─────────────────
+  // Window-based period-return comparisons against the benchmark are now
+  // driven by `useFundNavHistory`'s full history, not `data.navHistory`.
+  // This test just guards that the header-card XIRR survives the split.
+  test('fundXirr is a finite number', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUND, error: null });
+      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
       if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
       if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
       return makeChain({ data: [], error: null });
     });
-    const result = await fetchFundDetail('fund-1');
-    // fundXirr: SIP-adjusted annualised — will be a finite number for valid cashflows
+    const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(isFinite(result!.fundXirr)).toBe(true);
-    // navHistory provides the raw data for window-based period returns
-    // Start: 100, End: 140 → period return = +40% for the 'All' window
-    const start = result!.navHistory[0].value;
-    const end = result!.navHistory[result!.navHistory.length - 1].value;
-    const periodReturn = ((end - start) / start) * 100;
-    expect(periodReturn).toBeCloseTo(40, 0); // +40% period NAV return
-    // They are different metrics — XIRR ≠ simple period return
-    expect(result!.fundXirr * 100).not.toBeCloseTo(periodReturn, 0);
   });
 
   // ── Fix 8: gain/loss must be derivable from currentValue and investedAmount ──
   test('currentValue and investedAmount allow computing gain/loss', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUND, error: null });
+      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
       if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
       if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
       return makeChain({ data: [], error: null });
     });
-    const result = await fetchFundDetail('fund-1');
+    const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentValue).not.toBeNull();
     const gain = result!.currentValue! - result!.investedAmount;
     const gainPct = (gain / result!.investedAmount) * 100;
@@ -449,13 +455,13 @@ describe('fetchFundDetail()', () => {
 
   test('gain/loss is not computable (null) when currentValue is null (NAV pending)', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUND, error: null });
+      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
       if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
       if (table === 'nav_history') return makeChain({ data: [], error: null }); // no NAV
       if (table === 'index_history') return makeChain({ data: [], error: null });
       return makeChain({ data: [], error: null });
     });
-    const result = await fetchFundDetail('fund-1');
+    const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentValue).toBeNull();
     // gain cannot be computed — UI must handle null
     const gain = result!.currentValue !== null ? result!.currentValue - result!.investedAmount : null;

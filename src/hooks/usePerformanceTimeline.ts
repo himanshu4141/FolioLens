@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { filterToWindow, type TimeWindow, type NavPoint } from '@/src/utils/navUtils';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 export interface TimelineEntry {
   type: 'fund' | 'index';
@@ -45,6 +46,7 @@ export async function fetchPerformanceTimeline(
   fundItems: { id: string; name: string }[],
   indexItems: { symbol: string; name: string }[],
 ): Promise<PerformanceTimelineData> {
+  perfStart('query:performanceTimeline');
   const entries: TimelineEntry[] = [];
 
   if (fundItems.length > 0) {
@@ -123,6 +125,11 @@ export async function fetchPerformanceTimeline(
     }
   }
 
+  perfEnd('query:performanceTimeline', {
+    entries: entries.length,
+    funds: fundItems.length,
+    indexes: indexItems.length,
+  });
   return { entries };
 }
 

@@ -13,9 +13,10 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart, PieChart } from 'react-native-gifted-charts';
 import Svg, { G, Line as SvgLine, Rect as SvgRect, Text as SvgText } from 'react-native-svg';
-import { useQuery } from '@tanstack/react-query';
+import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import {
   useFundDetail,
+  useFundNavHistory,
   filterToWindow,
   indexTo100,
   type TimeWindow,
@@ -186,7 +187,13 @@ function PerformanceTab({
   }, []);
 
   const { data: indexRows } = useQuery({
-    queryKey: ['index-history', selectedSymbol],
+    // Namespaced separately from any other consumer reading `index_history`
+    // so the cache shape can't be poisoned by a fetcher that stores rows
+    // as `{ index_date, close_value }[]` rather than this hook's
+    // `{ date, value }[]`. Cross-contamination through the persister was
+    // responsible for the Nifty 500 TRI chart-vanish on the Portfolio
+    // screen — see Phase 9 M3 follow-up notes.
+    queryKey: ['fund-detail-index', selectedSymbol],
     queryFn: async () => {
       // ascending: false → most-recent 1000 rows (avoids returning only pre-2021 data
       // for long-history indexes like BSE Sensex). Reversed back to ascending for chart use.
@@ -269,7 +276,12 @@ function PerformanceTab({
   // chart body width = total width passed to LineChart minus y-axis label area
   const PERF_Y_AXIS_W = 32;
   const perfChartBodyW = liveChartWidth - 32 - PERF_Y_AXIS_W; // 32 = card padding (16×2)
-  const perfSpacing = sampledNav.length > 1 ? Math.max(8, (perfChartBodyW - 16) / (sampledNav.length - 1)) : 20;
+  // No min floor on spacing: with 60 samples in a ~320px iPhone body the
+  // natural spacing is ~5px, but a `Math.max(8, …)` clamp pushed total
+  // chart width to ~488px and clipped the right ~40% off-canvas (the
+  // "chart ends in 2017 on the All range" bug). The chart now exactly
+  // fills the available width; spacing scales down on narrow screens.
+  const perfSpacing = sampledNav.length > 1 ? Math.max(1, (perfChartBodyW - 16) / (sampledNav.length - 1)) : 20;
 
   const labelInterval = Math.max(1, Math.floor(sampledNav.length / 5));
   const xLabels = sampledNav.map((p, i) =>
@@ -439,8 +451,9 @@ function PerformanceTab({
     const actualChartRange = Math.max(1, actualChartTop - actualChartBottom);
     const ACTUAL_Y_AXIS_W = 54;
     const actualChartW = liveChartWidth - 32 - ACTUAL_Y_AXIS_W - 8;
+    // See perfSpacing for why the floor is 1 not 8.
     const actualSpacing =
-      points.length > 1 ? Math.max(8, (actualChartW - 16) / (points.length - 1)) : 20;
+      points.length > 1 ? Math.max(1, (actualChartW - 16) / (points.length - 1)) : 20;
     const actualLabelInterval = Math.max(1, Math.floor(points.length / 5));
     const actualXLabels =
       investmentTimeline.xAxisLabels.length === points.length
@@ -785,7 +798,8 @@ function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: numb
 
   const NAV_Y_AXIS_W = 44;
   const navChartBodyW = liveChartWidth - 32 - NAV_Y_AXIS_W;
-  const navSpacing = sampledFiltered.length > 1 ? Math.max(8, (navChartBodyW - 16) / (sampledFiltered.length - 1)) : 20;
+  // See perfSpacing for why the floor is 1 not 8.
+  const navSpacing = sampledFiltered.length > 1 ? Math.max(1, (navChartBodyW - 16) / (sampledFiltered.length - 1)) : 20;
   const formatNavYLabel = useCallback((v: string) => {
     const n = Number(v);
     if (n >= 1000) return `₹${(n / 1000).toFixed(1)}K`;
@@ -1760,12 +1774,23 @@ function ClearLensFundDetailScreen() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ClearLensFundTab>('performance');
   const { data, isLoading, isError } = useFundDetail(id);
+  // Full NAV history is fetched in parallel as a background query. The
+  // header card / metadata / XIRR render off `data` (small fetch), and
+  // the charts gate on `navHistory.length > 1` so they show their own
+  // empty/skeleton state until the paginated history arrives.
+  const { data: navHistoryFull } = useFundNavHistory(data?.schemeCode);
+  const navHistory = navHistoryFull ?? data?.navHistory ?? [];
+  // See ClearLensPortfolioScreen for rationale — `useIsRestoring` keeps
+  // the "Couldn't load fund data" / spinner branches from racing the
+  // persister rehydrate.
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const { session } = useSession();
   const userId = session?.user.id;
   const tokens = useClearLensTokens();
   const clearDetailStyles = useMemo(() => makeClearDetailStyles(tokens), [tokens]);
 
-  if (isLoading) {
+  if (showFirstLoad) {
     return (
       <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
         <ClearLensHeader onPressBack={() => router.back()} />
@@ -1776,7 +1801,7 @@ function ClearLensFundDetailScreen() {
     );
   }
 
-  if (isError || !data) {
+  if (isError) {
     return (
       <ClearLensScreen desktopMaxWidth={FUND_DETAIL_DESKTOP_MAX}>
         <ClearLensHeader onPressBack={() => router.back()} />
@@ -1787,8 +1812,11 @@ function ClearLensFundDetailScreen() {
       </ClearLensScreen>
     );
   }
+  // Defensive: `showFirstLoad` already gates on `data === undefined`, so
+  // the remainder of this component can treat `data` as defined.
+  if (!data) return null;
 
-  const latestNavDate = data.navHistory[data.navHistory.length - 1]?.date ?? null;
+  const latestNavDate = navHistory[navHistory.length - 1]?.date ?? null;
   const todayIso = new Date().toISOString().split('T')[0];
   const navIsStale = latestNavDate !== null && latestNavDate !== todayIso;
   const gain = data.currentValue !== null ? data.currentValue - data.investedAmount : null;
@@ -1904,19 +1932,19 @@ function ClearLensFundDetailScreen() {
         {activeTab === 'performance' && (
           <>
             <PerformanceTab
-              navHistory={data.navHistory}
+              navHistory={navHistory}
               fundBenchmarkIndex={data.benchmarkIndex ?? null}
               fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
               fundRef={{ id: data.id, schemeCode: data.schemeCode }}
               userId={userId}
             />
-            <GrowthConsistencyChart navHistory={data.navHistory} />
+            <GrowthConsistencyChart navHistory={navHistory} />
           </>
         )}
 
         {activeTab === 'nav' && (
           <>
-            <NavHistoryTab navHistory={data.navHistory} />
+            <NavHistoryTab navHistory={navHistory} />
             <TechnicalDetailsCard
               expenseRatio={data.expenseRatio}
               aumCr={data.aumCr}

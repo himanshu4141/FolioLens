@@ -37,7 +37,13 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 
 // Bump this when a query's row shape changes or a migration backfills
 // history rows. Persisted entries are discarded on next start.
-export const __BUSTER__ = 'v1';
+//
+// v2 (2026-05-11): clears the malformed `['index-history', symbol]` payload
+// that `app/fund/[id].tsx` wrote in v1 under the same key the shared cache
+// layer uses but with `{ date, value }` rows instead of `{ index_date,
+// close_value }`. The mismatch made the Nifty 500 TRI chart vanish on
+// Portfolio. Bumping the buster guarantees existing devices start clean.
+export const __BUSTER__ = 'v2';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -96,17 +102,24 @@ export const persister = createAsyncStoragePersister({
 // signed-out user never reads cached PII from disk; the wizard's hook
 // (`useUserProfile`) handles its own refetch-on-mount.
 const PERSIST_ALLOWLIST: readonly string[] = [
+  // Computed query results — these are what the user actually sees after
+  // hydration, so persisting them is the lever that makes "page reload"
+  // paint instantly.
   'portfolio',
   'portfolio-composition',
   'investmentVsBenchmarkTimeline',
   'portfolio-timeline',
   'performance-timeline',
   'fund-detail',
+  'fund-detail-index',
+  'fund-nav-history',
   'money-trail',
-  'nav-history',
-  'index-history',
+  // Auxiliary user-scoped lookups.
   'user-funds',
   'user-transactions',
+  // Per-scheme metadata — shared between Fund Detail and Compare via
+  // a single producer / single cache key (`['scheme-master', code]`).
+  'scheme-master',
 ];
 
 export function shouldPersistQueryKey(queryKey: QueryKey): boolean {

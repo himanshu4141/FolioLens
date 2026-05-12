@@ -36,12 +36,12 @@ describe('shouldPersistQueryKey()', () => {
   describe('persists', () => {
     it.each([
       ['portfolio aggregate', ['portfolio', 'user-1', '^NSEI']],
-      ['nav-history', ['nav-history', 'user-1', [12345]]],
-      ['index-history', ['index-history', '^NSEI']],
       ['investmentVsBenchmarkTimeline', ['investmentVsBenchmarkTimeline', 'user-1', 'a', 'b', 'c']],
       ['portfolio-composition', ['portfolio-composition', [12345]]],
       ['money-trail', ['money-trail', 'user-1']],
       ['fund-detail', ['fund-detail', 'fund-1']],
+      ['fund-detail-index', ['fund-detail-index', '^NSEI']],
+      ['fund-nav-history', ['fund-nav-history', 12345]],
       ['portfolio-timeline', ['portfolio-timeline', 'user-1']],
       ['performance-timeline', ['performance-timeline', 'fund-1']],
       ['user-funds', ['user-funds', 'user-1']],

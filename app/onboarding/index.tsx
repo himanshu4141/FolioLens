@@ -56,6 +56,8 @@ import {
   pickOnboardingInitialStep,
   type OnboardingMode,
 } from '@/src/utils/onboardingInitialStep';
+import { fetchPortfolioData } from '@/src/hooks/usePortfolio';
+import { useAppStore } from '@/src/store/appStore';
 import { analytics } from '@/src/lib/analytics';
 
 type WizardStyles = ReturnType<typeof makeStyles>;
@@ -327,6 +329,22 @@ function OnboardingWizard() {
     // has to manually pull-to-refresh before any data shows up.
     if (draft.importResult) {
       await queryClient.invalidateQueries();
+
+      // Kick the Portfolio query off *before* navigation. The wizard's
+      // "Done" CTA was opening the Portfolio tab and showing a spinner
+      // for ~2–3s while the cards loaded, which is jarring after the
+      // user just waited for the CAS parser. By starting the prefetch
+      // here, the network round-trip overlaps with the React Native
+      // navigation animation — by the time Portfolio mounts the data is
+      // usually already in cache.
+      const userId = session?.user.id;
+      if (userId) {
+        const benchmarkSymbol = useAppStore.getState().defaultBenchmarkSymbol;
+        queryClient.prefetchQuery({
+          queryKey: ['portfolio', userId, benchmarkSymbol],
+          queryFn: () => fetchPortfolioData(queryClient, userId, benchmarkSymbol),
+        });
+      }
     }
 
     await clearOnboardingDraft();

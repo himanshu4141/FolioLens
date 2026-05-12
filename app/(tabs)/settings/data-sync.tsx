@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
@@ -29,6 +29,15 @@ export default function DataSyncScreen() {
   const queryClient = useQueryClient();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
+  // `useIsRestoring` returns true while the React Query persister is
+  // rehydrating the cache from disk on a fresh mount. During that window
+  // any query that depends on persisted state would render different
+  // markup on server (no data → `'—'`) vs client (rehydrated date), and
+  // React's hydration matcher would bail with error #418. Gating the
+  // display value on this flag makes both sides emit the same fallback
+  // until rehydration completes.
+  const isRestoring = useIsRestoring();
+
   const { data: latestNavRow } = useQuery({
     queryKey: ['latest-nav-date'],
     queryFn: async () => {
@@ -43,7 +52,12 @@ export default function DataSyncScreen() {
     staleTime: 10 * 60 * 1000,
   });
 
-  const navBadge = navStatusBadge(latestNavRow, colors);
+  // Hide the real value behind the same `'—'` placeholder both server-
+  // rendered HTML and the very first client render use — only switch to
+  // the actual date once the cache is restored and React's hydration
+  // pass is complete.
+  const displayedNavDate = isRestoring ? null : latestNavRow ?? null;
+  const navBadge = navStatusBadge(displayedNavDate, colors);
 
   function formatNavDate(navDate: string | null | undefined): string {
     if (!navDate) return '—';
@@ -67,7 +81,31 @@ export default function DataSyncScreen() {
     const navOk = navResult.status === 'fulfilled' && !navResult.value.error;
     const idxOk = idxResult.status === 'fulfilled' && !idxResult.value.error;
     if (navOk || idxOk) {
-      await queryClient.invalidateQueries({ queryKey: ['latest-nav-date'] });
+      // Edge functions kick off async ingestion — they return success
+      // before the new nav_history row is committed. Poll the freshness
+      // query a few times (up to ~6s) so the UI eventually reflects the
+      // new "Last sync" date instead of leaving the user staring at the
+      // pre-sync date despite the button reading "Done".
+      const before = latestNavRow ?? null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await queryClient.refetchQueries({ queryKey: ['latest-nav-date'] });
+        const fresh = queryClient.getQueryData<string | null>(['latest-nav-date']);
+        if (fresh && fresh !== before) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      // Anything that renders fund value, "as of" date, or per-fund NAV
+      // points is now stale relative to the freshly published row. Drop
+      // those entries so the next mount reads the new data.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+        queryClient.invalidateQueries({ queryKey: ['fund-detail'] }),
+        queryClient.invalidateQueries({ queryKey: ['fund-nav-history'] }),
+        queryClient.invalidateQueries({ queryKey: ['fund-detail-index'] }),
+        queryClient.invalidateQueries({ queryKey: ['investmentVsBenchmarkTimeline'] }),
+        queryClient.invalidateQueries({ queryKey: ['performance-timeline'] }),
+        queryClient.invalidateQueries({ queryKey: ['portfolio-timeline'] }),
+        queryClient.invalidateQueries({ queryKey: ['money-trail'] }),
+      ]);
       setSyncState('done');
       setTimeout(() => setSyncState('idle'), 3000);
     } else {
@@ -99,7 +137,7 @@ export default function DataSyncScreen() {
             <View style={styles.rowLeft}>
               <Text style={styles.rowValue}>Last sync</Text>
             </View>
-            <Text style={styles.syncDate}>{formatNavDate(latestNavRow)}</Text>
+            <Text style={styles.syncDate}>{formatNavDate(displayedNavDate)}</Text>
           </View>
 
           {/* Manual sync */}

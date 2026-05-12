@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterToWindow, type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
@@ -11,12 +11,7 @@ import {
 } from '@/src/utils/xirr';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
-import {
-  fetchIndexHistoryDirect,
-  fetchIndexHistoryWithCache,
-  fetchNavHistoryDirect,
-  fetchNavHistoryWithCache,
-} from '@/src/lib/sharedHistoryCache';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 export interface InvestmentVsBenchmarkPoint {
   date: string;
@@ -246,42 +241,59 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   userId: string,
   benchmarkSymbol: string,
   window: TimeWindow,
-  qc?: QueryClient,
 ): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
+  perfStart('query:timeline');
   const fundIds = funds.map((fund) => fund.id);
   const schemeCodes = funds.map((fund) => fund.schemeCode);
 
   const txRows = await fetchAllTransactions(userId, fundIds);
   const firstTxDate = txRows[0]?.transaction_date;
-  if (!firstTxDate) return { points: [], xAxisLabels: [] };
+  if (!firstTxDate) {
+    perfEnd('query:timeline', { points: 0, reason: 'no_txs' });
+    return { points: [], xAxisLabels: [] };
+  }
 
   const windowStart = getWindowStartDate(window);
   const navStartDate = windowStart ? laterDate(firstTxDate, windowStart) : firstTxDate;
 
-  // Share the NAV / index cache with `usePortfolio` so a warm visit pays
-  // zero network cost, and a stale revalidation only delta-fetches new
-  // rows. Both fetchers return *full* history; we filter to the active
-  // window in-memory below — the JS slice is microseconds, the network
-  // savings are seconds on slow connections.
-  const [allNavRows, allIdxRows] = await Promise.all([
-    qc
-      ? fetchNavHistoryWithCache(qc, userId, schemeCodes)
-      : fetchNavHistoryDirect(schemeCodes),
-    qc
-      ? fetchIndexHistoryWithCache(qc, benchmarkSymbol)
-      : fetchIndexHistoryDirect(benchmarkSymbol),
+  // Window-bounded SQL fetches. An earlier iteration of this hook routed
+  // through a shared cache layer and pulled *all* history, then filtered
+  // in-memory — fine for warm cache but ~8s of cold-load pagination over
+  // 12k+ NAV rows + a long-history TRI index. The bounded SELECTs trim
+  // both round-trip count and payload size: on the "1Y" window a 10-fund
+  // portfolio touches < 3 NAV pages instead of ~13.
+  perfStart('query:timeline:nav');
+  perfStart('query:timeline:index');
+  const [navRows, idxRows] = await Promise.all([
+    fetchAllNavRows(schemeCodes, navStartDate).then((rows) => {
+      perfEnd('query:timeline:nav', { rows: rows.length, since: navStartDate });
+      return rows;
+    }),
+    fetchAllIndexRows(benchmarkSymbol, firstTxDate).then((rows) => {
+      perfEnd('query:timeline:index', {
+        rows: rows.length,
+        symbol: benchmarkSymbol,
+        since: firstTxDate,
+      });
+      return rows;
+    }),
   ]);
 
-  const navRows: RawNavRow[] = allNavRows.filter((row) => row.nav_date >= navStartDate);
-  const idxRows: RawIdxRow[] = allIdxRows.filter((row) => row.index_date >= firstTxDate);
-
-  return computeInvestmentVsBenchmarkTimeline(
+  const result = computeInvestmentVsBenchmarkTimeline(
     navRows,
     txRows,
     idxRows,
     funds,
     window,
   );
+  perfEnd('query:timeline', {
+    points: result.points.length,
+    nav_rows: navRows.length,
+    idx_rows: idxRows.length,
+    window,
+    symbol: benchmarkSymbol,
+  });
+  return result;
 }
 
 async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<RawTxRow[]> {
@@ -302,6 +314,44 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
   return rows;
 }
 
+async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promise<RawNavRow[]> {
+  if (schemeCodes.length === 0) return [];
+  const rows: RawNavRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('nav_history')
+      .select('scheme_code, nav_date, nav')
+      .in('scheme_code', schemeCodes)
+      .gte('nav_date', startDate)
+      .order('nav_date', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    rows.push(...((data ?? []) as RawNavRow[]));
+    if ((data ?? []).length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function fetchAllIndexRows(benchmarkSymbol: string, startDate: string): Promise<RawIdxRow[]> {
+  if (!benchmarkSymbol) return [];
+  const rows: RawIdxRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('index_history')
+      .select('index_date, close_value')
+      .eq('index_symbol', benchmarkSymbol)
+      .gte('index_date', startDate)
+      .order('index_date', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) throw error;
+    rows.push(...((data ?? []) as RawIdxRow[]));
+    if ((data ?? []).length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
 export function useInvestmentVsBenchmarkTimeline(
   funds: FundRef[],
   userId: string | undefined,
@@ -314,13 +364,7 @@ export function useInvestmentVsBenchmarkTimeline(
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
     enabled: funds.length > 0 && !!userId,
     queryFn: () =>
-      fetchInvestmentVsBenchmarkTimeline(
-        funds,
-        userId!,
-        benchmarkSymbol,
-        window,
-        queryClient,
-      ),
+      fetchInvestmentVsBenchmarkTimeline(funds, userId!, benchmarkSymbol, window),
     staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
   });
 
@@ -339,13 +383,7 @@ export function useInvestmentVsBenchmarkTimeline(
       queryClient.prefetchQuery({
         queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, option.symbol, window],
         queryFn: () =>
-          fetchInvestmentVsBenchmarkTimeline(
-            funds,
-            userId,
-            option.symbol,
-            window,
-            queryClient,
-          ),
+          fetchInvestmentVsBenchmarkTimeline(funds, userId, option.symbol, window),
         staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
       });
     }
