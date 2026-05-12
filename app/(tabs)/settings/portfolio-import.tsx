@@ -132,6 +132,7 @@ export default function PortfolioImportScreen() {
       <UtilityHeader title="Portfolio import" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.frame}>
         <View style={styles.headerCopy}>
           <Text style={styles.heading}>Import and auto-refresh</Text>
           <Text style={styles.subheading}>
@@ -258,6 +259,7 @@ export default function PortfolioImportScreen() {
             </View>
           ))}
         </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -267,7 +269,13 @@ function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
-    content: { padding: ClearLensSpacing.md, gap: ClearLensSpacing.sm, paddingBottom: ClearLensSpacing.xxl },
+    content: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      alignItems: 'center',
+    },
+    frame: { width: '100%', maxWidth: 960, gap: ClearLensSpacing.sm },
 
     headerCopy: {
       gap: 4,

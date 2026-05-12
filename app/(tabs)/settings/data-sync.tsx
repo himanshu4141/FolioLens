@@ -119,6 +119,7 @@ export default function DataSyncScreen() {
       <UtilityHeader title="Data sync" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.frame}>
         <View style={styles.card}>
           {/* NAV data status */}
           <View style={styles.row}>
@@ -200,6 +201,7 @@ export default function DataSyncScreen() {
             We keep your data up to date so your insights are always relevant.
           </Text>
         </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -209,7 +211,13 @@ function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
-    content: { padding: ClearLensSpacing.md, gap: ClearLensSpacing.sm, paddingBottom: ClearLensSpacing.xxl },
+    content: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      alignItems: 'center',
+    },
+    frame: { width: '100%', maxWidth: 960, gap: ClearLensSpacing.sm },
 
     card: {
       backgroundColor: cl.surface,

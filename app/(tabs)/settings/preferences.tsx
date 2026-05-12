@@ -99,6 +99,7 @@ export default function PreferencesScreen() {
       <UtilityHeader title="Preferences" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.frame}>
         {/* Theme */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionLabel}>Appearance</Text>
@@ -187,6 +188,7 @@ export default function PreferencesScreen() {
             </View>
           ))}
         </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -196,7 +198,13 @@ function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: cl.background },
-    content: { padding: ClearLensSpacing.md, gap: ClearLensSpacing.xs, paddingBottom: ClearLensSpacing.xxl },
+    content: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingTop: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      alignItems: 'center',
+    },
+    frame: { width: '100%', maxWidth: 960, gap: ClearLensSpacing.xs },
 
     sectionHeaderRow: {
       flexDirection: 'row',

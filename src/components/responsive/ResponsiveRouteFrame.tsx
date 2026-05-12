@@ -13,10 +13,9 @@ import type { ClearLensTokens } from '@/src/constants/clearLensTheme';
  * keyed inner <View> at the same React depth. So a desktop ↔ mobile resize
  * does NOT unmount/remount the screen — local React state (form inputs,
  * selected fund, segment-control choices, scroll position, etc.) survives
- * the breakpoint crossing. Without this invariant the wrapper used to swap
- * the React tree between `<DesktopShell><Screen/></DesktopShell>` and
- * `<>{children}</>` on every resize, and the resulting Screen unmount wiped
- * the user's tool selections.
+ * the breakpoint crossing. Earlier versions of this wrapper swapped the
+ * React tree between two different parents on each resize, and the
+ * resulting Screen unmount wiped the user's tool selections.
  *
  * Only the DesktopSidebar appears as a sibling of the content View on
  * desktop. Mounting/unmounting a sibling does NOT affect the keyed
