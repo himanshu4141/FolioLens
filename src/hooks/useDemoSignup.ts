@@ -32,6 +32,29 @@ interface DemoSignupResponse {
  * later sign up properly the auth-state listener re-identifies them
  * by Supabase user id; PostHog can be configured to alias the two.
  */
+/**
+ * Pulls a user-friendly message out of a `supabase.functions.invoke`
+ * error. The wrapper's `.message` is dev-vocabulary; the real
+ * server-rendered error (set by `normaliseDemoSignup` or the function
+ * body) sits on `(error as any).context`, which is the original
+ * `Response`. Returns null when no useful body is present so the caller
+ * can fall through to a generic "couldn't reach the server" line.
+ */
+async function extractServerErrorMessage(error: unknown): Promise<string | null> {
+  const ctx = (error as { context?: unknown })?.context;
+  if (!ctx || typeof (ctx as Response).json !== 'function') return null;
+  try {
+    const body = await (ctx as Response).json();
+    if (body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string') {
+      return (body as { error: string }).error;
+    }
+  } catch {
+    // Body wasn't JSON or stream is gone — give up; caller will use
+    // the fallback message.
+  }
+  return null;
+}
+
 export async function submitDemoSignup(input: DemoSignupInput): Promise<DemoSignupResult> {
   const trimmedEmail = input.email.trim().toLowerCase();
 
@@ -56,14 +79,25 @@ export async function submitDemoSignup(input: DemoSignupInput): Promise<DemoSign
   });
 
   if (res.error) {
-    const msg = res.error.message || 'Could not sign up. Please try again.';
-    analytics.track('demo_signup_failed', { reason: msg.slice(0, 200) });
-    throw new Error(msg);
+    // Prefer the server's user-facing message (e.g. "Enter a valid email
+    // address" from normaliseDemoSignup) over the supabase-js wrapper text
+    // ("Failed to send a request to the Edge Function") which leaks
+    // dev-tooling vocabulary into the UI. The wrapper attaches the original
+    // Response on `.context`; if that body parses to JSON with a string
+    // `error` field, surface that; otherwise fall back to a plain network-
+    // failure line.
+    const friendly = (await extractServerErrorMessage(res.error))
+      ?? "Couldn't reach the server. Check your connection and try again.";
+    analytics.track('demo_signup_failed', {
+      reason: friendly.slice(0, 200),
+      raw: (res.error.message ?? '').slice(0, 200),
+    });
+    throw new Error(friendly);
   }
 
   const data = res.data;
   if (!data?.ok) {
-    const msg = data?.error || 'Could not sign up. Please try again.';
+    const msg = data?.error ?? "Something went wrong. Please try again in a moment.";
     analytics.track('demo_signup_failed', { reason: msg.slice(0, 200) });
     throw new Error(msg);
   }
@@ -97,7 +131,11 @@ export function useDemoSignup() {
     try {
       return await submitDemoSignup(input);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not sign up. Please try again.');
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Something went wrong. Please try again in a moment.",
+      );
       return null;
     } finally {
       setIsSubmitting(false);

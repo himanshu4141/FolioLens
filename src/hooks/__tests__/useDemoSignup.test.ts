@@ -68,19 +68,40 @@ describe('submitDemoSignup', () => {
     });
   });
 
-  it('throws and emits demo_signup_failed when the function returns an error envelope', async () => {
+  it('returns the server-rendered error from response context when the function errors', async () => {
+    // Simulates a FunctionsHttpError: the supabase-js wrapper exposes the
+    // raw Response on `.context` so the user-facing copy survives the
+    // round-trip (instead of leaking "Failed to send a request to the
+    // Edge Function" into the UI).
+    const fakeContext = {
+      json: jest.fn().mockResolvedValue({ error: 'Enter a valid email address' }),
+    };
     mockedInvoke.mockResolvedValue({
       data: null,
-      error: { message: 'Server exploded' },
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+      error: { message: 'Failed to send a request to the Edge Function', context: fakeContext },
+    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
 
-    await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow('Server exploded');
+    await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow('Enter a valid email address');
 
     expect(mockedTrack).toHaveBeenCalledWith(
       'demo_signup_failed',
-      expect.objectContaining({ reason: 'Server exploded' }),
+      expect.objectContaining({ reason: 'Enter a valid email address' }),
     );
     expect(mockedIdentify).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a network-failure message when the error has no parsable context', async () => {
+    mockedInvoke.mockResolvedValue({
+      data: null,
+      error: { message: 'Failed to send a request to the Edge Function' },
+    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+
+    await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/couldn't reach the server/i);
+
+    expect(mockedTrack).toHaveBeenCalledWith(
+      'demo_signup_failed',
+      expect.objectContaining({ reason: expect.stringMatching(/couldn't reach the server/i) }),
+    );
   });
 
   it('throws and emits demo_signup_failed when ok=false in the body', async () => {
@@ -101,22 +122,25 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({ data: null, error: null } as Awaited<
       ReturnType<typeof supabase.functions.invoke>
     >);
-    await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/Could not sign up/);
+    await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/Something went wrong/);
   });
 
-  it('truncates the error reason in analytics to 200 chars', async () => {
+  it('captures the raw error.message (truncated) on the analytics event for debugging', async () => {
     const longError = 'x'.repeat(500);
     mockedInvoke.mockResolvedValue({
       data: null,
       error: { message: longError },
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
 
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow();
 
     const failedCall = mockedTrack.mock.calls.find((c) => c[0] === 'demo_signup_failed');
     expect(failedCall).toBeDefined();
-    const reason = failedCall![1] as { reason: string };
-    expect(reason.reason.length).toBe(200);
+    const event = failedCall![1] as { reason: string; raw: string };
+    // `reason` is the user-facing friendly fallback (short); `raw` keeps the
+    // original error.message for diagnostics, truncated to 200.
+    expect(event.raw.length).toBe(200);
+    expect(event.reason).toMatch(/couldn't reach the server/i);
   });
 
   it('passes has_utm_source=false in submitted event when no utm_source is present', async () => {

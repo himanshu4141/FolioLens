@@ -357,6 +357,16 @@ export interface AppStore {
   previewMode: boolean;
   enterPreviewMode: () => void;
   exitPreviewMode: () => void;
+
+  // Visibility flag for the "Sign up to import" confirm modal. The
+  // `useImportPreviewGate` hook flips this on when a preview-mode user
+  // taps an import / onboarding entry point; the globally-mounted
+  // `PreviewExitConfirmModal` reads it. Kept on the store (rather than
+  // colocated context) so any entry point in the app can trigger it
+  // without threading props through the parent tree.
+  importGateVisible: boolean;
+  showImportGate: () => void;
+  hideImportGate: () => void;
 }
 
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
@@ -496,6 +506,10 @@ export const useAppStore = create<AppStore>()(
       previewMode: false,
       enterPreviewMode: () => set({ previewMode: true }),
       exitPreviewMode: () => set({ previewMode: false }),
+
+      importGateVisible: false,
+      showImportGate: () => set({ importGateVisible: true }),
+      hideImportGate: () => set({ importGateVisible: false }),
     }),
     {
       name: 'foliolens-app-store',

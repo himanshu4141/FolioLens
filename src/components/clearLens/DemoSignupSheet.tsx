@@ -16,10 +16,12 @@ import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,
   ClearLensRadii,
+  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
+import { useResponsiveLayout } from '@/src/components/responsive';
 import { useDemoSignup } from '@/src/hooks/useDemoSignup';
 import {
   readEntryAttributionFromBrowser,
@@ -48,7 +50,9 @@ export function DemoSignupSheet({
   attribution?: EntryAttribution;
 }) {
   const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const { layout } = useResponsiveLayout();
+  const isDesktop = layout === 'desktop';
+  const styles = useMemo(() => makeStyles(tokens, isDesktop), [tokens, isDesktop]);
   const cl = tokens.colors;
   const [email, setEmail] = useState('');
   const [marketingConsent, setMarketingConsent] = useState(false);
@@ -88,7 +92,7 @@ export function DemoSignupSheet({
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType={isDesktop ? 'fade' : 'slide'}
       onRequestClose={handleClose}
       accessibilityViewIsModal
     >
@@ -98,7 +102,7 @@ export function DemoSignupSheet({
       >
         <Pressable style={styles.backdropTap} onPress={handleClose} />
         <View style={styles.sheet}>
-          <View style={styles.handle} />
+          {!isDesktop && <View style={styles.handle} />}
           <View style={styles.titleRow}>
             <Text style={styles.title}>Try FolioLens with sample data</Text>
             <TouchableOpacity
@@ -112,8 +116,8 @@ export function DemoSignupSheet({
             </TouchableOpacity>
           </View>
           <Text style={styles.subtitle}>
-            You&apos;ll be added to the early access list — we&apos;ll email you when launch
-            invites open. Preview opens right away.
+            Drop your email to open the preview right away. We&apos;ll only email you
+            if you tick the box below.
           </Text>
 
           <Text style={styles.label}>Email</Text>
@@ -167,8 +171,8 @@ export function DemoSignupSheet({
           </TouchableOpacity>
 
           <Text style={styles.disclaimer}>
-            We store your email so we can invite you when FolioLens is ready. No spam, no
-            investment advice. Privacy policy at foliolens.in/privacy.html.
+            We&apos;ll only contact you if you opt in above. No spam, no investment
+            advice. Privacy policy at foliolens.in/privacy.html.
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -176,25 +180,37 @@ export function DemoSignupSheet({
   );
 }
 
-function makeStyles(tokens: ClearLensTokens) {
+function makeStyles(tokens: ClearLensTokens, isDesktop: boolean) {
   const cl = tokens.colors;
   return StyleSheet.create({
+    // Mobile: bottom-anchored sheet with rounded top corners.
+    // Desktop: centered card with all-round corners + horizontal padding
+    // around it so it doesn't kiss the viewport edges.
     backdrop: {
       flex: 1,
-      justifyContent: 'flex-end',
+      justifyContent: isDesktop ? 'center' : 'flex-end',
+      alignItems: 'center',
+      paddingHorizontal: isDesktop ? ClearLensSpacing.lg : 0,
       backgroundColor: tokens.semantic.overlay.backdrop,
     },
     backdropTap: {
-      flex: 1,
+      ...StyleSheet.absoluteFillObject,
     },
     sheet: {
+      width: '100%',
+      maxWidth: isDesktop ? 480 : undefined,
       backgroundColor: cl.surface,
       borderTopLeftRadius: ClearLensRadii.xl,
       borderTopRightRadius: ClearLensRadii.xl,
+      // Bottom corners are square on mobile (sheet hugs the viewport edge)
+      // and rounded on desktop (it's a free-floating card).
+      borderBottomLeftRadius: isDesktop ? ClearLensRadii.xl : 0,
+      borderBottomRightRadius: isDesktop ? ClearLensRadii.xl : 0,
       paddingHorizontal: ClearLensSpacing.lg,
-      paddingTop: ClearLensSpacing.sm,
-      paddingBottom: ClearLensSpacing.xl,
+      paddingTop: isDesktop ? ClearLensSpacing.lg : ClearLensSpacing.sm,
+      paddingBottom: isDesktop ? ClearLensSpacing.lg : ClearLensSpacing.xl,
       gap: ClearLensSpacing.sm,
+      ...(isDesktop ? ClearLensShadow : null),
     },
     handle: {
       width: 44,

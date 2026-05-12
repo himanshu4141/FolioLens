@@ -29,6 +29,7 @@ import { authClient } from '@/src/lib/auth';
 import { useAppStore } from '@/src/store/appStore';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
 import { PreviewBanner } from '@/src/components/PreviewBanner';
+import { PreviewExitConfirmModal } from '@/src/components/clearLens/PreviewExitConfirmModal';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
@@ -96,6 +97,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     <>
       {previewMode && <PreviewBanner />}
       {children}
+      <PreviewExitConfirmModal />
     </>
   );
 }
