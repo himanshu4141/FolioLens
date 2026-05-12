@@ -18,6 +18,7 @@ import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/sr
 import type { NavPoint } from '@/src/utils/navUtils';
 import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -101,6 +102,7 @@ function isFundDetailRow(
 }
 
 export async function fetchFundDetail(fundId: string): Promise<FundDetailData | null> {
+  perfStart('query:fundDetail');
   // Load fund metadata
   const { data: fund, error: fundError } = await supabase
     .from('fund')
@@ -108,7 +110,10 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
     .eq('id', fundId)
     .single();
 
-  if (fundError || !isFundDetailRow(fund)) return null;
+  if (fundError || !isFundDetailRow(fund)) {
+    perfEnd('query:fundDetail', { found: false });
+    return null;
+  }
 
   // Parallel fetch: extended scheme_master fields not yet exposed by the
   // `fund` view (M3v2 — Compare Funds redesign). All nullable; the FundDetail
@@ -157,6 +162,7 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   }));
 
   if (navHistory.length === 0) {
+    perfEnd('query:fundDetail', { found: true, navs: 0, has_current_nav: false });
     // NAV sync hasn't run yet for this scheme — return zeroed data so the UI
     // can show an informative empty state rather than crashing.
     return {
@@ -204,6 +210,12 @@ export async function fetchFundDetail(fundId: string): Promise<FundDetailData | 
   // `['fund-detail-index', symbol]` useQuery (see `app/fund/[id].tsx`)
   // so we don't paginate it here.
 
+  perfEnd('query:fundDetail', {
+    found: true,
+    navs: navHistory.length,
+    has_current_nav: true,
+    txs: txs?.length ?? 0,
+  });
   return {
     id: fund.id,
     schemeName: fund.scheme_name,
@@ -256,6 +268,7 @@ export function useFundDetail(fundId: string) {
  * the background.
  */
 export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[]> {
+  perfStart('query:fundNavHistory');
   const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
     (from, to) => supabase
       .from('nav_history')
@@ -264,6 +277,7 @@ export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[
       .order('nav_date', { ascending: true })
       .range(from, to),
   );
+  perfEnd('query:fundNavHistory', { rows: rows.length, scheme_code: schemeCode });
   return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
 }
 

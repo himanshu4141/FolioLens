@@ -31,6 +31,7 @@ import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { analytics } from '@/src/lib/analytics';
+import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
 
 // Required for expo-web-browser openAuthSessionAsync to complete on Android.
@@ -204,6 +205,7 @@ export default function RootLayout() {
           // slow load on the user's device is impossible to attribute
           // between "cache miss" and "OTA never applied".
           console.log('[persister] cache restored', { buster: __BUSTER__ });
+          perfNow('persister:restored', { buster: __BUSTER__ });
           analytics.track('persister_restored', { buster: __BUSTER__ });
         }}
         onError={() => {
@@ -211,6 +213,7 @@ export default function RootLayout() {
           // are non-fatal — the app continues with an empty cache. Surface
           // them so we can spot a pattern.
           console.warn('[persister] cache restore failed', { buster: __BUSTER__ });
+          perfNow('persister:restore_failed', { buster: __BUSTER__ });
           analytics.track('persister_restore_failed', { buster: __BUSTER__ });
         }}
       >

@@ -26,6 +26,7 @@ import {
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 interface NavRow {
   scheme_code: number;
@@ -90,25 +91,37 @@ function isPortfolioFundRow(
 }
 
 export async function fetchPortfolioData(userId: string, benchmarkSymbol: string) {
+  perfStart('query:portfolio');
+
   // Load active funds
+  perfStart('query:portfolio:funds');
   const { data: funds, error: fundsError } = await supabase
     .from('fund')
     .select('id, scheme_code, scheme_name, scheme_category, benchmark_index_symbol')
     .eq('user_id', userId)
     .eq('is_active', true);
+  perfEnd('query:portfolio:funds', { rows: funds?.length ?? 0 });
 
   if (fundsError) throw fundsError;
-  if (!funds?.length) return { fundCards: [], summary: null };
+  if (!funds?.length) {
+    perfEnd('query:portfolio', { funds: 0, txs: 0, navs: 0, idxs: 0 });
+    return { fundCards: [], summary: null };
+  }
 
   const validFunds = funds.filter(isPortfolioFundRow);
-  if (!validFunds.length) return { fundCards: [], summary: null };
+  if (!validFunds.length) {
+    perfEnd('query:portfolio', { funds: 0, txs: 0, navs: 0, idxs: 0 });
+    return { fundCards: [], summary: null };
+  }
 
   // Load all transactions for this user (for XIRR)
+  perfStart('query:portfolio:txs');
   const { data: allTxs, error: txError } = await supabase
     .from('transaction')
     .select('fund_id, transaction_date, transaction_type, units, amount')
     .eq('user_id', userId)
     .order('transaction_date', { ascending: true });
+  perfEnd('query:portfolio:txs', { rows: allTxs?.length ?? 0 });
 
   if (txError) throw txError;
 
@@ -136,12 +149,14 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
   const navCutoff = new Date();
   navCutoff.setDate(navCutoff.getDate() - 90);
   const navCutoffIso = navCutoff.toISOString().split('T')[0];
+  perfStart('query:portfolio:nav');
   const { data: navRowsRaw, error: navError } = await supabase
     .from('nav_history')
     .select('scheme_code, nav_date, nav')
     .in('scheme_code', schemeCodes)
     .gte('nav_date', navCutoffIso)
     .order('nav_date', { ascending: false });
+  perfEnd('query:portfolio:nav', { rows: navRowsRaw?.length ?? 0 });
   if (navError) throw navError;
   const navRows: NavRow[] = (navRowsRaw ?? []) as NavRow[];
 
@@ -189,6 +204,7 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
   const firstTxDate = (allTxs?.[0]?.transaction_date as string | undefined) ?? null;
   let benchmarkRows: IndexRow[] = [];
   if (benchmarkSymbol) {
+    perfStart('query:portfolio:index');
     let benchmarkQuery = supabase
       .from('index_history')
       .select('index_date, close_value')
@@ -196,6 +212,7 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
       .order('index_date', { ascending: false });
     if (firstTxDate) benchmarkQuery = benchmarkQuery.gte('index_date', firstTxDate);
     const { data, error } = await benchmarkQuery;
+    perfEnd('query:portfolio:index', { rows: data?.length ?? 0, symbol: benchmarkSymbol });
     if (error) throw error;
     benchmarkRows = (data ?? []) as IndexRow[];
   }
@@ -355,6 +372,12 @@ export async function fetchPortfolioData(userId: string, benchmarkSymbol: string
     latestNavDate,
   };
 
+  perfEnd('query:portfolio', {
+    fund_cards: fundCards.length,
+    txs: allTxs?.length ?? 0,
+    navs: navRows.length,
+    idxs: benchmarkRows.length,
+  });
   return { fundCards, summary };
 }
 

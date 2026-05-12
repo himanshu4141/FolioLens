@@ -11,6 +11,7 @@ import {
 } from '@/src/utils/xirr';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 export interface InvestmentVsBenchmarkPoint {
   date: string;
@@ -241,12 +242,16 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   benchmarkSymbol: string,
   window: TimeWindow,
 ): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
+  perfStart('query:timeline');
   const fundIds = funds.map((fund) => fund.id);
   const schemeCodes = funds.map((fund) => fund.schemeCode);
 
   const txRows = await fetchAllTransactions(userId, fundIds);
   const firstTxDate = txRows[0]?.transaction_date;
-  if (!firstTxDate) return { points: [], xAxisLabels: [] };
+  if (!firstTxDate) {
+    perfEnd('query:timeline', { points: 0, reason: 'no_txs' });
+    return { points: [], xAxisLabels: [] };
+  }
 
   const windowStart = getWindowStartDate(window);
   const navStartDate = windowStart ? laterDate(firstTxDate, windowStart) : firstTxDate;
@@ -257,18 +262,38 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   // 12k+ NAV rows + a long-history TRI index. The bounded SELECTs trim
   // both round-trip count and payload size: on the "1Y" window a 10-fund
   // portfolio touches < 3 NAV pages instead of ~13.
+  perfStart('query:timeline:nav');
+  perfStart('query:timeline:index');
   const [navRows, idxRows] = await Promise.all([
-    fetchAllNavRows(schemeCodes, navStartDate),
-    fetchAllIndexRows(benchmarkSymbol, firstTxDate),
+    fetchAllNavRows(schemeCodes, navStartDate).then((rows) => {
+      perfEnd('query:timeline:nav', { rows: rows.length, since: navStartDate });
+      return rows;
+    }),
+    fetchAllIndexRows(benchmarkSymbol, firstTxDate).then((rows) => {
+      perfEnd('query:timeline:index', {
+        rows: rows.length,
+        symbol: benchmarkSymbol,
+        since: firstTxDate,
+      });
+      return rows;
+    }),
   ]);
 
-  return computeInvestmentVsBenchmarkTimeline(
+  const result = computeInvestmentVsBenchmarkTimeline(
     navRows,
     txRows,
     idxRows,
     funds,
     window,
   );
+  perfEnd('query:timeline', {
+    points: result.points.length,
+    nav_rows: navRows.length,
+    idx_rows: idxRows.length,
+    window,
+    symbol: benchmarkSymbol,
+  });
+  return result;
 }
 
 async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<RawTxRow[]> {

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/src/lib/supabase';
 import { useSession } from '@/src/hooks/useSession';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import {
   buildAnnualMoneyFlows,
   buildMoneyTrailSummary,
@@ -43,6 +44,7 @@ export interface MoneyTrailData {
 const PAGE_SIZE = 1000;
 
 export async function fetchMoneyTrailData(userId: string): Promise<MoneyTrailData> {
+  perfStart('query:moneyTrail');
   const [txRows, fundRows] = await Promise.all([
     fetchAllTransactionRows(userId),
     fetchFundRows(userId),
@@ -72,6 +74,11 @@ export async function fetchMoneyTrailData(userId: string): Promise<MoneyTrailDat
   });
 
   const transactions = buildMoneyTrailTransactions(rawRows);
+  perfEnd('query:moneyTrail', {
+    txs: txRows.length,
+    funds: fundRows.length,
+    transactions: transactions.length,
+  });
   return {
     transactions,
     annualFlows: buildAnnualMoneyFlows(transactions),
