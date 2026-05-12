@@ -103,7 +103,7 @@ Clear Lens Fund Detail includes:
 - Composition asset mix, market-cap mix, sectors, top holdings, and disclosure footer
 - Portfolio Weight card (caps at 460 px wide on desktop so the donut + info pair doesn't drift in whitespace)
 
-On desktop the screen renders inside the sidebar shell with `desktopMaxWidth={920}` (chart-heavy). All charts (Performance, NAV, Growth Consistency) read width from `useWindowDimensions` so they grow as the window does. The Growth Consistency bars use equal-slot positioning (`plotWidth / bars.length` per slot) so they span the full plot rather than clustering at the left edge.
+On desktop the screen renders inside the sidebar shell with `desktopMaxWidth={920}` — a historical override that pre-dates the 760 → 960 list-tier bump. It's now narrower than the list tier by 40 px; flagged as a known orphan in `DESIGN.md` to drop or align on the next touch. All charts (Performance, NAV, Growth Consistency) read width from `useWindowDimensions` and clamp to `FUND_DETAIL_DESKTOP_MAX` so they grow as the window does. The Growth Consistency bars use equal-slot positioning (`plotWidth / bars.length` per slot) so they span the full plot rather than clustering at the left edge.
 
 ### 5. Money Trail
 
@@ -153,7 +153,7 @@ Includes:
 - import tools, auto-forward inbox status, CAS address, PAN management, PDF upload fallback
 - sign out (under About & support)
 
-On desktop the hub caps content at 760 px so the cards don't stretch edge-to-edge of the sidebar shell's content area.
+On desktop the hub and all its sub-pages (Account, Preferences, Data sync, Portfolio import, About) cap content at **960 px** — the list tier defined in `DESIGN.md`. Each sub-page wraps its ScrollView body in a centered `frame` view so the cards don't stretch edge-to-edge of the sidebar shell's content area, mirroring the hub's own pattern.
 
 ### 8. Tools Hub
 
