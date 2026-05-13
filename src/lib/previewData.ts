@@ -679,6 +679,47 @@ export function findPreviewCompositionByCode(
 // (Portfolio card, Fund Detail header, Money Trail) read coherent
 // numbers for the same fund.
 
+// ── Tools Hub adapters ───────────────────────────────────────────────────────
+//
+// Lightweight projections of `PREVIEW_FUND_CARDS` / `SCHEMES` that match
+// the row shape various Tools Hub screens fetch from Supabase. Each
+// preview-aware tool short-circuits its loader and uses these instead.
+
+export interface PreviewToolFundRow {
+  id: string;
+  schemeName: string;
+  schemeCategory: string;
+  schemeCode: number;
+  currentValue: number;
+  /** Heuristic: Regular plans 1.62%, Direct plans 0.65%. Liquid funds 0.20%. */
+  expenseRatio: number;
+  /** 'direct' | 'regular' — derived from the scheme name. */
+  planType: 'direct' | 'regular';
+}
+
+function expenseRatioForScheme(schemeName: string, category: string): number {
+  if (category.toLowerCase().includes('liquid')) return 0.2;
+  if (schemeName.includes('Regular')) return 1.62;
+  return 0.65;
+}
+
+/**
+ * Mirrors the shape that `ClearLensDirectVsRegularScreen.fetchPlanRows`
+ * returns from Supabase. In preview mode the screen swaps the live
+ * query out for this fixture so the breakdown card renders with the
+ * preview portfolio (which deliberately includes one Regular-plan fund
+ * so the tool has a non-trivial story to tell).
+ */
+export const PREVIEW_TOOL_FUND_ROWS: PreviewToolFundRow[] = PREVIEW_FUND_CARDS.map((card) => ({
+  id: card.id,
+  schemeName: card.schemeName,
+  schemeCategory: card.schemeCategory,
+  schemeCode: card.schemeCode,
+  currentValue: card.currentValue ?? 0,
+  expenseRatio: expenseRatioForScheme(card.schemeName, card.schemeCategory),
+  planType: card.schemeName.includes('Regular') ? 'regular' : 'direct',
+}));
+
 export function buildPreviewFundDetail(fundId: string): FundDetailData | null {
   const scheme = SCHEME_BY_ID.get(fundId);
   if (!scheme) return null;

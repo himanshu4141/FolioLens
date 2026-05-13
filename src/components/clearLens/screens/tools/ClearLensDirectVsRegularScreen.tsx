@@ -36,12 +36,15 @@ import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { fundViewRepo } from '@/src/lib/data/userFund';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { useAppStore } from '@/src/store/appStore';
+import { PREVIEW_TOOL_FUND_ROWS } from '@/src/lib/previewData';
 import {
   buildPlanBreakdown,
   computeCostImpact,
   type FundPlanRow,
 } from '@/src/utils/directVsRegularCalc';
 import { formatCurrency } from '@/src/utils/formatting';
+import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
 
 const HORIZON_OPTIONS: { value: HorizonKey; label: string }[] = [
   { value: '5Y', label: '5Y' },
@@ -131,15 +134,30 @@ export function ClearLensDirectVsRegularScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { session } = useSession();
   const userId = session?.user.id;
+  const previewMode = useAppStore((s) => s.previewMode);
 
   const [horizon, setHorizon] = useState<HorizonKey>('10Y');
   const [deltaStr, setDeltaStr] = useState<string>(String(DEFAULT_EXPENSE_DELTA_PCT));
   const [sipStr, setSipStr] = useState<string>('10000');
 
   const fundsQuery = useQuery({
-    queryKey: ['direct-vs-regular-funds', userId],
-    queryFn: () => (userId ? fetchPlanRows(userId) : Promise.resolve([] as UserFundRow[])),
-    enabled: !!userId,
+    queryKey: previewMode
+      ? ['direct-vs-regular-funds', 'preview']
+      : ['direct-vs-regular-funds', userId],
+    queryFn: () => {
+      if (previewMode) {
+        return Promise.resolve(
+          PREVIEW_TOOL_FUND_ROWS.map((r) => ({
+            id: r.id,
+            schemeName: r.schemeName,
+            currentValue: r.currentValue,
+            expenseRatio: r.expenseRatio,
+          })) as UserFundRow[],
+        );
+      }
+      return userId ? fetchPlanRows(userId) : Promise.resolve([] as UserFundRow[]);
+    },
+    enabled: previewMode || !!userId,
     staleTime: 60_000,
   });
 
@@ -186,7 +204,7 @@ export function ClearLensDirectVsRegularScreen() {
     ? (breakdown.regularValue / breakdown.totalValue) * 100
     : 0;
 
-  if (!userId) {
+  if (!userId && !previewMode) {
     return (
       <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
@@ -213,50 +231,54 @@ export function ClearLensDirectVsRegularScreen() {
             </Text>
           </View>
 
-          {/* Inputs */}
-          <View style={styles.card}>
-            <View style={styles.inputRow}>
-              <Text style={styles.inputLabel}>Horizon</Text>
-              <ClearLensSegmentedControl
-                options={HORIZON_OPTIONS}
-                selected={horizon}
-                onChange={setHorizon}
-              />
+          <ToolsPreviewBanner message="A sample portfolio with one regular-plan fund, 10-year horizon, ₹10,000/mo SIP. Sign up to plug in your own." />
+
+          {/* Inputs — hidden in preview mode (controls are locked there). */}
+          {!previewMode && (
+            <View style={styles.card}>
+              <View style={styles.inputRow}>
+                <Text style={styles.inputLabel}>Horizon</Text>
+                <ClearLensSegmentedControl
+                  options={HORIZON_OPTIONS}
+                  selected={horizon}
+                  onChange={setHorizon}
+                />
+              </View>
+
+              <Separator />
+
+              <View style={styles.inputRow}>
+                <Text style={styles.inputLabel}>Monthly SIP (₹)</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="e.g. 10,000"
+                  placeholderTextColor={tokens.colors.textTertiary}
+                  value={sipStr}
+                  onChangeText={setSipStr}
+                  keyboardType="numeric"
+                  returnKeyType="next"
+                />
+              </View>
+
+              <Separator />
+
+              <View style={styles.inputRow}>
+                <Text style={styles.inputLabel}>Expense ratio difference (% per year)</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="e.g. 0.7"
+                  placeholderTextColor={tokens.colors.textTertiary}
+                  value={deltaStr}
+                  onChangeText={setDeltaStr}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                />
+                <Text style={styles.inputHint}>
+                  Typical equity-fund commission is around 0.5%–1.0% per year.
+                </Text>
+              </View>
             </View>
-
-            <Separator />
-
-            <View style={styles.inputRow}>
-              <Text style={styles.inputLabel}>Monthly SIP (₹)</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="e.g. 10,000"
-                placeholderTextColor={tokens.colors.textTertiary}
-                value={sipStr}
-                onChangeText={setSipStr}
-                keyboardType="numeric"
-                returnKeyType="next"
-              />
-            </View>
-
-            <Separator />
-
-            <View style={styles.inputRow}>
-              <Text style={styles.inputLabel}>Expense ratio difference (% per year)</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="e.g. 0.7"
-                placeholderTextColor={tokens.colors.textTertiary}
-                value={deltaStr}
-                onChangeText={setDeltaStr}
-                keyboardType="numeric"
-                returnKeyType="done"
-              />
-              <Text style={styles.inputHint}>
-                Typical equity-fund commission is around 0.5%–1.0% per year.
-              </Text>
-            </View>
-          </View>
+          )}
 
           {fundsQuery.isLoading ? (
             <View style={styles.center}><Text style={styles.helperText}>Loading your funds…</Text></View>
