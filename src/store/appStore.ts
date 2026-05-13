@@ -367,6 +367,29 @@ export interface AppStore {
   importGateVisible: boolean;
   showImportGate: () => void;
   hideImportGate: () => void;
+
+  // Generic styled dialog queue — replaces `Alert.alert` / `window.confirm`
+  // / `window.alert` call sites that previously rendered un-styled OS
+  // chrome inside an otherwise design-system-styled app. The
+  // `useAlertDialog` / `useConfirmDialog` hooks in `useDialog.ts` are the
+  // public API; callers shouldn't read this state directly. Only one
+  // dialog at a time — newer calls replace the in-flight one (matches
+  // `Alert.alert` semantics).
+  dialog: AppDialogRequest | null;
+  showDialog: (req: AppDialogRequest) => void;
+  hideDialog: () => void;
+}
+
+export interface AppDialogRequest {
+  kind: 'alert' | 'confirm';
+  title: string;
+  body?: string;
+  okText?: string;
+  cancelText?: string;
+  destructive?: boolean;
+  // For 'confirm' dialogs. Callers wire side effects through these.
+  onConfirm?: () => void;
+  onCancel?: () => void;
 }
 
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
@@ -510,6 +533,10 @@ export const useAppStore = create<AppStore>()(
       importGateVisible: false,
       showImportGate: () => set({ importGateVisible: true }),
       hideImportGate: () => set({ importGateVisible: false }),
+
+      dialog: null,
+      showDialog: (req) => set({ dialog: req }),
+      hideDialog: () => set({ dialog: null }),
     }),
     {
       name: 'foliolens-app-store',

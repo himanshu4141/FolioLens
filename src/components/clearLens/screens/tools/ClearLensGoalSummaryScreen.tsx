@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import {
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useConfirmDialog } from '@/src/hooks/useDialog';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
@@ -49,6 +49,7 @@ export function ClearLensGoalSummaryScreen() {
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
   const { goals, returnAssumptions, deleteGoal } = useAppStore();
+  const showConfirm = useConfirmDialog();
   const [tab, setTab] = useState<TabKey>('estimate');
 
   const goal = goals.find((g) => g.id === id);
@@ -82,21 +83,18 @@ export function ClearLensGoalSummaryScreen() {
 
   function confirmDelete() {
     const goalId = goal!.id;
-    Alert.alert(
-      'Delete goal',
-      `Remove "${goal!.name}"? This cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            router.back();
-            deleteGoal(goalId);
-          },
-        },
-      ],
-    );
+    const goalName = goal!.name;
+    showConfirm({
+      title: 'Delete goal',
+      body: `Remove "${goalName}"? This cannot be undone.`,
+      okText: 'Delete',
+      cancelText: 'Cancel',
+      destructive: true,
+      onConfirm: () => {
+        router.back();
+        deleteGoal(goalId);
+      },
+    });
   }
 
   const presetLabel = goal.returnPreset.charAt(0).toUpperCase() + goal.returnPreset.slice(1);

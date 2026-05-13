@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { authClient } from '@/src/lib/auth';
 import { useAppStore } from '@/src/store/appStore';
+import { useAlertDialog } from '@/src/hooks/useDialog';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -54,6 +55,7 @@ export function AppOverflowMenu({
   const router = useRouter();
   const previewMode = useAppStore((s) => s.previewMode);
   const exitPreviewMode = useAppStore((s) => s.exitPreviewMode);
+  const showAlert = useAlertDialog();
 
   function dismissAnd(action: () => void) {
     return () => {
@@ -71,7 +73,7 @@ export function AppOverflowMenu({
     }
     const { error } = await authClient.signOut();
     if (error) {
-      Alert.alert('Sign out failed', error.message);
+      showAlert({ title: 'Sign out failed', body: error.message });
     }
   }
 
