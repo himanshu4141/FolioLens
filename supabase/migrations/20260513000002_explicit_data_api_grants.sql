@@ -37,16 +37,16 @@
 
 -- ─── 1. Stop future implicit grants ───────────────────────────────────────
 -- ALTER DEFAULT PRIVILEGES only affects objects created *after* this runs.
--- We cover both `postgres` (default owner for our migrations) and
--- `supabase_admin` (Supabase's internal role that originally installed
--- the implicit grants) so new tables don't silently re-inherit them.
+-- Use the current-user form (no FOR ROLE clause) so this works regardless
+-- of whether migrations run as `postgres` (cloud / Supabase CLI) or some
+-- other admin role — Postgres rejects `FOR ROLE X` unless current_user is
+-- a member of X. Migrations are the only thing creating tables in the
+-- public schema, so stripping the migration role's own defaults covers
+-- every CREATE TABLE we'll ever do here.
 
-alter default privileges for role postgres       in schema public revoke all on tables    from anon, authenticated;
-alter default privileges for role postgres       in schema public revoke all on sequences from anon, authenticated;
-alter default privileges for role postgres       in schema public revoke all on routines  from anon, authenticated;
-alter default privileges for role supabase_admin in schema public revoke all on tables    from anon, authenticated;
-alter default privileges for role supabase_admin in schema public revoke all on sequences from anon, authenticated;
-alter default privileges for role supabase_admin in schema public revoke all on routines  from anon, authenticated;
+alter default privileges in schema public revoke all on tables    from anon, authenticated;
+alter default privileges in schema public revoke all on sequences from anon, authenticated;
+alter default privileges in schema public revoke all on routines  from anon, authenticated;
 
 -- ─── 2. Strip implicit grants from existing objects ───────────────────────
 -- Wipes the slate for `anon` and `authenticated` so the GRANTs below are
