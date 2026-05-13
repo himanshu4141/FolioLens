@@ -29,6 +29,7 @@ import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
+import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -149,6 +150,7 @@ export function ClearLensPastSipCheckScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { session } = useSession();
   const userId = session?.user.id;
+  const previewMode = useAppStore((s) => s.previewMode);
   const { defaultBenchmarkSymbol } = useAppStore();
 
   const [selectedScheme, setSelectedScheme] = useState<PickedScheme | null>(null);
@@ -288,6 +290,41 @@ export function ClearLensPastSipCheckScreen() {
   // -------------------------------------------------------------------------
   // Empty / loading states
   // -------------------------------------------------------------------------
+  if (previewMode) {
+    // Sample output card — preview users can't run the full backtest
+    // (no real fund history loaded), so render a frozen example with a
+    // sign-up CTA. Same scheme as the Tools Hub preview elsewhere.
+    return (
+      <ClearLensScreen>
+        <ClearLensHeader onPressBack={() => router.back()} />
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.titleBlock}>
+            <Text style={styles.eyebrow}>Past SIP check</Text>
+            <Text style={styles.title}>What if you had SIP&apos;d in this fund?</Text>
+            <Text style={styles.subtitle}>
+              Picks any fund and shows how a monthly SIP would have grown over a
+              chosen window, vs the benchmark.
+            </Text>
+          </View>
+          <ToolsPreviewSampleCard
+            bannerMessage="₹10,000/mo SIP into HDFC Mid-Cap Opportunities over 3 years vs Nifty 500 TRI. Sign up to run it on any fund."
+            heroLabel="3-year SIP outcome"
+            heroValue="₹4.18 L"
+            heroSubtitle="₹3.60 L invested → ₹4.18 L final value"
+            rows={[
+              { label: 'Fund XIRR', value: '21.4%', tone: 'positive' },
+              { label: 'Nifty 500 TRI XIRR', value: '14.8%' },
+              { label: 'Lead over benchmark', value: '+₹19.6k', tone: 'positive' },
+              { label: 'Best 3-month stretch', value: '+₹38.4k' },
+              { label: 'Worst 3-month stretch', value: '−₹22.1k', tone: 'negative' },
+            ]}
+            footnote="Sample numbers. Once you import a real CAS, this runs against your actual NAV history."
+          />
+        </ScrollView>
+      </ClearLensScreen>
+    );
+  }
+
   if (!userId) {
     return (
       <ClearLensScreen>

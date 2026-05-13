@@ -27,7 +27,9 @@ import type { ReactNode } from 'react';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
+import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
 import { useResponsiveLayout } from '@/src/components/responsive';
+import { useAppStore } from '@/src/store/appStore';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -280,6 +282,7 @@ export function ClearLensCompareFundsScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { session } = useSession();
   const userId = session?.user.id ?? null;
+  const previewMode = useAppStore((s) => s.previewMode);
   const queryClient = useQueryClient();
 
   const [selectedCodes, setSelectedCodes] = useState<number[]>([]);
@@ -457,6 +460,41 @@ export function ClearLensCompareFundsScreen() {
     if (router.canGoBack()) router.back();
     else router.replace('/tools');
   };
+
+  if (previewMode) {
+    return (
+      <ClearLensScreen>
+        <ClearLensHeader onPressBack={handleBack} />
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.titleBlock}>
+            <Text style={styles.eyebrow}>Compare funds</Text>
+            <Text style={styles.title}>Side-by-side on the metrics that matter</Text>
+            <Text style={styles.subtitle}>
+              Returns, risk, asset mix, sectors, top holdings — across up to four
+              funds at once.
+            </Text>
+          </View>
+          <ToolsPreviewSampleCard
+            bannerMessage="A sample comparison of HDFC Mid-Cap vs HDFC Hybrid Equity. Sign up to compare any two funds with their real history."
+            heroLabel="HDFC Mid-Cap vs HDFC Hybrid Equity"
+            heroValue="+6.3% / yr"
+            heroSubtitle="HDFC Mid-Cap led HDFC Hybrid Equity by 6.3% annualised over 3Y"
+            rows={[
+              { label: '3Y XIRR — HDFC Mid-Cap', value: '21.4%', tone: 'positive' },
+              { label: '3Y XIRR — HDFC Hybrid Equity', value: '15.1%' },
+              { label: 'Volatility — HDFC Mid-Cap', value: '18.6%' },
+              { label: 'Volatility — HDFC Hybrid Equity', value: '11.2%', tone: 'positive' },
+              { label: 'Expense ratio — Mid-Cap (Direct)', value: '0.65%', tone: 'positive' },
+              { label: 'Expense ratio — Hybrid (Direct IDCW)', value: '0.78%' },
+              { label: 'Equity allocation', value: '95% vs 71%' },
+              { label: 'Top-3 sector overlap', value: '24%' },
+            ]}
+            footnote="Sample numbers. Once you import a real CAS, compare any funds across the full Returns / Risk / Asset mix / Sectors / Holdings tabs."
+          />
+        </ScrollView>
+      </ClearLensScreen>
+    );
+  }
 
   if (!userId) {
     return (
