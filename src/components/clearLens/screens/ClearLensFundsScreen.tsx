@@ -560,6 +560,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
         onMoneyTrail={() => router.push('/money-trail')}
         onTools={() => router.push('/tools' as never)}
         onSettings={() => router.push('/(tabs)/settings')}
+        hasPortfolio={fundCards.length > 0}
       />
       {isLoading ? (
         <View style={styles.centered}>

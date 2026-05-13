@@ -22,6 +22,10 @@ interface AppOverflowMenuProps {
   onMoneyTrail: () => void;
   onTools: () => void;
   onSettings: () => void;
+  // When the user has no holdings yet, the same destination is the
+  // first-time import flow — so swap the label/icon back to "Import"
+  // instead of "Refresh" to avoid implying there's something to refresh.
+  hasPortfolio?: boolean;
 }
 
 type RowConfig = {
@@ -40,6 +44,7 @@ export function AppOverflowMenu({
   onMoneyTrail,
   onSettings,
   onTools,
+  hasPortfolio = true,
 }: AppOverflowMenuProps) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -63,11 +68,11 @@ export function AppOverflowMenu({
   const dataActions: RowConfig[] = [
     {
       key: 'import',
-      icon: 'refresh-outline',
-      // Most users hit this after the initial import, when they want to
-      // pull in fresh CAS transactions — "Import portfolio" implied a
-      // first-time action and made repeat use feel wrong.
-      label: 'Refresh portfolio',
+      icon: hasPortfolio ? 'refresh-outline' : 'cloud-upload-outline',
+      // First-time users land here with no holdings — show "Import" so the
+      // CTA matches the empty-state action. Returning users see "Refresh"
+      // since they'll mostly use this to pull in fresh CAS transactions.
+      label: hasPortfolio ? 'Refresh portfolio' : 'Import portfolio',
       onPress: dismissAnd(onImport),
     },
   ];

@@ -974,6 +974,7 @@ function ClearLensPortfolioScreenMobile() {
         onMoneyTrail={() => router.push('/money-trail')}
         onSettings={() => router.push('/(tabs)/settings')}
         onTools={() => router.push('/tools' as never)}
+        hasPortfolio={!!summary && fundCards.length > 0}
       />
 
       {showFirstLoad ? (
