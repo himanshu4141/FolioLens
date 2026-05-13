@@ -123,6 +123,7 @@ Because this change only adds plugin and documentation files, the app TypeScript
 - The implemented plugin omits hooks, MCP server config, app config, icons, and screenshots from `plugin.json` because version 0.1.0 only ships skills and a shared reference. This avoids dangling placeholder paths while keeping the plugin installable.
 - The shared reference moved from `plugins/foliolens-qa/skills/references/app-reference.md` to `docs/qa/foliolens-app-reference.md` so multiple QA bundles can point at one update location.
 - The Claude plugin is now checked in under `qa/claude/foliolens-qa/` with `.claude-plugin/plugin.json`, `README.md`, and `skills/`. Its skill names and QA workflow wording are preserved, while its reference file is a repo-relative pointer to the canonical shared reference.
+- The Claude plugin README was replaced with the user-provided plugin overview covering skills, tested areas, requirements, and report locations.
 
 ## Progress
 
