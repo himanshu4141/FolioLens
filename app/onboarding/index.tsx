@@ -22,7 +22,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { userProfileRepo } from '@/src/lib/data/userProfile';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile, userProfileQueryKey } from '@/src/hooks/useUserProfile';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
@@ -152,8 +152,8 @@ function maskDobInput(raw: string): string {
 }
 
 async function markAutoForwardSetupComplete(userId: string): Promise<void> {
-  const { error } = await supabase
-    .from('user_profile')
+  const { error } = await userProfileRepo
+    .from()
     .update({
       cas_auto_forward_setup_completed_at: new Date().toISOString(),
       cas_inbox_confirmation_url: null,
@@ -602,8 +602,8 @@ function IdentityStep({
     });
 
     const startedAt = Date.now();
-    const { error: upsertError } = await supabase
-      .from('user_profile')
+    const { error: upsertError } = await userProfileRepo
+      .from()
       .upsert(upsertPayload, { onConflict: 'user_id' });
     const elapsedMs = Date.now() - startedAt;
 

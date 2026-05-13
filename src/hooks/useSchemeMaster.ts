@@ -14,7 +14,7 @@
  * sync-fund-meta cron), so a long staleTime is safe.
  */
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { schemeMasterRepo } from '@/src/lib/data/schemeMaster';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
@@ -48,8 +48,8 @@ export async function fetchSchemeMaster(
   schemeCode: number,
 ): Promise<SchemeMasterDbRow | null> {
   perfStart('query:schemeMaster');
-  const { data, error } = await supabase
-    .from('scheme_master')
+  const { data, error } = await schemeMasterRepo
+    .from()
     .select(SCHEME_MASTER_COLUMNS)
     .eq('scheme_code', schemeCode)
     .maybeSingle();

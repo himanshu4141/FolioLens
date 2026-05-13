@@ -39,7 +39,8 @@ import {
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
-import { supabase } from '@/src/lib/supabase';
+import { functionsClient } from '@/src/lib/functions';
+import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { shortSchemeName } from '@/src/utils/schemeName';
@@ -198,8 +199,8 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
   if (schemeCodes.length === 0) return [];
   perfStart('query:compare:compositions');
   // Get the latest composition row per scheme.
-  const { data, error } = await supabase
-    .from('fund_portfolio_composition')
+  const { data, error } = await fundPortfolioCompositionRepo
+    .from()
     .select(
       'scheme_code, portfolio_date, source, equity_pct, debt_pct, cash_pct, other_pct, large_cap_pct, mid_cap_pct, small_cap_pct, sector_allocation, top_holdings, raw_debt_holdings',
     )
@@ -317,7 +318,7 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-snapshot', code],
         queryFn: async () => {
-          const { data, error } = await supabase.functions.invoke<{ status: string }>(
+          const { data, error } = await functionsClient.invoke<{ status: string }>(
             'fetch-fund-snapshot',
             { body: { scheme_code: code } },
           );
@@ -337,7 +338,7 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-nav', code],
         queryFn: async () => {
-          const { data, error } = await supabase.functions.invoke<{ status: string }>(
+          const { data, error } = await functionsClient.invoke<{ status: string }>(
             'fetch-fund-nav',
             { body: { scheme_code: code } },
           );

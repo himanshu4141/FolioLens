@@ -60,7 +60,19 @@ npm run lint        # zero warnings (--max-warnings 0)
 ### Supabase migrations
 - After writing a new migration, apply it to the production DB (`supabase db push` or via the Supabase MCP tool) and confirm it ran without errors.
 - For cron schedule changes, verify the `cron.job` table reflects the new schedule.
+- New user-owned tables FK their `user_id` column to `public.app_user(id)`, never to `auth.users(id)`. The schema is decoupled from Supabase Auth — keep it that way. See `supabase/migrations/20260514000000_app_user_decouple.sql`.
 - Any new table in the `public` schema that the app reads/writes via supabase-js needs explicit `GRANT` statements — Supabase no longer auto-exposes `public` tables to the Data API (see `supabase/migrations/20260513000002_explicit_data_api_grants.sql` for the project-wide convention and the rationale).
+
+### Reducing Supabase lock-in
+The app uses Supabase but stays exit-ready. Full reasoning + the 90-day exit plan: `docs/EXIT-RUNBOOK.md`.
+
+- All client access goes through wrappers, not `supabase` directly:
+  - Auth: `src/lib/auth/index.ts` (`authClient`)
+  - Edge Functions: `src/lib/functions/index.ts` (`functionsClient`)
+  - Storage: `src/lib/storage/index.ts` (`storageClient`)
+  - Data API: `src/lib/data/<table>.ts` (`<table>Repo`)
+- Do not import `supabase` from `@/src/lib/supabase` outside these wrappers. New data access goes through (or extends) the per-table repo.
+- Avoid net-new Supabase-specific surface area: no Realtime, no Supabase Vault, no `supabase.rpc()` from the client, no new `SECURITY DEFINER` functions unless absolutely necessary, no new pg_cron jobs with business logic in SQL (cron should call an HTTP endpoint).
 
 ### Stacked PRs
 - When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.

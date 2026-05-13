@@ -40,7 +40,8 @@ import {
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { functionsClient } from '@/src/lib/functions';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { fetchPerformanceTimeline } from '@/src/hooks/usePerformanceTimeline';
@@ -114,8 +115,8 @@ interface PickedScheme {
 async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
   perfStart('query:sipCheck:nav');
   const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
-    (from, to) => supabase
-      .from('nav_history')
+    (from, to) => navHistoryRepo
+      .from()
       .select('nav_date, nav')
       .eq('scheme_code', schemeCode)
       .order('nav_date', { ascending: true })
@@ -132,7 +133,7 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
  */
 async function ensureNavCached(schemeCode: number): Promise<{ status: string }> {
   perfStart('query:sipCheck:backfill');
-  const { data, error } = await supabase.functions.invoke<{ status: string }>('fetch-fund-nav', {
+  const { data, error } = await functionsClient.invoke<{ status: string }>('fetch-fund-nav', {
     body: { scheme_code: schemeCode },
   });
   perfEnd('query:sipCheck:backfill', { status: data?.status ?? 'unknown', scheme_code: schemeCode });

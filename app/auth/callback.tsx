@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import * as Linking from 'expo-linking';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { getAppScheme, getNativeExchangeCallbackUrl } from '@/src/utils/appScheme';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
@@ -112,7 +112,7 @@ export default function OAuthCallbackScreen() {
           const sessionTokens = sessionUrl ? parseSessionFromUrl(sessionUrl) : null;
 
           if (sessionTokens) {
-            const { error } = await supabase.auth.setSession({
+            const { error } = await authClient.setSession({
               access_token: sessionTokens.accessToken,
               refresh_token: sessionTokens.refreshToken,
             });
@@ -145,7 +145,7 @@ export default function OAuthCallbackScreen() {
 
         // Pass the full reconstructed URL; Supabase extracts the code param
         // and retrieves the stored PKCE verifier from AsyncStorage automatically.
-        const { data, error } = await supabase.auth.exchangeCodeForSession(callbackHref);
+        const { data, error } = await authClient.exchangeCodeForSession(callbackHref);
 
         if (error) {
           // Surface the verbatim Supabase error to logs so production crashes

@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { casImportRepo } from '@/src/lib/data/casImport';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
@@ -67,8 +67,8 @@ function formatImportSource(source: LastImport['import_source']): string {
 }
 
 async function fetchLastImport(userId: string): Promise<LastImport | null> {
-  const { data, error } = await supabase
-    .from('cas_import')
+  const { data, error } = await casImportRepo
+    .from()
     .select('created_at, import_source, import_status, funds_updated, transactions_added')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })

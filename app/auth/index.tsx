@@ -14,7 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { canShowDevAuthShortcut, getDevAuthCredentials } from '@/src/lib/devAuth';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
@@ -63,7 +63,7 @@ export default function SignInScreen() {
     setError(null);
     setLoadingMode('magic');
 
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error } = await authClient.signInWithOtp({
       email: email.trim(),
       options: {
         emailRedirectTo: getRedirectUrl(),
@@ -88,7 +88,7 @@ export default function SignInScreen() {
       ? `${window.location.origin}/auth/callback`
       : getNativeBridgeUrl('/auth/callback');
 
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await authClient.signInWithOAuth({
       provider: 'google',
       options: { redirectTo, skipBrowserRedirect: true },
     });
@@ -130,7 +130,7 @@ export default function SignInScreen() {
     setError(null);
     setLoadingMode('demo');
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error } = await authClient.signInWithPassword({
       email: devEmail,
       password: devPassword,
     });

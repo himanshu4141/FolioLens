@@ -18,7 +18,7 @@
  * across opens.
  */
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { transactionRepo } from '@/src/lib/data/transaction';
 import { useSession } from '@/src/hooks/useSession';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
@@ -63,8 +63,8 @@ export async function fetchUserTransactionsRemote(
 ): Promise<UserTransactionRow[]> {
   const rows: UserTransactionRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    let q = supabase
-      .from('transaction')
+    let q = transactionRepo
+      .from()
       .select(TX_COLUMNS)
       .eq('user_id', userId)
       .order('transaction_date', { ascending: true })

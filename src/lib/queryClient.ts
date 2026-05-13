@@ -31,7 +31,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MutationCache, QueryCache, QueryClient, type QueryKey } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
 import { isAuthSessionInvalidError } from '@/src/lib/authError';
 
@@ -64,7 +64,7 @@ function handleAuthError(error: unknown): void {
   inFlightSignOut = (async () => {
     try {
       analytics.track('auth_session_invalidated');
-      await supabase.auth.signOut();
+      await authClient.signOut();
     } catch {
       // signOut errors are non-fatal — AuthGate watches session state.
     } finally {

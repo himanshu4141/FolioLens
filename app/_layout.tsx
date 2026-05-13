@@ -25,7 +25,7 @@ import {
   shouldPersistQueryKey,
 } from '@/src/lib/queryClient';
 import { useSession } from '@/src/hooks/useSession';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
@@ -57,14 +57,14 @@ WebBrowser.maybeCompleteAuthSession();
  *
  * NOTE: Google OAuth (PKCE) callbacks do NOT flow through this function.
  * They arrive as <scheme>://auth/callback?code=... and are handled entirely
- * within app/auth/callback.tsx, which calls supabase.auth.exchangeCodeForSession.
+ * within app/auth/callback.tsx, which calls authClient.exchangeCodeForSession.
  * The openAuthSessionAsync call in auth/index.tsx returns the URL directly,
  * so the Linking listener below never fires for OAuth callbacks.
  */
 function handleAuthDeepLink(url: string) {
   const sessionTokens = parseSessionFromUrl(url);
   if (sessionTokens) {
-    supabase.auth.setSession({
+    authClient.setSession({
       access_token: sessionTokens.accessToken,
       refresh_token: sessionTokens.refreshToken,
     });
@@ -131,7 +131,7 @@ function useAnalyticsLifecycle() {
       });
     }
 
-    const identify = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+    const identify = (session: Awaited<ReturnType<typeof authClient.getSession>>['data']['session']) => {
       if (session?.user) {
         analytics.identify(session.user.id, {
           email_domain: session.user.email?.split('@')[1] ?? null,
@@ -148,7 +148,7 @@ function useAnalyticsLifecycle() {
     // network round-trip during web bootstrap.
     const sqliteSupported = Platform.OS !== 'web';
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    authClient.getSession().then(({ data: { session } }) => {
       identify(session);
       if (sqliteSupported && session?.user.id) {
         // Kick off the offline-first bootstrap. Idempotent — if the
@@ -159,7 +159,7 @@ function useAnalyticsLifecycle() {
         });
       }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
       identify(session);
       if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
         void bootstrapForUser(session.user.id).catch((err) => {
@@ -201,7 +201,7 @@ function useAnalyticsLifecycle() {
           const sinceLastSync = Date.now() - lastForegroundSyncAtRef.current;
           if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
             lastForegroundSyncAtRef.current = Date.now();
-            void supabase.auth.getSession().then(({ data: { session } }) => {
+            void authClient.getSession().then(({ data: { session } }) => {
               const uid = session?.user.id;
               if (!uid) return;
               syncDeltaForUser(uid)

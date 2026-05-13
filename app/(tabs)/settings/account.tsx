@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
@@ -70,7 +70,7 @@ export default function AccountScreen() {
       ? `${window.location.origin}/auth/callback`
       : getNativeBridgeUrl('/auth/callback');
 
-    const { data, error } = await supabase.auth.linkIdentity({
+    const { data, error } = await authClient.linkIdentity({
       provider: 'google',
       options: { redirectTo, skipBrowserRedirect: Platform.OS !== 'web' },
     });

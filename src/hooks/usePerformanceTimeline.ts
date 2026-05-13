@@ -10,7 +10,9 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { fundViewRepo } from '@/src/lib/data/userFund';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { filterToWindow, type TimeWindow, type NavPoint } from '@/src/utils/navUtils';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
@@ -51,8 +53,8 @@ export async function fetchPerformanceTimeline(
 
   if (fundItems.length > 0) {
     // Fetch scheme codes for the fund IDs
-    const { data: funds, error: fundsError } = await supabase
-      .from('fund')
+    const { data: funds, error: fundsError } = await fundViewRepo
+      .from()
       .select('id, scheme_code, scheme_name')
       .in('id', fundItems.map((f) => f.id));
 
@@ -62,8 +64,8 @@ export async function fetchPerformanceTimeline(
     const schemeCodes = validFunds.map((f) => f.scheme_code);
 
     if (schemeCodes.length > 0) {
-      const { data: navRows, error: navError } = await supabase
-        .from('nav_history')
+      const { data: navRows, error: navError } = await navHistoryRepo
+        .from()
         .select('scheme_code, nav_date, nav')
         .in('scheme_code', schemeCodes)
         .order('nav_date', { ascending: false })
@@ -96,8 +98,8 @@ export async function fetchPerformanceTimeline(
   }
 
   if (indexItems.length > 0) {
-    const { data: idxRows, error: idxError } = await supabase
-      .from('index_history')
+    const { data: idxRows, error: idxError } = await indexHistoryRepo
+      .from()
       .select('index_symbol, index_date, close_value')
       .in('index_symbol', indexItems.map((i) => i.symbol))
       .order('index_date', { ascending: false })

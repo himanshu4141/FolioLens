@@ -13,7 +13,9 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { transactionRepo } from '@/src/lib/data/transaction';
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { filterToWindow, indexTo100, type TimeWindow, type NavPoint } from '@/src/utils/navUtils';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterReversedTransactionPairs } from '@/src/utils/xirr';
@@ -185,20 +187,20 @@ export async function fetchPortfolioTimeline(
   const [navResult, txResult, idxResult] = await Promise.all([
     // Fetch newest rows first so our 10k-row budget covers recent history
     // (nav_history can have 55k+ rows per fund going back to 2013)
-    supabase
-      .from('nav_history')
+    navHistoryRepo
+      .from()
       .select('scheme_code, nav_date, nav')
       .in('scheme_code', schemeCodes)
       .order('nav_date', { ascending: false })
       .limit(10000),
-    supabase
-      .from('transaction')
+    transactionRepo
+      .from()
       .select('fund_id, transaction_date, transaction_type, units, amount')
       .eq('user_id', userId)
       .in('fund_id', fundIds)
       .order('transaction_date', { ascending: true }),
-    supabase
-      .from('index_history')
+    indexHistoryRepo
+      .from()
       .select('index_date, close_value')
       .eq('index_symbol', benchmarkSymbol)
       .order('index_date', { ascending: false })

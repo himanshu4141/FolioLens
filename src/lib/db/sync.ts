@@ -20,7 +20,8 @@
  * never sees a "sync failed" modal; instead, the Portfolio header
  * shows "Last synced N min ago" so they know how fresh the data is.
  */
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
@@ -53,8 +54,8 @@ async function fetchAllNavRows(
   if (schemeCodes.length === 0) return [];
   const rows: RawNavRow[] = [];
   for (let from = 0; ; from += NAV_PAGE_SIZE) {
-    let q = supabase
-      .from('nav_history')
+    let q = navHistoryRepo
+      .from()
       .select('scheme_code, nav_date, nav')
       .in('scheme_code', schemeCodes)
       .order('nav_date', { ascending: true })
@@ -74,8 +75,8 @@ async function fetchAllIndexRows(
 ): Promise<RawIdxRow[]> {
   const rows: RawIdxRow[] = [];
   for (let from = 0; ; from += IDX_PAGE_SIZE) {
-    let q = supabase
-      .from('index_history')
+    let q = indexHistoryRepo
+      .from()
       .select('index_date, close_value')
       .eq('index_symbol', symbol)
       .order('index_date', { ascending: true })

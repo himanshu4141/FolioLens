@@ -33,7 +33,9 @@ import {
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
-import { supabase } from '@/src/lib/supabase';
+import { fundViewRepo } from '@/src/lib/data/userFund';
+import { transactionRepo } from '@/src/lib/data/transaction';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import {
   buildPlanBreakdown,
   computeCostImpact,
@@ -66,8 +68,8 @@ interface UserFundRow {
 }
 
 async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
-  const { data: funds, error } = await supabase
-    .from('fund')
+  const { data: funds, error } = await fundViewRepo
+    .from()
     .select('id, scheme_name, scheme_code, expense_ratio')
     .eq('user_id', userId)
     .eq('is_active', true);
@@ -76,8 +78,8 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
 
   // Compute current value per fund: latest NAV × net units (purchases − redemptions).
   const fundIds = funds.map((f) => f.id as string);
-  const { data: txs } = await supabase
-    .from('transaction')
+  const { data: txs } = await transactionRepo
+    .from()
     .select('fund_id, transaction_type, units')
     .in('fund_id', fundIds);
 
@@ -97,8 +99,8 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
     .filter((c): c is number => c != null);
   const navByScheme = new Map<number, number>();
   if (schemeCodes.length > 0) {
-    const { data: navRows } = await supabase
-      .from('nav_history')
+    const { data: navRows } = await navHistoryRepo
+      .from()
       .select('scheme_code, nav, nav_date')
       .in('scheme_code', schemeCodes)
       .order('nav_date', { ascending: false });

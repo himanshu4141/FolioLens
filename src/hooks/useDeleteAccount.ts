@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
+import { functionsClient } from '@/src/lib/functions';
 import { analytics } from '@/src/lib/analytics';
 
 interface DeleteAccountResponse {
@@ -20,7 +21,7 @@ interface DeleteAccountResponse {
  * would land on a fresh anonymous id).
  */
 export async function deleteAccount(): Promise<DeleteAccountResponse> {
-  const res = await supabase.functions.invoke<DeleteAccountResponse>('delete-account', {
+  const res = await functionsClient.invoke<DeleteAccountResponse>('delete-account', {
     body: {},
   });
   if (res.error) {
@@ -31,7 +32,7 @@ export async function deleteAccount(): Promise<DeleteAccountResponse> {
     throw new Error(data?.error ?? 'Could not delete account.');
   }
   analytics.track('account_deleted');
-  await supabase.auth.signOut();
+  await authClient.signOut();
   return data;
 }
 

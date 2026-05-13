@@ -14,7 +14,7 @@
 
 import { useEffect } from 'react';
 import { useQuery, useQueryClient, keepPreviousData, type QueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import {
   xirr,
   buildCashflowsFromTransactions,
@@ -160,8 +160,8 @@ export async function fetchPortfolioData(
   }
   if (navRows.length === 0) {
     navSource = 'supabase';
-    const { data: navRowsRaw, error: navError } = await supabase
-      .from('nav_history')
+    const { data: navRowsRaw, error: navError } = await navHistoryRepo
+      .from()
       .select('scheme_code, nav_date, nav')
       .in('scheme_code', schemeCodes)
       .gte('nav_date', navCutoffIso)
