@@ -24,7 +24,7 @@ import { supabase } from '@/src/lib/supabase';
 import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
-import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
+import { fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import * as txRepo from '@/src/lib/db/tx';
 import * as navRepo from '@/src/lib/db/nav';
@@ -146,13 +146,15 @@ async function runSync(
   try {
     const watermark = await txRepo.getWatermark();
     if (watermark === null || options.mode === 'delta') {
-      const fresh = await fetchUserTransactions(userId);
-      const newRows =
-        watermark === null
-          ? fresh
-          : fresh.filter((r) => r.transaction_date >= watermark);
-      await txRepo.bulkInsert(newRows);
-      txInserted = newRows.length;
+      // Hit Supabase directly — `fetchUserTransactions` is the SQLite-
+      // first read-through used by hooks, so calling it here would just
+      // hand us back the rows we're trying to refresh (and delta would
+      // be a permanent no-op once the local table had any rows).
+      const fresh = await fetchUserTransactionsRemote(userId, watermark);
+      const before = await txRepo.count();
+      await txRepo.bulkInsert(fresh);
+      const after = await txRepo.count();
+      txInserted = after - before;
       await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
     }
   } catch (err) {
@@ -270,15 +272,29 @@ export async function bootstrapForUser(userId: string): Promise<SyncResult> {
   return inFlightBootstrap;
 }
 
+let inFlightDelta: Promise<SyncResult> | null = null;
+
 /**
- * Same but uses delta semantics — call on screen focus or
- * pull-to-refresh.
+ * Same but uses delta semantics — call on screen focus, foreground,
+ * or pull-to-refresh.
+ *
+ * Single-flight: concurrent callers (pull-to-refresh + AppState
+ * 'active' firing in the same tick) share one in-flight sync instead
+ * of racing two parallel pulls against Supabase.
  */
 export async function syncDeltaForUser(userId: string): Promise<SyncResult> {
-  const funds = await fetchUserFunds(userId);
-  const schemeCodes = funds
-    .map((f) => f.scheme_code)
-    .filter((c): c is number => typeof c === 'number');
-  const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
-  return syncDelta(userId, schemeCodes, indexSymbols);
+  if (inFlightDelta) return inFlightDelta;
+  inFlightDelta = (async () => {
+    try {
+      const funds = await fetchUserFunds(userId);
+      const schemeCodes = funds
+        .map((f) => f.scheme_code)
+        .filter((c): c is number => typeof c === 'number');
+      const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
+      return await syncDelta(userId, schemeCodes, indexSymbols);
+    } finally {
+      inFlightDelta = null;
+    }
+  })();
+  return inFlightDelta;
 }
