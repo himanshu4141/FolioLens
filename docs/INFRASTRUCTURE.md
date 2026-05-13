@@ -188,6 +188,66 @@ Build-time env vars (the `EXPO_PUBLIC_*` ones baked into the JS bundle) come fro
 GitHub Actions overrides these for OTA updates by passing the workflow's `_PROD` or `_DEV` GitHub secrets at runtime — that way OTA bundles always land with values matching the channel they ship to.
 
 
+## Feature flags
+
+
+Flags resolve **at build time** from `EXPO_PUBLIC_FEATURE_*` env vars baked into the JS bundle. The EAS channel decides which value gets baked: each channel block in [eas.json](../eas.json) sets its own `env` map, and the flag value follows from there. The source of truth for what's wired up is [src/lib/featureFlags.ts](../src/lib/featureFlags.ts).
+
+
+Why build-time rather than runtime: at this scale (one consumer per flag, low cadence) the simplicity wins. No runtime fetch, no PostHog round-trip on the critical auth path, no RLS to reason about. The trade-off is that toggling a flag requires a rebuild + OTA — acceptable for "ship-readiness" gates.
+
+
+### Current flags
+
+
+| Flag | Env var | preview-* channels | production channel |
+|------|---------|--------------------|--------------------|
+| Preview mode (sample-data walkthrough) | `EXPO_PUBLIC_FEATURE_PREVIEW_MODE` | `true` | `false` |
+
+
+### Adding or toggling a flag
+
+
+1. **Pick the env var name.** Stick to the `EXPO_PUBLIC_FEATURE_<NAME>` convention. Anything without the `EXPO_PUBLIC_` prefix won't make it into the JS bundle.
+2. **Set the per-channel value in [eas.json](../eas.json).** Every channel that should see the flag enabled needs `"EXPO_PUBLIC_FEATURE_<NAME>": "true"`. Production should default to `"false"` unless you actively want it on in prod.
+3. **Wire the flag into `src/lib/featureFlags.ts`.** One `process.env` read at module scope, exported via the `featureFlags` object. Consumers import `featureFlags.<name>` — never call `process.env` directly from feature code.
+4. **For Vercel web builds**, also set the env var in the Vercel project's Environment Variables UI for the relevant environments (Preview vs Production). Vercel does not read `eas.json` — the web bundle gets its env from Vercel's own settings.
+5. **To toggle in prod:** flip the value in `eas.json` for the relevant channel, commit, and republish the OTA update (or cut a new native build if the change needs to reach users on an older binary).
+
+
+### Defense-in-depth for state that outlives the flag
+
+
+If a flag controls a mode that persists state (e.g. preview mode persists `previewMode` in the Zustand store), the app should force-exit that state when the flag is off. See `AuthGate` in [app/_layout.tsx](../app/_layout.tsx) for the pattern — a one-shot effect that clears the persisted flag-gated state on mount when `featureFlags.<name>` is false. Without this, a user whose previous build had the flag on would stay stuck in the flag-gated mode after we flip it off.
+
+
+### Graduation path: PostHog runtime override
+
+
+If a flag ever needs to be toggled **at runtime** for a specific user cohort — e.g. "enable preview for the people who emailed asking for it" — layer PostHog feature flags on top **without removing the build-time floor**. PostHog is already initialised via [src/lib/analytics.ts](../src/lib/analytics.ts) and identifies users by Supabase `user.id`, so cohort targeting is free.
+
+
+The shape of the change:
+
+
+```ts
+import { PostHog } from 'posthog-react-native';
+
+const buildTimeDefault = process.env.EXPO_PUBLIC_FEATURE_PREVIEW_MODE === 'true';
+
+export function isPreviewModeEnabled(posthog?: PostHog): boolean {
+  // PostHog override wins when defined; otherwise build-time default.
+  const override = posthog?.getFeatureFlag('preview_mode_enabled');
+  if (override === true) return true;
+  if (override === false) return false;
+  return buildTimeDefault;
+}
+```
+
+
+Keep the build-time default `false` in prod so a missing or misconfigured PostHog flag can never *enable* a feature that prod isn't ready for — PostHog can only override the build-time decision for a targeted cohort. Target the PostHog flag at distinct IDs (which `analytics.identify()` already populates with the Supabase user ID) or by an email-domain property from the PostHog dashboard.
+
+
 ## Google OAuth
 
 

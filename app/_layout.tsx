@@ -31,6 +31,7 @@ import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/Theme
 import { PreviewBanner } from '@/src/components/PreviewBanner';
 import { PreviewExitConfirmModal } from '@/src/components/clearLens/PreviewExitConfirmModal';
 import { AppDialog } from '@/src/components/clearLens/AppDialog';
+import { featureFlags } from '@/src/lib/featureFlags';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
@@ -78,8 +79,21 @@ function handleAuthDeepLink(url: string) {
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { session, loading } = useSession();
   const previewMode = useAppStore((s) => s.previewMode);
+  const exitPreviewMode = useAppStore((s) => s.exitPreviewMode);
   const segments = useSegments();
   const router = useRouter();
+
+  // Defense-in-depth: if the preview-mode feature flag is off but
+  // `previewMode` is persisted from a previous build that had the
+  // flag on, force-exit on mount. The auth-screen entry CTA is the
+  // only normal way to enter preview, but a hot-flip of the flag
+  // shouldn't leave existing users stranded inside a preview the
+  // build no longer ships.
+  useEffect(() => {
+    if (!featureFlags.previewMode && previewMode) {
+      exitPreviewMode();
+    }
+  }, [previewMode, exitPreviewMode]);
 
   useEffect(() => {
     if (loading) return;

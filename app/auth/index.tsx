@@ -18,6 +18,7 @@ import { authClient } from '@/src/lib/auth';
 import { canShowDevAuthShortcut, getDevAuthCredentials } from '@/src/lib/devAuth';
 import { useAppStore } from '@/src/store/appStore';
 import { DemoSignupSheet } from '@/src/components/clearLens/DemoSignupSheet';
+import { featureFlags } from '@/src/lib/featureFlags';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
@@ -256,20 +257,22 @@ export default function SignInScreen() {
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.previewButton, loadingMode !== null && styles.buttonDisabled]}
-              onPress={handlePreview}
-              disabled={loadingMode !== null}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Preview the app with sample data without signing up"
-            >
-              {loadingMode === 'preview' ? (
-                <ActivityIndicator color={cl.textSecondary} />
-              ) : (
-                <Text style={styles.previewButtonText}>Try with sample data — early access list</Text>
-              )}
-            </TouchableOpacity>
+            {featureFlags.previewMode && (
+              <TouchableOpacity
+                style={[styles.previewButton, loadingMode !== null && styles.buttonDisabled]}
+                onPress={handlePreview}
+                disabled={loadingMode !== null}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Preview the app with sample data without signing up"
+              >
+                {loadingMode === 'preview' ? (
+                  <ActivityIndicator color={cl.textSecondary} />
+                ) : (
+                  <Text style={styles.previewButtonText}>Try with sample data — early access list</Text>
+                )}
+              </TouchableOpacity>
+            )}
 
             {showDevAuthShortcut && (
               <>
