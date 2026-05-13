@@ -33,7 +33,11 @@ import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
-import { bootstrapForUser, clearAll as clearLocalDb } from '@/src/lib/db/sync';
+import {
+  bootstrapForUser,
+  clearAll as clearLocalDb,
+  syncDeltaForUser,
+} from '@/src/lib/db/sync';
 
 // Required for expo-web-browser openAuthSessionAsync to complete on Android.
 // When Chrome Custom Tabs redirects to the app's active scheme, Android opens the app via
@@ -92,10 +96,23 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 // a "return" — only resumes after at least 5 minutes of background time.
 const APP_RETURNED_THRESHOLD_MS = 5 * 60 * 1000;
 
+// Throttle for the foreground delta sync. Lower than the analytics
+// threshold above on purpose: a user who uploaded a CAS on web and
+// switched to mobile within a minute should still see the new portfolio
+// value when the app comes back to foreground. The throttle just stops
+// a tap-back-from-control-centre from spamming Supabase every few
+// seconds.
+const FOREGROUND_SYNC_MIN_INTERVAL_MS = 30 * 1000;
+
 function useAnalyticsLifecycle() {
   // Tracks the last time the app was in foreground; used to compute the
   // gap before emitting `app_returned`. Initialised on mount.
   const lastActiveAtRef = useRef<number>(Date.now());
+  // Tracks the last successful foreground delta sync attempt. Separate
+  // from `lastActiveAtRef` because we want to gate sync on time-since-
+  // last-sync, not time-since-last-foreground (so two quick app switches
+  // don't both trigger Supabase pulls).
+  const lastForegroundSyncAtRef = useRef<number>(0);
   const sentAppStartedRef = useRef(false);
 
   useEffect(() => {
@@ -173,6 +190,35 @@ function useAnalyticsLifecycle() {
           analytics.track('app_returned', {
             previous_session_age_hours: Number((idleMs / 1000 / 60 / 60).toFixed(2)),
           });
+        }
+
+        // Pull any server-side changes (e.g. a CAS uploaded from web on
+        // another device) into the local SQLite cache, then invalidate
+        // React Query so screens recompute against the fresh rows. The
+        // single-flight guard inside `syncDeltaForUser` plus the
+        // foreground-sync throttle below keep this cheap.
+        if (sqliteSupported) {
+          const sinceLastSync = Date.now() - lastForegroundSyncAtRef.current;
+          if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
+            lastForegroundSyncAtRef.current = Date.now();
+            void supabase.auth.getSession().then(({ data: { session } }) => {
+              const uid = session?.user.id;
+              if (!uid) return;
+              syncDeltaForUser(uid)
+                .then((result) => {
+                  const changed =
+                    result.txInserted > 0 ||
+                    result.navInserted > 0 ||
+                    result.idxInserted > 0;
+                  if (changed) {
+                    void queryClient.invalidateQueries();
+                  }
+                })
+                .catch((err) => {
+                  console.warn('[db/sync] foreground delta failed', err);
+                });
+            });
+          }
         }
       } else if (nextState === 'background' || nextState === 'inactive') {
         lastActiveAtRef.current = Date.now();

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -20,8 +21,9 @@ import {
   ClearLensPill,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
-import { useIsRestoring } from '@tanstack/react-query';
+import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
+import { syncDeltaForUser } from '@/src/lib/db/sync';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
@@ -876,7 +878,47 @@ function ClearLensPortfolioScreenMobile() {
   const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol } = useAppStore();
   const [overflowOpen, setOverflowOpen] = useState(false);
 
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, refetch, isRefetching } = usePortfolio(defaultBenchmarkSymbol);
+  // The RefreshControl spinner is normally driven by `isRefetching`, but
+  // the SQLite sync runs *before* the React Query refetch — during that
+  // window `isRefetching` is false and the spinner would snap closed
+  // mid-pull. This local flag keeps it up across the whole operation.
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+
+  // Pull-to-refresh has to do more than `refetch()`. Portfolio reads
+  // transactions from a SQLite read-through cache, and the React Query
+  // entry that fronts it has its own staleTime. So a plain refetch may
+  // hand back the same stale rows we already had. The right sequence is:
+  //   1. Pull fresh transactions / NAVs into SQLite from Supabase
+  //      (`syncDeltaForUser`). This is the only step that detects
+  //      server-side changes (e.g. a CAS uploaded from web).
+  //   2. Invalidate every React Query entry so screens that derive from
+  //      transactions (portfolio totals, money trail, timelines)
+  //      recompute against the freshly-synced rows.
+  //   3. Refetch the portfolio query so the on-screen value updates
+  //      now, not on the next mount.
+  // Web has no SQLite layer; the sync call is a no-op there.
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefreshing(true);
+    try {
+      if (!userId) {
+        await refetch();
+        return;
+      }
+      if (Platform.OS !== 'web') {
+        try {
+          await syncDeltaForUser(userId);
+        } catch (err) {
+          console.warn('[portfolio] delta sync failed', err);
+        }
+      }
+      await queryClient.invalidateQueries();
+      await refetch();
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  }, [refetch, queryClient, userId]);
   // `useIsRestoring` is true while the `PersistQueryClientProvider`
   // rehydrates the cache from AsyncStorage. During that window React
   // Query pauses fetching (`fetchStatus: 'paused'`), so `isLoading` is
@@ -930,8 +972,8 @@ function ClearLensPortfolioScreenMobile() {
           contentContainerStyle={styles.scrollContent}
           refreshControl={
             <RefreshControl
-              refreshing={isRefetching}
-              onRefresh={refetch}
+              refreshing={isManualRefreshing || isRefetching}
+              onRefresh={handleRefresh}
               tintColor={tokens.colors.emerald}
             />
           }

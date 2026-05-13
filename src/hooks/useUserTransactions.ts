@@ -48,15 +48,29 @@ const TX_COLUMNS =
   'id, fund_id, transaction_date, transaction_type, units, amount, nav_at_transaction, folio_number, cas_import_id, created_at';
 const PAGE_SIZE = 1000;
 
-async function fetchFromSupabase(userId: string): Promise<UserTransactionRow[]> {
+/**
+ * Direct Supabase pull, bypassing the SQLite read-through. The sync
+ * orchestrator uses this for delta refresh — without it, `syncDelta`
+ * would call back into the SQLite-first wrapper and the "fresh" rows
+ * it diffs against the watermark would just be the SQLite rows it's
+ * trying to update. `sinceDate` lets delta callers ship only new rows
+ * over the wire (the watermark is the local table's max
+ * `transaction_date`).
+ */
+export async function fetchUserTransactionsRemote(
+  userId: string,
+  sinceDate: string | null = null,
+): Promise<UserTransactionRow[]> {
   const rows: UserTransactionRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('transaction')
       .select(TX_COLUMNS)
       .eq('user_id', userId)
       .order('transaction_date', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
+    if (sinceDate) q = q.gte('transaction_date', sinceDate);
+    const { data, error } = await q;
 
     if (error) throw error;
     rows.push(...((data ?? []) as UserTransactionRow[]));
@@ -82,7 +96,7 @@ export async function fetchUserTransactions(userId: string): Promise<UserTransac
     }
   }
 
-  const fresh = await fetchFromSupabase(userId);
+  const fresh = await fetchUserTransactionsRemote(userId);
   if (fresh.length > 0 && SQLITE_AVAILABLE) {
     try {
       await txRepo.bulkInsert(fresh);
