@@ -50,8 +50,15 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // transactions from the same shared cache as Portfolio + Fund Detail.
 // The existing v2 cache rows lack those columns; on an OTA, screens
 // that depend on them would see `undefined` until staleTime expiry.
-// Bumping the buster forces a fresh fetch on first launch post-OTA.
-export const __BUSTER__ = 'v3';
+//
+// v4 (2026-05-13): preview-mode fixtures got materially richer.
+// `PREVIEW_RAW_TRANSACTIONS` now includes IDCW reinvestments +
+// switch_in/out pair + an extra redemption + per-fund composition
+// fixtures + Fund Detail builder. Cached preview entries from v3 still
+// hold the thinner SIP+one-redemption shape, so existing devices that
+// opened preview before this OTA would keep showing the old Money
+// Trail. Bump forces a clean re-read on next launch.
+export const __BUSTER__ = 'v4';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

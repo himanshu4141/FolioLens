@@ -479,6 +479,22 @@ export function ClearLensCompareFundsScreen() {
             heroLabel="HDFC Mid-Cap vs HDFC Hybrid Equity"
             heroValue="+6.3% / yr"
             heroSubtitle="HDFC Mid-Cap led HDFC Hybrid Equity by 6.3% annualised over 3Y"
+            chart={{
+              series: [
+                {
+                  label: 'HDFC Mid-Cap',
+                  color: tokens.colors.emerald,
+                  // ₹1 invested grows along a 21.4% XIRR path.
+                  points: [100, 109, 121, 135, 142, 158, 174, 186, 197, 215, 232, 248],
+                },
+                {
+                  label: 'HDFC Hybrid Equity',
+                  color: tokens.colors.textTertiary,
+                  // 15.1% XIRR — milder slope.
+                  points: [100, 106, 113, 121, 128, 135, 142, 149, 156, 164, 172, 178],
+                },
+              ],
+            }}
             rows={[
               { label: '3Y XIRR — HDFC Mid-Cap', value: '21.4%', tone: 'positive' },
               { label: '3Y XIRR — HDFC Hybrid Equity', value: '15.1%' },

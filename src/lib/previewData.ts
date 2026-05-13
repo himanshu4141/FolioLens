@@ -672,6 +672,49 @@ export function findPreviewCompositionByCode(
   return PREVIEW_FUND_COMPOSITION_BY_CODE.get(schemeCode);
 }
 
+// ── Synthetic NAV history fixture ────────────────────────────────────────────
+//
+// `useFundNavHistory` and Past SIP Check both need a multi-month NAV
+// series anchored to the fund's currentNav. Build a deterministic
+// 36-month daily series per scheme so Fund Detail chart + Past SIP
+// Check simulator have something to render in preview mode without
+// hitting Supabase.
+
+const PREVIEW_NAV_HISTORY_MONTHS = 36;
+
+function buildPreviewNavHistory(schemeCode: number, currentNav: number, monthsBack: number) {
+  const out: { date: string; value: number }[] = [];
+  const days = Math.round(monthsBack * 30.4);
+  for (let i = days; i >= 0; i--) {
+    const d = new Date(PREVIEW_TODAY);
+    d.setDate(PREVIEW_TODAY.getDate() - i);
+    // Walk from 65% → 100% of currentNav across the window with a
+    // small scheme-seeded sine so the line has texture. Deterministic
+    // across reloads.
+    const t = (days - i) / Math.max(1, days);
+    const base = currentNav * (0.65 + 0.35 * t);
+    const noise = Math.sin((schemeCode + i) * 0.34) * (currentNav * 0.012);
+    out.push({
+      date: isoDate(d),
+      value: Math.round((base + noise) * 100) / 100,
+    });
+  }
+  return out;
+}
+
+const PREVIEW_NAV_HISTORY_BY_CODE = new Map(
+  SCHEMES.map((scheme) => [
+    scheme.schemeCode,
+    buildPreviewNavHistory(scheme.schemeCode, scheme.currentNav, PREVIEW_NAV_HISTORY_MONTHS),
+  ] as const),
+);
+
+export function findPreviewNavHistoryByCode(
+  schemeCode: number,
+): { date: string; value: number }[] | null {
+  return PREVIEW_NAV_HISTORY_BY_CODE.get(schemeCode) ?? null;
+}
+
 // ── Fund Detail fixture builder ──────────────────────────────────────────────
 //
 // Mirrors `FundDetailData`. Built from the same scheme metadata +

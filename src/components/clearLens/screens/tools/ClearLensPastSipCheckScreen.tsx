@@ -311,6 +311,25 @@ export function ClearLensPastSipCheckScreen() {
             heroLabel="3-year SIP outcome"
             heroValue="₹4.18 L"
             heroSubtitle="₹3.60 L invested → ₹4.18 L final value"
+            chart={{
+              series: [
+                {
+                  label: 'HDFC Mid-Cap',
+                  color: tokens.colors.emerald,
+                  // Cumulative value of a ₹10k/mo SIP — climbs roughly
+                  // linearly with a few growth phases. 12 quarterly points
+                  // across the 36-month window.
+                  points: [10, 31, 56, 85, 119, 158, 199, 245, 295, 348, 401, 418],
+                },
+                {
+                  label: 'Nifty 500 TRI',
+                  color: tokens.colors.textTertiary,
+                  // Benchmark series — same SIP cadence, ~14.8% XIRR =
+                  // shallower curve trailing the fund line.
+                  points: [10, 30, 53, 80, 110, 142, 178, 215, 254, 296, 339, 398],
+                },
+              ],
+            }}
             rows={[
               { label: 'Fund XIRR', value: '21.4%', tone: 'positive' },
               { label: 'Nifty 500 TRI XIRR', value: '14.8%' },

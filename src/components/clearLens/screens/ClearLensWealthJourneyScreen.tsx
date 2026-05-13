@@ -30,6 +30,7 @@ import {
   ClearLensSegmentedControl,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
+import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import {
   ClearLensFonts,
@@ -1059,6 +1060,7 @@ export function ClearLensWealthJourneyScreen() {
                 <Text style={styles.heroTitle}>Plan today, with clarity</Text>
                 <Text style={styles.heroSubtitle}>See where your money is headed under your current pace.</Text>
               </View>
+              <ToolsPreviewBanner message="Running on a sample portfolio. Sign up to plan against your real holdings + SIPs." />
 
               <ClearLensCard style={styles.snapshotCard}>
                 <View style={styles.cardHeader}>

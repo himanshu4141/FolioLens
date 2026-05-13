@@ -3,6 +3,7 @@ import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -32,18 +33,21 @@ export function ClearLensGoalPlannerScreen() {
     return (
       <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="flag-outline" size={36} color={tokens.colors.textTertiary} />
+        <View style={styles.emptyOuter}>
+          <ToolsPreviewBanner message="Add a goal to see the required monthly SIP. Sign up to save it to your account." />
+          <View style={styles.emptyContainer}>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="flag-outline" size={36} color={tokens.colors.textTertiary} />
+            </View>
+            <Text style={styles.emptyTitle}>No goals yet</Text>
+            <Text style={styles.emptySubtitle}>
+              Add a financial goal — retirement, home, education — and see exactly how much you need to invest each month.
+            </Text>
+            <TouchableOpacity style={styles.addButton} onPress={handleAdd} activeOpacity={0.8}>
+              <Ionicons name="add" size={18} color={tokens.colors.textOnDark} />
+              <Text style={styles.addButtonText}>Add your first goal</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={styles.emptyTitle}>No goals yet</Text>
-          <Text style={styles.emptySubtitle}>
-            Add a financial goal — retirement, home, education — and see exactly how much you need to invest each month.
-          </Text>
-          <TouchableOpacity style={styles.addButton} onPress={handleAdd} activeOpacity={0.8}>
-            <Ionicons name="add" size={18} color={tokens.colors.textOnDark} />
-            <Text style={styles.addButtonText}>Add your first goal</Text>
-          </TouchableOpacity>
         </View>
       </ClearLensScreen>
     );
@@ -57,6 +61,11 @@ export function ClearLensGoalPlannerScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        ListHeaderComponent={
+          <View style={styles.previewBannerWrap}>
+            <ToolsPreviewBanner message="Add goals to see the required monthly SIP. Sign up to save them to your account." />
+          </View>
+        }
         renderItem={({ item }) => (
           <GoalCard goal={item} rates={rates} />
         )}
@@ -151,6 +160,12 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: '
 function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
+  emptyOuter: {
+    flex: 1,
+    paddingHorizontal: ClearLensSpacing.md,
+    paddingTop: ClearLensSpacing.sm,
+    gap: ClearLensSpacing.sm,
+  },
   emptyContainer: {
     flex: 1,
     alignItems: 'center',
@@ -199,6 +214,9 @@ function makeStyles(tokens: ClearLensTokens) {
     paddingTop: ClearLensSpacing.xs,
     paddingBottom: ClearLensSpacing.xxl,
     gap: ClearLensSpacing.sm,
+  },
+  previewBannerWrap: {
+    paddingBottom: ClearLensSpacing.sm,
   },
   card: {
     backgroundColor: cl.surface,
