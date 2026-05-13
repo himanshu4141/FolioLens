@@ -397,21 +397,40 @@ export function InvestmentVsBenchmarkChart({
     setActiveIndex(null);
   }, [benchmarkSymbol, window]);
 
-  if (!isLoading && points.length < 2) return null;
-
   const chartWidth = Math.max(260, chartInnerWidth);
   const plotWidth = Math.max(180, chartWidth - JOURNEY_Y_AXIS_WIDTH - JOURNEY_CHART_RIGHT_PADDING);
   const svgHeight = JOURNEY_CHART_TOP_PADDING + JOURNEY_CHART_HEIGHT;
   const frameHeight = svgHeight + JOURNEY_X_AXIS_HEIGHT;
-  const values = points.flatMap((point) => [
-    point.investedValue,
-    point.portfolioValue,
-    point.benchmarkValue,
-  ]);
-  const journeyScale = getJourneyScale(values);
-  const portfolioPath = buildJourneyPath(points, (point) => point.portfolioValue, journeyScale, plotWidth);
-  const benchmarkPath = buildJourneyPath(points, (point) => point.benchmarkValue, journeyScale, plotWidth);
-  const investedPath = buildJourneyPath(points, (point) => point.investedValue, journeyScale, plotWidth);
+
+  // Memoize the scale + path strings by `points` so dragging the tooltip
+  // (which updates `activeIndex` rapidly via `onResponderMove`) doesn't
+  // re-iterate all points every frame to rebuild three `d=` strings. Before
+  // this, panning a 90-point timeline on a mid-range Android caused
+  // perceptible drag-stutter; with memoization the move handler only
+  // re-renders the tooltip layer.
+  const journeyScale = useMemo(() => {
+    const values = points.flatMap((point) => [
+      point.investedValue,
+      point.portfolioValue,
+      point.benchmarkValue,
+    ]);
+    return getJourneyScale(values);
+  }, [points]);
+  const portfolioPath = useMemo(
+    () => buildJourneyPath(points, (point) => point.portfolioValue, journeyScale, plotWidth),
+    [points, journeyScale, plotWidth],
+  );
+  const benchmarkPath = useMemo(
+    () => buildJourneyPath(points, (point) => point.benchmarkValue, journeyScale, plotWidth),
+    [points, journeyScale, plotWidth],
+  );
+  const investedPath = useMemo(
+    () => buildJourneyPath(points, (point) => point.investedValue, journeyScale, plotWidth),
+    [points, journeyScale, plotWidth],
+  );
+
+  if (!isLoading && points.length < 2) return null;
+
   const activeIndexForRender = activeIndex !== null && points.length > 0
     ? Math.round(clamp(activeIndex, 0, points.length - 1))
     : null;
@@ -435,7 +454,11 @@ export function InvestmentVsBenchmarkChart({
     if (points.length < 2) return;
     const localX = event.nativeEvent.locationX;
     const ratio = clamp((localX - JOURNEY_Y_AXIS_WIDTH) / plotWidth, 0, 1);
-    setActiveIndex(Math.round(ratio * (points.length - 1)));
+    const next = Math.round(ratio * (points.length - 1));
+    // `onResponderMove` fires every pointer sample (often 60+/s). Skip the
+    // state update when the snapped index hasn't changed so we don't spam
+    // React with no-op renders on a long horizontal drag.
+    setActiveIndex((prev) => (prev === next ? prev : next));
   }
 
   return (

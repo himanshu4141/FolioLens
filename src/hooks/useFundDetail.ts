@@ -175,19 +175,15 @@ export async function fetchFundDetail(
       .limit(2);
     if (error) throw error;
     navRowsDesc = (data ?? []) as { nav_date: string; nav: number }[];
-    if (navRowsDesc.length > 0 && SQLITE_AVAILABLE) {
-      try {
-        await navRepo.bulkInsert(
-          navRowsDesc.map((r) => ({
-            scheme_code: fund.scheme_code,
-            nav_date: r.nav_date,
-            nav: Number(r.nav),
-          })),
-        );
-      } catch (err) {
-        console.warn('[useFundDetail] sqlite nav write failed', err);
-      }
-    }
+    // Deliberately do NOT write these 2 rows back into SQLite. They're only
+    // for the header card (current/previous NAV). Seeding the local cache
+    // with a 2-row slice trips `useFundNavHistory` into thinking the full
+    // history is already cached — its `rows.length === 0` fallback never
+    // fires, the paginated Supabase fetch is skipped, and the Growth
+    // Consistency chart ends up with two quarters' worth of data instead of
+    // three years. The sync orchestrator's `getWatermark` would also be
+    // fooled into asking Supabase only for rows newer than the latest of
+    // these two, never backfilling pre-watermark history.
   }
   perfEnd('query:fundDetail:extras');
 

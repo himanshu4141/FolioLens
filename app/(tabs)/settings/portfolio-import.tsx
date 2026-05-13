@@ -129,14 +129,14 @@ export default function PortfolioImportScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <UtilityHeader title="Portfolio import" />
+      <UtilityHeader title="Refresh portfolio" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={styles.frame}>
         <View style={styles.headerCopy}>
-          <Text style={styles.heading}>Import and auto-refresh</Text>
+          <Text style={styles.heading}>Refresh & import</Text>
           <Text style={styles.subheading}>
-            Keep your FolioLens import inbox as the default path, with PDF upload as a fallback.
+            Auto-forward CAS to your FolioLens inbox so transactions stay current. Upload a PDF anytime as a fallback.
           </Text>
         </View>
 
@@ -222,8 +222,8 @@ export default function PortfolioImportScreen() {
               <Ionicons name="cloud-upload-outline" size={18} color={cl.emerald} />
             </View>
             <View style={styles.rowLeft}>
-              <Text style={styles.rowValue}>Open import flow</Text>
-              <Text style={styles.rowSub}>Upload a CAS PDF or adjust auto-forward setup.</Text>
+              <Text style={styles.rowValue}>Refresh from CAS</Text>
+              <Text style={styles.rowSub}>Upload a fresh CAS PDF or revisit auto-forward setup.</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={cl.textTertiary} />
           </TouchableOpacity>

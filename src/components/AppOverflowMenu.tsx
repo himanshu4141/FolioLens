@@ -63,8 +63,11 @@ export function AppOverflowMenu({
   const dataActions: RowConfig[] = [
     {
       key: 'import',
-      icon: 'cloud-upload-outline',
-      label: 'Import portfolio',
+      icon: 'refresh-outline',
+      // Most users hit this after the initial import, when they want to
+      // pull in fresh CAS transactions — "Import portfolio" implied a
+      // first-time action and made repeat use feel wrong.
+      label: 'Refresh portfolio',
       onPress: dismissAnd(onImport),
     },
   ];

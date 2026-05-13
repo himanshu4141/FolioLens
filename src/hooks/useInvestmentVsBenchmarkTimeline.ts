@@ -367,17 +367,46 @@ export function useInvestmentVsBenchmarkTimeline(
   // combination: that would multiply by ~5 windows and burn server
   // round-trips for combos most users never look at. Window switching
   // remains a cold fetch.
+  //
+  // The prefetches are also staggered behind a delay and queued one at
+  // a time. Firing all 2-3 fetches in parallel the instant the active
+  // query resolves stalls the JS thread for hundreds of ms while each
+  // queryFn runs `computeInvestmentVsBenchmarkTimeline` over thousands
+  // of NAV rows — that's the freeze users see on first paint of
+  // Portfolio and when navigating to About immediately after.
   useEffect(() => {
     if (!data || !userId || funds.length === 0) return;
-    for (const option of BENCHMARK_OPTIONS) {
-      if (option.symbol === benchmarkSymbol) continue;
-      queryClient.prefetchQuery({
-        queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, option.symbol, window],
-        queryFn: () =>
-          fetchInvestmentVsBenchmarkTimeline(funds, userId, option.symbol, window),
-        staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
-      });
+    const others = BENCHMARK_OPTIONS.filter((option) => option.symbol !== benchmarkSymbol);
+    let cancelled = false;
+    let cursor = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    function runNext() {
+      if (cancelled || cursor >= others.length) return;
+      const option = others[cursor++];
+      queryClient
+        .prefetchQuery({
+          queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, option.symbol, window],
+          queryFn: () =>
+            fetchInvestmentVsBenchmarkTimeline(funds, userId, option.symbol, window),
+          staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
+        })
+        .finally(() => {
+          if (cancelled) return;
+          // 250ms gap between prefetches yields enough idle time for
+          // user gestures (tab switches, pan) to feel responsive.
+          timer = setTimeout(runNext, 250);
+        });
     }
+
+    // First prefetch fires after a 1.2s idle window so the active chart
+    // has finished painting and any tab transition can settle.
+    timer = setTimeout(runNext, 1200);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
   }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient]);
 
   return {
