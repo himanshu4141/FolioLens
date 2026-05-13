@@ -120,9 +120,9 @@ export default function SettingsScreen() {
               cl={cl}
             />
             <HubRow
-              icon="cloud-upload-outline"
-              title="Portfolio import"
-              subtitle="Auto-forward inbox, setup status, upload fallback"
+              icon="refresh-outline"
+              title="Refresh portfolio"
+              subtitle="Auto-forward CAS, upload statements, import history"
               onPress={() => router.push('/settings/portfolio-import')}
               styles={styles}
               cl={cl}

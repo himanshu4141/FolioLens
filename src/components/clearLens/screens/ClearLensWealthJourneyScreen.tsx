@@ -1031,6 +1031,7 @@ export function ClearLensWealthJourneyScreen() {
         onMoneyTrail={() => router.push('/money-trail')}
         onTools={() => router.push('/tools' as never)}
         onSettings={() => router.push('/(tabs)/settings')}
+        hasPortfolio={(portfolioData?.fundCards ?? []).length > 0}
       />
 
       {portfolioLoading ? (

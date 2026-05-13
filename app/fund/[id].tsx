@@ -202,7 +202,9 @@ function PerformanceTab({
     staleTime: 5 * 60_000,
   });
 
-  const indexHistory = indexRows ?? [];
+  // Stable empty-array fallback so the `useMemo`s below don't see a new
+  // reference on every render when `indexRows` is still loading.
+  const indexHistory = useMemo(() => indexRows ?? [], [indexRows]);
   const selectedLabel = benchmarkOptions.find((b) => b.symbol === selectedSymbol)?.label ?? selectedSymbol;
 
   // Reset crosshair when window or benchmark changes so summary resets to period-end values.
@@ -215,27 +217,40 @@ function PerformanceTab({
     }
   ), []);
 
-  const filteredNav = filterToWindow(navHistory, window);
-  const navStartDate = filteredNav[0]?.date ?? '';
-  const filteredIdx = indexHistory.filter((p) => p.date >= navStartDate);
-  // Use the later of the two start dates so both series are indexed to 100 at the same moment.
-  // Without this, nearestBenchmarkValue returns 100 for all dates before the index's first point,
-  // making the benchmark appear flat while the fund grows.
-  const idxStartDate = filteredIdx[0]?.date ?? navStartDate;
-  const commonStart = navStartDate >= idxStartDate ? navStartDate : idxStartDate;
-  const alignedNav = filteredNav.filter((p) => p.date >= commonStart);
-  const alignedIdx = filteredIdx.filter((p) => p.date >= commonStart);
+  // Heavy NAV / index derivations live in a single memo so they only re-run
+  // when the inputs (`navHistory`, `indexHistory`, `window`) actually change.
+  // The crosshair handler updates `activeIdx` via RAF on every pointer
+  // sample — without this memo every one of those updates re-ran
+  // `filterToWindow`, `indexTo100`, and the `sample()` pass over a
+  // 1,000+ row NAV history.
+  const navSeries = useMemo(() => {
+    const filteredNav = filterToWindow(navHistory, window);
+    const navStartDate = filteredNav[0]?.date ?? '';
+    const filteredIdx = indexHistory.filter((p) => p.date >= navStartDate);
+    // Use the later of the two start dates so both series are indexed to 100
+    // at the same moment. Without this, nearestBenchmarkValue returns 100 for
+    // all dates before the index's first point, making the benchmark appear
+    // flat while the fund grows.
+    const idxStartDate = filteredIdx[0]?.date ?? navStartDate;
+    const commonStart = navStartDate >= idxStartDate ? navStartDate : idxStartDate;
+    const alignedNav = filteredNav.filter((p) => p.date >= commonStart);
+    const alignedIdx = filteredIdx.filter((p) => p.date >= commonStart);
+    const indexedNav = indexTo100(alignedNav);
+    const indexedBenchmark = indexTo100(alignedIdx);
 
-  const indexedNav = indexTo100(alignedNav);
-  const indexedBenchmark = indexTo100(alignedIdx);
+    function sampleSeries<T>(arr: T[], max: number): T[] {
+      if (arr.length <= max) return arr;
+      const step = Math.ceil(arr.length / max);
+      return arr.filter((_, i) => i % step === 0 || i === arr.length - 1);
+    }
 
-  function sample<T>(arr: T[], max: number): T[] {
-    if (arr.length <= max) return arr;
-    const step = Math.ceil(arr.length / max);
-    return arr.filter((_, i) => i % step === 0 || i === arr.length - 1);
-  }
-
-  const sampledNav = sample(indexedNav, 60);
+    return {
+      indexedNav,
+      indexedBenchmark,
+      sampledNav: sampleSeries(indexedNav, 60),
+    };
+  }, [navHistory, indexHistory, window]);
+  const { indexedNav, indexedBenchmark, sampledNav } = navSeries;
 
   function nearestBenchmarkValue(
     series: { date: string; value: number }[],
@@ -253,7 +268,7 @@ function PerformanceTab({
     return series[lo - 1].value;
   }
 
-  const navPoints = sampledNav.map((p) => ({ value: p.value }));
+  const navPoints = useMemo(() => sampledNav.map((p) => ({ value: p.value })), [sampledNav]);
   const hasNavData = navPoints.length > 1;
   const hasBenchmarkData = indexedBenchmark.length > 1;
   const benchmarkPoints = useMemo(
@@ -276,22 +291,25 @@ function PerformanceTab({
   // fills the available width; spacing scales down on narrow screens.
   const perfSpacing = sampledNav.length > 1 ? Math.max(1, (perfChartBodyW - 16) / (sampledNav.length - 1)) : 20;
 
-  const labelInterval = Math.max(1, Math.floor(sampledNav.length / 5));
-  const xLabels = sampledNav.map((p, i) =>
-    i % labelInterval === 0 || i === sampledNav.length - 1
-      ? formatChartDate(p.date, window)
-      : ''
-  );
+  const xLabels = useMemo(() => {
+    const labelInterval = Math.max(1, Math.floor(sampledNav.length / 5));
+    return sampledNav.map((p, i) =>
+      i % labelInterval === 0 || i === sampledNav.length - 1
+        ? formatChartDate(p.date, window)
+        : '',
+    );
+  }, [sampledNav, window]);
 
-  const allVals = [
-    ...navPoints.map((p) => p.value),
-    ...(hasBenchmarkData ? benchmarkPoints.map((p) => p.value) : []),
-  ];
-  const yMax = allVals.length > 0 ? Math.max(...allVals) : 110;
-  const yMin = allVals.length > 0 ? Math.min(...allVals) : 90;
-  const yPad = ((yMax - yMin) || yMax * 0.1 || 1) * 0.12;
-  const chartMaxValue = yMax + yPad;
-  const chartMostNegative = yMin - yPad;
+  const { chartMaxValue, chartMostNegative } = useMemo(() => {
+    const allVals = [
+      ...navPoints.map((p) => p.value),
+      ...(hasBenchmarkData ? benchmarkPoints.map((p) => p.value) : []),
+    ];
+    const yMax = allVals.length > 0 ? Math.max(...allVals) : 110;
+    const yMin = allVals.length > 0 ? Math.min(...allVals) : 90;
+    const yPad = ((yMax - yMin) || yMax * 0.1 || 1) * 0.12;
+    return { chartMaxValue: yMax + yPad, chartMostNegative: yMin - yPad };
+  }, [navPoints, benchmarkPoints, hasBenchmarkData]);
 
   const latestNav = indexedNav[indexedNav.length - 1]?.value ?? 100;
   const navReturn = ((latestNav - 100) / 100) * 100;
@@ -412,32 +430,27 @@ function PerformanceTab({
     }),
     [colors.textTertiary],
   );
-  if (fundRef && userId && investmentTimeline.isLoading && !hasInvestmentTimeline) {
-    return (
-      <View style={s.tabContent}>
-        <TimeWindowSelector selected={window} onChange={setWindow} />
-        <View style={s.chartCard}>
-          <ActivityIndicator size="small" color={tokens.colors.emerald} />
-        </View>
-      </View>
-    );
-  }
 
-  if (fundRef && userId && hasInvestmentTimeline) {
+  // Timeline-branch derivations that depend only on the resolved points
+  // (not on the crosshair position). Hoisted out of the `if`-block render
+  // path so dragging the pointer doesn't rebuild three N-element arrays
+  // and re-flatMap + Math.max(...) the whole series every frame.
+  const timelineChart = useMemo(() => {
+    if (!hasInvestmentTimeline) return null;
     const points = timelinePoints;
-    const actualActiveIdx = activeIdx !== null && activeIdx < points.length ? activeIdx : points.length - 1;
-    const latestPoint = points[points.length - 1];
-    const activePoint = points[actualActiveIdx] ?? latestPoint;
     const investedData = points.map((point) => ({ value: point.investedValue }));
     const fundValueData = points.map((point) => ({ value: point.portfolioValue }));
     const benchmarkValueData = points.map((point) => ({ value: point.benchmarkValue }));
-    const actualValues = points.flatMap((point) => [
-      point.investedValue,
-      point.portfolioValue,
-      point.benchmarkValue,
-    ]);
-    const actualYMax = Math.max(...actualValues);
-    const actualYMin = Math.min(...actualValues);
+    let actualYMax = -Infinity;
+    let actualYMin = Infinity;
+    for (const point of points) {
+      if (point.investedValue > actualYMax) actualYMax = point.investedValue;
+      if (point.portfolioValue > actualYMax) actualYMax = point.portfolioValue;
+      if (point.benchmarkValue > actualYMax) actualYMax = point.benchmarkValue;
+      if (point.investedValue < actualYMin) actualYMin = point.investedValue;
+      if (point.portfolioValue < actualYMin) actualYMin = point.portfolioValue;
+      if (point.benchmarkValue < actualYMin) actualYMin = point.benchmarkValue;
+    }
     const actualYPad = ((actualYMax - actualYMin) || actualYMax * 0.1 || 1) * 0.12;
     const actualChartTop = actualYMax + actualYPad;
     const actualChartBottom = Math.max(0, actualYMin - actualYPad);
@@ -456,6 +469,46 @@ function PerformanceTab({
               ? formatChartDate(point.date, window)
               : '',
           );
+    return {
+      investedData,
+      fundValueData,
+      benchmarkValueData,
+      actualChartBottom,
+      actualChartRange,
+      actualChartW,
+      actualSpacing,
+      actualXLabels,
+      ACTUAL_Y_AXIS_W,
+    };
+  }, [hasInvestmentTimeline, timelinePoints, investmentTimeline.xAxisLabels, liveChartWidth, window]);
+
+  if (fundRef && userId && investmentTimeline.isLoading && !hasInvestmentTimeline) {
+    return (
+      <View style={s.tabContent}>
+        <TimeWindowSelector selected={window} onChange={setWindow} />
+        <View style={s.chartCard}>
+          <ActivityIndicator size="small" color={tokens.colors.emerald} />
+        </View>
+      </View>
+    );
+  }
+
+  if (fundRef && userId && hasInvestmentTimeline && timelineChart) {
+    const points = timelinePoints;
+    const actualActiveIdx = activeIdx !== null && activeIdx < points.length ? activeIdx : points.length - 1;
+    const latestPoint = points[points.length - 1];
+    const activePoint = points[actualActiveIdx] ?? latestPoint;
+    const {
+      investedData,
+      fundValueData,
+      benchmarkValueData,
+      actualChartBottom,
+      actualChartRange,
+      actualChartW,
+      actualSpacing,
+      actualXLabels,
+      ACTUAL_Y_AXIS_W,
+    } = timelineChart;
     const activeFundReturn =
       activePoint.investedValue > 0
         ? ((activePoint.portfolioValue - activePoint.investedValue) / activePoint.investedValue) * 100
@@ -1161,7 +1214,14 @@ function GrowthConsistencyChart({ navHistory }: { navHistory: { date: string; va
   // and bars get clipped by the mobile viewport.
   const { width: viewportWidth } = useWindowDimensions();
   const chartWidth = Math.min(viewportWidth, FUND_DETAIL_CHART_MAX) - 32 - 64;
-  const bars = computeQuarterlyReturns(navHistory, colors.positive, colors.negative);
+  // Memoize the quarterly-return reduction — it walks the entire NAV
+  // history (1,000+ rows for a long-lived scheme) and re-bucketing on
+  // every parent render (e.g. when the Performance tab's crosshair
+  // updates) is wasted work.
+  const bars = useMemo(
+    () => computeQuarterlyReturns(navHistory, colors.positive, colors.negative),
+    [navHistory, colors.positive, colors.negative],
+  );
   if (bars.length < 2) return null;
 
   const vals = bars.map((b) => Math.abs(b.value));

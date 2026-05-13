@@ -52,7 +52,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const QUICK_ACTIONS: { key: 'import' | 'trail' | 'tools'; icon: keyof typeof Ionicons.glyphMap; label: string }[] = [
-  { key: 'import', icon: 'cloud-upload-outline', label: 'Import portfolio' },
+  { key: 'import', icon: 'refresh-outline', label: 'Refresh portfolio' },
   { key: 'trail', icon: 'trail-sign-outline', label: 'Money Trail' },
   { key: 'tools', icon: 'construct-outline', label: 'Tools' },
 ];

@@ -1283,7 +1283,7 @@ function DoneStep({
           <Text style={styles.stepBody}>
             No CAS imported yet — your home screen will be empty until you upload one.
             Come back anytime via{' '}
-            <Text style={styles.bold}>Settings → Portfolio import</Text>.
+            <Text style={styles.bold}>Settings → Refresh portfolio</Text>.
           </Text>
         )}
       </View>
