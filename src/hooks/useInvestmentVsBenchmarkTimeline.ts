@@ -376,6 +376,10 @@ export function useInvestmentVsBenchmarkTimeline(
   // Portfolio and when navigating to About immediately after.
   useEffect(() => {
     if (!data || !userId || funds.length === 0) return;
+    // Capture `userId` in a typed local so the inner `runNext` closure
+    // sees `string` instead of `string | undefined` — TypeScript's
+    // narrowing on the guard above doesn't reach into the nested fn.
+    const uid: string = userId;
     const others = BENCHMARK_OPTIONS.filter((option) => option.symbol !== benchmarkSymbol);
     let cancelled = false;
     let cursor = 0;
@@ -386,9 +390,9 @@ export function useInvestmentVsBenchmarkTimeline(
       const option = others[cursor++];
       queryClient
         .prefetchQuery({
-          queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, option.symbol, window],
+          queryKey: ['investmentVsBenchmarkTimeline', uid, fundKey, option.symbol, window],
           queryFn: () =>
-            fetchInvestmentVsBenchmarkTimeline(funds, userId, option.symbol, window),
+            fetchInvestmentVsBenchmarkTimeline(funds, uid, option.symbol, window),
           staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
         })
         .finally(() => {

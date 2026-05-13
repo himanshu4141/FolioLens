@@ -202,7 +202,9 @@ function PerformanceTab({
     staleTime: 5 * 60_000,
   });
 
-  const indexHistory = indexRows ?? [];
+  // Stable empty-array fallback so the `useMemo`s below don't see a new
+  // reference on every render when `indexRows` is still loading.
+  const indexHistory = useMemo(() => indexRows ?? [], [indexRows]);
   const selectedLabel = benchmarkOptions.find((b) => b.symbol === selectedSymbol)?.label ?? selectedSymbol;
 
   // Reset crosshair when window or benchmark changes so summary resets to period-end values.
