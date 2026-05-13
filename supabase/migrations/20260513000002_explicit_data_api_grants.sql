@@ -1,4 +1,4 @@
--- Make Data API access on every public-schema table/view explicit.
+-- Opt in to Supabase's new "no auto-exposure" Data API default, today.
 --
 -- Why: Supabase is removing the long-standing default that auto-exposes
 -- tables in the `public` schema to PostgREST / GraphQL / supabase-js.
@@ -7,18 +7,23 @@
 -- Rollout from the Supabase team:
 --   - 2026-04-28: opt-in toggle for new projects
 --   - 2026-05-30: new behavior becomes the default for new projects
---   - 2026-10-30: applied to all existing projects
+--   - 2026-10-30: applied to all existing projects (us)
 --
--- All our existing tables were created before this change and therefore
--- inherited implicit grants on the `anon` / `authenticated` / `service_role`
--- roles. Once the new behavior reaches our project (or if the project is
--- ever recreated from migrations), Data API access disappears unless we
--- grant it ourselves.
+-- We could wait until October and just add explicit GRANTs — but then the
+-- GRANTs would be masked by the legacy implicit grants until the switchover,
+-- and a missing GRANT on a future table would silently work in development
+-- and break in October. Flipping the behavior now (this migration) makes
+-- the explicit GRANTs load-bearing today, so any missing grant fails loudly
+-- in staging the moment it's introduced.
 --
--- This migration re-states those grants explicitly so the schema is
--- self-describing and the behavior is identical before and after the
--- Supabase rollout. RLS continues to enforce per-row access — the GRANTs
--- only control which roles can see the table at all.
+-- This migration does three things, in order:
+--   1. Stops future implicit grants by stripping the default-privileges
+--      entries Supabase pre-installed on the `public` schema.
+--   2. Revokes the implicit grants already attached to every existing
+--      public-schema object from `anon` / `authenticated`. (service_role
+--      is intentionally untouched — it bypasses RLS and we want it to
+--      keep working.)
+--   3. Re-grants exactly the access each table needs, by role.
 --
 -- Convention going forward (see AGENTS.md → "Supabase migrations"):
 --   - User-owned tables (RLS by user_id): grant SELECT, INSERT, UPDATE,
@@ -30,7 +35,32 @@
 --   - We never grant to `anon` — there is no anonymous surface area in
 --     the app today.
 
--- ─── User-owned tables ─────────────────────────────────────────────────────
+-- ─── 1. Stop future implicit grants ───────────────────────────────────────
+-- ALTER DEFAULT PRIVILEGES only affects objects created *after* this runs.
+-- We cover both `postgres` (default owner for our migrations) and
+-- `supabase_admin` (Supabase's internal role that originally installed
+-- the implicit grants) so new tables don't silently re-inherit them.
+
+alter default privileges for role postgres       in schema public revoke all on tables    from anon, authenticated;
+alter default privileges for role postgres       in schema public revoke all on sequences from anon, authenticated;
+alter default privileges for role postgres       in schema public revoke all on routines  from anon, authenticated;
+alter default privileges for role supabase_admin in schema public revoke all on tables    from anon, authenticated;
+alter default privileges for role supabase_admin in schema public revoke all on sequences from anon, authenticated;
+alter default privileges for role supabase_admin in schema public revoke all on routines  from anon, authenticated;
+
+-- ─── 2. Strip implicit grants from existing objects ───────────────────────
+-- Wipes the slate for `anon` and `authenticated` so the GRANTs below are
+-- the only thing standing between those roles and our tables. Functions
+-- and sequences are revoked too: we don't expose any RPCs to `anon` /
+-- `authenticated` today, and we use UUID PKs rather than serial columns.
+-- service_role is left alone — it bypasses RLS and Edge Functions /
+-- cron jobs depend on its full access.
+
+revoke all on all tables    in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+revoke all on all routines  in schema public from anon, authenticated;
+
+-- ─── 3a. User-owned tables ────────────────────────────────────────────────
 -- RLS already scopes rows to `auth.uid() = user_id`. The grants just make
 -- the table visible to the Data API for the `authenticated` role.
 
@@ -41,9 +71,9 @@ grant select, insert, update, delete on public.user_profile         to authentic
 grant select, insert, update, delete on public.cas_inbound_session  to authenticated;
 grant select, insert                 on public.user_feedback        to authenticated;
 
--- ─── Shared / catalog tables (read-only for authenticated) ────────────────
+-- ─── 3b. Shared / catalog tables (read-only for authenticated) ────────────
 -- RLS allows SELECT to any authenticated user; writes are restricted to the
--- service role, which already has implicit privileges on tables it owns.
+-- service role, which keeps its implicit privileges from step 2.
 
 grant select on public.nav_history                 to authenticated;
 grant select on public.index_history               to authenticated;
@@ -51,19 +81,19 @@ grant select on public.benchmark_mapping           to authenticated;
 grant select on public.scheme_master               to authenticated;
 grant select on public.fund_portfolio_composition  to authenticated;
 
--- ─── Compatibility view ────────────────────────────────────────────────────
+-- ─── 3c. Compatibility view ───────────────────────────────────────────────
 -- `fund` is a security_invoker view joining user_fund + scheme_master. The
--- view defers permission checks to the underlying tables, but the Data API
--- still needs SELECT on the view itself to expose it.
+-- view defers row checks to the underlying tables, but the Data API still
+-- needs SELECT on the view itself to expose it.
 
 grant select on public.fund to authenticated;
 
--- ─── service_role ─────────────────────────────────────────────────────────
--- service_role bypasses RLS but still needs table-level privileges. Grant
--- ALL on every Data-API-exposed object so Edge Functions and cron jobs
--- continue to read/write unchanged. (app_config is intentionally excluded
--- because it already lives outside the Data API surface — service_role
--- accesses it directly via its connection, not PostgREST.)
+-- ─── 3d. service_role belt-and-suspenders ─────────────────────────────────
+-- service_role's implicit grants were not revoked in step 2, but re-state
+-- them explicitly so the schema is self-describing and a future REVOKE on
+-- service_role doesn't silently break Edge Functions / cron jobs.
+-- (app_config is intentionally excluded — it lives outside the Data API
+-- surface; service_role accesses it via its connection, not PostgREST.)
 
 grant all on public.user_fund                   to service_role;
 grant all on public.transaction                 to service_role;
