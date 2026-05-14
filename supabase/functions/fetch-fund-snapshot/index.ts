@@ -29,10 +29,16 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { CORS, json } from '../_shared/cors.ts';
+import { trackServerEvent } from '../_shared/analytics.ts';
 import {
+  type CapClassification,
   type CategoryComposition,
-  isDebtDataCorrupted,
+  type EquityHolding,
+  type MarketCapCategory,
+  classifyHoldings,
   deriveDebtPct,
+  isDebtDataCorrupted,
+  isEquityHoldingsCorrupted,
   isEquityPctPlausible,
 } from '../_shared/portfolio-utils.ts';
 
@@ -321,41 +327,60 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
 // Stage 2 — fund_portfolio_composition
 // ---------------------------------------------------------------------------
 
+interface CompositionResult {
+  status: 'fetched' | 'cache_hit' | 'category_rules' | 'no_holdings' | 'failed';
+  classifierOutcome: 'amfi' | 'category_fallback' | 'category_rules' | null;
+  classifierCoveragePct: number | null;
+  equityHoldingsCount: number;
+}
+
 async function syncComposition(
   schemeCode: number,
   familyId: number | null,
   schemeCategory: string | null,
-): Promise<{ status: 'fetched' | 'cache_hit' | 'category_rules' | 'no_holdings' | 'failed' }> {
+  isinToCap: Map<string, MarketCapCategory>,
+): Promise<CompositionResult> {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
 
-  // Cache check — current-month amfi row already present.
+  // Cache check — current-month real-holdings row already present (either
+  // a classifier hit or a category_fallback). category_rules never short-
+  // circuits the lookup, because it's the last-resort path.
   const { data: existing } = await supabase
     .from('fund_portfolio_composition')
     .select('source, portfolio_date')
     .eq('scheme_code', schemeCode)
     .gte('portfolio_date', currentMonthStart)
-    .eq('source', 'amfi')
+    .in('source', ['amfi', 'category_fallback'])
     .limit(1);
 
   if (existing && existing.length > 0) {
-    console.log('[fetch-fund-snapshot] scheme=%d composition cache hit (%s)', schemeCode, existing[0].portfolio_date);
-    return { status: 'cache_hit' };
+    console.log('[fetch-fund-snapshot] scheme=%d composition cache hit (%s, %s)',
+      schemeCode, existing[0].portfolio_date, existing[0].source);
+    return {
+      status: 'cache_hit',
+      classifierOutcome: existing[0].source as 'amfi' | 'category_fallback',
+      classifierCoveragePct: null,
+      equityHoldingsCount: 0,
+    };
   }
 
   // No family_id → fall back to category rules.
   if (familyId == null) {
-    return seedCategoryRules(schemeCode, schemeCategory);
+    const res = await seedCategoryRules(schemeCode, schemeCategory);
+    return { ...res, classifierOutcome: 'category_rules', classifierCoveragePct: null, equityHoldingsCount: 0 };
   }
 
   const holdings = await mfdataGet<MfdataHoldings>(`/families/${familyId}/holdings`);
   if (!holdings || !holdings.equity_holdings || holdings.equity_holdings.length === 0) {
-    return seedCategoryRules(schemeCode, schemeCategory);
+    const res = await seedCategoryRules(schemeCode, schemeCategory);
+    return { ...res, classifierOutcome: 'category_rules', classifierCoveragePct: null, equityHoldingsCount: 0 };
   }
 
-  const portfolio = buildPortfolio(holdings, schemeCategory ?? '');
+  const portfolio = buildPortfolio(holdings, schemeCategory ?? '', isinToCap);
   const portfolioDate = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
-  const notClassified = Math.max(0, 100 - portfolio.largeCapPct - portfolio.midCapPct - portfolio.smallCapPct);
+
+  const sourceTag = portfolio.classifierOutcome === 'amfi' ? 'amfi' : 'category_fallback';
 
   const { error } = await supabase.from('fund_portfolio_composition').upsert({
     scheme_code: schemeCode,
@@ -367,21 +392,32 @@ async function syncComposition(
     large_cap_pct: portfolio.largeCapPct,
     mid_cap_pct: portfolio.midCapPct,
     small_cap_pct: portfolio.smallCapPct,
-    not_classified_pct: notClassified,
+    not_classified_pct: portfolio.notClassifiedPct,
     sector_allocation: portfolio.sectorAllocation,
     top_holdings: portfolio.topHoldings,
     raw_debt_holdings: portfolio.rawDebtHoldings,
-    source: 'amfi',
+    source: sourceTag,
     synced_at: new Date().toISOString(),
   }, { onConflict: 'scheme_code,portfolio_date,source' });
 
   if (error) {
     console.error('[fetch-fund-snapshot] scheme=%d composition upsert error: %s', schemeCode, error.message);
-    return { status: 'failed' };
+    return {
+      status: 'failed',
+      classifierOutcome: null,
+      classifierCoveragePct: portfolio.classifierCoveragePct,
+      equityHoldingsCount: holdings.equity_holdings.length,
+    };
   }
 
-  console.log('[fetch-fund-snapshot] scheme=%d composition fetched (amfi)', schemeCode);
-  return { status: 'fetched' };
+  console.log('[fetch-fund-snapshot] scheme=%d composition fetched (%s, coverage=%s%%)',
+    schemeCode, sourceTag, portfolio.classifierCoveragePct);
+  return {
+    status: 'fetched',
+    classifierOutcome: portfolio.classifierOutcome,
+    classifierCoveragePct: portfolio.classifierCoveragePct,
+    equityHoldingsCount: holdings.equity_holdings.length,
+  };
 }
 
 async function seedCategoryRules(
@@ -421,12 +457,23 @@ async function seedCategoryRules(
 interface BuiltPortfolio {
   equityPct: number; debtPct: number; cashPct: number; otherPct: number;
   largeCapPct: number; midCapPct: number; smallCapPct: number;
+  notClassifiedPct: number;
+  /** 'amfi' if ≥1 ISIN classified; 'category_fallback' if had holdings but none matched. */
+  classifierOutcome: 'amfi' | 'category_fallback';
+  /** How many of the 50 disclosed top-holdings rows were classified into L/M/S. */
+  classifierHits: number;
+  /** Sum of largeCapPct + midCapPct + smallCapPct — coverage as a % of NAV. */
+  classifierCoveragePct: number;
   sectorAllocation: Record<string, number> | null;
   topHoldings: { name: string; isin: string; sector: string; marketCap: string; pctOfNav: number }[] | null;
   rawDebtHoldings: MfdataDebtHolding[] | null;
 }
 
-function buildPortfolio(holdings: MfdataHoldings, schemeCategory: string): BuiltPortfolio {
+function buildPortfolio(
+  holdings: MfdataHoldings,
+  schemeCategory: string,
+  isinToCap: Map<string, MarketCapCategory>,
+): BuiltPortfolio {
   const catRules = getCategoryRules(schemeCategory);
 
   const rawEquityPct = holdings.equity_pct;
@@ -453,8 +500,21 @@ function buildPortfolio(holdings: MfdataHoldings, schemeCategory: string): Built
 
   const cashPct = Math.max(0, 100 - equityPct - debtPct);
 
+  // Reject equity_holdings outright if it's been polluted with benchmark
+  // rows — sector aggregation and the classifier both join over every entry.
+  const rawEquityHoldings = holdings.equity_holdings ?? [];
+  let equityHoldings: MfdataEquityHolding[];
+  if (isEquityHoldingsCorrupted(rawEquityHoldings as EquityHolding[])) {
+    console.warn(
+      '[fetch-fund-snapshot] equity_holdings corrupted for category "%s", discarding %d rows',
+      schemeCategory, rawEquityHoldings.length,
+    );
+    equityHoldings = [];
+  } else {
+    equityHoldings = rawEquityHoldings;
+  }
+
   const sectorMap: Record<string, number> = {};
-  const equityHoldings = holdings.equity_holdings ?? [];
   for (const h of equityHoldings) {
     if (h.sector && typeof h.weight_pct === 'number') {
       sectorMap[h.sector] = (sectorMap[h.sector] ?? 0) + h.weight_pct;
@@ -465,6 +525,30 @@ function buildPortfolio(holdings: MfdataHoldings, schemeCategory: string): Built
     sectorAllocation[sector] = Math.round(weight * 100) / 100;
   }
 
+  // Real per-fund cap split from the AMFI classifier — same shape as in
+  // sync-fund-portfolios. Falls back to category defaults only when no
+  // ISIN resolved; the caller flips `source` to 'category_fallback' so the
+  // UI can show a disclaimer rather than presenting category-averages
+  // as measured.
+  const classification: CapClassification = classifyHoldings(
+    equityHoldings as EquityHolding[],
+    isinToCap,
+  );
+  const classifierTotal =
+    classification.largeCapPct + classification.midCapPct + classification.smallCapPct;
+  const hasClassifierCoverage = equityHoldings.length > 0 && classifierTotal > 0;
+
+  const largeCapPct = hasClassifierCoverage ? classification.largeCapPct : catRules.large;
+  const midCapPct = hasClassifierCoverage ? classification.midCapPct : catRules.mid;
+  const smallCapPct = hasClassifierCoverage ? classification.smallCapPct : catRules.small;
+  const notClassifiedPct = hasClassifierCoverage
+    ? classification.notClassifiedPct
+    : Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
+
+  const annotatedByKey = new Map<string, MarketCapCategory | 'Other'>();
+  for (const a of classification.annotated) {
+    annotatedByKey.set(`${(a.isin ?? '').toUpperCase()}|${a.stock_name ?? ''}`, a.marketCap);
+  }
   const topHoldings = equityHoldings
     .filter((h) => h.stock_name && typeof h.weight_pct === 'number')
     .sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0))
@@ -473,22 +557,70 @@ function buildPortfolio(holdings: MfdataHoldings, schemeCategory: string): Built
       name: h.stock_name!,
       isin: h.isin ?? '',
       sector: h.sector ?? 'Other',
-      marketCap: 'Other',
+      marketCap: annotatedByKey.get(`${(h.isin ?? '').toUpperCase()}|${h.stock_name ?? ''}`) ?? 'Other',
       pctOfNav: h.weight_pct!,
     }));
+
+  const classifierHits = classification.annotated.filter((a) => a.marketCap !== 'Other').length;
 
   return {
     equityPct: Math.round(equityPct * 100) / 100,
     debtPct: Math.round(debtPct * 100) / 100,
     cashPct: Math.round(cashPct * 100) / 100,
     otherPct: 0,
-    largeCapPct: catRules.large,
-    midCapPct: catRules.mid,
-    smallCapPct: catRules.small,
+    largeCapPct,
+    midCapPct,
+    smallCapPct,
+    notClassifiedPct,
+    classifierOutcome: hasClassifierCoverage ? 'amfi' : 'category_fallback',
+    classifierHits,
+    classifierCoveragePct: Math.round(classifierTotal * 100) / 100,
     sectorAllocation: Object.keys(sectorAllocation).length > 0 ? sectorAllocation : null,
     topHoldings: topHoldings.length > 0 ? topHoldings : null,
     rawDebtHoldings,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Classifier cache
+// ---------------------------------------------------------------------------
+
+// Module-scope cache for the ~750-row stock_market_cap table. Edge function
+// isolates are reused across warm invocations, so loading the table once
+// per cold-start is the cheapest correct option. TTL is 6 hours because
+// the seeder cron is monthly — there's no path that updates the table
+// between fetches inside a single isolate's lifetime that we care about.
+const CAP_MAP_TTL_MS = 6 * 60 * 60 * 1000;
+let cachedIsinToCap: Map<string, MarketCapCategory> | null = null;
+let cachedIsinToCapAt = 0;
+
+async function getIsinToCapMap(): Promise<Map<string, MarketCapCategory>> {
+  const now = Date.now();
+  if (cachedIsinToCap && now - cachedIsinToCapAt < CAP_MAP_TTL_MS) {
+    return cachedIsinToCap;
+  }
+  const map = new Map<string, MarketCapCategory>();
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('stock_market_cap')
+      .select('isin, market_cap_category')
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.warn('[fetch-fund-snapshot] stock_market_cap load failed: %s', error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+    for (const row of data as { isin: string; market_cap_category: MarketCapCategory }[]) {
+      map.set(row.isin.toUpperCase(), row.market_cap_category);
+    }
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  cachedIsinToCap = map;
+  cachedIsinToCapAt = now;
+  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,24 +646,45 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
   console.log('[fetch-fund-snapshot] scheme=%d invocation started', schemeCode);
 
+  const isinToCap = await getIsinToCapMap();
+
   // Stage 1 — metadata.
   const metaResult = await syncMeta(schemeCode);
 
   // Stage 2 — composition. Always attempt, even if meta failed (a fund could
   // already have scheme_master row from the AMFI seed but no composition).
-  let compositionResult: { status: string };
+  let compositionResult: CompositionResult;
   if (metaResult.status === 'failed') {
     // Best-effort composition with category fallback only — we don't have a
     // family_id and may not have a category either.
-    compositionResult = await syncComposition(schemeCode, null, null);
+    compositionResult = await syncComposition(schemeCode, null, null, isinToCap);
   } else {
-    compositionResult = await syncComposition(schemeCode, metaResult.family_id ?? null, metaResult.scheme_category ?? null);
+    compositionResult = await syncComposition(
+      schemeCode,
+      metaResult.family_id ?? null,
+      metaResult.scheme_category ?? null,
+      isinToCap,
+    );
   }
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
     '[fetch-fund-snapshot] scheme=%d done — meta=%s composition=%s elapsed_ms=%d',
     schemeCode, metaResult.status, compositionResult.status, elapsedMs,
+  );
+
+  trackServerEvent(
+    'fund_snapshot_fetched',
+    {
+      scheme_code: schemeCode,
+      composition_status: compositionResult.status,
+      classifier_outcome: compositionResult.classifierOutcome,
+      classifier_coverage_pct: compositionResult.classifierCoveragePct,
+      equity_holdings_count: compositionResult.equityHoldingsCount,
+      cap_map_size: isinToCap.size,
+      elapsed_ms: elapsedMs,
+    },
+    'system:fetch-fund-snapshot',
   );
 
   return json({
