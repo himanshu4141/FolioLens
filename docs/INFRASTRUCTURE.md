@@ -82,9 +82,10 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `sync-fund-portfolios` | pg_cron (monthly) | Pulls AMFI portfolio composition disclosures | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes scheme metadata (AUM, expense ratio, risk) | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
+| `demo-signup` | In-app "Try with sample data" sheet (pre-auth) | Captures email + marketing consent + UTM/referrer attribution into `public.demo_signup`. Idempotent on email — re-submissions bump `signup_count` instead of erroring. Service-role insert path; RLS on the table denies direct client writes. | Active |
 
 
-All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function.
+All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -117,6 +118,8 @@ All current pg_net call sites — the four cron schedules (`sync-nav-hourly`, `s
 `notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
 
 The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`, `MAIL_FORWARD_TO` (founder inbox), and `MAIL_FORWARD_FROM` (verified sender) env vars — same ones that already power human-alias forwarding and CAS import notifications. **No new Vercel env vars are required.**
+
+`public.demo_signup` is intentionally separate from the marketing-site early-access form (currently a Tally embed; future Supabase `waitlist_signup` table per `foliolens-site/supabase-waitlist-endpoint-guide.md` is unbuilt). The two funnels share the `source` / `status` convention so they can be merged later if needed. No new env vars are required — `demo-signup` uses the standard `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` already present on every project.
 
 
 ## Vercel projects
@@ -183,6 +186,66 @@ Build-time env vars (the `EXPO_PUBLIC_*` ones baked into the JS bundle) come fro
 
 
 GitHub Actions overrides these for OTA updates by passing the workflow's `_PROD` or `_DEV` GitHub secrets at runtime — that way OTA bundles always land with values matching the channel they ship to.
+
+
+## Feature flags
+
+
+Flags resolve **at build time** from `EXPO_PUBLIC_FEATURE_*` env vars baked into the JS bundle. The EAS channel decides which value gets baked: each channel block in [eas.json](../eas.json) sets its own `env` map, and the flag value follows from there. The source of truth for what's wired up is [src/lib/featureFlags.ts](../src/lib/featureFlags.ts).
+
+
+Why build-time rather than runtime: at this scale (one consumer per flag, low cadence) the simplicity wins. No runtime fetch, no PostHog round-trip on the critical auth path, no RLS to reason about. The trade-off is that toggling a flag requires a rebuild + OTA — acceptable for "ship-readiness" gates.
+
+
+### Current flags
+
+
+| Flag | Env var | preview-* channels | production channel |
+|------|---------|--------------------|--------------------|
+| Preview mode (sample-data walkthrough) | `EXPO_PUBLIC_FEATURE_PREVIEW_MODE` | `true` | `false` |
+
+
+### Adding or toggling a flag
+
+
+1. **Pick the env var name.** Stick to the `EXPO_PUBLIC_FEATURE_<NAME>` convention. Anything without the `EXPO_PUBLIC_` prefix won't make it into the JS bundle.
+2. **Set the per-channel value in [eas.json](../eas.json).** Every channel that should see the flag enabled needs `"EXPO_PUBLIC_FEATURE_<NAME>": "true"`. Production should default to `"false"` unless you actively want it on in prod.
+3. **Wire the flag into `src/lib/featureFlags.ts`.** One `process.env` read at module scope, exported via the `featureFlags` object. Consumers import `featureFlags.<name>` — never call `process.env` directly from feature code.
+4. **For Vercel web builds**, also set the env var in the Vercel project's Environment Variables UI for the relevant environments (Preview vs Production). Vercel does not read `eas.json` — the web bundle gets its env from Vercel's own settings.
+5. **To toggle in prod:** flip the value in `eas.json` for the relevant channel, commit, and republish the OTA update (or cut a new native build if the change needs to reach users on an older binary).
+
+
+### Defense-in-depth for state that outlives the flag
+
+
+If a flag controls a mode that persists state (e.g. preview mode persists `previewMode` in the Zustand store), the app should force-exit that state when the flag is off. See `AuthGate` in [app/_layout.tsx](../app/_layout.tsx) for the pattern — a one-shot effect that clears the persisted flag-gated state on mount when `featureFlags.<name>` is false. Without this, a user whose previous build had the flag on would stay stuck in the flag-gated mode after we flip it off.
+
+
+### Graduation path: PostHog runtime override
+
+
+If a flag ever needs to be toggled **at runtime** for a specific user cohort — e.g. "enable preview for the people who emailed asking for it" — layer PostHog feature flags on top **without removing the build-time floor**. PostHog is already initialised via [src/lib/analytics.ts](../src/lib/analytics.ts) and identifies users by Supabase `user.id`, so cohort targeting is free.
+
+
+The shape of the change:
+
+
+```ts
+import { PostHog } from 'posthog-react-native';
+
+const buildTimeDefault = process.env.EXPO_PUBLIC_FEATURE_PREVIEW_MODE === 'true';
+
+export function isPreviewModeEnabled(posthog?: PostHog): boolean {
+  // PostHog override wins when defined; otherwise build-time default.
+  const override = posthog?.getFeatureFlag('preview_mode_enabled');
+  if (override === true) return true;
+  if (override === false) return false;
+  return buildTimeDefault;
+}
+```
+
+
+Keep the build-time default `false` in prod so a missing or misconfigured PostHog flag can never *enable* a feature that prod isn't ready for — PostHog can only override the build-time decision for a targeted cohort. Target the PostHog flag at distinct IDs (which `analytics.identify()` already populates with the Supabase user ID) or by an email-domain property from the PostHog dashboard.
 
 
 ## Google OAuth

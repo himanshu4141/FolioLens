@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Alert,
   Platform,
   ScrollView,
 } from 'react-native';
@@ -18,6 +17,7 @@ import { authClient } from '@/src/lib/auth';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
+import { useAlertDialog, useConfirmDialog } from '@/src/hooks/useDialog';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -86,6 +86,8 @@ export default function AboutScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const [copiedUpdateId, setCopiedUpdateId] = useState(false);
   const [feedbackKind, setFeedbackKind] = useState<FeedbackKind | null>(null);
+  const showAlert = useAlertDialog();
+  const showConfirm = useConfirmDialog();
 
   async function handleOpenHelp() {
     try {
@@ -94,10 +96,10 @@ export default function AboutScreen() {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
       });
     } catch (error) {
-      Alert.alert(
-        'Could not open Help',
-        error instanceof Error ? error.message : 'Please try again.',
-      );
+      showAlert({
+        title: 'Could not open Help',
+        body: error instanceof Error ? error.message : 'Please try again.',
+      });
     }
   }
 
@@ -107,10 +109,10 @@ export default function AboutScreen() {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
       });
     } catch (error) {
-      Alert.alert(
-        `Could not open ${label}`,
-        error instanceof Error ? error.message : 'Please try again.',
-      );
+      showAlert({
+        title: `Could not open ${label}`,
+        body: error instanceof Error ? error.message : 'Please try again.',
+      });
     }
   }
 
@@ -137,30 +139,20 @@ export default function AboutScreen() {
     setTimeout(() => setCopiedUpdateId(false), 2000);
   }
 
-  async function handleSignOut() {
-    // React Native's Alert.alert is a no-op on react-native-web, so on
-    // desktop the previous version of this handler appeared dead — the
-    // "Sign out" button did nothing because the confirmation dialog never
-    // rendered and signOut() was never called.
-    const confirmed =
-      Platform.OS === 'web'
-        ? typeof window !== 'undefined' && window.confirm('Are you sure you want to sign out?')
-        : await new Promise<boolean>((resolve) => {
-            Alert.alert('Sign out', 'Are you sure you want to sign out?', [
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Sign out', style: 'destructive', onPress: () => resolve(true) },
-            ]);
-          });
-    if (!confirmed) return;
-
-    const { error } = await authClient.signOut();
-    if (error) {
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.alert(`Error: ${error.message}`);
-      } else {
-        Alert.alert('Error', error.message);
-      }
-    }
+  function handleSignOut() {
+    showConfirm({
+      title: 'Sign out',
+      body: 'You can sign back in any time with your email or Google account.',
+      okText: 'Sign out',
+      cancelText: 'Cancel',
+      destructive: true,
+      onConfirm: async () => {
+        const { error } = await authClient.signOut();
+        if (error) {
+          showAlert({ title: 'Sign out failed', body: error.message });
+        }
+      },
+    });
   }
 
   return (

@@ -16,6 +16,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useQuery } from '@tanstack/react-query';
 import { casImportRepo } from '@/src/lib/data/casImport';
 import { useSession } from '@/src/hooks/useSession';
+import { useImportPreviewGate } from '@/src/hooks/useImportPortfolioPress';
 import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import {
@@ -83,6 +84,7 @@ async function fetchLastImport(userId: string): Promise<LastImport | null> {
 
 export default function PortfolioImportScreen() {
   const router = useRouter();
+  const gatePreview = useImportPreviewGate();
   const { session } = useSession();
   const userId = session?.user.id;
   const tokens = useClearLensTokens();
@@ -180,9 +182,10 @@ export default function PortfolioImportScreen() {
 
             <TouchableOpacity
               style={styles.primaryAction}
-              onPress={() =>
-                router.push({ pathname: '/onboarding', params: { mode: 'auto-refresh' } })
-              }
+              onPress={() => {
+                if (gatePreview()) return;
+                router.push({ pathname: '/onboarding', params: { mode: 'auto-refresh' } });
+              }}
               activeOpacity={0.78}
             >
               <Ionicons name="settings-outline" size={15} color={cl.textOnDark} />
@@ -215,7 +218,10 @@ export default function PortfolioImportScreen() {
         <View style={styles.card}>
           <TouchableOpacity
             style={styles.row}
-            onPress={() => router.push('/onboarding')}
+            onPress={() => {
+              if (gatePreview()) return;
+              router.push('/onboarding');
+            }}
             activeOpacity={0.72}
           >
             <View style={styles.optionIcon}>

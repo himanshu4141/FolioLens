@@ -79,4 +79,5 @@ __pycache__/
 .vercel
 fundlens-clear-lens/**
 
-.worktrees
+.worktrees/
+.claude/worktrees/

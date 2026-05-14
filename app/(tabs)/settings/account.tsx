@@ -15,6 +15,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { authClient } from '@/src/lib/auth';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile } from '@/src/hooks/useUserProfile';
+import { useImportPreviewGate } from '@/src/hooks/useImportPortfolioPress';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
@@ -39,6 +40,11 @@ function formatDob(iso: string): string {
 
 export default function AccountScreen() {
   const router = useRouter();
+  const gatePreview = useImportPreviewGate();
+  const goToIdentity = () => {
+    if (gatePreview()) return;
+    router.push({ pathname: '/onboarding', params: { mode: 'identity' } });
+  };
   const { session } = useSession();
   const userId = session?.user.id;
   const tokens = useClearLensTokens();
@@ -104,7 +110,7 @@ export default function AccountScreen() {
         <View style={styles.card}>
           <TouchableOpacity
             style={styles.profileRow}
-            onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
+            onPress={goToIdentity}
             activeOpacity={0.7}
           >
             <View style={styles.avatarCircle}>
@@ -140,7 +146,7 @@ export default function AccountScreen() {
                 </Text>
               </View>
               <TouchableOpacity
-                onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
+                onPress={goToIdentity}
                 style={styles.actionBtn}
               >
                 <Text style={styles.actionBtnText}>Edit</Text>
@@ -170,7 +176,7 @@ export default function AccountScreen() {
               </View>
               {!profile?.dob ? (
                 <TouchableOpacity
-                  onPress={() => router.push({ pathname: '/onboarding', params: { mode: 'identity' } })}
+                  onPress={goToIdentity}
                   style={styles.actionBtn}
                 >
                   <Text style={styles.actionBtnText}>Add</Text>

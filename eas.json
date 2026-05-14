@@ -9,14 +9,16 @@
       "distribution": "internal",
       "channel": "development",
       "env": {
-        "APP_VARIANT": "development"
+        "APP_VARIANT": "development",
+        "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "true"
       }
     },
     "preview-main": {
       "distribution": "internal",
       "channel": "foliolens-main",
       "env": {
-        "APP_VARIANT": "preview-main"
+        "APP_VARIANT": "preview-main",
+        "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "true"
       },
       "android": {
         "buildType": "apk"
@@ -26,7 +28,8 @@
       "distribution": "internal",
       "channel": "foliolens-pr",
       "env": {
-        "APP_VARIANT": "preview-pr"
+        "APP_VARIANT": "preview-pr",
+        "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "true"
       },
       "android": {
         "buildType": "apk"
@@ -34,7 +37,10 @@
     },
     "production": {
       "distribution": "internal",
-      "channel": "foliolens-production"
+      "channel": "foliolens-production",
+      "env": {
+        "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "false"
+      }
     }
   },
   "submit": {

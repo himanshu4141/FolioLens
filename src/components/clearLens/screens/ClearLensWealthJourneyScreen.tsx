@@ -30,6 +30,8 @@ import {
   ClearLensSegmentedControl,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
+import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
+import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -577,6 +579,7 @@ export function ClearLensWealthJourneyScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const handleImportPress = useImportPortfolioPress();
   const isFocused = useIsFocused();
   const { width: viewportWidth } = useWindowDimensions();
   const { session } = useSession();
@@ -1027,7 +1030,7 @@ export function ClearLensWealthJourneyScreen() {
       <AppOverflowMenu
         visible={overflowOpen}
         onClose={() => setOverflowOpen(false)}
-        onImport={() => router.push('/onboarding')}
+        onImport={handleImportPress}
         onMoneyTrail={() => router.push('/money-trail')}
         onTools={() => router.push('/tools' as never)}
         onSettings={() => router.push('/(tabs)/settings')}
@@ -1057,6 +1060,7 @@ export function ClearLensWealthJourneyScreen() {
                 <Text style={styles.heroTitle}>Plan today, with clarity</Text>
                 <Text style={styles.heroSubtitle}>See where your money is headed under your current pace.</Text>
               </View>
+              <ToolsPreviewBanner message="Running on a sample portfolio. Sign up to plan against your real holdings + SIPs." />
 
               <ClearLensCard style={styles.snapshotCard}>
                 <View style={styles.cardHeader}>

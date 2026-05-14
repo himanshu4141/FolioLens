@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   type AppStateStatus,
   KeyboardAvoidingView,
@@ -30,6 +29,7 @@ import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclai
 import { DesktopFormFrame } from '@/src/components/responsive';
 import { AutoRefreshSetup } from '@/src/components/onboarding/AutoRefreshSetup';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
+import { useAlertDialog } from '@/src/hooks/useDialog';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,
@@ -853,6 +853,7 @@ function ImportStep({
   const [requestKind, setRequestKind] = useState<RequestKind>('rta');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const showAlert = useAlertDialog();
 
   // The `error` state is shared between sub-screens. Clear it on every sub
   // transition so an error from one path (e.g. Upload's parser failure)
@@ -958,7 +959,10 @@ function ImportStep({
         portal_id: portalId,
         message: err instanceof Error ? err.message : String(err),
       });
-      Alert.alert('Could not open portal', err instanceof Error ? err.message : 'Try again.');
+      showAlert({
+        title: 'Could not open portal',
+        body: err instanceof Error ? err.message : 'Try again.',
+      });
     }
   }
 

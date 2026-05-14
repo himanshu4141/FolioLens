@@ -24,6 +24,7 @@ import {
 import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { syncDeltaForUser } from '@/src/lib/db/sync';
+import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
@@ -894,6 +895,7 @@ function ClearLensPortfolioScreenMobile() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const userId = session?.user.id;
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
@@ -970,7 +972,7 @@ function ClearLensPortfolioScreenMobile() {
       <AppOverflowMenu
         visible={overflowOpen}
         onClose={() => setOverflowOpen(false)}
-        onImport={() => router.push('/onboarding')}
+        onImport={handleImportPress}
         onMoneyTrail={() => router.push('/money-trail')}
         onSettings={() => router.push('/(tabs)/settings')}
         onTools={() => router.push('/tools' as never)}
@@ -989,7 +991,7 @@ function ClearLensPortfolioScreenMobile() {
           </TouchableOpacity>
         </View>
       ) : !summary || fundCards.length === 0 ? (
-        <PortfolioEmptyState onImport={() => router.push('/onboarding')} />
+        <PortfolioEmptyState onImport={handleImportPress} />
       ) : (
         <ScrollView
           showsVerticalScrollIndicator={false}

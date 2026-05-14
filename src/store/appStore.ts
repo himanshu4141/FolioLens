@@ -349,6 +349,47 @@ export interface AppStore {
   setPortfolioChartWindow: (window: PortfolioChartWindow) => void;
   moneyTrailSortBy: MoneyTrailSortKey;
   setMoneyTrailSortBy: (sort: MoneyTrailSortKey) => void;
+  // Preview ("try the app without signing up") mode. Intentionally NOT
+  // persisted — every cold start drops back to /auth so previewers don't
+  // drift permanently into demo data. Consumed by AuthGate (treated as
+  // "logged in") and by data hooks that swap real Supabase queries for
+  // the fixtures in `src/lib/previewData.ts`.
+  previewMode: boolean;
+  enterPreviewMode: () => void;
+  exitPreviewMode: () => void;
+
+  // Visibility flag for the "Sign up to import" confirm modal. The
+  // `useImportPreviewGate` hook flips this on when a preview-mode user
+  // taps an import / onboarding entry point; the globally-mounted
+  // `PreviewExitConfirmModal` reads it. Kept on the store (rather than
+  // colocated context) so any entry point in the app can trigger it
+  // without threading props through the parent tree.
+  importGateVisible: boolean;
+  showImportGate: () => void;
+  hideImportGate: () => void;
+
+  // Generic styled dialog queue — replaces `Alert.alert` / `window.confirm`
+  // / `window.alert` call sites that previously rendered un-styled OS
+  // chrome inside an otherwise design-system-styled app. The
+  // `useAlertDialog` / `useConfirmDialog` hooks in `useDialog.ts` are the
+  // public API; callers shouldn't read this state directly. Only one
+  // dialog at a time — newer calls replace the in-flight one (matches
+  // `Alert.alert` semantics).
+  dialog: AppDialogRequest | null;
+  showDialog: (req: AppDialogRequest) => void;
+  hideDialog: () => void;
+}
+
+export interface AppDialogRequest {
+  kind: 'alert' | 'confirm';
+  title: string;
+  body?: string;
+  okText?: string;
+  cancelText?: string;
+  destructive?: boolean;
+  // For 'confirm' dialogs. Callers wire side effects through these.
+  onConfirm?: () => void;
+  onCancel?: () => void;
 }
 
 // Phase 8 — when migrating persisted preferences, route legacy PR symbols
@@ -485,6 +526,17 @@ export const useAppStore = create<AppStore>()(
       moneyTrailSortBy: 'newest' as MoneyTrailSortKey,
       setMoneyTrailSortBy: (sort) =>
         set({ moneyTrailSortBy: sanitizeMoneyTrailSort(sort) }),
+      previewMode: false,
+      enterPreviewMode: () => set({ previewMode: true }),
+      exitPreviewMode: () => set({ previewMode: false }),
+
+      importGateVisible: false,
+      showImportGate: () => set({ importGateVisible: true }),
+      hideImportGate: () => set({ importGateVisible: false }),
+
+      dialog: null,
+      showDialog: (req) => set({ dialog: req }),
+      hideDialog: () => set({ dialog: null }),
     }),
     {
       name: 'foliolens-app-store',

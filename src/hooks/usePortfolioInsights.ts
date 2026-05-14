@@ -16,6 +16,8 @@ import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioCompos
 import { parseFundName } from '@/src/utils/fundName';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { PERSIST_MAX_AGE_MS } from '@/src/lib/queryClient';
+import { useAppStore } from '@/src/store/appStore';
+import { PREVIEW_FUND_COMPOSITIONS } from '@/src/lib/previewData';
 import type { FundCardData } from '@/src/hooks/usePortfolio';
 import type {
   PortfolioInsights,
@@ -270,14 +272,27 @@ export function computeInsights(
 
 export function usePortfolioInsights(fundCards: FundCardData[]) {
   const queryClient = useQueryClient();
+  const previewMode = useAppStore((s) => s.previewMode);
   const schemeCodes = [...new Set(fundCards.map((f) => f.schemeCode))];
 
   const {
     data: compositions,
     isLoading,
   } = useQuery({
-    queryKey: ['portfolio-composition', schemeCodes],
-    queryFn: () => fetchCompositions(schemeCodes),
+    queryKey: previewMode
+      ? ['portfolio-composition', 'preview', schemeCodes]
+      : ['portfolio-composition', schemeCodes],
+    // Preview mode short-circuits to the in-memory composition fixtures
+    // (`PREVIEW_FUND_COMPOSITIONS`) so the Asset Mix card on Portfolio +
+    // Portfolio Insights screen render real-looking allocations instead
+    // of hanging on the "Syncing composition data from AMFI disclosures"
+    // banner forever.
+    queryFn: () =>
+      previewMode
+        ? Promise.resolve(
+            PREVIEW_FUND_COMPOSITIONS.filter((c) => schemeCodes.includes(c.schemeCode)),
+          )
+        : fetchCompositions(schemeCodes),
     enabled: schemeCodes.length > 0,
     staleTime: STALE_TIMES.PORTFOLIO_COMPOSITION,
     gcTime: PERSIST_MAX_AGE_MS,
