@@ -60,6 +60,7 @@ npm run lint        # zero warnings (--max-warnings 0)
 ### Supabase migrations
 - After writing a new migration, apply it to the production DB (`supabase db push` or via the Supabase MCP tool) and confirm it ran without errors.
 - For cron schedule changes, verify the `cron.job` table reflects the new schedule.
+- Any new table in the `public` schema that the app reads/writes via supabase-js needs explicit `GRANT` statements — Supabase no longer auto-exposes `public` tables to the Data API (see `supabase/migrations/20260513000002_explicit_data_api_grants.sql` for the project-wide convention and the rationale).
 
 ### Stacked PRs
 - When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.
