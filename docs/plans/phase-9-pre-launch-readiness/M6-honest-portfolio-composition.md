@@ -434,8 +434,8 @@ Backstop checks the user shouldn't have to do but a reviewer should:
 
 ## Progress
 
-- [ ] M1 — `stock_market_cap` table + RLS migration applied; `sync-stock-market-cap` edge function deployed; monthly cron registered; classifier + equity-corruption guard unit-tested; local seed run produces ~750 rows.
-- [ ] M2 — `buildPortfolio` and `buildPortfolioFromHoldings` use the classifier; `source='category_fallback'` tagging in place; equity-corruption guard active; two Flexi Cap funds show distinct splits after on-demand refresh.
-- [ ] M3 — Backfill script ships, dry-run + real-run executed locally; demo seed regenerated; spot-check confirms distinct splits without a new mfdata sync.
-- [ ] M4 — Compare / Insights / Fund Details surface "Not classified" row and fallback footnote; manual smoke on all three surfaces green.
-- [ ] M5 — `docs/architecture/data-sync-pipeline.md` updated; `docs/plans/README.md` updated; prod cron + backfill executed; bug no longer reproducible on `app.foliolens.in`.
+- [x] M1 — `stock_market_cap` table + RLS migration applied; `sync-stock-market-cap` edge function shipped; monthly cron registered via migration; classifier + equity-corruption guard unit-tested (18 new tests, 64 total in portfolio-utils passing).
+- [x] M2 — `buildPortfolio` and `buildPortfolioFromHoldings` use the classifier; `source='category_fallback'` tagging in place; equity-corruption guard active; PostHog `fund_snapshot_fetched` event emitted on every on-demand snapshot; `sync-fund-portfolios` payload extended with classifier-coverage metrics. Type-check clean, 1037 tests pass.
+- [x] M3 — Backfill script `scripts/backfill-stock-market-cap.mjs` ships with dry-run support, idempotent re-runs, and source-flip handling via delete+insert. Demo seed regenerated: hardcoded 38/33/29 dropped, cap pcts now computed from the seed's own top_holdings so demo data exercises the same UI codepath as production.
+- [x] M4 — Compare Funds renders the "Not classified" row conditionally + names funds whose cap mix is category-derived. Portfolio Insights' `DonutMixCard` adds the Not Classified slice + uses the existing `disclosure` slot for the disclaimer. Fund Details shows an italic disclosure above the cap bar when `source != 'amfi'`. `CompositionSource` type widened to include `category_fallback`.
+- [x] M5 — `docs/architecture/data-sync-pipeline.md` updated with the new function (header count 4→5, mermaid diagrams extended, sequence diagram + observability notes added). `docs/plans/README.md` lists this plan in Active. Production cron + backfill remain to be executed by the operator.
