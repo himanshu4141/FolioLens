@@ -1,0 +1,15 @@
+{
+  "name": "foliolens-qa",
+  "version": "0.1.0",
+  "description": "Structured QA testing for FolioLens - PR validation, post-release smoke tests, and full regression suites. Covers every screen, theming, UX principles, cache architecture, responsive layout, and console health.",
+  "author": {
+    "name": "Himanshu Yadav"
+  },
+  "keywords": [
+    "qa",
+    "testing",
+    "foliolens",
+    "mutual-fund",
+    "regression"
+  ]
+}
