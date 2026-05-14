@@ -48,3 +48,13 @@ CREATE POLICY "service role has full access to stock_market_cap"
   FOR ALL
   TO service_role
   USING (true);
+
+-- Explicit Data API grants — auto-exposure of new public-schema tables was
+-- revoked in 20260513000002_explicit_data_api_grants.sql, so every new
+-- table needs its own GRANTs to be visible to the supabase-js client.
+-- Shared catalog table pattern (matches scheme_master / fund_portfolio_composition):
+--   authenticated → SELECT only (RLS gives row-level gating; writes flow through
+--                   the service-role edge functions, not the client)
+--   service_role  → ALL (belt-and-suspenders against any future REVOKE)
+GRANT SELECT ON public.stock_market_cap TO authenticated;
+GRANT ALL    ON public.stock_market_cap TO service_role;

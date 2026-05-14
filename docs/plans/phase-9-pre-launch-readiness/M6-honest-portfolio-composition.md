@@ -207,7 +207,7 @@ The pieces are interlocked (UI assumes classifier exists; backfill assumes table
 
 **Files added.**
 
-- `supabase/migrations/20260514000000_stock_market_cap.sql`
+- `supabase/migrations/20260514100000_stock_market_cap.sql`
 
         CREATE TABLE stock_market_cap (
           isin TEXT PRIMARY KEY,
