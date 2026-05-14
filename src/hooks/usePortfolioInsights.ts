@@ -138,7 +138,12 @@ export function computeInsights(
       continue;
     }
 
-    if (comp.source === 'category_rules') estimatedWeightPct += weight * 100;
+    // Both 'category_rules' and 'category_fallback' present SEBI category
+    // averages rather than fund-specific data — count both against the
+    // disclosure-banner threshold.
+    if (comp.source === 'category_rules' || comp.source === 'category_fallback') {
+      estimatedWeightPct += weight * 100;
+    }
 
     // Funds with meaningful debt or cash exposure
     if (comp.debtPct >= 1 || comp.cashPct >= 5) {
