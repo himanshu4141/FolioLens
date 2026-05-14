@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { transactionRepo } from '@/src/lib/data/transaction';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterToWindow, type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
@@ -300,8 +301,8 @@ export async function fetchInvestmentVsBenchmarkTimeline(
 async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<RawTxRow[]> {
   const rows: RawTxRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('transaction')
+    const { data, error } = await transactionRepo
+      .from()
       .select('fund_id, transaction_date, transaction_type, units, amount')
       .eq('user_id', userId)
       .in('fund_id', fundIds)
@@ -319,8 +320,8 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
   if (schemeCodes.length === 0) return [];
   const rows: RawNavRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from('nav_history')
+    const { data, error } = await navHistoryRepo
+      .from()
       .select('scheme_code, nav_date, nav')
       .in('scheme_code', schemeCodes)
       .gte('nav_date', startDate)

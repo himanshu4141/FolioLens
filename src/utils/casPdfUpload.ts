@@ -5,7 +5,7 @@ import {
   getInfoAsync,
   uploadAsync,
 } from 'expo-file-system/legacy';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
 
 export type CasUploadResult = { funds: number; transactions: number };
@@ -29,7 +29,7 @@ export async function uploadCasPdf(
   asset: DocumentPicker.DocumentPickerAsset,
   customPassword?: string,
 ): Promise<CasUploadResult> {
-  const { data: sessionData } = await supabase.auth.getSession();
+  const { data: sessionData } = await authClient.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) {
     console.warn('[cas-upload] no_session_token');

@@ -18,7 +18,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
 import * as ImagePicker from 'expo-image-picker';
 import ExpoConstants from 'expo-constants';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
+import { storageClient } from '@/src/lib/storage';
+import { userFeedbackRepo } from '@/src/lib/data/userFeedback';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -151,7 +153,7 @@ export function FeedbackSheet({
     const blob = await response.blob();
 
     const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${attachment.ext}`;
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await storageClient
       .from(ATTACHMENT_BUCKET)
       .upload(path, blob, {
         contentType: attachment.mime,
@@ -176,7 +178,7 @@ export function FeedbackSheet({
     setSubmitting(true);
     setError(null);
 
-    const { data: userResult, error: userError } = await supabase.auth.getUser();
+    const { data: userResult, error: userError } = await authClient.getUser();
     if (userError || !userResult.user) {
       setSubmitting(false);
       setError('You need to be signed in to send feedback.');
@@ -199,7 +201,7 @@ export function FeedbackSheet({
     const appVersion = ExpoConstants.expoConfig?.version ?? null;
     const updateId = Updates.isEmbeddedLaunch ? null : Updates.updateId;
 
-    const { error: insertError } = await supabase.from('user_feedback').insert({
+    const { error: insertError } = await userFeedbackRepo.insert({
       user_id: userResult.user.id,
       type: kind,
       title: trimmedTitle.slice(0, TITLE_MAX),

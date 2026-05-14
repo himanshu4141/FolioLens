@@ -10,7 +10,9 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
+import { functionsClient } from '@/src/lib/functions';
+import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
 import { parseFundName } from '@/src/utils/fundName';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { PERSIST_MAX_AGE_MS } from '@/src/lib/queryClient';
@@ -54,8 +56,8 @@ export async function fetchCompositions(schemeCodes: number[]): Promise<FundPort
   // Fetch the single best row per scheme_code:
   // prefer 'amfi' over 'category_rules', then most recent date.
   // 'amfi' < 'category_rules' alphabetically, so ASC puts amfi first.
-  const { data, error } = await supabase
-    .from('fund_portfolio_composition')
+  const { data, error } = await fundPortfolioCompositionRepo
+    .from()
     .select('scheme_code, portfolio_date, equity_pct, debt_pct, cash_pct, other_pct, large_cap_pct, mid_cap_pct, small_cap_pct, not_classified_pct, sector_allocation, top_holdings, source')
     .in('scheme_code', schemeCodes)
     .order('scheme_code', { ascending: true })
@@ -283,8 +285,8 @@ export function usePortfolioInsights(fundCards: FundCardData[]) {
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      await supabase.auth.getSession();
-      const res = await supabase.functions.invoke('sync-fund-portfolios', {
+      await authClient.getSession();
+      const res = await functionsClient.invoke('sync-fund-portfolios', {
         body: {},
       });
       if (res.error) throw res.error;

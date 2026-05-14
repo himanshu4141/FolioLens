@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,
@@ -87,8 +87,8 @@ export default function SettingsScreen() {
   const { data: latestNavRow } = useQuery({
     queryKey: ['latest-nav-date'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('nav_history')
+      const { data } = await navHistoryRepo
+        .from()
         .select('nav_date')
         .order('nav_date', { ascending: false })
         .limit(1)

@@ -14,7 +14,7 @@ import * as Updates from 'expo-updates';
 import ExpoConstants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
@@ -153,7 +153,7 @@ export default function AboutScreen() {
           });
     if (!confirmed) return;
 
-    const { error } = await supabase.auth.signOut();
+    const { error } = await authClient.signOut();
     if (error) {
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         window.alert(`Error: ${error.message}`);

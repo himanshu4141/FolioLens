@@ -14,7 +14,7 @@
  * different shape.
  */
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { fundViewRepo } from '@/src/lib/data/userFund';
 import { useSession } from '@/src/hooks/useSession';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
@@ -40,8 +40,8 @@ const FUND_COLUMNS =
 
 export async function fetchUserFunds(userId: string): Promise<UserFundRow[]> {
   perfStart('query:userFunds');
-  const { data, error } = await supabase
-    .from('fund')
+  const { data, error } = await fundViewRepo
+    .from()
     .select(FUND_COLUMNS)
     .eq('user_id', userId);
   perfEnd('query:userFunds', { rows: data?.length ?? 0 });

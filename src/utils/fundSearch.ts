@@ -7,7 +7,8 @@
  * call shape lean. We rely on the gin_trgm index on scheme_name added by the
  * M3v2 migration so ilike stays fast at scale.
  */
-import { supabase } from '@/src/lib/supabase';
+import { schemeMasterRepo } from '@/src/lib/data/schemeMaster';
+import { userFundRepo } from '@/src/lib/data/userFund';
 export { shortSchemeName } from './schemeName';
 
 export interface SchemeSearchResult {
@@ -49,8 +50,8 @@ export async function searchSchemes(
 ): Promise<SchemeSearchResult[]> {
   const { query = '', amcName, category, offset = 0, limit = 25 } = options;
 
-  let q = supabase
-    .from('scheme_master')
+  let q = schemeMasterRepo
+    .from()
     .select('scheme_code, scheme_name, scheme_category, amc_name, plan_type, isin')
     .order('scheme_name', { ascending: true })
     .range(offset, offset + limit - 1);
@@ -84,8 +85,8 @@ export async function searchSchemes(
  * scheme_master to surface scheme metadata.
  */
 export async function fetchUserHeldSchemes(userId: string): Promise<SchemeSearchResult[]> {
-  const { data: holdings, error: holdingsError } = await supabase
-    .from('user_fund')
+  const { data: holdings, error: holdingsError } = await userFundRepo
+    .from()
     .select('scheme_code')
     .eq('user_id', userId)
     .eq('is_active', true);
@@ -93,8 +94,8 @@ export async function fetchUserHeldSchemes(userId: string): Promise<SchemeSearch
   const codes = [...new Set((holdings ?? []).map((r) => r.scheme_code as number))];
   if (codes.length === 0) return [];
 
-  const { data, error } = await supabase
-    .from('scheme_master')
+  const { data, error } = await schemeMasterRepo
+    .from()
     .select('scheme_code, scheme_name, scheme_category, amc_name, plan_type, isin')
     .in('scheme_code', codes)
     .order('scheme_name', { ascending: true });

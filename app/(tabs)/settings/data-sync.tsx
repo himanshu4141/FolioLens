@@ -10,7 +10,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { functionsClient } from '@/src/lib/functions';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { navStatusBadge } from './index';
@@ -41,8 +42,8 @@ export default function DataSyncScreen() {
   const { data: latestNavRow } = useQuery({
     queryKey: ['latest-nav-date'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('nav_history')
+      const { data } = await navHistoryRepo
+        .from()
         .select('nav_date')
         .order('nav_date', { ascending: false })
         .limit(1)
@@ -72,11 +73,11 @@ export default function DataSyncScreen() {
 
   async function handleSync() {
     setSyncState('syncing');
-    supabase.functions.invoke('sync-fund-portfolios').catch(() => {});
-    supabase.functions.invoke('sync-fund-meta').catch(() => {});
+    functionsClient.invoke('sync-fund-portfolios').catch(() => {});
+    functionsClient.invoke('sync-fund-meta').catch(() => {});
     const [navResult, idxResult] = await Promise.allSettled([
-      supabase.functions.invoke('sync-nav'),
-      supabase.functions.invoke('sync-index'),
+      functionsClient.invoke('sync-nav'),
+      functionsClient.invoke('sync-index'),
     ]);
     const navOk = navResult.status === 'fulfilled' && !navResult.value.error;
     const idxOk = idxResult.status === 'fulfilled' && !idxResult.value.error;

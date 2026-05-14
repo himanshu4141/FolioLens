@@ -17,7 +17,7 @@
  * Phase 9 M5 — Layer 4 of "CDN snapshots for benchmark index history".
  */
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
@@ -91,8 +91,8 @@ async function fallbackFromIndexHistory(
     // `.gte()` precedes `.range()` so the paginator's terminal call
     // stays as `.range()` — tests rely on that to terminate the chain
     // and so does PostgREST's pagination contract.
-    let q = supabase
-      .from('index_history')
+    let q = indexHistoryRepo
+      .from()
       .select('index_date, close_value')
       .eq('index_symbol', symbol);
     if (sinceDate) q = q.gte('index_date', sinceDate);

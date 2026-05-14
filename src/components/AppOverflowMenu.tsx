@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -59,7 +59,7 @@ export function AppOverflowMenu({
 
   async function handleSignOut() {
     onClose();
-    const { error } = await supabase.auth.signOut();
+    const { error } = await authClient.signOut();
     if (error) {
       Alert.alert('Sign out failed', error.message);
     }

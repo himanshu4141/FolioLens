@@ -18,7 +18,7 @@
  * caller pulls the same six columns and reads only the fields it needs.
  */
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { userProfileRepo } from '@/src/lib/data/userProfile';
 
 export interface UserProfile {
   pan: string | null;
@@ -33,8 +33,8 @@ export const USER_PROFILE_COLUMNS =
   'pan, dob, kfintech_email, cas_inbox_token, cas_inbox_confirmation_url, cas_auto_forward_setup_completed_at' as const;
 
 export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
-  const { data, error } = await supabase
-    .from('user_profile')
+  const { data, error } = await userProfileRepo
+    .from()
     .select(USER_PROFILE_COLUMNS)
     .eq('user_id', userId)
     .maybeSingle();

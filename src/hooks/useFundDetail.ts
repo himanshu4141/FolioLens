@@ -13,7 +13,7 @@
  */
 
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { supabase } from '@/src/lib/supabase';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { paginateRangeQuery } from '@/src/utils/supabasePagination';
@@ -167,8 +167,8 @@ export async function fetchFundDetail(
     nav: r.nav,
   }));
   if (navRowsDesc.length === 0) {
-    const { data, error } = await supabase
-      .from('nav_history')
+    const { data, error } = await navHistoryRepo
+      .from()
       .select('nav_date, nav')
       .eq('scheme_code', fund.scheme_code)
       .order('nav_date', { ascending: false })
@@ -336,8 +336,8 @@ export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[
     source = 'supabase';
     rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
       (from, to) =>
-        supabase
-          .from('nav_history')
+        navHistoryRepo
+          .from()
           .select('nav_date, nav')
           .eq('scheme_code', schemeCode)
           .order('nav_date', { ascending: true })
