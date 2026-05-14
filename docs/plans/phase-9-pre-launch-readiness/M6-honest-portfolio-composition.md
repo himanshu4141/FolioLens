@@ -83,8 +83,73 @@ A wider audit on the same day flagged five related "hardcoded-but-presented-as-r
 - Backfill script `scripts/backfill-stock-market-cap.mjs` that re-runs the classifier against the stored `top_holdings` JSONB for every `source='amfi'` row, updating `large_cap_pct / mid_cap_pct / small_cap_pct / not_classified_pct` and stamping each holding's `marketCap` inside the JSONB.
 - Surface a "Not classified" row + fallback footnote on three UI surfaces (Compare, Portfolio Insights' MarketCapCard, Fund Details). The footnote reads roughly: "Showing category averages — fund hasn't disclosed enough holdings yet."
 - Regenerate `scripts/seed-demo-user.mjs` so demo accounts don't reintroduce the 38/33/29 pattern.
+- **PostHog events + alert thresholds** for every new/changed function — see the **Observability** section below.
 - Update `docs/architecture/data-sync-pipeline.md` to add the new edge function to the mermaid diagrams and the function-by-function reference.
 - Update `docs/plans/README.md` to list this plan in the active section.
+
+
+## Observability
+
+
+All new server-side telemetry uses the existing `trackServerEventAwait` helper at `supabase/functions/_shared/analytics.ts`. Convention from Phase 9 M2: snake_case event names, snake_case properties, `environment` auto-added, `distinct_id='system:<fn-name>'` for cron paths.
+
+**New cron `sync-stock-market-cap` — every run emits exactly one terminal event:**
+
+- Success: `sync_completed` with
+
+        {
+          job: 'sync-stock-market-cap',
+          classification_period: 'H2-2025',         // parsed from the xlsx
+          rows_seen: 752,                            // rows in the spreadsheet
+          rows_upserted: 752,                        // rows actually changed
+          was_noop: false,                           // true if period already current
+          large_count: 100, mid_count: 150, small_count: 502,
+          elapsed_ms: 4321,
+        }
+
+- Failure: `sync_failed` with
+
+        {
+          job: 'sync-stock-market-cap',
+          failure_reason: 'fetch_listing_failed' | 'xlsx_link_not_found' | 'fetch_xlsx_failed'
+                        | 'parse_failed' | 'sanity_check_failed' | 'upsert_failed',
+          first_error: '<truncated to 240 chars>',
+          elapsed_ms: 4321,
+        }
+
+**Existing cron `sync-fund-portfolios` — extend the wrap-up payload at `sync-fund-portfolios/index.ts:482-494` with classifier metrics:**
+
+        classifier_hit_count: 8421,                  // schemes that resolved to source='amfi' with real cap data
+        classifier_fallback_count: 318,              // had holdings but couldn't classify any → 'category_fallback'
+        classifier_no_holdings_count: 1240,          // no holdings disclosed → 'category_rules' (unchanged behavior)
+        classifier_coverage_pct_avg: 92.4,           // mean of (largeCapPct + midCapPct + smallCapPct) across hit schemes
+        equity_corruption_guard_trips: 3,            // rows where isEquityHoldingsCorrupted fired
+
+The event name (`sync_completed` vs `sync_failed`) is unchanged — these are just additional properties on the existing emission.
+
+**On-demand `fetch-fund-snapshot` — new fire-and-forget event per invocation:**
+
+`fund_snapshot_fetched` with
+
+        {
+          scheme_code: 122639,
+          composition_status: 'fetched' | 'cache_hit' | 'category_rules' | 'failed',
+          classifier_outcome: 'amfi' | 'category_fallback' | 'category_rules' | null,
+          classifier_coverage_pct: 87.2 | null,
+          equity_holdings_count: 42,
+          elapsed_ms: 850,
+        }
+
+This is the first event ever emitted by `fetch-fund-snapshot`, so the addition is a new wire-up rather than a property tweak. Fire-and-forget (not `await`) so the client response isn't delayed by PostHog.
+
+**PostHog alerts** (configured in the PostHog dashboard after the events land — captured here so the next person to log in knows what's wired):
+
+1. `sync_failed` where `job = 'sync-stock-market-cap'` in the last 7 days → page on-call. The seeder runs monthly, so 7 days of failure means the next run is at risk.
+2. `sync_completed` where `job = 'sync-stock-market-cap'` AND `large_count NOT BETWEEN 90 AND 110` → AMFI list almost always contains exactly 100 Large Caps; an outlier value means the parser is reading the wrong column or sheet.
+3. `sync_completed` where `job = 'sync-fund-portfolios'` AND `classifier_hit_count / schemes_processed < 0.7` → coverage degraded; AMFI list likely stale or mfdata ISINs dropped.
+4. Trailing-7-day rate of `fund_snapshot_fetched` events where `classifier_outcome = 'category_fallback'` exceeding the baseline by 3× → live coverage degradation visible to users.
+
+Thresholds 1 and 2 are page-worthy. Thresholds 3 and 4 are review-on-monday signals.
 
 
 ## Out of Scope
@@ -159,7 +224,7 @@ The pieces are interlocked (UI assumes classifier exists; backfill assumes table
         CREATE POLICY "stock_market_cap read" ON stock_market_cap FOR SELECT TO authenticated USING (true);
         CREATE POLICY "stock_market_cap write" ON stock_market_cap FOR ALL TO service_role USING (true) WITH CHECK (true);
 
-- `supabase/functions/sync-stock-market-cap/index.ts` — fetches the AMFI listing page HTML, regexes the latest `.xlsx` href, downloads it (max 5 MB, 30 s timeout), parses with the `xlsx` npm package via esm.sh (Deno-compatible), upserts ~750 rows. Returns `{ classification_period, rows_seen, rows_upserted, was_noop }`. Deploys with `--verify-jwt`.
+- `supabase/functions/sync-stock-market-cap/index.ts` — fetches the AMFI listing page HTML, regexes the latest `.xlsx` href, downloads it (max 5 MB, 30 s timeout), parses with the `xlsx` npm package via esm.sh (Deno-compatible), upserts ~750 rows. Returns `{ classification_period, rows_seen, rows_upserted, was_noop }`. Emits `sync_completed` or `sync_failed` PostHog event with the metrics from the Observability section. Deploys with `--verify-jwt`.
 - `supabase/functions/_shared/__tests__/market-cap-classifier.test.ts` — Jest tests for `classifyHoldings` (all-large, mixed, partial-coverage, empty, weights summing <100, case-insensitive ISIN) and `isEquityHoldingsCorrupted` (numeric stock_name, date-like ISIN, weight >100, normal data passes).
 
 
@@ -184,6 +249,7 @@ The pieces are interlocked (UI assumes classifier exists; backfill assumes table
 - Local seed produces roughly 100 / 150 / 500+ rows by category (exact counts shift each AMFI cycle).
 - Re-running the seeder against the same period returns `was_noop: true` and changes no rows.
 - Production cron entry visible in `cron.job` table.
+- A `sync_completed` PostHog event arrives with `job='sync-stock-market-cap'`, `large_count`, `mid_count`, `small_count`, `classification_period`. Forcing a parse error (e.g. point the fetch at a 404 URL locally) produces a `sync_failed` event with `failure_reason='fetch_listing_failed'`.
 
 
 ### M2 — Classifier wired into both portfolio builders
@@ -218,6 +284,8 @@ The pieces are interlocked (UI assumes classifier exists; backfill assumes table
 - Parag Parikh's `not_classified_pct` is non-trivial (>10% expected — foreign equity).
 - A debt fund (e.g. `scheme_code=119551`, HDFC Liquid) refreshed via the on-demand path keeps `large_cap_pct/mid_cap_pct/small_cap_pct = 0` and `source='category_rules'` (no equity holdings to classify).
 - Existing `portfolio-utils.test.ts` cases still pass — the change is additive.
+- `fund_snapshot_fetched` PostHog events appear with `classifier_outcome ∈ {'amfi', 'category_fallback', 'category_rules', null}` and sensible `classifier_coverage_pct` values.
+- After a `sync-fund-portfolios` cron run locally, the `sync_completed` event payload includes the four new classifier metric properties (`classifier_hit_count`, `classifier_fallback_count`, `classifier_no_holdings_count`, `classifier_coverage_pct_avg`).
 
 
 ### M3 — Backfill existing rows and demo seed
@@ -357,6 +425,7 @@ Backstop checks the user shouldn't have to do but a reviewer should:
 
 
 - **2026-05-14 — Monthly cron over twice-yearly.** Twice-yearly is the natural cadence of AMFI's actual publication, but a monthly run is idempotent, costs nothing, and removes "AMFI moved their release date" as a failure mode. The seeder logs `was_noop: true` on duplicate periods, so a noisy log is the only downside.
+- **2026-05-14 — PostHog telemetry on every new/changed path.** Threshold-able events (`sync_completed`/`sync_failed` on the new seeder, classifier metrics folded into the existing `sync-fund-portfolios` payload, a new `fund_snapshot_fetched` event on the on-demand path) so AMFI parser regressions and coverage degradation are alertable rather than silent. Alert thresholds documented in **Observability** for the dashboard owner to wire up.
 - **2026-05-14 — Source tagging `category_fallback` rather than nulling cap columns.** The columns are non-null in the existing schema, and the UI table renders any null as `—`, which would be a worse user experience than "category-average disclaimer + the old numbers". The tag lets the UI be honest without breaking layout.
 - **2026-05-14 — Reuse `top_holdings` JSONB for backfill instead of re-syncing mfdata.** Faster, no external rate-limit risk, deterministic. The JSONB has every field the classifier needs.
 - **2026-05-14 — Bundle the equity-corruption guard now, not as a follow-up.** Without it, the classifier is one bad mfdata response away from polluted cap data. The guard is cheap and parallel to the existing debt guard — natural to add alongside.
