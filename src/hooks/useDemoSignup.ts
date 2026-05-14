@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { supabase } from '@/src/lib/supabase';
+import { functionsClient } from '@/src/lib/functions';
 import { analytics } from '@/src/lib/analytics';
 import type { EntryAttribution } from '@/src/utils/entryAttribution';
 
@@ -64,7 +64,7 @@ export async function submitDemoSignup(input: DemoSignupInput): Promise<DemoSign
     utm_source: input.attribution.utm_source,
   });
 
-  const res = await supabase.functions.invoke<DemoSignupResponse>('demo-signup', {
+  const res = await functionsClient.invoke<DemoSignupResponse>('demo-signup', {
     body: {
       email: trimmedEmail,
       marketing_consent: input.marketing_consent,

@@ -75,5 +75,13 @@ CREATE TRIGGER demo_signup_set_updated_at
 -- function uses the service role key and bypasses RLS.
 ALTER TABLE public.demo_signup ENABLE ROW LEVEL SECURITY;
 
+-- Explicit service_role grant: belt-and-suspenders against a future REVOKE
+-- on service_role's implicit grants (mirrors the convention from
+-- 20260513000002_explicit_data_api_grants.sql). No anon / authenticated
+-- grants on purpose — this table is service-role-only and intentionally
+-- outside the Data API surface; the demo-signup edge function (running
+-- under the service role) is the only writer.
+GRANT ALL ON public.demo_signup TO service_role;
+
 COMMENT ON TABLE public.demo_signup IS
   'In-app demo / early-access signups. Captured via demo-signup edge function. Separate from marketing-site waitlist.';
