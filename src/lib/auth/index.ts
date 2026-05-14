@@ -11,12 +11,16 @@
  * so the supported surface area is explicit. Adding a new auth method
  * (e.g. MFA enrollment) goes through this file first.
  *
- * Implementation note: methods resolve lazily via a Proxy. Binding
- * eagerly at module load would crash `jest.mock('@/src/lib/supabase')`
- * tests whose mock only stubs the methods they exercise — they'd hit
- * `auth.X.bind()` on an undefined `X` during import. Lazy resolution
- * also preserves overloaded signatures (e.g. `linkIdentity`) that the
- * spread-args pattern doesn't.
+ * Implementation note: methods resolve lazily via a Proxy. The
+ * laziness preserves overloaded signatures (e.g. `linkIdentity`) that
+ * a `{ method: supabase.auth.method.bind(...) }` spread would collapse
+ * to a single union signature. It also keeps a partial
+ * `jest.mock('@/src/lib/supabase', () => ({ supabase: { auth: { signOut: jest.fn() } } }))`
+ * style mock working — eager binding would `auth.X.bind()` an
+ * undefined method during import. The convention now is to mock at
+ * the wrapper boundary instead (`jest.mock('@/src/lib/auth', () => ({
+ * authClient: { signOut: jest.fn() } }))`), but the lazy form stays as
+ * insurance against a regression in either direction.
  *
  * See `docs/EXIT-RUNBOOK.md` for the broader exit-readiness posture.
  */

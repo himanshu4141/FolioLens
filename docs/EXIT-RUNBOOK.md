@@ -138,11 +138,13 @@ The most invasive change. Three concerns:
    (Google) need updated redirect URLs.
 
 Source-side changes:
-- Rewrite `src/lib/auth/index.ts` to wrap the new SDK.
-- Tests in `src/hooks/__tests__/useDeleteAccount.test.ts`,
-  `src/lib/__tests__/queryClient.test.ts`,
-  `src/utils/__tests__/casPdfUpload.test.ts` mock the supabase module —
-  swap their mocks for the new shape.
+- Rewrite `src/lib/auth/index.ts` to wrap the new SDK. Consumer tests
+  mock `@/src/lib/auth` (and `@/src/lib/functions`, `@/src/lib/storage`,
+  `@/src/lib/data/<table>`) at the wrapper boundary, so they stay
+  untouched as long as the wrapper's public surface — method names and
+  signatures — is preserved. Only tests for the wrapper itself (if any
+  are added) and the bootstrap stubs in `jest.env.ts` /
+  `__mocks__/@react-native-async-storage/` would need a look.
 - Drop `app/auth/callback.tsx`'s `exchangeCodeForSession` path if the
   new provider doesn't use PKCE; replace with the equivalent flow.
 
