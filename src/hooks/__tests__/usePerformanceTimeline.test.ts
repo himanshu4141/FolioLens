@@ -1,3 +1,15 @@
+jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
+jest.mock('@/src/lib/data/userFund', () => ({
+  fundViewRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/indexHistory', () => ({
+  indexHistoryRepo: { from: jest.fn() },
+}));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
 import {
   buildTimelineSeries,
   buildXAxisLabels,
@@ -5,10 +17,12 @@ import {
   fetchPerformanceTimeline,
   type TimelineEntry,
 } from '../usePerformanceTimeline';
-import { supabase } from '@/src/lib/supabase';
-
-jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+// eslint-disable-next-line import/first
+import { fundViewRepo } from '@/src/lib/data/userFund';
+// eslint-disable-next-line import/first
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+// eslint-disable-next-line import/first
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 
 // ---------------------------------------------------------------------------
 // formatDateShort()
@@ -222,7 +236,27 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const fundFrom = fundViewRepo.from as jest.Mock;
+const navFrom = navHistoryRepo.from as jest.Mock;
+const idxFrom = indexHistoryRepo.from as jest.Mock;
+
+// All-repos mock — `mockFrom` (kept under its old name to minimise diff)
+// still receives the most-recent mock when callers do
+// `mockFrom.mockImplementation((table) => ...)`.
+const mockFrom = {
+  // Lets tests still call `expect(mockFrom).not.toHaveBeenCalled()` — true
+  // when none of the three repo `from()` mocks have been invoked.
+  toHaveBeenCalled: undefined,
+  mockImplementation(fn: (table: string) => unknown) {
+    fundFrom.mockImplementation(() => fn('fund'));
+    navFrom.mockImplementation(() => fn('nav_history'));
+    idxFrom.mockImplementation(() => fn('index_history'));
+  },
+};
+
+function repoCallCount() {
+  return fundFrom.mock.calls.length + navFrom.mock.calls.length + idxFrom.mock.calls.length;
+}
 
 const FUND_ROWS = [{ id: 'f1', scheme_code: 100, scheme_name: 'Fund A' }];
 const NAV_ROWS = [
@@ -240,7 +274,7 @@ describe('fetchPerformanceTimeline()', () => {
   it('returns empty entries when both fundItems and indexItems are empty', async () => {
     const result = await fetchPerformanceTimeline([], []);
     expect(result.entries).toHaveLength(0);
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(repoCallCount()).toBe(0);
   });
 
   it('fetches fund NAV history and returns timeline entries', async () => {

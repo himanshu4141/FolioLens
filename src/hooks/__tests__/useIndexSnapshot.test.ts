@@ -13,11 +13,15 @@
  * Tests mock the global `fetch` for the snapshot URL and mock
  * `supabase.from` for the fallback path. No network calls are made.
  */
-import { fetchIndexHistory, fetchIndexSnapshot } from '../useIndexSnapshot';
-import { supabase } from '@/src/lib/supabase';
-
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/src/lib/data/indexHistory', () => ({
+  indexHistoryRepo: { from: jest.fn() },
+}));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { fetchIndexHistory, fetchIndexSnapshot } from '../useIndexSnapshot';
+// eslint-disable-next-line import/first
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 
 // The helper builds URLs from EXPO_PUBLIC_SUPABASE_URL. We set a stable
 // value here so URL construction is deterministic.
@@ -46,7 +50,7 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const mockFrom = indexHistoryRepo.from as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -155,7 +159,7 @@ describe('fetchIndexHistory()', () => {
       { date: '2024-01-01', value: 100 },
       { date: '2024-01-02', value: 101 },
     ]);
-    expect(mockFrom).toHaveBeenCalledWith('index_history');
+    expect(mockFrom).toHaveBeenCalled();
   });
 
   it('falls back on network error', async () => {

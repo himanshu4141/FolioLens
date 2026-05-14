@@ -1,12 +1,16 @@
+jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
+jest.mock('@/src/lib/data/userProfile', () => ({
+  userProfileRepo: { from: jest.fn() },
+}));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
 import {
   USER_PROFILE_COLUMNS,
   fetchUserProfile,
   userProfileQueryKey,
 } from '@/src/hooks/useUserProfile';
-import { supabase } from '@/src/lib/supabase';
-
-jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+// eslint-disable-next-line import/first
+import { userProfileRepo } from '@/src/lib/data/userProfile';
 
 function makeChain(response: { data: unknown; error: unknown }) {
   const chain: Record<string, jest.Mock> = {
@@ -20,7 +24,7 @@ function makeChain(response: { data: unknown; error: unknown }) {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const mockFrom = userProfileRepo.from as jest.Mock;
 
 const FULL_PROFILE = {
   pan: 'ABCDE1234F',
@@ -66,7 +70,7 @@ describe('fetchUserProfile()', () => {
 
     const result = await fetchUserProfile('user-1');
 
-    expect(mockFrom).toHaveBeenCalledWith('user_profile');
+    expect(mockFrom).toHaveBeenCalledTimes(1);
     expect(chain.select).toHaveBeenCalledWith(USER_PROFILE_COLUMNS);
     expect(chain.eq).toHaveBeenCalledWith('user_id', 'user-1');
     expect(result).toEqual(FULL_PROFILE);

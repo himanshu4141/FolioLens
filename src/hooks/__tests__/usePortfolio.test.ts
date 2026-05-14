@@ -1,16 +1,38 @@
+jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn(), keepPreviousData: undefined }));
+jest.mock('@/src/lib/data/userFund', () => ({
+  fundViewRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/transaction', () => ({
+  transactionRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/indexHistory', () => ({
+  indexHistoryRepo: { from: jest.fn() },
+}));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
 import type { QueryClient } from '@tanstack/react-query';
+// eslint-disable-next-line import/first
 import { fetchPortfolioData } from '../usePortfolio';
-import { supabase } from '@/src/lib/supabase';
+// eslint-disable-next-line import/first
+import { fundViewRepo } from '@/src/lib/data/userFund';
+// eslint-disable-next-line import/first
+import { transactionRepo } from '@/src/lib/data/transaction';
+// eslint-disable-next-line import/first
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+// eslint-disable-next-line import/first
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
+// eslint-disable-next-line import/first
 import { __setDbForTests } from '@/src/lib/db/db';
+
 // Jest auto-mocks `expo-sqlite` via `__mocks__/expo-sqlite.ts`; the
 // real module's `.d.ts` doesn't declare these test-only exports, so we
 // import them with a typed require to keep TS happy.
 const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
   __resetAllForTests: () => void;
 };
-
-jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn(), keepPreviousData: undefined }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
 
 // Reset the in-memory SQLite mock + the db.ts singleton before every
 // test so rows written in one test don't leak into the next. The
@@ -58,7 +80,27 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const fundFrom = fundViewRepo.from as jest.Mock;
+const txFrom = transactionRepo.from as jest.Mock;
+const navFrom = navHistoryRepo.from as jest.Mock;
+const idxFrom = indexHistoryRepo.from as jest.Mock;
+
+// One-liner replacement for the previous `mockFrom.mockImplementation`
+// table-switch. Each repo's `from()` is mocked to return a chain over
+// the supplied data; pass `{ error }` instead of an array to simulate
+// a failing query.
+type RepoData = unknown[] | { error: unknown };
+function setupRepos(opts: { funds?: RepoData; txs?: RepoData; nav?: RepoData; index?: RepoData } = {}) {
+  const toChain = (val: RepoData | undefined) => {
+    if (val === undefined) return makeChain({ data: [], error: null });
+    if (Array.isArray(val)) return makeChain({ data: val, error: null });
+    return makeChain({ data: null, error: val.error });
+  };
+  fundFrom.mockReturnValue(toChain(opts.funds));
+  txFrom.mockReturnValue(toChain(opts.txs));
+  navFrom.mockReturnValue(toChain(opts.nav));
+  idxFrom.mockReturnValue(toChain(opts.index));
+}
 
 const MOCK_FUNDS = [
   {
@@ -103,10 +145,7 @@ describe('fetchPortfolioData()', () => {
   });
 
   it('returns empty fundCards and null summary when user has no funds', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [], error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [] });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(0);
@@ -114,20 +153,12 @@ describe('fetchPortfolioData()', () => {
   });
 
   it('throws when fund query returns an error', async () => {
-    mockFrom.mockImplementation(() =>
-      makeChain({ data: null, error: { message: 'DB error' } }),
-    );
+    setupRepos({ funds: { error: { message: 'DB error' } } });
     await expect(fetchPortfolioData(fakeQc, 'user-1', '^NSEI')).rejects.toMatchObject({ message: 'DB error' });
   });
 
   it('returns structured fund cards for a valid portfolio', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(1);
@@ -144,13 +175,7 @@ describe('fetchPortfolioData()', () => {
   });
 
   it('summary contains totalValue, xirr, and daily change', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
@@ -177,13 +202,7 @@ describe('fetchPortfolioData()', () => {
       },
     ];
 
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: failedPaymentTxs, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: failedPaymentTxs, nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
 
@@ -195,26 +214,14 @@ describe('fetchPortfolioData()', () => {
   });
 
   it('skips funds with no transactions (does not add them to fundCards)', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: [], error: null }); // no txs
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: [], nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.fundCards).toHaveLength(0);
   });
 
   it('shows a pending card for funds with no NAV data rather than crashing or hiding the holding', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: [], error: null }); // no nav
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: [], index: MOCK_INDEX });
 
     // Should not throw — fund appears as a pending card with null nav fields
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
@@ -241,13 +248,7 @@ describe('fetchPortfolioData()', () => {
       { scheme_code: 12345, nav_date: new Date(today.getTime() - 90 * 86400000).toISOString().split('T')[0], nav: 120 },
     ];
 
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: navData, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: navData, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const card = result.fundCards[0];
@@ -272,13 +273,7 @@ describe('fetchPortfolioData()', () => {
       { index_date: '2024-01-01', close_value: 21000 },
     ];
 
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: recentIndex, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: recentIndex });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
@@ -290,13 +285,7 @@ describe('fetchPortfolioData()', () => {
   // formatXirr() which multiplies by 100 internally, so the raw value must
   // NOT already be multiplied.
   it('returnXirr is a decimal fraction between -1 and 100 for a valid holding', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const card = result.fundCards[0];
@@ -331,13 +320,7 @@ describe('fetchPortfolioData()', () => {
       { index_date: '2024-01-01', close_value: 200 },
     ];
 
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: longTxs, error: null });
-      if (table === 'nav_history') return makeChain({ data: longNav, error: null });
-      if (table === 'index_history') return makeChain({ data: longIndex, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: longTxs, nav: longNav, index: longIndex });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     const marketXirr = result.summary!.marketXirr;
@@ -353,13 +336,7 @@ describe('fetchPortfolioData()', () => {
   });
 
   it('marketXirr is NaN when index history is empty (no benchmark data)', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: [], error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: [] });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
@@ -368,13 +345,7 @@ describe('fetchPortfolioData()', () => {
 
   // ── Fix 12: portfolio-level gain/loss ──────────────────────────────────────
   it('summary totalInvested matches sum of transaction amounts', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: MOCK_FUNDS, error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      if (table === 'index_history') return makeChain({ data: MOCK_INDEX, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
 
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     // MOCK_TXS: 10000 + 6000 = 16000 total invested

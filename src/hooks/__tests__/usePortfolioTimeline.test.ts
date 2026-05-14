@@ -1,12 +1,26 @@
-import { computePortfolioTimeline, fetchPortfolioTimeline } from '../usePortfolioTimeline';
-import { supabase } from '@/src/lib/supabase';
-
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/transaction', () => ({
+  transactionRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/indexHistory', () => ({
+  indexHistoryRepo: { from: jest.fn() },
+}));
 jest.mock('@/src/hooks/usePerformanceTimeline', () => ({
   buildXAxisLabels: (dates: string[]) => dates.map(() => ''),
   formatDateShort: (d: string) => d,
 }));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { computePortfolioTimeline, fetchPortfolioTimeline } from '../usePortfolioTimeline';
+// eslint-disable-next-line import/first
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+// eslint-disable-next-line import/first
+import { transactionRepo } from '@/src/lib/data/transaction';
+// eslint-disable-next-line import/first
+import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,7 +42,9 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const navFrom = navHistoryRepo.from as jest.Mock;
+const txFrom = transactionRepo.from as jest.Mock;
+const idxFrom = indexHistoryRepo.from as jest.Mock;
 
 // Build a sequence of NAV dates starting from a base date
 function navDates(startDate: string, count: number): string[] {
@@ -252,11 +268,9 @@ describe('fetchPortfolioTimeline', () => {
       error: null,
     });
 
-    // Promise.all fetches nav, tx, idx in parallel
-    mockFrom
-      .mockReturnValueOnce(navChain)
-      .mockReturnValueOnce(txChain)
-      .mockReturnValueOnce(idxChain);
+    navFrom.mockReturnValue(navChain);
+    txFrom.mockReturnValue(txChain);
+    idxFrom.mockReturnValue(idxChain);
 
     const result = await fetchPortfolioTimeline(FUNDS, 'user-1', '^NSEI', 'All');
     expect(result.portfolioPoints.length).toBeGreaterThan(0);
@@ -268,10 +282,9 @@ describe('fetchPortfolioTimeline', () => {
     const txChain = makeChain({ data: [], error: null });
     const idxChain = makeChain({ data: [], error: null });
 
-    mockFrom
-      .mockReturnValueOnce(navChain)
-      .mockReturnValueOnce(txChain)
-      .mockReturnValueOnce(idxChain);
+    navFrom.mockReturnValue(navChain);
+    txFrom.mockReturnValue(txChain);
+    idxFrom.mockReturnValue(idxChain);
 
     await expect(fetchPortfolioTimeline(FUNDS, 'user-1', '^NSEI', 'All')).rejects.toThrow('nav fetch failed');
   });
