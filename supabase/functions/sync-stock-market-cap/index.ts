@@ -40,18 +40,21 @@ import {
   extractLatestXlsxUrl,
   extractClassificationPeriod,
 } from '../_shared/amfi-listing-parser.ts';
-import { type AmfiStockRow, parseAmfiRows } from '../_shared/amfi-xlsx-parser.ts';
+import {
+  type AmfiStockRow,
+  AMFI_SANITY_BOUNDS,
+  countBuckets,
+  parseAmfiRows,
+  validateBucketShape,
+} from '../_shared/amfi-xlsx-parser.ts';
 
 const AMFI_LISTING_URL = 'https://www.amfiindia.com/otherdata/categorisation-of-stocks';
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_XLSX_BYTES = 5 * 1024 * 1024; // 5 MB ceiling — the list is ~150 KB today.
 const USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
 
-// AMFI lists are remarkably consistent: ~100 Large, ~150 Mid, ~500 Small.
-// We refuse to upsert if the parsed total is way outside these bounds —
-// almost always indicates a header-mismatch parse error.
-const MIN_EXPECTED_ROWS = 500;
-const MAX_EXPECTED_ROWS = 1500;
+// Sanity bounds live in _shared/amfi-xlsx-parser.ts so they can be tested
+// alongside `parseAmfiRows` against the same fixtures the parser uses.
 
 type FailureReason =
   | 'fetch_listing_failed'
@@ -211,20 +214,22 @@ Deno.serve(async (req) => {
         throw err;
       }
       rowsSeen = parsed.length;
-      largeCount = parsed.filter((r) => r.market_cap_category === 'Large Cap').length;
-      midCount = parsed.filter((r) => r.market_cap_category === 'Mid Cap').length;
-      smallCount = parsed.filter((r) => r.market_cap_category === 'Small Cap').length;
+      const buckets = countBuckets(parsed);
+      largeCount = buckets.large;
+      midCount = buckets.mid;
+      smallCount = buckets.small;
 
-      // Step 4 — sanity check before any DB write.
-      if (parsed.length < MIN_EXPECTED_ROWS || parsed.length > MAX_EXPECTED_ROWS) {
+      // Step 4 — sanity check before any DB write. The bucket shape is the
+      // load-bearing assertion: SEBI pins Large at 100 and Mid at 150;
+      // Small is unbounded but must exist. If buckets are off by more than
+      // AMFI_SANITY_BOUNDS.bucketSlack, something likely broke parsing or
+      // AMFI changed schema — refuse the write so the downstream
+      // classifier doesn't poison every fund's cap split.
+      const sanityError = validateBucketShape(buckets, AMFI_SANITY_BOUNDS);
+      if (sanityError) {
         failureReason = 'sanity_check_failed';
-        firstError = `row count ${parsed.length} outside [${MIN_EXPECTED_ROWS}, ${MAX_EXPECTED_ROWS}]`;
+        firstError = sanityError;
         throw new Error(firstError);
-      }
-      // AMFI's Large bucket is always exactly 100 except across the 2-3 day
-      // gap when they're rotating the list. Tolerate +/-10 to absorb that.
-      if (largeCount < 90 || largeCount > 110) {
-        console.warn('[sync-stock-market-cap] large_count outside [90,110]: %d', largeCount);
       }
 
       // Step 5 — upsert.
@@ -299,6 +304,12 @@ Deno.serve(async (req) => {
       success: false,
       failure_reason: failureReason,
       first_error: firstError,
+      classification_period: classificationPeriod,
+      xlsx_url: xlsxUrl,
+      rows_seen: rowsSeen,
+      large_count: largeCount,
+      mid_count: midCount,
+      small_count: smallCount,
       elapsed_ms: elapsedMs,
     }, { status: 500 });
   }
