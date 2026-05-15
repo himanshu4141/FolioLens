@@ -13,6 +13,7 @@ const config = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
+  setupFiles: ['<rootDir>/jest.env.ts'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: { strict: true } }],
   },
@@ -29,6 +30,17 @@ const config = {
     '!src/lib/analytics.native.ts', // RN-only impl; covered by manual smoke
     '!src/lib/installGlobalErrorHandlers.ts', // RN/window globals; covered by manual smoke
     '!src/utils/fundSearch.ts', // thin supabase query wrappers; not runnable in Node
+    // Exit-readiness wrappers (#153) — pass-through Proxies / one-line
+    // `from()` shims around `supabase.{auth,functions,storage,from}`.
+    // Tests mock these directly (jest.mock at the wrapper boundary), so
+    // the wrappers themselves never execute in unit tests. Their job is
+    // to be the swap-point if we ever move off Supabase; correctness is
+    // verified by every consumer test passing while the wrapper is
+    // mocked, not by direct coverage.
+    '!src/lib/auth/**',
+    '!src/lib/functions/**',
+    '!src/lib/storage/**',
+    '!src/lib/data/**',
   ],
   coverageThreshold: {
     // Functions threshold is the lowest of the four because the global

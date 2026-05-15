@@ -7,8 +7,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-jest.mock('@/src/lib/supabase', () => ({
-  supabase: { auth: { signOut: jest.fn() } },
+jest.mock('@/src/lib/auth', () => ({
+  authClient: { signOut: jest.fn() },
 }));
 
 jest.mock('@/src/lib/analytics', () => ({
@@ -25,11 +25,11 @@ import {
 // eslint-disable-next-line import/first
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 // eslint-disable-next-line import/first
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 // eslint-disable-next-line import/first
 import { analytics } from '@/src/lib/analytics';
 
-const mockedSignOut = supabase.auth.signOut as jest.MockedFunction<typeof supabase.auth.signOut>;
+const mockedSignOut = authClient.signOut as jest.MockedFunction<typeof authClient.signOut>;
 const mockedTrack = analytics.track as jest.MockedFunction<typeof analytics.track>;
 
 describe('shouldPersistQueryKey()', () => {
@@ -102,7 +102,7 @@ describe('queryClient global auth-error handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
-    mockedSignOut.mockResolvedValue({ error: null } as Awaited<ReturnType<typeof supabase.auth.signOut>>);
+    mockedSignOut.mockResolvedValue({ error: null } as Awaited<ReturnType<typeof authClient.signOut>>);
   });
 
   afterEach(() => {

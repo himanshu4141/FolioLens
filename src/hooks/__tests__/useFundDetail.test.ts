@@ -5,22 +5,45 @@
  * are deterministic regardless of when the tests are run.
  */
 
+jest.mock('@tanstack/react-query', () => ({
+  useQuery: jest.fn(),
+  useQueryClient: jest.fn(),
+}));
+jest.mock('@/src/lib/data/userFund', () => ({
+  fundViewRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/transaction', () => ({
+  transactionRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/schemeMaster', () => ({
+  schemeMasterRepo: { from: jest.fn() },
+}));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
 import type { QueryClient } from '@tanstack/react-query';
+// eslint-disable-next-line import/first
 import { filterToWindow, indexTo100, type TimeWindow } from '@/src/utils/navUtils';
+// eslint-disable-next-line import/first
 import { fetchFundDetail } from '@/src/hooks/useFundDetail';
-import { supabase } from '@/src/lib/supabase';
+// eslint-disable-next-line import/first
+import { fundViewRepo } from '@/src/lib/data/userFund';
+// eslint-disable-next-line import/first
+import { transactionRepo } from '@/src/lib/data/transaction';
+// eslint-disable-next-line import/first
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+// eslint-disable-next-line import/first
+import { schemeMasterRepo } from '@/src/lib/data/schemeMaster';
+// eslint-disable-next-line import/first
 import { __setDbForTests } from '@/src/lib/db/db';
+
 // Auto-mocked via `__mocks__/expo-sqlite.ts`; pull the test helper via
 // a typed require since the real `.d.ts` doesn't declare it.
 const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
   __resetAllForTests: () => void;
 };
-
-jest.mock('@tanstack/react-query', () => ({
-  useQuery: jest.fn(),
-  useQueryClient: jest.fn(),
-}));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
 
 // Per-test reset for the SQLite mock — same pattern as the portfolio
 // hook tests. Each test runs against an empty `tx` / `nav` / `idx`
@@ -356,7 +379,28 @@ function makeChain(response: { data: unknown; error: unknown }): any {
   return chain;
 }
 
-const mockFrom = supabase.from as jest.Mock;
+const fundFrom = fundViewRepo.from as jest.Mock;
+const txFrom = transactionRepo.from as jest.Mock;
+const navFrom = navHistoryRepo.from as jest.Mock;
+const schemeFrom = schemeMasterRepo.from as jest.Mock;
+
+// One-liner replacement for the previous `mockFrom.mockImplementation`
+// table-switch. Each repo's `from()` is mocked to return a chain over
+// the supplied data; pass `{ error }` instead of an array to simulate
+// a failing query. Undefined keys default to an empty array.
+type RepoData = unknown[] | null | { error: unknown };
+function setupRepos(opts: { funds?: RepoData; txs?: RepoData; nav?: RepoData; scheme?: RepoData } = {}) {
+  const toChain = (val: RepoData | undefined) => {
+    if (val === undefined) return makeChain({ data: [], error: null });
+    if (val === null) return makeChain({ data: null, error: null });
+    if (Array.isArray(val)) return makeChain({ data: val, error: null });
+    return makeChain({ data: null, error: val.error });
+  };
+  fundFrom.mockReturnValue(toChain(opts.funds));
+  txFrom.mockReturnValue(toChain(opts.txs));
+  navFrom.mockReturnValue(toChain(opts.nav));
+  schemeFrom.mockReturnValue(toChain(opts.scheme));
+}
 
 const MOCK_FUND = {
   id: 'fund-1',
@@ -392,22 +436,17 @@ describe('fetchFundDetail()', () => {
   test('returns null when fund is not in the shared user-funds cache', async () => {
     // fetchUserFunds returns an empty roster — caller asked for a fundId that
     // doesn't belong to this user.
-    mockFrom.mockImplementation(() => makeChain({ data: [], error: null }));
+    setupRepos({ funds: [] });
     expect(await fetchFundDetail(fakeQc, 'user-1', 'missing-id')).toBeNull();
   });
 
   test('returns null when fund query returns no data', async () => {
-    mockFrom.mockImplementation(() => makeChain({ data: null, error: null }));
+    setupRepos({ funds: null });
     expect(await fetchFundDetail(fakeQc, 'user-1', 'fund-1')).toBeNull();
   });
 
   test('returns structured fund detail for a valid fund', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [MOCK_FUND], txs: MOCK_TXS, nav: MOCK_NAV });
 
     const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result).not.toBeNull();
@@ -424,12 +463,7 @@ describe('fetchFundDetail()', () => {
   });
 
   test('handles empty transaction list (zero units, NaN XIRR)', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
-      if (table === 'transaction') return makeChain({ data: [], error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [MOCK_FUND], txs: [], nav: MOCK_NAV });
     const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentUnits).toBe(0);
     expect(result!.currentValue).toBe(0);
@@ -441,24 +475,14 @@ describe('fetchFundDetail()', () => {
   // driven by `useFundNavHistory`'s full history, not `data.navHistory`.
   // This test just guards that the header-card XIRR survives the split.
   test('fundXirr is a finite number', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [MOCK_FUND], txs: MOCK_TXS, nav: MOCK_NAV });
     const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(isFinite(result!.fundXirr)).toBe(true);
   });
 
   // ── Fix 8: gain/loss must be derivable from currentValue and investedAmount ──
   test('currentValue and investedAmount allow computing gain/loss', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: MOCK_NAV, error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [MOCK_FUND], txs: MOCK_TXS, nav: MOCK_NAV });
     const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentValue).not.toBeNull();
     const gain = result!.currentValue! - result!.investedAmount;
@@ -469,13 +493,7 @@ describe('fetchFundDetail()', () => {
   });
 
   test('gain/loss is not computable (null) when currentValue is null (NAV pending)', async () => {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'fund') return makeChain({ data: [MOCK_FUND], error: null });
-      if (table === 'transaction') return makeChain({ data: MOCK_TXS, error: null });
-      if (table === 'nav_history') return makeChain({ data: [], error: null }); // no NAV
-      if (table === 'index_history') return makeChain({ data: [], error: null });
-      return makeChain({ data: [], error: null });
-    });
+    setupRepos({ funds: [MOCK_FUND], txs: MOCK_TXS, nav: [] });
     const result = await fetchFundDetail(fakeQc, 'user-1', 'fund-1');
     expect(result!.currentValue).toBeNull();
     // gain cannot be computed — UI must handle null

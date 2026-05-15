@@ -1,10 +1,10 @@
-import { computeInvestmentVsBenchmarkTimeline } from '../useInvestmentVsBenchmarkTimeline';
-
 jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
-jest.mock('@/src/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
 jest.mock('@/src/hooks/usePerformanceTimeline', () => ({
   buildXAxisLabels: (dates: string[]) => dates.map((date) => date.slice(5)),
 }));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { computeInvestmentVsBenchmarkTimeline } from '../useInvestmentVsBenchmarkTimeline';
 
 const FUND = { id: 'fund-1', schemeCode: 100 };
 

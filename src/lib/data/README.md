@@ -31,3 +31,24 @@ export const navHistoryRepo = {
 On swap-day, the implementation of `from()` (or the named functions)
 becomes whatever the new backend is — `fetch()`, `trpcClient.foo.query()`,
 etc. The consumer code stays put.
+
+## Tests
+
+Tests of code that uses these repos mock the repo, not the underlying
+`supabase` module — same swap-day reasoning as the production rule.
+
+```ts
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+
+const navFrom = navHistoryRepo.from as jest.Mock;
+navFrom.mockReturnValue(makeChain({ data: [...], error: null }));
+```
+
+For tests that touch multiple tables, mock each repo separately and
+a small `setupRepos({ funds, txs, nav })` helper inside the test file
+keeps each test body to one line — see
+`src/hooks/__tests__/usePortfolio.test.ts` for the pattern.

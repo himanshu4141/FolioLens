@@ -1,5 +1,5 @@
-jest.mock('@/src/lib/supabase', () => ({
-  supabase: { functions: { invoke: jest.fn() } },
+jest.mock('@/src/lib/functions', () => ({
+  functionsClient: { invoke: jest.fn() },
 }));
 
 jest.mock('@/src/lib/analytics', () => ({
@@ -9,13 +9,13 @@ jest.mock('@/src/lib/analytics', () => ({
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import { submitDemoSignup } from '../useDemoSignup';
 // eslint-disable-next-line import/first
-import { supabase } from '@/src/lib/supabase';
+import { functionsClient } from '@/src/lib/functions';
 // eslint-disable-next-line import/first
 import { analytics } from '@/src/lib/analytics';
 // eslint-disable-next-line import/first
 import { EMPTY_ATTRIBUTION } from '@/src/utils/entryAttribution';
 
-const mockedInvoke = supabase.functions.invoke as jest.MockedFunction<typeof supabase.functions.invoke>;
+const mockedInvoke = functionsClient.invoke as jest.MockedFunction<typeof functionsClient.invoke>;
 const mockedTrack = analytics.track as jest.MockedFunction<typeof analytics.track>;
 const mockedIdentify = analytics.identify as jest.MockedFunction<typeof analytics.identify>;
 
@@ -34,7 +34,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: { ok: true, isReturning: false },
       error: null,
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     const result = await submitDemoSignup(BASE_INPUT);
 
@@ -56,7 +56,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: { ok: true, isReturning: true },
       error: null,
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await submitDemoSignup({ ...BASE_INPUT, marketing_consent: true });
 
@@ -79,7 +79,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: null,
       error: { message: 'Failed to send a request to the Edge Function', context: fakeContext },
-    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as unknown as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow('Enter a valid email address');
 
@@ -94,7 +94,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: null,
       error: { message: 'Failed to send a request to the Edge Function' },
-    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as unknown as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/couldn't reach the server/i);
 
@@ -108,7 +108,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: { ok: false, error: 'Enter a valid email address' },
       error: null,
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/valid email/);
 
@@ -120,7 +120,7 @@ describe('submitDemoSignup', () => {
 
   it('falls back to a generic error message when the body is empty', async () => {
     mockedInvoke.mockResolvedValue({ data: null, error: null } as Awaited<
-      ReturnType<typeof supabase.functions.invoke>
+      ReturnType<typeof functionsClient.invoke>
     >);
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow(/Something went wrong/);
   });
@@ -130,7 +130,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: null,
       error: { message: longError },
-    } as unknown as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as unknown as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await expect(submitDemoSignup(BASE_INPUT)).rejects.toThrow();
 
@@ -147,7 +147,7 @@ describe('submitDemoSignup', () => {
     mockedInvoke.mockResolvedValue({
       data: { ok: true, isReturning: false },
       error: null,
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>);
+    } as Awaited<ReturnType<typeof functionsClient.invoke>>);
 
     await submitDemoSignup({ ...BASE_INPUT, attribution: EMPTY_ATTRIBUTION });
 

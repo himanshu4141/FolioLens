@@ -73,6 +73,7 @@ The app uses Supabase but stays exit-ready. Full reasoning + the 90-day exit pla
   - Data API: `src/lib/data/<table>.ts` (`<table>Repo`)
 - Do not import `supabase` from `@/src/lib/supabase` outside these wrappers. New data access goes through (or extends) the per-table repo.
 - Avoid net-new Supabase-specific surface area: no Realtime, no Supabase Vault, no `supabase.rpc()` from the client, no new `SECURITY DEFINER` functions unless absolutely necessary, no new pg_cron jobs with business logic in SQL (cron should call an HTTP endpoint).
+- **Tests mock at the wrapper boundary**, not the supabase module. A new test for code that uses `functionsClient` should `jest.mock('@/src/lib/functions', () => ({ functionsClient: { invoke: jest.fn() } }))` — never `jest.mock('@/src/lib/supabase', ...)`. Same for `@/src/lib/auth`, `@/src/lib/storage`, and `@/src/lib/data/<table>`. Bootstrap stubs in `jest.env.ts` + `__mocks__/@react-native-async-storage/` keep the supabase client importable without leaking real I/O. If a wrapper's interface changes, only that wrapper's consumers' tests update; if the underlying provider changes, only the wrappers do.
 
 ### Stacked PRs
 - When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.

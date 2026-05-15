@@ -4,7 +4,7 @@ import {
   getInfoAsync,
   uploadAsync,
 } from 'expo-file-system/legacy';
-import { supabase } from '@/src/lib/supabase';
+import { authClient } from '@/src/lib/auth';
 import { uploadCasPdf } from '../casPdfUpload';
 
 jest.mock('react-native', () => ({ Platform: { OS: 'ios' } }), { virtual: true });
@@ -16,17 +16,15 @@ jest.mock('expo-file-system/legacy', () => ({
   uploadAsync: jest.fn(),
 }));
 
-jest.mock('@/src/lib/supabase', () => ({
+jest.mock('@/src/lib/auth', () => ({
   __esModule: true,
-  supabase: {
-    auth: { getSession: jest.fn() },
-  },
+  authClient: { getSession: jest.fn() },
 }));
 
 const mockedGetInfo = getInfoAsync as jest.MockedFunction<typeof getInfoAsync>;
 const mockedUpload = uploadAsync as jest.MockedFunction<typeof uploadAsync>;
-const mockedGetSession = supabase.auth.getSession as jest.MockedFunction<
-  typeof supabase.auth.getSession
+const mockedGetSession = authClient.getSession as jest.MockedFunction<
+  typeof authClient.getSession
 >;
 
 type CasAsset = Parameters<typeof uploadCasPdf>[0];

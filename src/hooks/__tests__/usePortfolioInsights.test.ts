@@ -1,7 +1,3 @@
-import { computeInsights } from '../usePortfolioInsights';
-import type { FundPortfolioComposition } from '@/src/types/app';
-import type { FundCardData } from '../usePortfolio';
-
 jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(),
   useMutation: jest.fn(),
@@ -14,23 +10,19 @@ jest.mock('@tanstack/react-query', () => ({
   QueryCache: jest.fn().mockImplementation(() => ({})),
   MutationCache: jest.fn().mockImplementation(() => ({})),
 }));
-jest.mock('@react-native-async-storage/async-storage', () => ({
-  __esModule: true,
-  default: { getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() },
-}));
 jest.mock('@tanstack/query-async-storage-persister', () => ({
   createAsyncStoragePersister: jest.fn(() => ({})),
-}));
-jest.mock('@/src/lib/supabase', () => ({
-  supabase: {
-    from: jest.fn(),
-    auth: { getSession: jest.fn() },
-    functions: { invoke: jest.fn() },
-  },
 }));
 jest.mock('@/src/utils/fundName', () => ({
   parseFundName: (name: string) => ({ base: name.split(' ')[0], planBadge: null }),
 }));
+
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { computeInsights } from '../usePortfolioInsights';
+// eslint-disable-next-line import/first
+import type { FundPortfolioComposition } from '@/src/types/app';
+// eslint-disable-next-line import/first
+import type { FundCardData } from '../usePortfolio';
 
 // ---------------------------------------------------------------------------
 // Fixtures
