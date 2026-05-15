@@ -36,8 +36,12 @@ import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import { trackServerEventAwait } from '../_shared/analytics.ts';
+import {
+  extractLatestXlsxUrl,
+  extractClassificationPeriod,
+} from '../_shared/amfi-listing-parser.ts';
 
-const AMFI_LISTING_URL = 'https://www.amfiindia.com/research-information/other-data/categorization-of-stocks';
+const AMFI_LISTING_URL = 'https://www.amfiindia.com/otherdata/categorisation-of-stocks';
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_XLSX_BYTES = 5 * 1024 * 1024; // 5 MB ceiling — the list is ~150 KB today.
 const USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -80,58 +84,6 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * Scrapes the listing page for the latest .xlsx href. AMFI links the
- * spreadsheet from the page body (a list of "Categorization of Stocks for
- * H2-YYYY" cards, each linking to its own .xlsx). The latest is typically
- * the first match on the page; we return all matches sorted descending and
- * pick the head so we always end up with the freshest period.
- */
-function extractLatestXlsxUrl(html: string): string | null {
-  // hrefs we want look like /modules/categorisation-stocks?file=...xlsx or
-  // /research-information/.../categorisation-of-stocks-h2-2025.xlsx. Be
-  // lenient — match any href ending in .xlsx near the categorization page.
-  const hrefRe = /href\s*=\s*["']([^"']+\.xlsx[^"']*)["']/gi;
-  const candidates: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = hrefRe.exec(html)) !== null) {
-    candidates.push(m[1]);
-  }
-  if (candidates.length === 0) return null;
-
-  // Sort by year/half embedded in the filename, descending; ties broken by
-  // string descending (alphabetically later == more recent for AMFI's URLs).
-  const ranked = candidates
-    .map((href) => {
-      const periodMatch = href.toLowerCase().match(/h([12])[-_ ]?(\d{4})/);
-      const half = periodMatch ? Number(periodMatch[1]) : 0;
-      const year = periodMatch ? Number(periodMatch[2]) : 0;
-      return { href, rank: year * 10 + half };
-    })
-    .sort((a, b) => (b.rank - a.rank) || b.href.localeCompare(a.href));
-
-  const winner = ranked[0].href;
-  if (winner.startsWith('http')) return winner;
-  if (winner.startsWith('//')) return `https:${winner}`;
-  if (winner.startsWith('/')) return `https://www.amfiindia.com${winner}`;
-  return `https://www.amfiindia.com/${winner}`;
-}
-
-/**
- * Best-effort period extractor. AMFI filenames embed `H1-2025`, `h2_2024`,
- * etc. — we read the first occurrence we recognise. Used only for the
- * `classification_period` column (idempotency key) and for the no-op
- * detection log.
- */
-function extractClassificationPeriod(sourceUrl: string, fallback: Date = new Date()): string {
-  const m = sourceUrl.toLowerCase().match(/h([12])[-_ ]?(\d{4})/);
-  if (m) return `H${m[1]}-${m[2]}`;
-  // Fallback: synthesize from today's date.
-  const month = fallback.getUTCMonth() + 1;
-  const year = fallback.getUTCFullYear();
-  return `H${month <= 6 ? 1 : 2}-${year}`;
 }
 
 /**
@@ -254,15 +206,20 @@ Deno.serve(async (req) => {
     }
 
     // Step 2 — extract the latest .xlsx link.
-    const found = extractLatestXlsxUrl(listingHtml);
+    const { url: found, candidates } = extractLatestXlsxUrl(listingHtml);
     if (!found) {
       failureReason = 'xlsx_link_not_found';
-      firstError = 'no .xlsx href on listing page';
+      // Surface a short sample of what we *did* see so the next
+      // diagnoser doesn't need to re-run with extra logging. AMFI
+      // occasionally ships a cycle as PDF-only, which lands here.
+      const sample = candidates.slice(0, 5).join(' | ') || '(no hrefs at all)';
+      firstError = `no .xlsx href; candidates=${sample}`.slice(0, 240);
       throw new Error(firstError);
     }
     xlsxUrl = found;
     classificationPeriod = extractClassificationPeriod(xlsxUrl);
-    console.log('[sync-stock-market-cap] picked period=%s url=%s', classificationPeriod, xlsxUrl);
+    console.log('[sync-stock-market-cap] picked period=%s url=%s (from %d candidates)',
+      classificationPeriod, xlsxUrl, candidates.length);
 
     // Idempotency check — if every row in `stock_market_cap` already
     // carries this period, skip the download entirely. Saves ~150 KB
