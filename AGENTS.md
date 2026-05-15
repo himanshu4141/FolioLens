@@ -75,6 +75,9 @@ The app uses Supabase but stays exit-ready. Full reasoning + the 90-day exit pla
 - Avoid net-new Supabase-specific surface area: no Realtime, no Supabase Vault, no `supabase.rpc()` from the client, no new `SECURITY DEFINER` functions unless absolutely necessary, no new pg_cron jobs with business logic in SQL (cron should call an HTTP endpoint).
 - **Tests mock at the wrapper boundary**, not the supabase module. A new test for code that uses `functionsClient` should `jest.mock('@/src/lib/functions', () => ({ functionsClient: { invoke: jest.fn() } }))` — never `jest.mock('@/src/lib/supabase', ...)`. Same for `@/src/lib/auth`, `@/src/lib/storage`, and `@/src/lib/data/<table>`. Bootstrap stubs in `jest.env.ts` + `__mocks__/@react-native-async-storage/` keep the supabase client importable without leaking real I/O. If a wrapper's interface changes, only that wrapper's consumers' tests update; if the underlying provider changes, only the wrappers do.
 
+### Caches
+Every cache layer is inventoried in [`docs/architecture/cache-surfaces.md`](./docs/architecture/cache-surfaces.md). Read it before introducing a new cache or changing the shape of a cached payload. The doc holds the bug taxonomy (12 classes) we use for audits and the "when adding a new cache" checklist — including bumping the right version mechanism (`__BUSTER__` for React Query, `version` for Zustand, `-vN`-suffixed key for AsyncStorage drafts, `SCHEMA_VERSION` for SQLite) and adding sign-out cleanup if the data is user-scoped.
+
 ### Stacked PRs
 - When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.
 - After adding commits to a lower branch, rebase all downstream branches and force-push.

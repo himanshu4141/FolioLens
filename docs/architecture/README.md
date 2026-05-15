@@ -9,6 +9,7 @@ Renderable Mermaid diagrams for the load-bearing flows in FolioLens. Each file h
 | [auth-flow.md](./auth-flow.md) | Magic-link + Google OAuth, web + native. The "native bridge" that lets `https://app.foliolens.in/auth/{confirm,callback}` hand off to the `foliolens://` deep link without breaking email-client and OAuth-whitelist constraints. |
 | [data-sync-pipeline.md](./data-sync-pipeline.md) | Four pg_cron-driven edge functions (`sync-nav`, `sync-index`, `sync-fund-portfolios`, `sync-fund-meta`) that keep prices, indices, fund composition, and metadata fresh. |
 | [release-pipeline.md](./release-pipeline.md) | PR → main → `v*` tag GitHub-Actions workflow shape. Three EAS channels, two Vercel projects, two Supabase projects. Why prod is tag-gated. |
+| [cache-surfaces.md](./cache-surfaces.md) | Every cache layer in the codebase — React Query, edge-function module caches, Zustand, AsyncStorage drafts, SQLite, CDN snapshots. Bug taxonomy + audit findings tracker + checklist for adding new caches. |
 
 ## Conventions used in these diagrams
 
