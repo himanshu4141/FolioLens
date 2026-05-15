@@ -1,6 +1,7 @@
 import {
   AMFI_SANITY_BOUNDS,
   countBuckets,
+  isCachedMapStillValid,
   parseAmfiRows,
   validateBucketShape,
   type AmfiStockRow,
@@ -288,5 +289,49 @@ describe('validateBucketShape', () => {
       { large: 50, mid: 75, small: 200, total: 325 },
       { minTotal: 100, maxTotal: 1000, expectedLarge: 50, expectedMid: 75, bucketSlack: 5 },
     )).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCachedMapStillValid — guards against the bootstrap-race bug where an
+// empty cached map survives the full TTL after the seeder later populates
+// the table.
+// ---------------------------------------------------------------------------
+
+describe('isCachedMapStillValid', () => {
+  const TTL = 60_000;
+
+  it('returns false when nothing has been cached yet', () => {
+    expect(isCachedMapStillValid(null, 0, 1000, TTL)).toBe(false);
+  });
+
+  it('returns false when the cached map is empty (the bootstrap-race fix)', () => {
+    // Direct repro of the bug that produced the "Cap mix shown is the SEBI
+    // category average" disclaimer on Compare Funds: fetch-fund-snapshot
+    // was warm-started before sync-stock-market-cap ever wrote a row, so
+    // the lookup map was cached as empty and stayed empty for 6 hours.
+    expect(isCachedMapStillValid(new Map(), 0, 1000, TTL)).toBe(false);
+  });
+
+  it('returns true when the cached map has rows and the TTL has not expired', () => {
+    const cached = new Map<string, string>([['INE040A01034', 'Large Cap']]);
+    expect(isCachedMapStillValid(cached, 0, TTL - 1, TTL)).toBe(true);
+  });
+
+  it('returns false when the TTL has just expired (boundary: now - cachedAt === ttlMs)', () => {
+    const cached = new Map<string, string>([['INE040A01034', 'Large Cap']]);
+    expect(isCachedMapStillValid(cached, 0, TTL, TTL)).toBe(false);
+  });
+
+  it('returns false when the cached map is well past the TTL', () => {
+    const cached = new Map<string, string>([['INE040A01034', 'Large Cap']]);
+    expect(isCachedMapStillValid(cached, 0, TTL * 10, TTL)).toBe(false);
+  });
+
+  it('handles future-dated cachedAt sanely (now < cachedAt) by treating it as fresh', () => {
+    // Edge case: clock skew between cache writer and reader. A negative
+    // age is still under the TTL, so use the cache rather than retry.
+    const cached = new Map<string, string>([['INE040A01034', 'Large Cap']]);
+    expect(isCachedMapStillValid(cached, 1000, 500, TTL)).toBe(true);
   });
 });

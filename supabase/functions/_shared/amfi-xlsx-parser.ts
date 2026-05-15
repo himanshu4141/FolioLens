@@ -21,6 +21,34 @@
  * and passes them to `parseAmfiRows` below.
  */
 
+/**
+ * Returns true if a cached `stock_market_cap` lookup map is still valid
+ * to use, false if the caller should re-fetch from the database.
+ *
+ * Two refresh triggers:
+ *   1. **Never loaded** (`cached === null`).
+ *   2. **Loaded but empty** (`cached.size === 0`). This handles the
+ *      bootstrap race where `fetch-fund-snapshot` was warm-started before
+ *      `sync-stock-market-cap` had populated the table, cached the empty
+ *      result, and would otherwise serve that empty cache for the full
+ *      TTL — making the classifier silently fall back to SEBI category
+ *      defaults (the bug that prompted this helper). Empty re-fetches are
+ *      one cheap SELECT, so re-trying every call until the table actually
+ *      has rows is the right tradeoff.
+ *
+ * Otherwise checks the TTL.
+ */
+export function isCachedMapStillValid<K, V>(
+  cached: Map<K, V> | null,
+  cachedAt: number,
+  now: number,
+  ttlMs: number,
+): boolean {
+  if (!cached) return false;
+  if (cached.size === 0) return false;
+  return now - cachedAt < ttlMs;
+}
+
 export interface AmfiStockRow {
   isin: string;
   company_name: string;

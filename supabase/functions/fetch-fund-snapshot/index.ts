@@ -41,6 +41,7 @@ import {
   isEquityHoldingsCorrupted,
   isEquityPctPlausible,
 } from '../_shared/portfolio-utils.ts';
+import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -585,19 +586,25 @@ function buildPortfolio(
 // Classifier cache
 // ---------------------------------------------------------------------------
 
-// Module-scope cache for the ~750-row stock_market_cap table. Edge function
-// isolates are reused across warm invocations, so loading the table once
-// per cold-start is the cheapest correct option. TTL is 6 hours because
-// the seeder cron is monthly — there's no path that updates the table
-// between fetches inside a single isolate's lifetime that we care about.
+// Module-scope cache for the stock_market_cap table (~5400 rows). Edge
+// function isolates are reused across warm invocations, so loading the
+// table once per cold-start is the cheapest correct option. TTL is 6
+// hours since the seeder cron is monthly.
+//
+// `isCachedMapStillValid` (in _shared/amfi-xlsx-parser.ts) refuses to
+// reuse an empty cached map — that path covers the bootstrap race where
+// this function got warm-started before `sync-stock-market-cap` had ever
+// populated the table. Without that, an early invocation would cache the
+// empty SELECT result and serve it for the next 6 hours, silently making
+// the classifier fall back to SEBI category defaults on every fund.
 const CAP_MAP_TTL_MS = 6 * 60 * 60 * 1000;
 let cachedIsinToCap: Map<string, MarketCapCategory> | null = null;
 let cachedIsinToCapAt = 0;
 
 async function getIsinToCapMap(): Promise<Map<string, MarketCapCategory>> {
   const now = Date.now();
-  if (cachedIsinToCap && now - cachedIsinToCapAt < CAP_MAP_TTL_MS) {
-    return cachedIsinToCap;
+  if (isCachedMapStillValid(cachedIsinToCap, cachedIsinToCapAt, now, CAP_MAP_TTL_MS)) {
+    return cachedIsinToCap!;
   }
   const map = new Map<string, MarketCapCategory>();
   const PAGE = 1000;
@@ -618,8 +625,15 @@ async function getIsinToCapMap(): Promise<Map<string, MarketCapCategory>> {
     if (data.length < PAGE) break;
     from += PAGE;
   }
-  cachedIsinToCap = map;
-  cachedIsinToCapAt = now;
+  // Only persist the cache when the load actually returned rows. An
+  // empty result is treated as "not yet loaded" so the next call retries
+  // — see `isCachedMapStillValid` for the full rationale.
+  if (map.size > 0) {
+    cachedIsinToCap = map;
+    cachedIsinToCapAt = now;
+  } else {
+    console.warn('[fetch-fund-snapshot] stock_market_cap returned 0 rows; not caching, will retry next call');
+  }
   return map;
 }
 
