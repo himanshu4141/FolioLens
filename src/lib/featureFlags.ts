@@ -43,8 +43,14 @@
  * "Preview the app" mode — the demo-signup gated walkthrough using
  * synthetic portfolio fixtures. Off in production until there's real
  * demand or evidence a no-CAS landing is needed.
+ *
+ * Local `expo start` doesn't see `eas.json` env values and rarely has the
+ * flag wired up in a personal `.env`, so default to enabled whenever
+ * `__DEV__` is true. Production bundles (`__DEV__ === false` and the env
+ * var unset) stay off — the gate that matters is preserved.
  */
-const previewModeEnabled = process.env.EXPO_PUBLIC_FEATURE_PREVIEW_MODE === 'true';
+const previewModeEnabled =
+  process.env.EXPO_PUBLIC_FEATURE_PREVIEW_MODE === 'true' || __DEV__;
 
 export const featureFlags = {
   previewMode: previewModeEnabled,
