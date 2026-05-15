@@ -74,7 +74,7 @@ A wider audit on the same day flagged five related "hardcoded-but-presented-as-r
 
 
 - New table `stock_market_cap` (ISIN PK, category, rank, classification_period, source, synced_at) + RLS following the `scheme_master` pattern (authenticated SELECT, service-role write).
-- New edge function `sync-stock-market-cap` that scrapes the AMFI categorization listing page for the latest `.xlsx`, parses it, and upserts the table. Idempotent (re-runs against the same period are no-ops). Monthly cron `30 0 1 * *` UTC. Deploy with `--verify-jwt` (admin only).
+- New edge function `sync-stock-market-cap` that scrapes the AMFI categorization listing page for the latest `.xlsx`, parses it, and upserts the table. Idempotent (re-runs against the same period are no-ops). Monthly cron `30 0 1 * *` UTC. Deployed with `--no-verify-jwt` to match the other pg_cron-triggered functions; on-demand runs go through the audited `.github/workflows/sync-stock-market-cap.yml` dispatch wrapper.
 - New shared helpers in `supabase/functions/_shared/portfolio-utils.ts`:
     - `classifyHoldings(holdings, isinToCap)` — pure, unit-tested.
     - `isEquityHoldingsCorrupted(holdings)` — parallel to the existing debt guard.
@@ -224,7 +224,11 @@ The pieces are interlocked (UI assumes classifier exists; backfill assumes table
         CREATE POLICY "stock_market_cap read" ON stock_market_cap FOR SELECT TO authenticated USING (true);
         CREATE POLICY "stock_market_cap write" ON stock_market_cap FOR ALL TO service_role USING (true) WITH CHECK (true);
 
-- `supabase/functions/sync-stock-market-cap/index.ts` — fetches the AMFI listing page HTML, regexes the latest `.xlsx` href, downloads it (max 5 MB, 30 s timeout), parses with the `xlsx` npm package via esm.sh (Deno-compatible), upserts ~750 rows. Returns `{ classification_period, rows_seen, rows_upserted, was_noop }`. Emits `sync_completed` or `sync_failed` PostHog event with the metrics from the Observability section. Deploys with `--verify-jwt`.
+- `supabase/functions/sync-stock-market-cap/index.ts` — fetches the AMFI listing page HTML, regexes the latest `.xlsx` href, downloads it (max 5 MB, 30 s timeout), parses with the `xlsx` npm package via esm.sh (Deno-compatible), upserts ~750 rows. Returns `{ classification_period, rows_seen, rows_upserted, was_noop }`. Emits `sync_completed` or `sync_failed` PostHog event with the metrics from the Observability section. Deployed with `--no-verify-jwt` so the pg_cron call works without an auth header (consistent with the other cron-triggered functions). Audited on-demand triggers go through `.github/workflows/sync-stock-market-cap.yml`.
+
+- `.github/workflows/sync-stock-market-cap.yml` — workflow_dispatch wrapper that POSTs to the edge function and reports outcome to PostHog. Lets an operator refresh on demand without juggling the service-role key or constructing a curl.
+
+- `.github/workflows/backfill-stock-market-cap.yml` — workflow_dispatch wrapper for `scripts/backfill-stock-market-cap.mjs`. Inputs include `dry_run`, `include_fallback`, `batch_size`, `start_offset` for the operator-knob cases (post-M6 lift, post-AMFI-refresh retry of `category_fallback` rows, resume after failure).
 - `supabase/functions/_shared/__tests__/market-cap-classifier.test.ts` — Jest tests for `classifyHoldings` (all-large, mixed, partial-coverage, empty, weights summing <100, case-insensitive ISIN) and `isEquityHoldingsCorrupted` (numeric stock_name, date-like ISIN, weight >100, normal data passes).
 
 

@@ -1,6 +1,6 @@
 # Data Sync Pipeline — pg_cron + Edge Functions + External APIs
 
-Five edge functions on independent schedules keep prices, scheme metadata, fund composition, benchmark indices, and the AMFI stock market-cap classification list fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are idempotent (re-running is safe), and most are deployed with `--no-verify-jwt`. `sync-stock-market-cap` is the exception — it's admin-only (`--verify-jwt`) since it changes a reference table that drives downstream classifications across every fund.
+Five edge functions on independent schedules keep prices, scheme metadata, fund composition, benchmark indices, and the AMFI stock market-cap classification list fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are deployed with `--no-verify-jwt`, and all are idempotent (re-running is safe). On-demand triggers for `sync-stock-market-cap` go through a `workflow_dispatch` wrapper in `.github/workflows/sync-stock-market-cap.yml` so manual runs leave an Actions audit trail + a PostHog `stock_market_cap_dispatch_completed` event.
 
 ## Where things live
 

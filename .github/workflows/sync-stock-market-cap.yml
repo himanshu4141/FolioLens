@@ -1,0 +1,126 @@
+name: Sync Stock Market Cap
+
+# Manually triggers the `sync-stock-market-cap` Edge Function. The function
+# already runs monthly via pg_cron on the 1st at 00:30 UTC (see
+# supabase/migrations/20260514100001_sync_stock_market_cap_cron.sql) — this
+# wrapper exists so an operator can refresh on demand without juggling the
+# service-role key.
+#
+# When to use:
+#   - Immediately after the M6 migration lands in prod, to seed the
+#     `stock_market_cap` table without waiting 30+ days for the cron.
+#   - When AMFI publishes a new half-yearly list mid-month (Jan / Jul) and
+#     we don't want to wait until the 1st of next month for the cron.
+#   - When debugging a `sync_failed` PostHog event — re-running here
+#     produces a fresh run with a linkable Actions log.
+#
+# The Edge Function is deployed with --no-verify-jwt (same as every other
+# cron-triggered function), so this workflow doesn't need the service-role
+# key; a plain POST is enough. Idempotency is enforced inside the function
+# via a classification_period precheck — re-runs against the same period
+# return `was_noop: true` and change no rows.
+#
+# Phase 9 M6 — see docs/plans/phase-9-pre-launch-readiness/M6-honest-portfolio-composition.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which project to sync'
+        required: true
+        type: choice
+        default: dev
+        options: [dev, prod, both]
+
+permissions:
+  contents: read
+
+jobs:
+  sync-dev:
+    name: Sync (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event.inputs.environment == 'dev' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - name: Invoke sync-stock-market-cap (dev)
+        id: sync
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
+        run: |
+          set -e
+          echo "POST $SUPABASE_URL/functions/v1/sync-stock-market-cap"
+          # `--fail-with-body` makes curl exit non-zero on HTTP >= 400 *and*
+          # still print the response body — we want the failure_reason JSON
+          # surfaced in the Actions log without an extra request.
+          response=$(curl -sS --fail-with-body \
+            -X POST "$SUPABASE_URL/functions/v1/sync-stock-market-cap" \
+            -H 'Content-Type: application/json' \
+            --max-time 120 \
+            --data '{}')
+          echo "$response" | jq .
+          echo "response=$(echo "$response" | jq -c .)" >> "$GITHUB_OUTPUT"
+      - name: Report outcome to PostHog
+        if: ${{ always() }}
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          OUTCOME: ${{ steps.sync.outcome }}
+        run: |
+          if [ -z "$POSTHOG_KEY" ]; then
+            echo "[posthog] no key configured, skipping capture"
+            exit 0
+          fi
+          curl -sf -X POST "$POSTHOG_HOST/capture/" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n \
+              --arg key "$POSTHOG_KEY" \
+              --arg outcome "$OUTCOME" \
+              --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --arg trigger "${{ github.event_name }}" \
+              '{api_key: $key, event: "stock_market_cap_dispatch_completed", distinct_id: "system:sync-stock-market-cap-dev", properties: {"$lib": "github-actions", environment: "dev", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')" \
+            || echo "[posthog] capture failed; not failing the job"
+
+  sync-prod:
+    name: Sync (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event.inputs.environment == 'prod' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - name: Invoke sync-stock-market-cap (prod)
+        id: sync
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}
+        run: |
+          set -e
+          echo "POST $SUPABASE_URL/functions/v1/sync-stock-market-cap"
+          response=$(curl -sS --fail-with-body \
+            -X POST "$SUPABASE_URL/functions/v1/sync-stock-market-cap" \
+            -H 'Content-Type: application/json' \
+            --max-time 120 \
+            --data '{}')
+          echo "$response" | jq .
+          echo "response=$(echo "$response" | jq -c .)" >> "$GITHUB_OUTPUT"
+      - name: Report outcome to PostHog
+        if: ${{ always() }}
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          OUTCOME: ${{ steps.sync.outcome }}
+        run: |
+          if [ -z "$POSTHOG_KEY" ]; then
+            echo "[posthog] no key configured, skipping capture"
+            exit 0
+          fi
+          curl -sf -X POST "$POSTHOG_HOST/capture/" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n \
+              --arg key "$POSTHOG_KEY" \
+              --arg outcome "$OUTCOME" \
+              --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --arg trigger "${{ github.event_name }}" \
+              '{api_key: $key, event: "stock_market_cap_dispatch_completed", distinct_id: "system:sync-stock-market-cap-prod", properties: {"$lib": "github-actions", environment: "production", outcome: $outcome, trigger: $trigger, workflow_run_url: $run_url}}')" \
+            || echo "[posthog] capture failed; not failing the job"

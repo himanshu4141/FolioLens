@@ -20,7 +20,13 @@
  * us resilient if AMFI shifts their release window, and the no-op path is
  * cheap (one HTTP GET + one xlsx parse to detect "same period as before").
  *
- * Deploy with --verify-jwt so only authenticated admins / cron can invoke.
+ * Deploy with --no-verify-jwt to match the other pg_cron-triggered functions
+ * (sync-fund-portfolios, sync-fund-meta, regenerate-index-snapshots). The
+ * scheduled SQL call in 20260514100001_sync_stock_market_cap_cron.sql sends
+ * no Authorization header. The .github/workflows/sync-stock-market-cap.yml
+ * dispatch wrapper is the audited path for on-demand triggers; ad-hoc
+ * invocation from the internet is rate-limited by AMFI's page-fetch cost
+ * + the seeder's idempotent no-op on repeated periods.
  *
  * Phase 9 M6 — see docs/plans/phase-9-pre-launch-readiness/M6-honest-portfolio-composition.md.
  */
