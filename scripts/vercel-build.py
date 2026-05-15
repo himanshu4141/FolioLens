@@ -68,6 +68,18 @@ def main() -> int:
         build_env.pop("EXPO_PUBLIC_POSTHOG_KEY", None)
         build_env.pop("EXPO_PUBLIC_POSTHOG_HOST", None)
 
+    # Preview-mode gate. VERCEL_ENV can't distinguish the prod project's
+    # production deploy from the dev project's main-merge deploy (both report
+    # `production`), so key off EXPO_PUBLIC_APP_BASE_URL — only the prod
+    # Vercel project sets it to https://app.foliolens.in. Everything else
+    # (dev project main, PR previews, missing var) gets the flag on so the
+    # demo-portfolio CTA shows up in dev + PR previews.
+    PROD_APP_BASE_URL = "https://app.foliolens.in"
+    if build_env.get("EXPO_PUBLIC_APP_BASE_URL") != PROD_APP_BASE_URL:
+        build_env["EXPO_PUBLIC_FEATURE_PREVIEW_MODE"] = "true"
+    else:
+        build_env["EXPO_PUBLIC_FEATURE_PREVIEW_MODE"] = "false"
+
     proc = subprocess.Popen(
         command,
         cwd=ROOT,
