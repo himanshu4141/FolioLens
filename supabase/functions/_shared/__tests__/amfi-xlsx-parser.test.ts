@@ -1,4 +1,10 @@
-import { parseAmfiRows } from '../amfi-xlsx-parser';
+import {
+  AMFI_SANITY_BOUNDS,
+  countBuckets,
+  parseAmfiRows,
+  validateBucketShape,
+  type AmfiStockRow,
+} from '../amfi-xlsx-parser';
 
 // AMFI's actual sheet shape (Dec 2025 cycle, paraphrased from the workflow
 // failure log): row 0 is the title, rows 1-2 are blank/subtitle, row 3 is
@@ -149,7 +155,11 @@ describe('parseAmfiRows', () => {
     expect(parseAmfiRows(rows)[0].avg_market_cap_cr).toBe(16000.5);
   });
 
-  it('parses a realistic ~750-row shape end to end', () => {
+  it('parses a realistic ~5400-row shape (matches AMFI Dec 2025 cycle)', () => {
+    // Real AMFI Dec 2025 cycle produced 5372 rows. SEBI rule fixes the
+    // first two buckets (Top 100 = Large, ranks 101-250 = Mid); everything
+    // else falls into Small (unbounded). This shape is what the seeder
+    // must accept in prod.
     const rows: unknown[][] = [titleRow, headerRow];
     for (let i = 0; i < 100; i++) {
       rows.push(dataRow(i + 1, `Large ${i}`, `INE${String(i).padStart(3, '0')}L00000`, 1000000 - i, 'Large Cap'));
@@ -157,13 +167,14 @@ describe('parseAmfiRows', () => {
     for (let i = 0; i < 150; i++) {
       rows.push(dataRow(101 + i, `Mid ${i}`, `INE${String(i).padStart(3, '0')}M00000`, 500000 - i, 'Mid Cap'));
     }
-    for (let i = 0; i < 500; i++) {
-      rows.push(dataRow(251 + i, `Small ${i}`, `INE${String(i).padStart(3, '0')}S00000`, 100000 - i, 'Small Cap'));
+    for (let i = 0; i < 5122; i++) {
+      rows.push(dataRow(251 + i, `Small ${i}`, `INE${String(i % 10000).padStart(4, '0')}S0000`, 100000 - i, 'Small Cap'));
     }
     const out = parseAmfiRows(rows);
     expect(out.filter((r) => r.market_cap_category === 'Large Cap')).toHaveLength(100);
     expect(out.filter((r) => r.market_cap_category === 'Mid Cap')).toHaveLength(150);
-    expect(out.filter((r) => r.market_cap_category === 'Small Cap')).toHaveLength(500);
+    expect(out.filter((r) => r.market_cap_category === 'Small Cap')).toHaveLength(5122);
+    expect(out).toHaveLength(5372);
   });
 
   it('stops scanning after the first 10 rows', () => {
@@ -185,5 +196,97 @@ describe('parseAmfiRows', () => {
       dataRow(1, 'HDFC Bank', 'INE040A01034', 1600000000, 'Large Cap'),
     ];
     expect(parseAmfiRows(rows)[0].isin).toBe('INE040A01034');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countBuckets
+// ---------------------------------------------------------------------------
+
+describe('countBuckets', () => {
+  it('returns zeros for empty input', () => {
+    expect(countBuckets([])).toEqual({ large: 0, mid: 0, small: 0, total: 0 });
+  });
+
+  it('counts each bucket independently', () => {
+    const rows: AmfiStockRow[] = [
+      { isin: 'INE040A01034', company_name: 'A', market_cap_category: 'Large Cap', rank: 1, avg_market_cap_cr: 1 },
+      { isin: 'INE040A01035', company_name: 'B', market_cap_category: 'Large Cap', rank: 2, avg_market_cap_cr: 1 },
+      { isin: 'INE040A01036', company_name: 'C', market_cap_category: 'Mid Cap', rank: 101, avg_market_cap_cr: 1 },
+      { isin: 'INE040A01037', company_name: 'D', market_cap_category: 'Small Cap', rank: 251, avg_market_cap_cr: 1 },
+      { isin: 'INE040A01038', company_name: 'E', market_cap_category: 'Small Cap', rank: 252, avg_market_cap_cr: 1 },
+    ];
+    expect(countBuckets(rows)).toEqual({ large: 2, mid: 1, small: 2, total: 5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateBucketShape
+// ---------------------------------------------------------------------------
+
+describe('validateBucketShape', () => {
+  // The shape that just failed in prod (Dec 2025 cycle): 100 + 150 + 5122 = 5372.
+  // Previous bounds [500, 1500] rejected it; new bounds must accept it.
+  it('accepts the AMFI Dec 2025 cycle shape (100 / 150 / 5122 = 5372)', () => {
+    expect(validateBucketShape({ large: 100, mid: 150, small: 5122, total: 5372 }))
+      .toBeNull();
+  });
+
+  it('accepts H1-2025 cycle shape (100 / 150 / ~4900)', () => {
+    expect(validateBucketShape({ large: 100, mid: 150, small: 4900, total: 5150 }))
+      .toBeNull();
+  });
+
+  it('accepts boundary case: Large = 100 + bucketSlack', () => {
+    const slack = AMFI_SANITY_BOUNDS.bucketSlack;
+    expect(validateBucketShape({ large: 100 + slack, mid: 150, small: 5000, total: 5000 + 100 + slack + 150 }))
+      .toBeNull();
+  });
+
+  it('rejects when total row count is below minTotal', () => {
+    const err = validateBucketShape({ large: 100, mid: 150, small: 50, total: 300 });
+    expect(err).toMatch(/row count 300 outside/);
+  });
+
+  it('rejects when total row count is above maxTotal', () => {
+    const err = validateBucketShape({ large: 100, mid: 150, small: 20000, total: 20250 });
+    expect(err).toMatch(/row count 20250 outside/);
+  });
+
+  it('rejects when Large bucket is way off (parser column mapping likely broken)', () => {
+    const err = validateBucketShape({ large: 5000, mid: 150, small: 222, total: 5372 });
+    expect(err).toMatch(/large_count=5000 outside/);
+  });
+
+  it('rejects when Large bucket is below the slack window', () => {
+    const slack = AMFI_SANITY_BOUNDS.bucketSlack;
+    const err = validateBucketShape({ large: 100 - slack - 1, mid: 150, small: 5000, total: 5234 });
+    expect(err).toMatch(/large_count=84 outside/);
+  });
+
+  it('rejects when Mid bucket is way off', () => {
+    const err = validateBucketShape({ large: 100, mid: 0, small: 5272, total: 5372 });
+    expect(err).toMatch(/mid_count=0 outside/);
+  });
+
+  it('rejects when Small bucket is empty (parser likely dropped most rows)', () => {
+    const err = validateBucketShape({ large: 100, mid: 150, small: 0, total: 250 });
+    // total=250 is below the minTotal=500 bound, so we get that error first —
+    // the small-zero check is a safety net, not the primary signal.
+    expect(err).toBeTruthy();
+  });
+
+  it('includes per-bucket counts in the error message for fast triage', () => {
+    const err = validateBucketShape({ large: 5000, mid: 200, small: 172, total: 5372 });
+    expect(err).toContain('mid=200');
+    expect(err).toContain('small=172');
+    expect(err).toContain('total=5372');
+  });
+
+  it('respects custom bounds', () => {
+    expect(validateBucketShape(
+      { large: 50, mid: 75, small: 200, total: 325 },
+      { minTotal: 100, maxTotal: 1000, expectedLarge: 50, expectedMid: 75, bucketSlack: 5 },
+    )).toBeNull();
   });
 });
