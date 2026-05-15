@@ -135,11 +135,6 @@ describe('reduceOnboarding', () => {
     expect(next.dob).toBeNull();
   });
 
-  it('trims email on set_email', () => {
-    const next = reduceOnboarding(EMPTY_DRAFT, { type: 'set_email', email: '  who@there.com ' });
-    expect(next.email).toBe('who@there.com');
-  });
-
   it('moves to done and saves import result on import_complete', () => {
     const seeded: OnboardingDraft = { ...EMPTY_DRAFT, step: 'import' };
     const next = reduceOnboarding(seeded, {
@@ -181,7 +176,6 @@ describe('loadOnboardingDraft', () => {
       step: 'identity',
       pan: 'ABCDE1234F',
       dob: '1990-04-12',
-      email: 'who@there.com',
       importResult: { funds: 3, transactions: 9 },
     };
     mockedStorage.getItem.mockResolvedValueOnce(JSON.stringify(stored));

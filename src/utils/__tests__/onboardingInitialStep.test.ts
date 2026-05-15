@@ -26,7 +26,11 @@ describe('pickOnboardingInitialStep()', () => {
       ).toBe('welcome');
     });
 
-    it('skips welcome → identity when PAN saved but DOB missing', () => {
+    it('keeps welcome even when PAN is saved (drop-zone is the primary action)', () => {
+      // Welcome is the dropzone hero in the new design — a returning user
+      // with PAN saved still lands on Welcome so they can pick a PDF. The
+      // wizard fast-paths the upload past Identity itself when PAN is set,
+      // it doesn't skip Welcome.
       expect(
         pickOnboardingInitialStep({
           draftStep: 'welcome',
@@ -34,10 +38,7 @@ describe('pickOnboardingInitialStep()', () => {
           dob: null,
           requestedMode: null,
         }),
-      ).toBe('identity');
-    });
-
-    it('skips welcome → import when PAN and DOB both saved', () => {
+      ).toBe('welcome');
       expect(
         pickOnboardingInitialStep({
           draftStep: 'welcome',
@@ -45,10 +46,10 @@ describe('pickOnboardingInitialStep()', () => {
           dob: '1990-01-15',
           requestedMode: null,
         }),
-      ).toBe('import');
+      ).toBe('welcome');
     });
 
-    it('skips identity → import when both saved', () => {
+    it('keeps draft step when user resumes from identity', () => {
       expect(
         pickOnboardingInitialStep({
           draftStep: 'identity',
@@ -56,7 +57,7 @@ describe('pickOnboardingInitialStep()', () => {
           dob: '1990-01-15',
           requestedMode: null,
         }),
-      ).toBe('import');
+      ).toBe('identity');
     });
 
     it('keeps draft step when user resumes from import', () => {
@@ -137,8 +138,10 @@ describe('pickOnboardingInitialStep()', () => {
       ).toBe('import');
     });
 
-    it('falls through to identity when DOB missing', () => {
-      // welcome+PAN auto-promotes to identity even without the deep-link
+    it('falls back to welcome when DOB missing (the deep-link gate fails)', () => {
+      // request-cas needs both PAN and DOB on the CAMS / KFintech form, so
+      // missing DOB drops the user back to Welcome where they pick a PDF
+      // (or tap "Get it in 2 mins" to traverse the get-statement flow).
       expect(
         pickOnboardingInitialStep({
           draftStep: 'welcome',
@@ -146,7 +149,7 @@ describe('pickOnboardingInitialStep()', () => {
           dob: null,
           requestedMode: 'request-cas',
         }),
-      ).toBe('identity');
+      ).toBe('welcome');
     });
 
     it('keeps welcome when nothing saved', () => {

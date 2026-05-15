@@ -15,8 +15,10 @@
  *     intentionally do NOT gate this branch on DOB.
  *   - `mode=request-cas` jumps to Import only when both PAN and DOB are
  *     saved — a fresh CAS request from CAMS / KFintech needs both.
- *   - With no mode, fall back to: PAN saved → skip Welcome (go to Identity
- *     or Import depending on DOB); PAN+DOB saved → skip Identity too.
+ *   - With no mode, fall back to the draft step. The Welcome screen is the
+ *     primary entry-point (drop-zone hero), so we don't auto-skip past it
+ *     when PAN is already saved — a returning user picks a PDF on Welcome
+ *     and the wizard fast-paths the upload itself without showing Identity.
  */
 
 import type { OnboardingStep } from '@/src/utils/onboardingDraft';
@@ -36,14 +38,6 @@ export function pickOnboardingInitialStep({
   dob,
   requestedMode,
 }: InitialStepInputs): OnboardingStep {
-  let step: OnboardingStep = draftStep;
-
-  if (step === 'welcome' && pan) {
-    step = dob ? 'import' : 'identity';
-  } else if (step === 'identity' && pan && dob) {
-    step = 'import';
-  }
-
   if (requestedMode === 'identity') {
     return 'identity';
   }
@@ -53,7 +47,7 @@ export function pickOnboardingInitialStep({
   if (requestedMode === 'request-cas' && pan && dob) {
     return 'import';
   }
-  return step;
+  return draftStep;
 }
 
 export function isOnboardingMode(value: unknown): value is OnboardingMode {

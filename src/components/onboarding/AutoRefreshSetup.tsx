@@ -143,15 +143,17 @@ export function AutoRefreshSetup({
   return (
     <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
-        <Text style={styles.title}>Set up auto-refresh</Text>
+        <Text style={styles.eyebrow}>Your portfolio inbox</Text>
+        <Text style={styles.title}>Skip the upload from now on.</Text>
         <Text style={styles.subtitle}>
-          Forward CAS emails from CAMS / KFintech to your private FolioLens
-          address and your portfolio updates automatically — no re-uploading.
+          Whenever a new statement lands in your email, forward it to the
+          address below. We&apos;ll pull in the new transactions automatically —
+          no need to download or upload anything.
         </Text>
       </View>
 
       <View style={styles.addressCard}>
-        <Text style={styles.addressLabel}>Your FolioLens import inbox</Text>
+        <Text style={styles.addressLabel}>Your private FolioLens address</Text>
         <View style={styles.addressRow}>
           <Text style={[styles.addressValue, styles.mono]} numberOfLines={2} selectable>
             {inboxAddress}
@@ -170,10 +172,27 @@ export function AutoRefreshSetup({
           </TouchableOpacity>
         </View>
         <Text style={styles.addressHint}>
-          Keep this address private — it&apos;s the routing key for your CAS
-          imports. We only accept signed mail, so spoofed inbound is dropped,
-          but treat the address like an unlisted phone number.
+          Only you. Only statements. We never email anyone else — and we drop
+          spoofed inbound, but treat the address like an unlisted phone number.
         </Text>
+      </View>
+
+      <View style={styles.howCard}>
+        <View style={styles.howRow}>
+          <View style={styles.howNum}><Text style={styles.howNumText}>1</Text></View>
+          <Text style={styles.howText}>
+            <Text style={styles.howBold}>One-time:</Text> set up a Gmail or
+            Outlook filter that auto-forwards CAMS / KFintech statement emails
+            to this address.
+          </Text>
+        </View>
+        <View style={styles.howRow}>
+          <View style={styles.howNum}><Text style={styles.howNumText}>2</Text></View>
+          <Text style={styles.howText}>
+            From then on, every new statement flows in by itself — we&apos;ll add
+            anything new to your portfolio.
+          </Text>
+        </View>
       </View>
 
       {autoForwardComplete ? (
@@ -225,16 +244,11 @@ export function AutoRefreshSetup({
       ) : null}
 
       <View style={styles.manualCard}>
-        <View style={styles.manualHeader}>
-          <View style={styles.manualBadge}>
-            <Text style={styles.manualBadgeText}>RECOMMENDED</Text>
-          </View>
-          <Text style={styles.manualTitle}>Forward each CAS email manually</Text>
-        </View>
+        <Text style={styles.manualTitle}>Or forward each CAS manually</Text>
         <Text style={styles.manualBody}>
-          Each time CAMS or KFintech emails you a Consolidated Account Statement
-          (~once a month), open the email and tap Forward → paste the address
-          above → send. Works on every email client without any setup.
+          When a new statement email arrives, open it and tap Forward → paste
+          the address above → send. Works on every email client without any
+          setup — handy if you don&apos;t want to set up the filter below.
         </Text>
       </View>
 
@@ -506,6 +520,11 @@ function makeStyles(tokens: ClearLensTokens) {
       gap: 6,
       paddingTop: ClearLensSpacing.sm,
     },
+    eyebrow: {
+      ...ClearLensTypography.label,
+      color: cl.emerald,
+      textTransform: 'uppercase',
+    },
     title: {
       ...ClearLensTypography.h1,
       color: cl.navy,
@@ -513,6 +532,40 @@ function makeStyles(tokens: ClearLensTokens) {
     subtitle: {
       ...ClearLensTypography.bodySmall,
       color: cl.textSecondary,
+    },
+    howCard: {
+      backgroundColor: cl.surfaceSoft,
+      borderRadius: ClearLensRadii.lg,
+      padding: ClearLensSpacing.md,
+      gap: ClearLensSpacing.sm,
+    },
+    howRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: ClearLensSpacing.sm,
+    },
+    howNum: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      backgroundColor: cl.mint50,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 1,
+    },
+    howNumText: {
+      fontSize: 12,
+      fontFamily: ClearLensFonts.bold,
+      color: cl.emeraldDeep,
+    },
+    howText: {
+      flex: 1,
+      ...ClearLensTypography.bodySmall,
+      color: cl.navy,
+      lineHeight: 19,
+    },
+    howBold: {
+      fontFamily: ClearLensFonts.bold,
     },
     addressCard: {
       backgroundColor: cl.surface,
