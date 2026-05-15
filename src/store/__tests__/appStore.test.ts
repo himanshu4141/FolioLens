@@ -3,6 +3,7 @@ import {
   type AppStore,
   mergePersistedAppState,
   migratePersistedAppState,
+  useAppStore,
 } from '../appStore';
 
 const DEFAULT_RETURN_ASSUMPTIONS = { cautious: 8, balanced: 12, growth: 12 };
@@ -496,5 +497,101 @@ describe('mergePersistedAppState', () => {
     );
     expect(merged.wealthJourney.yearsToRetirement).toBe(20);
     expect(merged.wealthJourney.withdrawalRate).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resetUserScopedState — guards against cross-user state leakage when the
+// same app process sees a SIGNED_OUT followed by a SIGNED_IN as a different
+// user. Persisted preferences (theme, default benchmark, etc.) must stay;
+// in-memory transient state must drop.
+// ---------------------------------------------------------------------------
+
+describe('resetUserScopedState', () => {
+  // Snapshot persisted-preference defaults BEFORE each test so we can
+  // assert they survive the reset. Run inside `beforeEach` because the
+  // store is module-singleton across tests.
+  const persistedDefaults = {
+    defaultBenchmarkSymbol: useAppStore.getState().defaultBenchmarkSymbol,
+    appColorScheme: useAppStore.getState().appColorScheme,
+    fundsSortBy: useAppStore.getState().fundsSortBy,
+    portfolioChartWindow: useAppStore.getState().portfolioChartWindow,
+    moneyTrailSortBy: useAppStore.getState().moneyTrailSortBy,
+    goals: useAppStore.getState().goals,
+    wealthJourney: useAppStore.getState().wealthJourney,
+    returnAssumptions: useAppStore.getState().returnAssumptions,
+  };
+
+  beforeEach(() => {
+    // Re-seed the in-memory user-scoped state to non-default values so
+    // the test asserts an actual reset, not a no-op. `toolsFlags` is
+    // server-controlled and the runtime default is "all enabled" — to
+    // detect a leak we set non-default values here and assert they go
+    // back to the runtime default after reset.
+    useAppStore.setState({
+      previewMode: true,
+      importGateVisible: true,
+      dialog: {
+        kind: 'confirm',
+        title: 'Delete user A account?',
+        body: 'This cannot be undone.',
+        destructive: true,
+        onConfirm: () => undefined,
+      },
+      fundsSearchQuery: 'leftover query from previous user',
+      toolsFlags: {
+        goalPlanner: false,
+        pastSipCheck: false,
+        compareFunds: false,
+        directVsRegular: false,
+      },
+    });
+  });
+
+  it('resets every in-memory transient field back to its first-launch default', () => {
+    useAppStore.getState().resetUserScopedState();
+    const s = useAppStore.getState();
+    expect(s.previewMode).toBe(false);
+    expect(s.importGateVisible).toBe(false);
+    expect(s.dialog).toBeNull();
+    expect(s.fundsSearchQuery).toBe('');
+    // toolsFlags resets to the build-time default (all-true today).
+    // The user-specific values are dropped — the next sign-in's
+    // bootstrap will refetch from server.
+    expect(s.toolsFlags.goalPlanner).toBe(true);
+    expect(s.toolsFlags.pastSipCheck).toBe(true);
+    expect(s.toolsFlags.compareFunds).toBe(true);
+    expect(s.toolsFlags.directVsRegular).toBe(true);
+  });
+
+  it('does NOT touch persisted user preferences (theme, benchmark, sort orders, goals, wealth journey)', () => {
+    useAppStore.getState().resetUserScopedState();
+    const s = useAppStore.getState();
+    expect(s.defaultBenchmarkSymbol).toBe(persistedDefaults.defaultBenchmarkSymbol);
+    expect(s.appColorScheme).toBe(persistedDefaults.appColorScheme);
+    expect(s.fundsSortBy).toBe(persistedDefaults.fundsSortBy);
+    expect(s.portfolioChartWindow).toBe(persistedDefaults.portfolioChartWindow);
+    expect(s.moneyTrailSortBy).toBe(persistedDefaults.moneyTrailSortBy);
+    expect(s.goals).toEqual(persistedDefaults.goals);
+    expect(s.wealthJourney).toEqual(persistedDefaults.wealthJourney);
+    expect(s.returnAssumptions).toEqual(persistedDefaults.returnAssumptions);
+  });
+
+  it('drops a queued dialog whose onConfirm closure could fire against the next user', () => {
+    // The smoking gun: a dialog like "Delete account?" with onConfirm bound
+    // to user A's id must not survive into user B's session.
+    let confirmFired = false;
+    useAppStore.setState({
+      dialog: {
+        kind: 'confirm',
+        title: 'Delete account?',
+        body: 'For user A only.',
+        destructive: true,
+        onConfirm: () => { confirmFired = true; },
+      },
+    });
+    useAppStore.getState().resetUserScopedState();
+    expect(useAppStore.getState().dialog).toBeNull();
+    expect(confirmFired).toBe(false);
   });
 });
