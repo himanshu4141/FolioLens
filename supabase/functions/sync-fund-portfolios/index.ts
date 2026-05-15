@@ -34,6 +34,7 @@ import {
   isEquityPctPlausible,
   isNumericString,
 } from '../_shared/portfolio-utils.ts';
+import { shouldSkipHoldingsSyncForEmptyClassifier } from '../_shared/amfi-xlsx-parser.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const REQUEST_DELAY_MS = 300; // stay well within mfdata.in rate limits
@@ -437,6 +438,24 @@ Deno.serve(async (req) => {
   const isinToCap = await loadIsinToCapMap(supabase);
   console.log('[sync-fund-portfolios] loaded %d ISIN classifications', isinToCap.size);
 
+  // Bootstrap guard: if `stock_market_cap` is empty (the seeder cron
+  // hasn't run yet), don't proceed with the holdings-driven sync.
+  // The classifier would return zero coverage on every fund and we'd
+  // write `category_fallback` rows for the entire universe — which
+  // then persist forever (the unique key is
+  // `(scheme_code, portfolio_date, source)`, so the eventual `amfi`
+  // rows from the next cron coexist with them rather than replacing).
+  // Skip the holdings path; fall through to `category_rules` so the
+  // Insights screen still has a baseline. The next cron run retries.
+  // See `docs/architecture/cache-surfaces.md` audit finding #7.
+  const skipHoldingsForEmptyClassifier = shouldSkipHoldingsSyncForEmptyClassifier(isinToCap.size);
+  if (skipHoldingsForEmptyClassifier) {
+    console.warn(
+      '[sync-fund-portfolios] stock_market_cap is empty; skipping holdings sync, ' +
+      'falling through to category_rules. Run sync-stock-market-cap first.',
+    );
+  }
+
   // Check which schemes already have fresh holdings-derived data this month.
   // Both 'amfi' (classifier hit) and 'category_fallback' (classifier missed
   // despite having holdings) count as "real-holdings attempt completed" —
@@ -462,8 +481,14 @@ Deno.serve(async (req) => {
   let classifierCoverageSamples = 0;
   const amfiErrors: string[] = [];
 
+  // When the classifier table is empty, run the loop with an empty work
+  // list — the precheck-confirmed `staleSchemes` set is what would have
+  // been processed; we skip mfdata calls entirely. `categorySynced` below
+  // still seeds category_rules for funds without any holdings-derived row.
+  const schemesToProcess = skipHoldingsForEmptyClassifier ? [] : staleSchemes;
+
   const amfiResults = await Promise.allSettled(
-    staleSchemes.map(async (scheme, idx) => {
+    schemesToProcess.map(async (scheme, idx) => {
       if (idx > 0) await delay(REQUEST_DELAY_MS);
 
       let synced = 0;
@@ -616,6 +641,10 @@ Deno.serve(async (req) => {
     ? Math.round((classifierCoverageSum / classifierCoverageSamples) * 100) / 100
     : 0;
 
+  // The bootstrap-empty-classifier path is a known dependency-ordering
+  // issue, not a true failure — surface it as `sync_completed` with a
+  // distinct property so an alert can fire if it persists past the
+  // first hour after `sync-stock-market-cap` is supposed to land.
   await trackServerEventAwait(
     amfiErrors.length > 0 && amfiSynced === 0 ? 'sync_failed' : 'sync_completed',
     {
@@ -630,6 +659,8 @@ Deno.serve(async (req) => {
       classifier_no_holdings_count: categorySynced,
       classifier_coverage_pct_avg: classifierCoveragePctAvg,
       equity_corruption_guard_trips: equityCorruptionGuardTrips,
+      classifier_table_size: isinToCap.size,
+      classifier_table_empty_skip: skipHoldingsForEmptyClassifier,
       elapsed_ms: elapsedMs,
     },
     'system:sync-fund-portfolios',

@@ -49,6 +49,38 @@ export function isCachedMapStillValid<K, V>(
   return now - cachedAt < ttlMs;
 }
 
+/**
+ * Returns true when the AMFI ISIN → cap classifier map is too sparse to
+ * safely run the holdings-driven `sync-fund-portfolios` cron path.
+ *
+ * **Why the cron needs this guard.** PR #161 fixed the on-demand
+ * `fetch-fund-snapshot` cache at module scope: if the function was
+ * warm-started before `sync-stock-market-cap` had populated
+ * `stock_market_cap`, it cached an empty map for 6h and silently
+ * fell back to SEBI category defaults on every fund. The cron has
+ * the same condition without the cache: if the table is empty when
+ * the cron runs, `classifyHoldings` returns zero coverage on every
+ * fund and the seeder writes `source='category_fallback'` rows for
+ * the entire universe. Those rows then persist forever (the unique
+ * key is `(scheme_code, portfolio_date, source)`, so the eventual
+ * `amfi` rows from the next cron coexist with them rather than
+ * replacing them). The dedup in the read path picks `amfi` first so
+ * UX is OK, but the DB carries a month-per-scheme of dead rows.
+ *
+ * Skip the holdings path entirely when the map is empty; fall through
+ * to `category_rules` seeding so the Insights screen still has a
+ * baseline. The next cron run retries.
+ *
+ * **Threshold.** Strictly `=== 0` — partial maps (e.g. mid-upsert
+ * failure of the seeder) are OK because `classifyHoldings` already
+ * handles missing-ISIN gracefully (flows into Not Classified). Only
+ * the all-empty case produces the "every fund gets the wrong source
+ * tag" pathology.
+ */
+export function shouldSkipHoldingsSyncForEmptyClassifier(isinToCapSize: number): boolean {
+  return isinToCapSize === 0;
+}
+
 export interface AmfiStockRow {
   isin: string;
   company_name: string;

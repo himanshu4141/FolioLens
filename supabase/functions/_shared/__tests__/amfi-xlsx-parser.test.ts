@@ -335,3 +335,32 @@ describe('isCachedMapStillValid', () => {
     expect(isCachedMapStillValid(cached, 1000, 500, TTL)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// shouldSkipHoldingsSyncForEmptyClassifier — guard for the cron-side variant
+// of the PR #161 bootstrap-race bug.
+// ---------------------------------------------------------------------------
+
+import { shouldSkipHoldingsSyncForEmptyClassifier } from '../amfi-xlsx-parser';
+
+describe('shouldSkipHoldingsSyncForEmptyClassifier', () => {
+  it('returns true when the classifier map is empty (the bootstrap-race guard)', () => {
+    // Direct repro of audit finding #7: if `sync-fund-portfolios` runs
+    // before `sync-stock-market-cap` has populated `stock_market_cap`,
+    // proceeding would write `category_fallback` rows for every fund.
+    // Skip the holdings path; fall through to category_rules.
+    expect(shouldSkipHoldingsSyncForEmptyClassifier(0)).toBe(true);
+  });
+
+  it('returns false when the map has at least one classification', () => {
+    // A partial map (e.g. mid-upsert failure of the seeder) is still
+    // safe to use — `classifyHoldings` handles missing ISINs gracefully
+    // by flowing them into Not Classified. Only the all-empty case
+    // produces the bug.
+    expect(shouldSkipHoldingsSyncForEmptyClassifier(1)).toBe(false);
+  });
+
+  it('returns false on a fully-loaded map (~5400 rows)', () => {
+    expect(shouldSkipHoldingsSyncForEmptyClassifier(5372)).toBe(false);
+  });
+});
