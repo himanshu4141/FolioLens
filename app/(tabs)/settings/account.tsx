@@ -136,23 +136,11 @@ export default function AccountScreen() {
             <Ionicons name="chevron-forward" size={18} color={tokens.colors.textTertiary} />
           </TouchableOpacity>
 
-          {!isLoading && profile?.kfintech_email && (
-            <View style={[styles.row, styles.borderTop]}>
-              <View style={styles.rowLeft}>
-                <Text style={styles.rowLabel}>CAS request email</Text>
-                <Text style={styles.rowValue} numberOfLines={1}>{profile.kfintech_email}</Text>
-                <Text style={styles.rowSub}>
-                  The email you use when requesting a CAS from CAMS, KFintech, MFCentral, NSDL, or CDSL portals.
-                </Text>
-              </View>
-              <TouchableOpacity
-                onPress={goToIdentity}
-                style={styles.actionBtn}
-              >
-                <Text style={styles.actionBtnText}>Edit</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+          {/* The "CAS request email" row was retired with the onboarding
+              redesign — the field is no longer captured during sign-up.
+              The DB column (kfintech_email) stays for legacy reads but is
+              not surfaced anywhere; the auth email is what gets used at
+                the request portals. */}
 
           {!isLoading && (
             <View style={[styles.row, styles.borderTop]}>
@@ -163,7 +151,7 @@ export default function AccountScreen() {
                 </Text>
                 {!profile?.dob ? (
                   <Text style={styles.rowSub}>
-                    Required for CDSL/NSDL CAS imports
+                    Some demat statements need this to unlock
                   </Text>
                 ) : (
                   <TouchableOpacity

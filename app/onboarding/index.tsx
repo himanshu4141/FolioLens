@@ -55,7 +55,7 @@ import {
   pickOnboardingInitialStep,
   type OnboardingMode,
 } from '@/src/utils/onboardingInitialStep';
-import { fetchPortfolioData } from '@/src/hooks/usePortfolio';
+import { fetchPortfolioData, usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { useAppStore } from '@/src/store/appStore';
 import { analytics } from '@/src/lib/analytics';
 
@@ -349,6 +349,13 @@ function OnboardingWizard() {
         transactions: result.transactions,
         elapsed_ms: elapsed,
       });
+      // Invalidate the pre-import portfolio caches (typically an empty
+      // portfolio for first-time users) so Done's fund preview and the
+      // eventual dashboard mount both refetch against the freshly
+      // imported funds. Done's usePortfolio() picks the marking up
+      // synchronously and starts fetching while the user reads the
+      // success copy.
+      void queryClient.invalidateQueries();
       dispatch({
         type: 'import_complete',
         funds: result.funds,
@@ -434,8 +441,13 @@ function OnboardingWizard() {
       transactions: draft.importResult?.transactions ?? 0,
     });
 
+    // Cache was invalidated right after upload completed and Done's
+    // usePortfolio() will have warmed the cache by the time the user
+    // taps through. The prefetch here is a safety belt for the case
+    // where Done was dismissed quickly — its work overlaps the
+    // navigation animation so the dashboard renders against a warm
+    // cache instead of flashing a spinner.
     if (draft.importResult) {
-      await queryClient.invalidateQueries();
       const userId = session?.user.id;
       if (userId) {
         const benchmarkSymbol = useAppStore.getState().defaultBenchmarkSymbol;
@@ -563,6 +575,7 @@ function OnboardingWizard() {
             autoForwardCompletedAt={profile?.cas_auto_forward_setup_completed_at ?? null}
             styles={styles}
             cl={cl}
+            tokens={tokens}
           />
         )}
       </KeyboardAvoidingView>
@@ -1018,7 +1031,10 @@ function ImportStep({
   cl: Cl;
 }) {
   const [sub, setSub] = useState<ImportSubScreen>(initialSub);
-  const [appFamily, setAppFamily] = useState<AppFamily | null>(null);
+  // Default to demat — broker apps (Zerodha, Angel, ICICI Direct) cover the
+  // majority of Indian retail mutual-fund investors. The user can switch to
+  // non-demat or "both" in one tap if the default doesn't match.
+  const [appFamily, setAppFamily] = useState<AppFamily>('demat');
   const showAlert = useAlertDialog();
   const [browserVisited, setBrowserVisited] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
@@ -1089,7 +1105,7 @@ function ImportStep({
     );
   }
 
-  if (sub === 'portal' && appFamily) {
+  if (sub === 'portal') {
     const portalOptions =
       appFamily === 'demat'
         ? DEPOSITORY_OPTIONS
@@ -1180,8 +1196,9 @@ function ImportStep({
     );
   }
 
-  // A2 default: tile selector.
-  const selected = appFamily ? APP_TILES.find((t) => t.id === appFamily) : null;
+  // A2 default: tile selector. `appFamily` is always set (defaults to demat),
+  // so the soft callout always renders alongside the selected tile.
+  const selected = APP_TILES.find((t) => t.id === appFamily)!;
 
   return (
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -1238,15 +1255,13 @@ function ImportStep({
         })}
       </View>
 
-      {selected ? (
-        <View style={styles.softCallout}>
-          <Text style={styles.softCalloutText}>
-            Got it — your funds are in{' '}
-            <Text style={styles.softCalloutBold}>{selected.inferred}</Text>. We&apos;ll
-            open the right form for you next.
-          </Text>
-        </View>
-      ) : null}
+      <View style={styles.softCallout}>
+        <Text style={styles.softCalloutText}>
+          Got it — your funds are in{' '}
+          <Text style={styles.softCalloutBold}>{selected.inferred}</Text>. We&apos;ll
+          open the right form for you next.
+        </Text>
+      </View>
 
       {/* Quietly link to auto-refresh setup so users who already have an
           inbox token (i.e. came back from the success screen) can jump
@@ -1271,8 +1286,7 @@ function ImportStep({
 
       <PrimaryButton
         label="Open the form ↗"
-        onPress={() => appFamily && setSub('portal')}
-        disabled={!appFamily}
+        onPress={() => setSub('portal')}
         styles={styles}
         cl={cl}
       />
@@ -1287,6 +1301,11 @@ function ImportStep({
 
 // ─── A4 · Done ─────────────────────────────────────────────────────────────
 
+// Top-N funds we surface in the success-screen preview. Matches the
+// wireframe (4 rows + "+ N more") and keeps the screen tight on small
+// phones.
+const DONE_PREVIEW_FUND_COUNT = 4;
+
 function DoneStep({
   draft,
   onFinish,
@@ -1295,6 +1314,7 @@ function DoneStep({
   autoForwardCompletedAt,
   styles,
   cl,
+  tokens,
 }: {
   draft: OnboardingDraft;
   onFinish: () => void;
@@ -1303,11 +1323,28 @@ function DoneStep({
   autoForwardCompletedAt: string | null;
   styles: WizardStyles;
   cl: Cl;
+  tokens: ClearLensTokens;
 }) {
   const result = draft.importResult;
   const imported = !!result;
   const autoRefreshReady = !!autoForwardCompletedAt;
   const showAutoRefreshNudge = imported && hasInboxToken && !autoRefreshReady;
+
+  // Fetches against the just-imported funds — the cache was invalidated in
+  // runUpload() right before the wizard advanced here, so this returns the
+  // fresh portfolio. The same fetch warms the dashboard's cache, so the
+  // "See my dashboard" transition reads from memory.
+  const { data: portfolio } = usePortfolio();
+  const previewFunds = useMemo(() => {
+    if (!portfolio?.fundCards?.length) return [];
+    return [...portfolio.fundCards]
+      .filter((f) => (f.currentValue ?? 0) > 0)
+      .sort((a, b) => (b.currentValue ?? 0) - (a.currentValue ?? 0))
+      .slice(0, DONE_PREVIEW_FUND_COUNT);
+  }, [portfolio]);
+  const extraFundCount = portfolio?.fundCards
+    ? Math.max(0, portfolio.fundCards.length - previewFunds.length)
+    : 0;
 
   return (
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -1348,6 +1385,24 @@ function DoneStep({
           </Text>
         )}
       </View>
+
+      {imported && previewFunds.length > 0 ? (
+        <View style={styles.fundsPreview}>
+          {previewFunds.map((fund, idx) => (
+            <FundPreviewRow
+              key={fund.id}
+              fund={fund}
+              color={tokens.semantic.fundAllocation[idx % tokens.semantic.fundAllocation.length]}
+              showDivider={idx < previewFunds.length - 1}
+              styles={styles}
+              tokens={tokens}
+            />
+          ))}
+          {extraFundCount > 0 ? (
+            <Text style={styles.fundsPreviewMore}>+ {extraFundCount} more</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {showAutoRefreshNudge ? (
         <Pressable
@@ -1406,6 +1461,41 @@ function DoneStep({
         cl={cl}
       />
     </ScrollView>
+  );
+}
+
+function FundPreviewRow({
+  fund,
+  color,
+  showDivider,
+  styles,
+  tokens,
+}: {
+  fund: FundCardData;
+  color: string;
+  showDivider: boolean;
+  styles: WizardStyles;
+  tokens: ClearLensTokens;
+}) {
+  // Per-fund returnXirr is decimal (0.18 = +18%). Show as a signed arrow
+  // delta the way the rest of Clear Lens does — never colour-only.
+  const xirrPct = fund.returnXirr * 100;
+  const sign = xirrPct > 0 ? '▲ +' : xirrPct < 0 ? '▼ ' : '';
+  const xirrText = `${sign}${xirrPct.toFixed(0)}%`;
+  const xirrColor =
+    xirrPct > 0
+      ? tokens.semantic.sentiment.positiveText
+      : xirrPct < 0
+        ? tokens.semantic.sentiment.negativeText
+        : tokens.colors.textTertiary;
+  return (
+    <View style={[styles.fundRow, showDivider && styles.fundRowDivider]}>
+      <View style={[styles.fundChip, { backgroundColor: color }]} />
+      <Text style={styles.fundName} numberOfLines={1}>
+        {fund.schemeName}
+      </Text>
+      <Text style={[styles.fundXirr, { color: xirrColor }]}>{xirrText}</Text>
+    </View>
   );
 }
 
@@ -2062,6 +2152,48 @@ function makeStyles(tokens: ClearLensTokens) {
       color: cl.textSecondary,
       textAlign: 'center',
       maxWidth: 280,
+    },
+    fundsPreview: {
+      backgroundColor: cl.surface,
+      borderRadius: ClearLensRadii.md,
+      borderWidth: 1,
+      borderColor: cl.border,
+      paddingVertical: 4,
+      paddingHorizontal: ClearLensSpacing.sm,
+    },
+    fundRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: ClearLensSpacing.sm,
+      paddingVertical: 10,
+    },
+    fundRowDivider: {
+      borderBottomWidth: 1,
+      borderBottomColor: cl.borderLight,
+      borderStyle: 'dashed',
+    },
+    fundChip: {
+      width: 22,
+      height: 22,
+      borderRadius: ClearLensRadii.sm,
+      flexShrink: 0,
+    },
+    fundName: {
+      flex: 1,
+      ...ClearLensTypography.bodySmall,
+      color: cl.navy,
+      fontFamily: ClearLensFonts.semiBold,
+    },
+    fundXirr: {
+      ...ClearLensTypography.bodySmall,
+      fontFamily: ClearLensFonts.bold,
+      fontVariant: ['tabular-nums'],
+    },
+    fundsPreviewMore: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      textAlign: 'center',
+      paddingVertical: 6,
     },
     bold: {
       fontFamily: ClearLensFonts.bold,
