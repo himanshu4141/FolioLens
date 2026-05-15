@@ -51,16 +51,23 @@ jobs:
         run: |
           set -e
           echo "POST $SUPABASE_URL/functions/v1/sync-stock-market-cap"
-          # `--fail-with-body` makes curl exit non-zero on HTTP >= 400 *and*
-          # still print the response body — we want the failure_reason JSON
-          # surfaced in the Actions log without an extra request.
-          response=$(curl -sS --fail-with-body \
+          # Write body to a file + capture HTTP status separately so the
+          # response body is surfaced in the log on every outcome — success
+          # *or* failure. The previous shape used `--fail-with-body` with
+          # `set -e`, which killed the script before the captured body got
+          # echoed and hid the `failure_reason` JSON the function returns
+          # on 500. See PR #154 follow-up.
+          http_status=$(curl -sS -o /tmp/sync-response.json -w '%{http_code}' \
             -X POST "$SUPABASE_URL/functions/v1/sync-stock-market-cap" \
             -H 'Content-Type: application/json' \
             --max-time 120 \
             --data '{}')
-          echo "$response" | jq .
-          echo "response=$(echo "$response" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "HTTP $http_status"
+          jq . /tmp/sync-response.json || cat /tmp/sync-response.json
+          if [ "$http_status" -ge 400 ]; then
+            echo "::error::sync-stock-market-cap returned HTTP $http_status"
+            exit 1
+          fi
       - name: Report outcome to PostHog
         if: ${{ always() }}
         env:
@@ -97,13 +104,17 @@ jobs:
         run: |
           set -e
           echo "POST $SUPABASE_URL/functions/v1/sync-stock-market-cap"
-          response=$(curl -sS --fail-with-body \
+          http_status=$(curl -sS -o /tmp/sync-response.json -w '%{http_code}' \
             -X POST "$SUPABASE_URL/functions/v1/sync-stock-market-cap" \
             -H 'Content-Type: application/json' \
             --max-time 120 \
             --data '{}')
-          echo "$response" | jq .
-          echo "response=$(echo "$response" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "HTTP $http_status"
+          jq . /tmp/sync-response.json || cat /tmp/sync-response.json
+          if [ "$http_status" -ge 400 ]; then
+            echo "::error::sync-stock-market-cap returned HTTP $http_status"
+            exit 1
+          fi
       - name: Report outcome to PostHog
         if: ${{ always() }}
         env:
