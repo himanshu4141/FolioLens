@@ -42,6 +42,7 @@ import {
   isEquityPctPlausible,
 } from '../_shared/portfolio-utils.ts';
 import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
+import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -243,17 +244,20 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
     .eq('scheme_code', schemeCode)
     .maybeSingle();
 
-  if (existing?.fund_meta_synced_at) {
-    const ageMs = Date.now() - new Date(existing.fund_meta_synced_at).getTime();
+  // `isSchemeMetaFresh` requires both a recent timestamp AND a non-null
+  // `mfdata_family_id`. Without the family_id guard, a previous partial-
+  // success sync (mfdata down, mfapi-only) would lock the cache for 7
+  // days and the holdings path would fall back to category defaults
+  // (audit #6). See `_shared/scheme-meta-cache.ts`.
+  if (isSchemeMetaFresh(existing, META_STALE_DAYS)) {
+    const ageMs = Date.now() - new Date(existing!.fund_meta_synced_at!).getTime();
     const ageDays = ageMs / (24 * 60 * 60 * 1000);
-    if (ageDays < META_STALE_DAYS) {
-      console.log('[fetch-fund-snapshot] scheme=%d meta cache hit (age=%.1fd)', schemeCode, ageDays);
-      return {
-        status: 'cache_hit',
-        family_id: (existing.mfdata_family_id as number | null) ?? null,
-        scheme_category: existing.scheme_category as string | null,
-      };
-    }
+    console.log('[fetch-fund-snapshot] scheme=%d meta cache hit (age=%.1fd)', schemeCode, ageDays);
+    return {
+      status: 'cache_hit',
+      family_id: (existing!.mfdata_family_id as number | null) ?? null,
+      scheme_category: existing!.scheme_category as string | null,
+    };
   }
 
   const mfdata = await mfdataGet<MFDataSchemePayload>(`/schemes/${schemeCode}`);
