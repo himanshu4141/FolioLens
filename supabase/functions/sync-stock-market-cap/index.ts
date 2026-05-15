@@ -40,6 +40,7 @@ import {
   extractLatestXlsxUrl,
   extractClassificationPeriod,
 } from '../_shared/amfi-listing-parser.ts';
+import { type AmfiStockRow, parseAmfiRows } from '../_shared/amfi-xlsx-parser.ts';
 
 const AMFI_LISTING_URL = 'https://www.amfiindia.com/otherdata/categorisation-of-stocks';
 const FETCH_TIMEOUT_MS = 30_000;
@@ -60,13 +61,7 @@ type FailureReason =
   | 'sanity_check_failed'
   | 'upsert_failed';
 
-interface StockRow {
-  isin: string;
-  company_name: string;
-  market_cap_category: 'Large Cap' | 'Mid Cap' | 'Small Cap';
-  rank: number | null;
-  avg_market_cap_cr: number | null;
-}
+type StockRow = AmfiStockRow;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,11 +82,15 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 }
 
 /**
- * Parses the AMFI xlsx into typed rows. AMFI's sheet shape is stable across
- * cycles: column headers include "ISIN", "Name of the Company", "Average
- * Market Capitalization", and a category column. The leftmost sheet has the
- * full list. We use SheetJS's header-aware row reader so column order shifts
- * don't break us — we look up columns by fuzzy header match.
+ * Reads the first sheet of the AMFI xlsx as a 2D array and hands it to
+ * `parseAmfiRows` (in `_shared/amfi-xlsx-parser.ts`) for the actual
+ * structural work. The previous version of this function used SheetJS's
+ * default object-mode `sheet_to_json`, which assumes row 0 is the header
+ * — AMFI's sheet has a title in row 0 instead, so the headers came back
+ * as `["…six months ended 31 December 2025", "__EMPTY", "__EMPTY_1", …]`
+ * and the column detector found none of the columns it needed. Moving to
+ * `header: 1` + a header-row scanner makes the parser robust to title /
+ * subtitle rows of any count up to MAX_HEADER_SCAN_ROWS.
  */
 function parseAmfiWorkbook(buffer: ArrayBuffer): StockRow[] {
   const wb = XLSX.read(buffer, { type: 'array' });
@@ -101,73 +100,17 @@ function parseAmfiWorkbook(buffer: ArrayBuffer): StockRow[] {
   const sheet = wb.Sheets[wb.SheetNames[0]];
   if (!sheet) throw new Error('first sheet missing');
 
-  const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+  // `header: 1` returns rows as positional arrays instead of objects keyed
+  // by row-0 cells. Combined with `defval: null` this gives us a stable
+  // 2D shape regardless of empty cells or merged title rows.
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
     defval: null,
     raw: true,
+    blankrows: false,
   });
-  if (rawRows.length === 0) throw new Error('sheet produced zero rows');
 
-  // Heuristic header detection — pick the first row whose keys look like data.
-  const headerMap = buildHeaderMap(rawRows[0]);
-  if (!headerMap.isin || !headerMap.company || !headerMap.category) {
-    throw new Error(
-      `headers missing — found ${JSON.stringify(Object.keys(rawRows[0]))} but need isin/company/category`,
-    );
-  }
-
-  const rows: StockRow[] = [];
-  for (const raw of rawRows) {
-    const isin = stringCell(raw[headerMap.isin]).toUpperCase();
-    if (!/^IN[A-Z0-9]{10}$/.test(isin)) continue; // skip header carry-overs / footnotes
-    const company = stringCell(raw[headerMap.company]);
-    const categoryRaw = stringCell(raw[headerMap.category]).toLowerCase();
-    let category: StockRow['market_cap_category'];
-    if (categoryRaw.includes('large')) category = 'Large Cap';
-    else if (categoryRaw.includes('mid')) category = 'Mid Cap';
-    else if (categoryRaw.includes('small')) category = 'Small Cap';
-    else continue; // skip "Sl. No.", blank rows, etc.
-
-    const rank = headerMap.rank ? numCell(raw[headerMap.rank]) : null;
-    const avgCap = headerMap.avgCap ? numCell(raw[headerMap.avgCap]) : null;
-    rows.push({
-      isin,
-      company_name: company || isin,
-      market_cap_category: category,
-      rank,
-      avg_market_cap_cr: avgCap,
-    });
-  }
-  return rows;
-}
-
-function buildHeaderMap(firstRow: Record<string, unknown>): {
-  isin?: string;
-  company?: string;
-  category?: string;
-  rank?: string;
-  avgCap?: string;
-} {
-  const map: ReturnType<typeof buildHeaderMap> = {};
-  for (const key of Object.keys(firstRow)) {
-    const k = key.toLowerCase();
-    if (!map.isin && k.includes('isin')) map.isin = key;
-    else if (!map.company && (k.includes('name of the company') || k === 'company' || k.includes('company name'))) map.company = key;
-    else if (!map.category && (k.includes('category') || k.includes('classification'))) map.category = key;
-    else if (!map.rank && (k.includes('sl') || k.includes('sr') || k === 'rank' || k.includes('no.'))) map.rank = key;
-    else if (!map.avgCap && (k.includes('market capital') || k.includes('avg') || k.includes('average market'))) map.avgCap = key;
-  }
-  return map;
-}
-
-function stringCell(value: unknown): string {
-  if (value == null) return '';
-  return String(value).trim();
-}
-
-function numCell(value: unknown): number | null {
-  if (value == null || value === '') return null;
-  const n = typeof value === 'number' ? value : Number(String(value).replace(/[,\s]/g, ''));
-  return Number.isFinite(n) ? n : null;
+  return parseAmfiRows(rows);
 }
 
 // ---------------------------------------------------------------------------
