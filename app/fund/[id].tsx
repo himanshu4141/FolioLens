@@ -1641,6 +1641,11 @@ function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
       {hasMarketCap && (
         <View style={[s.chartCard, { gap: ClearLensSpacing.sm }]}>
           <Text style={cs.cardTitle}>Market Cap Mix</Text>
+          {composition.source !== 'amfi' && (
+            <Text style={cs.capDisclosure}>
+              Showing SEBI category average — this fund hasn’t disclosed enough holdings yet.
+            </Text>
+          )}
           <View style={cs.stackedBar}>
             {(composition.largeCapPct ?? 0) > 0.5 && (
               <View style={[cs.barSeg, { flex: composition.largeCapPct!, backgroundColor: compCapColors.large }]} />
@@ -1748,6 +1753,12 @@ function makeCompStyles(colors: ClearLensCompatibleTokens) {
       textTransform: 'uppercase',
       letterSpacing: 0.5,
       color: colors.textTertiary,
+    },
+    capDisclosure: {
+      fontSize: 12,
+      lineHeight: 16,
+      color: colors.textSecondary,
+      fontStyle: 'italic' as const,
     },
     stackedBar: {
       flexDirection: 'row',

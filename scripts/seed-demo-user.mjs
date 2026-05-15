@@ -273,21 +273,45 @@ async function seedDemoCompositionData(client) {
     },
   ];
 
-  const rows = REAL_FUNDS.map((fund, index) => ({
-    scheme_code: fund.schemeCode,
-    portfolio_date: '2026-03-31',
-    equity_pct: round2(81.8 + index * 1.6),
-    debt_pct: index === 1 ? 9.2 : 6.8,
-    cash_pct: round2(index === 1 ? 7.4 : 11.4 - index * 1.1),
-    other_pct: 0,
-    large_cap_pct: 38,
-    mid_cap_pct: 33,
-    small_cap_pct: 29,
-    not_classified_pct: 0,
-    sector_allocation: sectorAllocation,
-    top_holdings: topHoldings,
-    source: 'amfi',
-  }));
+  // Compute market-cap pcts from the demo top_holdings rather than stamping
+  // SEBI category defaults. The seed lists 5 holdings (all Large Cap by
+  // AMFI's H2-2025 classification) adding to ~17.4% of NAV; the rest of
+  // each fund's equity flows into "not classified" because we don't have
+  // disclosed holdings for it in this seed. This matches the behaviour of
+  // the production pipeline and prevents demo accounts from re-introducing
+  // the fake 38/33/29 pattern that the M6 fix removes.
+  const capBuckets = topHoldings.reduce(
+    (acc, h) => {
+      const w = typeof h.pctOfNav === 'number' ? h.pctOfNav : 0;
+      if (h.marketCap === 'Large Cap') acc.large += w;
+      else if (h.marketCap === 'Mid Cap') acc.mid += w;
+      else if (h.marketCap === 'Small Cap') acc.small += w;
+      else acc.notClassified += w;
+      return acc;
+    },
+    { large: 0, mid: 0, small: 0, notClassified: 0 },
+  );
+
+  const rows = REAL_FUNDS.map((fund, index) => {
+    const equityPct = round2(81.8 + index * 1.6);
+    const classifiedTotal = capBuckets.large + capBuckets.mid + capBuckets.small;
+    const equityNotInTopHoldings = Math.max(0, equityPct - classifiedTotal - capBuckets.notClassified);
+    return {
+      scheme_code: fund.schemeCode,
+      portfolio_date: '2026-03-31',
+      equity_pct: equityPct,
+      debt_pct: index === 1 ? 9.2 : 6.8,
+      cash_pct: round2(index === 1 ? 7.4 : 11.4 - index * 1.1),
+      other_pct: 0,
+      large_cap_pct: round2(capBuckets.large),
+      mid_cap_pct: round2(capBuckets.mid),
+      small_cap_pct: round2(capBuckets.small),
+      not_classified_pct: round2(capBuckets.notClassified + equityNotInTopHoldings),
+      sector_allocation: sectorAllocation,
+      top_holdings: topHoldings,
+      source: 'amfi',
+    };
+  });
 
   await mustSucceed(
     client

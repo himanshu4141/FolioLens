@@ -24,10 +24,15 @@ import { CORS, json } from '../_shared/cors.ts';
 import { trackServerEventAwait } from '../_shared/analytics.ts';
 import {
   type CategoryComposition,
-  isNumericString,
+  type EquityHolding,
+  type MarketCapCategory,
+  type CapClassification,
+  classifyHoldings,
   isDebtDataCorrupted,
   deriveDebtPct,
+  isEquityHoldingsCorrupted,
   isEquityPctPlausible,
+  isNumericString,
 } from '../_shared/portfolio-utils.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -197,6 +202,19 @@ interface EnrichedPortfolio {
   largeCapPct: number;
   midCapPct: number;
   smallCapPct: number;
+  notClassifiedPct: number;
+  /**
+   * 'amfi' when at least one equity holding resolved to a Large/Mid/Small cap
+   * via the classifier. 'category_fallback' when we had clean equity
+   * holdings but none matched the AMFI list (e.g. an all-foreign-equity
+   * fund or an out-of-date AMFI map). The caller chooses what source value
+   * to persist; this field reports what the classifier produced.
+   */
+  classifierOutcome: 'amfi' | 'category_fallback';
+  /** Number of equity_holdings rows we actually classified into L/M/S. */
+  classifierHits: number;
+  /** Number of equity_holdings rows that flowed into Not Classified. */
+  classifierMisses: number;
   sectorAllocation: Record<string, number> | null;
   topHoldings: Array<{
     name: string;
@@ -211,6 +229,7 @@ interface EnrichedPortfolio {
 function buildPortfolioFromHoldings(
   holdings: MfdataHoldings,
   schemeCategory: string,
+  isinToCap: Map<string, MarketCapCategory>,
 ): EnrichedPortfolio {
   const catRules = getCategoryRules(schemeCategory);
 
@@ -249,8 +268,22 @@ function buildPortfolioFromHoldings(
   const cashPct = Math.max(0, 100 - equityPct - debtPct);
   const otherPct = 0;
 
+  // Reject equity_holdings outright if it's been polluted with benchmark
+  // rows — sector aggregation sums every row and the classifier joins by
+  // ISIN, so even one bad entry can corrupt both downstream outputs.
+  const rawEquityHoldings = holdings.equity_holdings ?? [];
+  let equityHoldings: MfdataEquityHolding[];
+  if (isEquityHoldingsCorrupted(rawEquityHoldings as EquityHolding[])) {
+    console.warn(
+      '[sync-fund-portfolios] equity_holdings corrupted for category "%s", discarding %d rows',
+      schemeCategory, rawEquityHoldings.length,
+    );
+    equityHoldings = [];
+  } else {
+    equityHoldings = rawEquityHoldings;
+  }
+
   const sectorMap: Record<string, number> = {};
-  const equityHoldings = holdings.equity_holdings ?? [];
   for (const h of equityHoldings) {
     if (h.sector && typeof h.weight_pct === 'number') {
       sectorMap[h.sector] = (sectorMap[h.sector] ?? 0) + h.weight_pct;
@@ -262,6 +295,33 @@ function buildPortfolioFromHoldings(
     sectorAllocation[sector] = Math.round(weight * 100) / 100;
   }
 
+  // Real per-fund cap split from the AMFI classifier. Falls back to the
+  // SEBI category-default values only if every holding was un-classifiable
+  // (e.g. all foreign equity or an out-of-date AMFI map); in that case we
+  // still mark the row 'category_fallback' so the UI can surface a
+  // disclaimer rather than presenting fake numbers as measured.
+  const classification: CapClassification = classifyHoldings(
+    equityHoldings as EquityHolding[],
+    isinToCap,
+  );
+  const classifierTotal =
+    classification.largeCapPct + classification.midCapPct + classification.smallCapPct;
+  const hasClassifierCoverage = equityHoldings.length > 0 && classifierTotal > 0;
+
+  const largeCapPct = hasClassifierCoverage ? classification.largeCapPct : catRules.large;
+  const midCapPct = hasClassifierCoverage ? classification.midCapPct : catRules.mid;
+  const smallCapPct = hasClassifierCoverage ? classification.smallCapPct : catRules.small;
+  const notClassifiedPct = hasClassifierCoverage
+    ? classification.notClassifiedPct
+    : Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
+
+  // Stamp each holding's marketCap from the classifier output (or 'Other'
+  // when nothing matched). The top_holdings list is the sorted top-50 by
+  // weight, so we look up annotations by ISIN+name to preserve sort order.
+  const annotatedByKey = new Map<string, MarketCapCategory | 'Other'>();
+  for (const a of classification.annotated) {
+    annotatedByKey.set(`${(a.isin ?? '').toUpperCase()}|${a.stock_name ?? ''}`, a.marketCap);
+  }
   const topHoldings = equityHoldings
     .filter((holding) => holding.stock_name && typeof holding.weight_pct === 'number')
     .sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0))
@@ -270,18 +330,25 @@ function buildPortfolioFromHoldings(
       name: holding.stock_name!,
       isin: holding.isin ?? '',
       sector: holding.sector ?? 'Other',
-      marketCap: 'Other',
+      marketCap: annotatedByKey.get(`${(holding.isin ?? '').toUpperCase()}|${holding.stock_name ?? ''}`) ?? 'Other',
       pctOfNav: holding.weight_pct!,
     }));
+
+  const classifierHits = classification.annotated.filter((a) => a.marketCap !== 'Other').length;
+  const classifierMisses = classification.annotated.length - classifierHits;
 
   return {
     equityPct: Math.round(equityPct * 100) / 100,
     debtPct: Math.round(debtPct * 100) / 100,
     cashPct: Math.round(cashPct * 100) / 100,
     otherPct: Math.round(otherPct * 100) / 100,
-    largeCapPct: catRules.large,
-    midCapPct: catRules.mid,
-    smallCapPct: catRules.small,
+    largeCapPct,
+    midCapPct,
+    smallCapPct,
+    notClassifiedPct,
+    classifierOutcome: hasClassifierCoverage ? 'amfi' : 'category_fallback',
+    classifierHits,
+    classifierMisses,
     sectorAllocation: Object.keys(sectorAllocation).length > 0 ? sectorAllocation : null,
     topHoldings: topHoldings.length > 0 ? topHoldings : null,
     rawDebtHoldings,
@@ -292,6 +359,38 @@ interface SchemeRow {
   id: string;
   scheme_code: number;
   scheme_category: string;
+}
+
+/**
+ * Pulls the full ISIN → market-cap map from `stock_market_cap`. ~750 rows
+ * is well under one PostgREST page, but we read in chunks for safety.
+ * Returns an empty map (and logs) when the table is missing or empty —
+ * the cron should not fail outright if the classifier seeder hasn't run
+ * yet; downstream code degrades to `category_fallback` per-fund.
+ */
+async function loadIsinToCapMap(
+  client: ReturnType<typeof createServiceClient>,
+): Promise<Map<string, MarketCapCategory>> {
+  const map = new Map<string, MarketCapCategory>();
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await client
+      .from('stock_market_cap')
+      .select('isin, market_cap_category')
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.warn('[sync-fund-portfolios] stock_market_cap load failed: %s', error.message);
+      return map;
+    }
+    if (!data || data.length === 0) break;
+    for (const row of data as { isin: string; market_cap_category: MarketCapCategory }[]) {
+      map.set(row.isin.toUpperCase(), row.market_cap_category);
+    }
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,20 +430,36 @@ Deno.serve(async (req) => {
   const schemes = [...schemeMap.values()];
   console.log('[sync-fund-portfolios] %d distinct schemes to process', schemes.length);
 
-  // Check which schemes already have fresh AMFI data this month
+  // Load the AMFI ISIN → market cap map once for the whole run. The
+  // ~750-row table fits in well under 100 KB and the classifier hits it
+  // for every fund we sync — pulling it once is much cheaper than
+  // re-querying per scheme.
+  const isinToCap = await loadIsinToCapMap(supabase);
+  console.log('[sync-fund-portfolios] loaded %d ISIN classifications', isinToCap.size);
+
+  // Check which schemes already have fresh holdings-derived data this month.
+  // Both 'amfi' (classifier hit) and 'category_fallback' (classifier missed
+  // despite having holdings) count as "real-holdings attempt completed" —
+  // the input data only changes monthly, so re-fetching mfdata would just
+  // burn rate-limit headroom.
   const schemeCodes = schemes.map((s) => s.scheme_code);
   const { data: existing } = await supabase
     .from('fund_portfolio_composition')
     .select('scheme_code, source, portfolio_date')
     .in('scheme_code', schemeCodes)
     .gte('portfolio_date', currentMonthStart.toISOString().split('T')[0])
-    .eq('source', 'amfi');
+    .in('source', ['amfi', 'category_fallback']);
 
   const freshAmfiCodes = new Set((existing ?? []).map((r: { scheme_code: number }) => r.scheme_code));
   const staleSchemes = schemes.filter((s) => !freshAmfiCodes.has(s.scheme_code));
   console.log('[sync-fund-portfolios] %d schemes need richer-data refresh', staleSchemes.length);
 
   let amfiSynced = 0;
+  let classifierHitCount = 0;
+  let classifierFallbackCount = 0;
+  let equityCorruptionGuardTrips = 0;
+  let classifierCoverageSum = 0;
+  let classifierCoverageSamples = 0;
   const amfiErrors: string[] = [];
 
   const amfiResults = await Promise.allSettled(
@@ -374,8 +489,24 @@ Deno.serve(async (req) => {
           return { schemeCode: scheme.scheme_code, synced: 0, error: 'no_holdings' };
         }
 
-        const portfolio = buildPortfolioFromHoldings(holdings, scheme.scheme_category);
-        const notClassified = Math.max(0, 100 - portfolio.largeCapPct - portfolio.midCapPct - portfolio.smallCapPct);
+        const portfolio = buildPortfolioFromHoldings(holdings, scheme.scheme_category, isinToCap);
+        if (portfolio.classifierOutcome === 'amfi') classifierHitCount += 1;
+        else classifierFallbackCount += 1;
+        if (portfolio.classifierMisses > 0 && portfolio.classifierHits === 0) {
+          // No hits at all in spite of having holdings — separately countable
+          // for diagnostics but already covered by classifierFallbackCount.
+        }
+        if (portfolio.topHoldings && portfolio.topHoldings.length > 0) {
+          const cov = portfolio.largeCapPct + portfolio.midCapPct + portfolio.smallCapPct;
+          classifierCoverageSum += cov;
+          classifierCoverageSamples += 1;
+        }
+        // The guard only trips when raw input was non-empty AND we discarded it.
+        if ((holdings.equity_holdings?.length ?? 0) > 0 && (portfolio.topHoldings?.length ?? 0) === 0) {
+          equityCorruptionGuardTrips += 1;
+        }
+
+        const sourceTag = portfolio.classifierOutcome === 'amfi' ? 'amfi' : 'category_fallback';
 
         const { error } = await supabase
           .from('fund_portfolio_composition')
@@ -389,11 +520,11 @@ Deno.serve(async (req) => {
             large_cap_pct: portfolio.largeCapPct,
             mid_cap_pct: portfolio.midCapPct,
             small_cap_pct: portfolio.smallCapPct,
-            not_classified_pct: notClassified,
+            not_classified_pct: portfolio.notClassifiedPct,
             sector_allocation: portfolio.sectorAllocation,
             top_holdings: portfolio.topHoldings,
             raw_debt_holdings: portfolio.rawDebtHoldings,
-            source: 'amfi',
+            source: sourceTag,
             synced_at: new Date().toISOString(),
           }, { onConflict: 'scheme_code,portfolio_date,source' });
 
@@ -426,13 +557,15 @@ Deno.serve(async (req) => {
   const today = now.toISOString().split('T')[0];
   let categorySynced = 0;
 
-  // Re-check which schemes now have AMFI data (just synced or already had it)
+  // Re-check which schemes now have holdings-derived data (real or fallback).
+  // category_rules is the *last* resort — funds with category_fallback have
+  // already been seen by the holdings path this cycle.
   const { data: nowHasAmfi } = await supabase
     .from('fund_portfolio_composition')
     .select('scheme_code')
     .in('scheme_code', schemeCodes)
     .gte('portfolio_date', currentMonthStart.toISOString().split('T')[0])
-    .eq('source', 'amfi');
+    .in('source', ['amfi', 'category_fallback']);
 
   const amfiCodeSet = new Set((nowHasAmfi ?? []).map((r: { scheme_code: number }) => r.scheme_code));
   const needsCategoryRules = schemes.filter((s) => !amfiCodeSet.has(s.scheme_code));
@@ -479,6 +612,10 @@ Deno.serve(async (req) => {
   console.log('[sync-fund-portfolios] done — amfiSynced=%d categorySynced=%d errors=%d, elapsed_ms=%d',
     amfiSynced, categorySynced, amfiErrors.length, elapsedMs);
 
+  const classifierCoveragePctAvg = classifierCoverageSamples > 0
+    ? Math.round((classifierCoverageSum / classifierCoverageSamples) * 100) / 100
+    : 0;
+
   await trackServerEventAwait(
     amfiErrors.length > 0 && amfiSynced === 0 ? 'sync_failed' : 'sync_completed',
     {
@@ -488,6 +625,11 @@ Deno.serve(async (req) => {
       category_synced: categorySynced,
       fresh_skipped: freshAmfiCodes.size,
       errors_count: amfiErrors.length,
+      classifier_hit_count: classifierHitCount,
+      classifier_fallback_count: classifierFallbackCount,
+      classifier_no_holdings_count: categorySynced,
+      classifier_coverage_pct_avg: classifierCoveragePctAvg,
+      equity_corruption_guard_trips: equityCorruptionGuardTrips,
       elapsed_ms: elapsedMs,
     },
     'system:sync-fund-portfolios',

@@ -48,7 +48,16 @@ export type TimeWindow = '1M' | '3M' | '6M' | '1Y' | '3Y' | 'ALL';
 // Portfolio Insights types
 // ---------------------------------------------------------------------------
 
-export type CompositionSource = 'category_rules' | 'amfi';
+/**
+ * - 'amfi' — large/mid/small cap pcts derived from the per-fund AMFI
+ *   classifier (real, fund-specific data).
+ * - 'category_fallback' — fund disclosed holdings but classifier coverage
+ *   was zero (e.g. all foreign equity, or AMFI list missed every ISIN).
+ *   Cap pcts are SEBI category averages; UI surfaces a disclaimer.
+ * - 'category_rules' — no holdings disclosed at all. Cap pcts are SEBI
+ *   category averages; UI surfaces the same disclaimer.
+ */
+export type CompositionSource = 'category_rules' | 'category_fallback' | 'amfi';
 
 export interface HoldingItem {
   name: string;

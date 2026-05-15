@@ -142,6 +142,16 @@ interface CompositionRow {
   largeCapPct: number | null;
   midCapPct: number | null;
   smallCapPct: number | null;
+  notClassifiedPct: number | null;
+  /**
+   * 'amfi' = cap pcts derived from real holdings via the AMFI classifier.
+   * 'category_fallback' = had holdings but classifier coverage was zero, so
+   *   we kept SEBI category defaults for visual continuity. UI shows a
+   *   disclaimer.
+   * 'category_rules' = no holdings disclosed; pure SEBI default. UI shows
+   *   the same disclaimer.
+   */
+  source: 'amfi' | 'category_fallback' | 'category_rules' | string | null;
   sectorAllocation: Record<string, number> | null;
   topHoldings: { name: string; isin: string; sector: string; pctOfNav: number }[] | null;
   rawDebtHoldings: { name?: string; weight_pct?: number; credit_rating?: string }[] | null;
@@ -204,19 +214,22 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
   const { data, error } = await fundPortfolioCompositionRepo
     .from()
     .select(
-      'scheme_code, portfolio_date, source, equity_pct, debt_pct, cash_pct, other_pct, large_cap_pct, mid_cap_pct, small_cap_pct, sector_allocation, top_holdings, raw_debt_holdings',
+      'scheme_code, portfolio_date, source, equity_pct, debt_pct, cash_pct, other_pct, large_cap_pct, mid_cap_pct, small_cap_pct, not_classified_pct, sector_allocation, top_holdings, raw_debt_holdings',
     )
     .in('scheme_code', schemeCodes)
     .order('portfolio_date', { ascending: false });
   perfEnd('query:compare:compositions', { rows: data?.length ?? 0, codes: schemeCodes.length });
   if (error) throw new Error(`fetchCompositions: ${error.message}`);
-  // Pick the first (= latest) per scheme_code, preferring `amfi` source.
+  // Pick the first (= latest) per scheme_code, preferring real-holdings
+  // sources ('amfi' or 'category_fallback') over the last-resort
+  // 'category_rules' default.
   const latest = new Map<number, typeof data[number]>();
+  const realHoldingsSource = (s: string | null) => s === 'amfi' || s === 'category_fallback';
   for (const row of data ?? []) {
     const existing = latest.get(row.scheme_code);
     if (!existing) {
       latest.set(row.scheme_code, row);
-    } else if (existing.source !== 'amfi' && row.source === 'amfi') {
+    } else if (!realHoldingsSource(existing.source) && realHoldingsSource(row.source)) {
       latest.set(row.scheme_code, row);
     }
   }
@@ -229,6 +242,8 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
     largeCapPct: row.large_cap_pct,
     midCapPct: row.mid_cap_pct,
     smallCapPct: row.small_cap_pct,
+    notClassifiedPct: row.not_classified_pct,
+    source: row.source ?? null,
     sectorAllocation: row.sector_allocation as Record<string, number> | null,
     topHoldings: row.top_holdings as CompositionRow['topHoldings'],
     rawDebtHoldings: row.raw_debt_holdings as CompositionRow['rawDebtHoldings'],
@@ -1199,11 +1214,32 @@ function AssetMixTab({
     { label: 'Cash', pluck: (c) => c.cashPct },
     { label: 'Other', pluck: (c) => c.otherPct },
   ];
+  // Only show the "Not classified" row when at least one fund has a
+  // non-trivial slice — keeps the table tidy for funds with full coverage
+  // while being honest about disclosure gaps. The 1% threshold absorbs
+  // floating-point dust without hiding meaningful gaps (Parag Parikh's
+  // foreign-equity sleeve is typically 20%+, well above the threshold).
+  const showNotClassifiedRow = [...compositionsByCode.values()].some(
+    (c) => (c.notClassifiedPct ?? 0) > 1,
+  );
+
   const capRows: { label: string; pluck: (c: CompositionRow) => number | null | undefined }[] = [
     { label: 'Large cap', pluck: (c) => c.largeCapPct },
     { label: 'Mid cap', pluck: (c) => c.midCapPct },
     { label: 'Small cap', pluck: (c) => c.smallCapPct },
+    ...(showNotClassifiedRow
+      ? [{ label: 'Not classified', pluck: (c: CompositionRow) => c.notClassifiedPct }]
+      : []),
   ];
+
+  // Any compared fund whose row was stamped from SEBI category averages
+  // (either because nothing matched the AMFI list or no holdings were
+  // disclosed at all) gets called out in a footnote. Keeps comparisons
+  // honest without burying the user in source-tag jargon.
+  const fallbackSchemes = schemes.filter((s) => {
+    const src = compositionsByCode.get(s.schemeCode)?.source;
+    return src === 'category_rules' || src === 'category_fallback';
+  });
 
   return (
     <View style={styles.tabCard}>
@@ -1250,6 +1286,15 @@ function AssetMixTab({
           ))}
         </View>
       </TableScrollHost>
+      {fallbackSchemes.length > 0 ? (
+        <Text style={styles.tabFootnote}>
+          {fallbackSchemes.length === schemes.length
+            ? 'Cap mix shown is the SEBI category average — these funds haven’t disclosed enough holdings yet.'
+            : `Cap mix for ${fallbackSchemes
+                .map((s) => shortSchemeName(s.schemeName))
+                .join(', ')} is the SEBI category average — fund hasn’t disclosed enough holdings yet.`}
+        </Text>
+      ) : null}
     </View>
   );
 }

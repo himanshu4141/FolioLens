@@ -414,7 +414,23 @@ export function ClearLensPortfolioInsightsScreen() {
                 { label: 'Large Cap', pct: insights.marketCapMix.large, color: tokens.semantic.marketCap.large },
                 { label: 'Mid Cap', pct: insights.marketCapMix.mid, color: tokens.semantic.marketCap.mid },
                 { label: 'Small Cap', pct: insights.marketCapMix.small, color: tokens.semantic.marketCap.small },
+                // Only render Not Classified when at least 1% of equity sits
+                // there — keeps the donut clean for well-covered portfolios
+                // while surfacing genuine disclosure gaps (e.g. Parag Parikh's
+                // foreign equity sleeve).
+                ...(insights.marketCapMix.notClassified > 1
+                  ? [{
+                      label: 'Not classified',
+                      pct: insights.marketCapMix.notClassified,
+                      color: tokens.semantic.marketCap.other,
+                    }]
+                  : []),
               ]}
+              disclosure={
+                insights.dataSource === 'category_rules'
+                  ? 'Showing category averages — some funds haven’t disclosed enough holdings yet.'
+                  : undefined
+              }
             />
 
             {insights.sectorBreakdown ? (

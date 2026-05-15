@@ -1,0 +1,155 @@
+name: Backfill Stock Market Cap
+
+# Re-runs the AMFI ISIN classifier against every fund_portfolio_composition
+# row that was written before Phase 9 M6 — without re-fetching mfdata. Reads
+# stored `top_holdings` JSONB, classifies each holding by ISIN against the
+# `stock_market_cap` reference table, and updates the four cap-pct columns
+# + each holding's marketCap stamp.
+#
+# When to use:
+#   - **Once after M6 lands in prod** to lift existing rows onto the real
+#     classifier output. Without this, funds carry SEBI category defaults
+#     (e.g. every Flexi Cap shows 38/33/29) until each one's next monthly
+#     sync-fund-portfolios tick rewrites them.
+#   - After AMFI publishes a refreshed half-yearly list (Jan / Jul), to
+#     retry rows previously tagged `category_fallback` against the newly
+#     loaded ISINs. Set `include_fallback=true` for that path.
+#   - Spot-fix runs after a bad data import — idempotent, safe to re-run.
+#
+# The script is idempotent (rows whose new values match existing values
+# are left untouched) and resumable (each batch commits independently, set
+# `start_offset` to resume after a failure).
+#
+# Phase 9 M6 — see docs/plans/phase-9-pre-launch-readiness/M6-honest-portfolio-composition.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which project to backfill'
+        required: true
+        type: choice
+        default: dev
+        options: [dev, prod, both]
+      dry_run:
+        description: 'Log intended updates without writing'
+        required: false
+        type: boolean
+        default: false
+      include_fallback:
+        description: 'Also re-process source=category_fallback rows (use after a new AMFI list lands)'
+        required: false
+        type: boolean
+        default: false
+      batch_size:
+        description: 'Composition rows per page (default 500)'
+        required: false
+        type: string
+        default: '500'
+      start_offset:
+        description: 'Skip first N rows (resume after failure)'
+        required: false
+        type: string
+        default: '0'
+
+permissions:
+  contents: read
+
+jobs:
+  backfill-dev:
+    name: Backfill (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      github.event.inputs.environment == 'dev' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run backfill (dev)
+        id: backfill
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_DEV }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+          INCLUDE_FALLBACK: ${{ github.event.inputs.include_fallback == 'true' && '1' || '' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '500' }}
+          START_OFFSET: ${{ github.event.inputs.start_offset || '0' }}
+        run: node scripts/backfill-stock-market-cap.mjs
+      - name: Report outcome to PostHog
+        if: ${{ always() }}
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          OUTCOME: ${{ steps.backfill.outcome }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INCLUDE_FALLBACK: ${{ github.event.inputs.include_fallback }}
+        run: |
+          if [ -z "$POSTHOG_KEY" ]; then
+            echo "[posthog] no key configured, skipping capture"
+            exit 0
+          fi
+          curl -sf -X POST "$POSTHOG_HOST/capture/" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n \
+              --arg key "$POSTHOG_KEY" \
+              --arg outcome "$OUTCOME" \
+              --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --arg trigger "${{ github.event_name }}" \
+              --arg dry_run "$DRY_RUN" \
+              --arg include_fallback "$INCLUDE_FALLBACK" \
+              '{api_key: $key, event: "stock_market_cap_backfill_completed", distinct_id: "system:backfill-stock-market-cap-dev", properties: {"$lib": "github-actions", environment: "dev", outcome: $outcome, trigger: $trigger, dry_run: $dry_run, include_fallback: $include_fallback, workflow_run_url: $run_url}}')" \
+            || echo "[posthog] capture failed; not failing the job"
+
+  backfill-prod:
+    name: Backfill (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      github.event.inputs.environment == 'prod' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run backfill (prod)
+        id: backfill
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_PROD }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+          INCLUDE_FALLBACK: ${{ github.event.inputs.include_fallback == 'true' && '1' || '' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '500' }}
+          START_OFFSET: ${{ github.event.inputs.start_offset || '0' }}
+        run: node scripts/backfill-stock-market-cap.mjs
+      - name: Report outcome to PostHog
+        if: ${{ always() }}
+        env:
+          POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          OUTCOME: ${{ steps.backfill.outcome }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INCLUDE_FALLBACK: ${{ github.event.inputs.include_fallback }}
+        run: |
+          if [ -z "$POSTHOG_KEY" ]; then
+            echo "[posthog] no key configured, skipping capture"
+            exit 0
+          fi
+          curl -sf -X POST "$POSTHOG_HOST/capture/" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n \
+              --arg key "$POSTHOG_KEY" \
+              --arg outcome "$OUTCOME" \
+              --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --arg trigger "${{ github.event_name }}" \
+              --arg dry_run "$DRY_RUN" \
+              --arg include_fallback "$INCLUDE_FALLBACK" \
+              '{api_key: $key, event: "stock_market_cap_backfill_completed", distinct_id: "system:backfill-stock-market-cap-prod", properties: {"$lib": "github-actions", environment: "production", outcome: $outcome, trigger: $trigger, dry_run: $dry_run, include_fallback: $include_fallback, workflow_run_url: $run_url}}')" \
+            || echo "[posthog] capture failed; not failing the job"
