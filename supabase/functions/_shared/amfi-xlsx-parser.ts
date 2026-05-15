@@ -29,6 +29,81 @@ export interface AmfiStockRow {
   avg_market_cap_cr: number | null;
 }
 
+export interface BucketCounts {
+  large: number;
+  mid: number;
+  small: number;
+  total: number;
+}
+
+export interface SanityBounds {
+  /** Inclusive lower bound on total row count. Coarse outer net. */
+  minTotal: number;
+  /** Inclusive upper bound on total row count. Coarse outer net. */
+  maxTotal: number;
+  /** Expected size of the Large Cap bucket — SEBI rule pins it at 100. */
+  expectedLarge: number;
+  /** Expected size of the Mid Cap bucket — SEBI rule pins it at 150. */
+  expectedMid: number;
+  /** Absolute slack applied to both `expectedLarge` and `expectedMid`. */
+  bucketSlack: number;
+}
+
+export const AMFI_SANITY_BOUNDS: SanityBounds = {
+  minTotal: 500,
+  maxTotal: 10_000,
+  expectedLarge: 100,
+  expectedMid: 150,
+  bucketSlack: 15,
+};
+
+/**
+ * Counts rows per market-cap category. Pure helper used by the seeder
+ * before sanity-checking and by the validator below for the load-bearing
+ * shape assertion.
+ */
+export function countBuckets(rows: AmfiStockRow[]): BucketCounts {
+  let large = 0;
+  let mid = 0;
+  let small = 0;
+  for (const r of rows) {
+    if (r.market_cap_category === 'Large Cap') large += 1;
+    else if (r.market_cap_category === 'Mid Cap') mid += 1;
+    else if (r.market_cap_category === 'Small Cap') small += 1;
+  }
+  return { large, mid, small, total: rows.length };
+}
+
+/**
+ * Validates the parsed AMFI output before the seeder commits any writes.
+ * Returns `null` on success or a human-readable error string on failure —
+ * the caller assigns this to `first_error` so the workflow log surfaces it
+ * verbatim. Throwing is the caller's choice (it lets the seeder tag
+ * `failure_reason='sanity_check_failed'` consistently with its other
+ * error paths).
+ */
+export function validateBucketShape(counts: BucketCounts, bounds: SanityBounds = AMFI_SANITY_BOUNDS): string | null {
+  const { minTotal, maxTotal, expectedLarge, expectedMid, bucketSlack } = bounds;
+  const largeLow = expectedLarge - bucketSlack;
+  const largeHigh = expectedLarge + bucketSlack;
+  const midLow = expectedMid - bucketSlack;
+  const midHigh = expectedMid + bucketSlack;
+
+  if (counts.total < minTotal || counts.total > maxTotal) {
+    return `row count ${counts.total} outside [${minTotal}, ${maxTotal}]; buckets L=${counts.large} M=${counts.mid} S=${counts.small}`;
+  }
+  if (counts.large < largeLow || counts.large > largeHigh) {
+    return `large_count=${counts.large} outside [${largeLow}, ${largeHigh}] (mid=${counts.mid} small=${counts.small} total=${counts.total})`;
+  }
+  if (counts.mid < midLow || counts.mid > midHigh) {
+    return `mid_count=${counts.mid} outside [${midLow}, ${midHigh}] (large=${counts.large} small=${counts.small} total=${counts.total})`;
+  }
+  if (counts.small < 1) {
+    return `small_count=${counts.small} suspiciously low (large=${counts.large} mid=${counts.mid} total=${counts.total})`;
+  }
+  return null;
+}
+
 interface ColumnMap {
   isin: number;
   company: number;
