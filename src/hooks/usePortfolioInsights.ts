@@ -12,6 +12,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { authClient } from '@/src/lib/auth';
 import { functionsClient } from '@/src/lib/functions';
+import { analytics } from '@/src/lib/analytics';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
 import { parseFundName } from '@/src/utils/fundName';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
@@ -314,6 +315,20 @@ export function usePortfolioInsights(fundCards: FundCardData[]) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['portfolio-composition'] });
+    },
+    onError: (error) => {
+      // Cache audit finding #21. Without this handler, a failed sync
+      // is silent: `isSyncing` flips back to false, but the user sees
+      // no feedback and the composition data stays stale. We don't
+      // invalidate the composition query (that would discard the
+      // last-known-good data we'd otherwise still serve); we just log
+      // + emit so a PostHog alert can fire if these spike.
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[usePortfolioInsights] sync-fund-portfolios mutation failed:', message);
+      analytics.captureException(error, {
+        source: 'usePortfolioInsights.syncMutation',
+        message,
+      });
     },
   });
 
