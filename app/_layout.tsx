@@ -27,6 +27,7 @@ import {
 import { useSession } from '@/src/hooks/useSession';
 import { authClient } from '@/src/lib/auth';
 import { useAppStore } from '@/src/store/appStore';
+import { clearOnboardingDraft } from '@/src/utils/onboardingDraft';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
 import { PreviewBanner } from '@/src/components/PreviewBanner';
 import { PreviewExitConfirmModal } from '@/src/components/clearLens/PreviewExitConfirmModal';
@@ -194,11 +195,28 @@ function useAnalyticsLifecycle() {
         });
       }
       if (event === 'SIGNED_OUT') {
-        // The persisted React Query cache holds the previous user's
-        // portfolio data. Drop the on-disk copy and the in-memory copy
-        // before the next sign-in could possibly read either.
+        // Sign-out is a single audited operation: every cache or piece
+        // of state that's tied to the previous user must be dropped
+        // before the next sign-in could possibly read it. New caches
+        // get added here. See `docs/architecture/cache-surfaces.md`.
+        //
+        // Supabase's own session token is wiped by `authClient.signOut()`
+        // before this event fires (the SDK calls `storage.removeItem`
+        // on its session key as part of the sign-out mutation).
         queryClient.clear();
         void persister.removeClient();
+        // Reset the in-memory Zustand store fields that aren't in
+        // `partialize` — they survive sign-out → sign-in within the same
+        // app process and would otherwise leak user A's preview / dialog
+        // / feature-flag state into user B's session. Persisted user
+        // preferences (theme, default benchmark, etc.) are deliberately
+        // kept.
+        useAppStore.getState().resetUserScopedState();
+        // The onboarding draft holds PII (PAN, DOB, email) for users
+        // mid-import; never let it cross sign-in boundaries.
+        void clearOnboardingDraft().catch((err) => {
+          console.warn('[onboarding] clearOnboardingDraft failed', err);
+        });
         if (sqliteSupported) {
           // Wipe the SQLite read cache too — PII (transactions) must
           // not survive a sign-out.

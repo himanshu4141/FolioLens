@@ -378,6 +378,24 @@ export interface AppStore {
   dialog: AppDialogRequest | null;
   showDialog: (req: AppDialogRequest) => void;
   hideDialog: () => void;
+
+  /**
+   * Resets every in-memory field that's tied to the *currently signed-in
+   * user* back to its first-launch default. Persisted preferences stay
+   * (theme, default benchmark, etc. — see `partialize`).
+   *
+   * Called from the SIGNED_OUT auth state handler so that user A's
+   * preview-mode flag, modal queue, server-controlled feature flags, and
+   * search inputs don't leak into user B's session when both sign in
+   * within the same app process (shared device, account switch, sign-out
+   * during testing).
+   *
+   * **When you add a new in-memory store field that is user-scoped or
+   * tracks ephemeral UI state, add it to the reset payload below.** This
+   * is the single place that defines "what a fresh-start session looks
+   * like."
+   */
+  resetUserScopedState: () => void;
 }
 
 export interface AppDialogRequest {
@@ -537,6 +555,24 @@ export const useAppStore = create<AppStore>()(
       dialog: null,
       showDialog: (req) => set({ dialog: req }),
       hideDialog: () => set({ dialog: null }),
+
+      resetUserScopedState: () =>
+        set({
+          // Preview / onboarding modal state.
+          previewMode: false,
+          importGateVisible: false,
+          // Server-controlled entitlements — must drop with the user; the
+          // next sign-in's `useToolsFlagsBootstrap` (or equivalent) will
+          // refetch and write fresh values.
+          toolsFlags: DEFAULT_TOOLS_FLAGS,
+          // Modal queue. A pending `onConfirm` callback can be closed
+          // over user-scoped data (e.g. a delete-account handler bound
+          // to user A); refusing to fire it after sign-out is the safe
+          // default.
+          dialog: null,
+          // Ephemeral UI inputs.
+          fundsSearchQuery: '',
+        }),
     }),
     {
       name: 'foliolens-app-store',
