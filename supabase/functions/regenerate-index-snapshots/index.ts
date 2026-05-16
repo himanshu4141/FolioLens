@@ -26,6 +26,7 @@
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import { trackServerEventAwait } from '../_shared/analytics.ts';
+import { summariseSnapshotOutcome } from '../_shared/snapshot-outcome.ts';
 
 const TRACKED_SYMBOLS: readonly string[] = [
   '^NSEITRI',
@@ -103,7 +104,14 @@ async function uploadSnapshot(
   const { error } = await supabase.storage.from(BUCKET).upload(path, body, {
     contentType: 'application/json',
     upsert: true,
-    cacheControl: 'public, max-age=3600, stale-while-revalidate=86400',
+    // SWR was originally 86400s (24h). Audit finding #13: that
+    // window meant a snapshot regen failure could leave the CDN
+    // serving outdated data for a full day before bypassing to
+    // origin. 21600s (6h) bounds the worst-case staleness while
+    // still absorbing brief regen-cron failures (the cron runs
+    // daily at 14:00 UTC; a failed run is back-fillable within 6h
+    // by either retry or manual workflow_dispatch).
+    cacheControl: 'public, max-age=3600, stale-while-revalidate=21600',
   });
   if (error) throw error;
   return { path, bytes: body.length };
@@ -150,12 +158,21 @@ Deno.serve(async (req: Request) => {
   const okCount = results.filter((r) => r.ok).length;
   const totalBytes = results.reduce((acc, r) => acc + r.bytes, 0);
   const elapsedMs = Date.now() - started;
+  const summary = summariseSnapshotOutcome(results);
 
   console.log(
-    `[regenerate-index-snapshots] done ok=${okCount}/${results.length} bytes=${totalBytes} elapsed_ms=${elapsedMs}`,
+    `[regenerate-index-snapshots] done outcome=${summary.outcome} ok=${okCount}/${results.length} bytes=${totalBytes} elapsed_ms=${elapsedMs}`,
   );
 
+  // Dashboard alerts (audit finding #13):
+  //   - `outcome = 'failure'` for any single run → page on-call.
+  //     Every snapshot stale across the board; SWR window keeps
+  //     serving the previous blob but we have no fresh-data path
+  //     until someone redeploys / re-runs.
+  //   - `outcome = 'partial'` → review-on-Monday severity.
   await trackServerEventAwait('snapshot_regenerated', {
+    outcome: summary.outcome,
+    failed_symbols: summary.failedSymbols,
     ok_count: okCount,
     total_count: results.length,
     total_bytes: totalBytes,
