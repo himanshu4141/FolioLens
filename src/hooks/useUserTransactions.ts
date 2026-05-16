@@ -53,13 +53,22 @@ const PAGE_SIZE = 1000;
  * orchestrator uses this for delta refresh — without it, `syncDelta`
  * would call back into the SQLite-first wrapper and the "fresh" rows
  * it diffs against the watermark would just be the SQLite rows it's
- * trying to update. `sinceDate` lets delta callers ship only new rows
- * over the wire (the watermark is the local table's max
- * `transaction_date`).
+ * trying to update.
+ *
+ * `sinceIso` is the local table's max `created_at` (server-side
+ * insertion timestamp). Filtering on `created_at >= sinceIso` is what
+ * catches back-dated CAS imports: a transaction with `transaction_date`
+ * older than what we already had still has a fresh `created_at` and
+ * therefore arrives on the next delta sync. Filtering on
+ * `transaction_date` (an earlier iteration) silently dropped those.
+ *
+ * The result is still ordered by `transaction_date` for predictable
+ * paging + downstream display order. The order column is independent
+ * of the filter column.
  */
 export async function fetchUserTransactionsRemote(
   userId: string,
-  sinceDate: string | null = null,
+  sinceIso: string | null = null,
 ): Promise<UserTransactionRow[]> {
   const rows: UserTransactionRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -69,7 +78,7 @@ export async function fetchUserTransactionsRemote(
       .eq('user_id', userId)
       .order('transaction_date', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
-    if (sinceDate) q = q.gte('transaction_date', sinceDate);
+    if (sinceIso) q = q.gte('created_at', sinceIso);
     const { data, error } = await q;
 
     if (error) throw error;

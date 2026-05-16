@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsRestoring } from '@tanstack/react-query';
 import {
   ClearLensCard,
   ClearLensHeader,
@@ -823,6 +824,15 @@ export default function MoneyTrailScreen() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const { data, isLoading, isError, refetch } = useMoneyTrail();
+  // `useIsRestoring` is true while the `PersistQueryClientProvider`
+  // rehydrates the cache from AsyncStorage. During that window React
+  // Query pauses fetching, so `isLoading` is false even though we
+  // have no data yet — without gating on this, the empty-state branch
+  // briefly renders ("550 transactions" → 0 → 550) on every cold
+  // launch. Matches the pattern used on Portfolio
+  // (ClearLensPortfolioScreen.tsx:947).
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const transactions = useMemo(() => data?.transactions ?? [], [data?.transactions]);
 
   useEffect(() => {
@@ -903,7 +913,7 @@ export default function MoneyTrailScreen() {
           we don't need an in-screen back button there. */}
       {isDesktop ? null : <ClearLensHeader onPressBack={() => router.back()} />}
 
-      {isLoading ? (
+      {showFirstLoad ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={tokens.colors.emerald} />
         </View>
