@@ -70,15 +70,30 @@ export async function bulkInsert(rows: DbTxRow[]): Promise<void> {
 }
 
 /**
- * Max(transaction_date) currently stored. Used by the sync orchestrator
- * to fetch only newer rows. Returns null when the table is empty.
+ * Max(created_at) currently stored. Used by the sync orchestrator
+ * to fetch only rows inserted server-side since the last sync.
+ * Returns null when the table is empty.
+ *
+ * We watermark on `created_at` (server-side insertion timestamp), not
+ * `transaction_date` (the trade date). CAS imports routinely write
+ * rows whose trade date is older than what we already had — e.g. a
+ * first-time CAS upload includes years of history; subsequent CAS
+ * uploads might add a back-dated transaction that arrived late from
+ * the registrar. Using `transaction_date` as the watermark would let
+ * those rows fall on the wrong side of the `>= watermark` filter and
+ * stay invisible to the client indefinitely.
+ *
+ * `transaction.created_at` is `now()` at server-side insert time.
+ * Both `parse-cas-pdf` and `cas-webhook-resend` import via
+ * `importCASData`, which inserts via Supabase's default `created_at`,
+ * so the watermark always advances monotonically as new rows arrive.
  */
 export async function getWatermark(): Promise<string | null> {
   const db = await getDb();
-  const row = (await db.getFirstAsync<{ max_date: string | null }>(
-    'SELECT MAX(transaction_date) as max_date FROM tx',
-  )) as { max_date: string | null } | null;
-  return row?.max_date ?? null;
+  const row = (await db.getFirstAsync<{ max_ts: string | null }>(
+    'SELECT MAX(created_at) as max_ts FROM tx',
+  )) as { max_ts: string | null } | null;
+  return row?.max_ts ?? null;
 }
 
 export async function count(): Promise<number> {

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsRestoring } from '@tanstack/react-query';
 import {
   ClearLensCard,
   ClearLensHeader,
@@ -122,6 +123,10 @@ export default function MoneyTrailDetailScreen() {
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const { data, isLoading } = useMoneyTrail();
+  // See `app/money-trail/index.tsx` for why this is needed — same
+  // flash-of-empty-state on cold launch while the persister rehydrates.
+  const isRestoring = useIsRestoring();
+  const showFirstLoad = isRestoring || isLoading || data === undefined;
   const transaction = useMemo(
     () => data?.transactions.find((item) => item.id === id) ?? null,
     [data?.transactions, id],
@@ -151,7 +156,7 @@ export default function MoneyTrailDetailScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <ClearLensHeader onPressBack={() => router.back()} />
 
-      {isLoading ? (
+      {showFirstLoad ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={tokens.colors.emerald} />
         </View>

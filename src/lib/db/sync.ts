@@ -145,19 +145,26 @@ async function runSync(
 
   // ── Transactions ──────────────────────────────────────────────────
   try {
+    // Always sync. The watermark naturally handles bootstrap vs delta:
+    // null watermark → first launch / fresh SQLite → full fetch;
+    // non-null watermark → fetch only rows newer than the watermark.
+    //
+    // Previously this was gated on `watermark === null || mode === 'delta'`,
+    // which silently skipped the tx fetch on every cold launch when SQLite
+    // had pre-existing rows. That left server-side imports (auto-forwarded
+    // CAS via Resend Inbound, web-uploaded CAS while mobile was closed)
+    // invisible until the user backgrounded + foregrounded the app — and
+    // AppState 'change' never fires on a fresh process launch (the OS
+    // starts the app 'active' before our listener registers). NAV and
+    // index sync below have always run unconditionally; bringing tx in
+    // line keeps the three repos symmetric.
     const watermark = await txRepo.getWatermark();
-    if (watermark === null || options.mode === 'delta') {
-      // Hit Supabase directly — `fetchUserTransactions` is the SQLite-
-      // first read-through used by hooks, so calling it here would just
-      // hand us back the rows we're trying to refresh (and delta would
-      // be a permanent no-op once the local table had any rows).
-      const fresh = await fetchUserTransactionsRemote(userId, watermark);
-      const before = await txRepo.count();
-      await txRepo.bulkInsert(fresh);
-      const after = await txRepo.count();
-      txInserted = after - before;
-      await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
-    }
+    const fresh = await fetchUserTransactionsRemote(userId, watermark);
+    const before = await txRepo.count();
+    await txRepo.bulkInsert(fresh);
+    const after = await txRepo.count();
+    txInserted = after - before;
+    await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     errors.push(`tx: ${msg}`);

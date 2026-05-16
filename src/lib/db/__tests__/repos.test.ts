@@ -29,9 +29,11 @@ beforeEach(() => {
 // Tx fixture helper — the 5 PK columns drive every assertion in this file,
 // but DbTxRow now also carries 5 nullable metadata columns (Money Trail +
 // Wealth Journey rely on them). Default the extras here so each test stays
-// readable.
+// readable. `created_at` is optional — pass it explicitly when a test
+// exercises the sync watermark, otherwise it defaults to null.
 function mkTx(
-  partial: Pick<DbTxRow, 'fund_id' | 'transaction_date' | 'transaction_type' | 'units' | 'amount'>,
+  partial: Pick<DbTxRow, 'fund_id' | 'transaction_date' | 'transaction_type' | 'units' | 'amount'>
+    & Partial<Pick<DbTxRow, 'created_at'>>,
 ): DbTxRow {
   return {
     ...partial,
@@ -39,7 +41,7 @@ function mkTx(
     nav_at_transaction: null,
     folio_number: null,
     cas_import_id: null,
-    created_at: null,
+    created_at: partial.created_at ?? null,
   };
 }
 
@@ -79,13 +81,37 @@ describe('tx repo', () => {
     expect(await txRepo.readByFundId('f3')).toHaveLength(0);
   });
 
-  it('getWatermark returns max(transaction_date) or null', async () => {
+  it('getWatermark returns max(created_at) or null', async () => {
     expect(await txRepo.getWatermark()).toBeNull();
     await txRepo.bulkInsert([
-      mkTx({ fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 }),
-      mkTx({ fund_id: 'f1', transaction_date: '2024-06-01', transaction_type: 'purchase', units: 50, amount: 6000 }),
+      mkTx({ fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000, created_at: '2024-01-02T03:04:05Z' }),
+      mkTx({ fund_id: 'f1', transaction_date: '2024-06-01', transaction_type: 'purchase', units: 50, amount: 6000, created_at: '2024-06-02T10:11:12Z' }),
     ]);
-    expect(await txRepo.getWatermark()).toBe('2024-06-01');
+    expect(await txRepo.getWatermark()).toBe('2024-06-02T10:11:12Z');
+  });
+
+  it('getWatermark tracks server-side insertion order, not trade order (back-dated CAS rows)', async () => {
+    // Regression for the auto-forward CAS bug (May 2026): a CAS that
+    // arrives today can contain transactions whose `transaction_date`
+    // is earlier than rows we already have. The watermark must reflect
+    // when the row was *inserted server-side* (`created_at`), not when
+    // the trade happened (`transaction_date`) — otherwise the delta
+    // sync's `created_at >= watermark` filter would miss the late
+    // arrival entirely.
+    await txRepo.bulkInsert([
+      mkTx({
+        fund_id: 'f1', transaction_date: '2024-12-01', transaction_type: 'purchase',
+        units: 100, amount: 10000,
+        created_at: '2024-12-02T00:00:00Z',
+      }),
+      mkTx({
+        fund_id: 'f1', transaction_date: '2024-06-01', transaction_type: 'purchase',
+        units: 50, amount: 6000,
+        // Late-arriving back-dated row — older trade date, newer insertion.
+        created_at: '2025-03-15T00:00:00Z',
+      }),
+    ]);
+    expect(await txRepo.getWatermark()).toBe('2025-03-15T00:00:00Z');
   });
 
   it('clear empties the table', async () => {
