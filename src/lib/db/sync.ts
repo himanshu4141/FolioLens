@@ -25,7 +25,7 @@ import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
-import { fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
+import { countUserTransactionsRemote, fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import * as txRepo from '@/src/lib/db/tx';
 import * as navRepo from '@/src/lib/db/nav';
@@ -101,6 +101,90 @@ export interface SyncResult {
   navInserted: number;
   idxInserted: number;
   errors: string[];
+  /**
+   * True when the post-sync tx count reconciliation detected drift
+   * between local SQLite and the Supabase source of truth and rebuilt
+   * the local table. See `reconcileTransactionCount`.
+   */
+  txRebuiltFromDrift?: boolean;
+}
+
+/**
+ * Pure rebuild-decision helper. Exported for unit tests so the
+ * tolerance thresholds can't drift silently.
+ *
+ * Returns `true` when the drift between local SQLite count and the
+ * server's count is big enough — both absolutely (≥5 rows) and
+ * relatively (>5%) — that we should treat the local cache as
+ * unreliable and trigger a full rebuild.
+ *
+ * The dual threshold is deliberate:
+ * - Absolute alone (e.g. ≥1) would rebuild on a 1-row-during-the-race
+ *   case, which is just a sync-window artefact.
+ * - Relative alone (e.g. >5%) would rebuild a 100-row portfolio over a
+ *   single missing transaction (1%), again just race noise.
+ * - Requiring both means we only rebuild when there's *meaningful*
+ *   drift — the May 2026 user case (~25% of their portfolio worth of
+ *   transactions missing) triggers cleanly; everyday sync races do not.
+ */
+export function shouldRebuildTxOnDrift(localCount: number, serverCount: number): boolean {
+  const drift = Math.abs(serverCount - localCount);
+  if (drift < 5) return false;
+  const driftPct = serverCount > 0 ? drift / serverCount : 0;
+  return driftPct > 0.05;
+}
+
+/**
+ * After the tx delta sync settles, count what's on the server vs what
+ * we have locally. If they disagree beyond a small tolerance, drop the
+ * local `tx` table and re-fetch the full transaction history.
+ *
+ * **Why this is needed.** The delta sync only fetches rows with
+ * `created_at >= watermark`. If the local cache started life
+ * incomplete — partial pre-PR-#175 bootstrap, a schema migration that
+ * dropped rows, manual SQLite tampering, or any future bug we don't
+ * know about yet — those historical gaps stay forever because no
+ * delta can ever reach them. May 2026 incident: a user's main install
+ * was ₹8L behind a side-by-side PR install because of exactly this.
+ *
+ * The reconciliation cost is one HTTP HEAD-style request per cold
+ * launch (PostgREST `count: 'exact', head: true`); on the rare drift
+ * detection it's one full re-fetch of the user's transactions.
+ *
+ * Returns `{ drift, rebuilt }`. `drift = null` when the remote count
+ * was unavailable (network/permission error) — we don't rebuild on
+ * unknown state.
+ */
+async function reconcileTransactionCount(
+  userId: string,
+): Promise<{ drift: number | null; rebuilt: boolean; serverCount: number | null; localCount: number }> {
+  const [localCount, serverCount] = await Promise.all([
+    txRepo.count(),
+    countUserTransactionsRemote(userId),
+  ]);
+  if (serverCount === null) {
+    // Network or permission error — don't disrupt the user's existing
+    // cache on an unknown signal.
+    return { drift: null, rebuilt: false, serverCount: null, localCount };
+  }
+  const drift = serverCount - localCount;
+  if (!shouldRebuildTxOnDrift(localCount, serverCount)) {
+    return { drift, rebuilt: false, serverCount, localCount };
+  }
+
+  console.warn(
+    '[db/sync] tx count drift detected: local=%d server=%d drift=%d; rebuilding',
+    localCount, serverCount, drift,
+  );
+  try {
+    await txRepo.clear();
+    const fresh = await fetchUserTransactionsRemote(userId, null);
+    await txRepo.bulkInsert(fresh);
+    return { drift, rebuilt: true, serverCount, localCount };
+  } catch (err) {
+    console.warn('[db/sync] tx rebuild after drift failed', err);
+    return { drift, rebuilt: false, serverCount, localCount };
+  }
 }
 
 /**
@@ -171,6 +255,39 @@ async function runSync(
     console.warn('[db/sync] tx sync failed', err);
   }
 
+  // ── Reconciliation ────────────────────────────────────────────────
+  // Verify the local tx count matches the server. Catches cache drift
+  // that the delta sync alone can't repair — see
+  // `reconcileTransactionCount`. Cheap enough to run on every sync
+  // (one HEAD-style count query); rebuild only fires when drift is
+  // both absolute (≥5 rows) and relative (>5%).
+  let txRebuiltFromDrift = false;
+  try {
+    const reconciliation = await reconcileTransactionCount(userId);
+    txRebuiltFromDrift = reconciliation.rebuilt;
+    if (reconciliation.drift !== null && (reconciliation.rebuilt || Math.abs(reconciliation.drift) >= 5)) {
+      analytics.track('tx_cache_reconciled', {
+        mode: options.mode,
+        local_count: reconciliation.localCount,
+        server_count: reconciliation.serverCount,
+        drift: reconciliation.drift,
+        rebuilt: reconciliation.rebuilt,
+      });
+    }
+    if (reconciliation.rebuilt) {
+      // Update the watermark — the local table was just refilled from
+      // server, so its MAX(created_at) is now authoritative again.
+      // `txInserted` stays as the delta-step's contribution; the
+      // separate `txRebuiltFromDrift` flag tells callers a full
+      // rebuild happened so they can invalidate React Query / etc.
+      await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    errors.push(`tx-reconcile: ${msg}`);
+    console.warn('[db/sync] tx reconciliation failed', err);
+  }
+
   // ── NAV per scheme ────────────────────────────────────────────────
   if (schemeCodes.length > 0) {
     try {
@@ -223,7 +340,7 @@ async function runSync(
     }
   }
 
-  const result: SyncResult = { txInserted, navInserted, idxInserted, errors };
+  const result: SyncResult = { txInserted, navInserted, idxInserted, errors, txRebuiltFromDrift };
   perfEnd(`db:sync:${options.mode}`, {
     tx_inserted: txInserted,
     nav_inserted: navInserted,

@@ -88,6 +88,36 @@ export async function fetchUserTransactionsRemote(
   return rows;
 }
 
+/**
+ * Server-side count of transactions for a user. Used by the sync
+ * orchestrator's reconciliation step to detect when the local SQLite
+ * cache has drifted from the source of truth (audit follow-up to
+ * the May 2026 "Money Trail missing older transactions" report).
+ *
+ * Cheap: PostgREST `count: 'exact', head: true` returns just the
+ * `Content-Range` header, no row data. One round trip per cold launch.
+ *
+ * Returns `null` on network / permission errors so the caller can
+ * decide to skip reconciliation rather than treating an outage as a
+ * forced rebuild.
+ */
+export async function countUserTransactionsRemote(userId: string): Promise<number | null> {
+  try {
+    const { count, error } = await transactionRepo
+      .from()
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    if (error) {
+      console.warn('[useUserTransactions] count query failed: %s', error.message);
+      return null;
+    }
+    return count ?? 0;
+  } catch (err) {
+    console.warn('[useUserTransactions] count query threw: %s', String(err));
+    return null;
+  }
+}
+
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
   perfStart('query:userTransactions');
   if (SQLITE_AVAILABLE) {
