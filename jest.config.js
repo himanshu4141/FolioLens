@@ -9,6 +9,7 @@ const config = {
     '<rootDir>/src/store/**/*.test.ts',
     '<rootDir>/src/constants/**/*.test.ts',
     '<rootDir>/supabase/functions/_shared/**/*.test.ts',
+    '<rootDir>/scripts/__tests__/**/*.test.ts',
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',

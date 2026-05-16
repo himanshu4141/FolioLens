@@ -1,0 +1,45 @@
+name: Cache Shape Check
+
+# When a PR touches files that hold cached React Query payload shapes,
+# require either:
+#   (a) `__BUSTER__` in src/lib/queryClient.ts to have been bumped, or
+#   (b) the PR title to contain `[cache-shape-stable]` to assert the
+#       change doesn't affect any cached payload.
+#
+# PR #133 shipped twice because the first attempt added new fields to a
+# query but didn't bump __BUSTER__, so persisted client caches kept
+# serving the old shape until they expired. The May 2026 cache audit
+# (docs/architecture/cache-surfaces.md, finding #12) called for an
+# automated guard; this is it.
+#
+# The script is `scripts/check-cache-shape.js`. Read it, or run
+# `node scripts/check-cache-shape.js --help`.
+
+on:
+  pull_request:
+    paths:
+      - 'src/lib/queryClient.ts'
+      - 'src/lib/queryStaleTimes.ts'
+      - 'src/hooks/**'
+      - 'src/lib/data/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Cache shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need both refs to diff; depth 0 is heavier than necessary
+          # but keeps the script logic simple (`git diff base...head`).
+          fetch-depth: 0
+      - name: Run check
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          node scripts/check-cache-shape.js \
+            ${{ github.event.pull_request.base.sha }} \
+            ${{ github.sha }}
