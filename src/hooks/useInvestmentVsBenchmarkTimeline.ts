@@ -15,6 +15,38 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 
+/**
+ * React Query key prefixes whose contents this hook's queryFn reads
+ * directly via DB calls (not via `qc.fetchQuery`, so React Query's own
+ * dependency tracking doesn't fire).
+ *
+ * **Cache audit finding #11.** When any of these inputs change in a
+ * write path (CAS import, manual transaction entry, NAV/index sync),
+ * the consumer must invalidate `'investmentVsBenchmarkTimeline'` along
+ * with the input key — otherwise the chart's 1h cache keeps serving a
+ * stale derived result while the inputs are fresh, and the chart
+ * disagrees with Portfolio.
+ *
+ * Today the existing write paths are well-covered:
+ * - `app/_layout.tsx` foreground delta sync calls
+ *   `queryClient.invalidateQueries()` (full nuke) when SQLite delta
+ *   detects new rows — covers CAS imports + cron-pushed NAV ticks.
+ * - `app/(tabs)/settings/data-sync.tsx` manual refresh explicitly
+ *   invalidates `'investmentVsBenchmarkTimeline'` along with the
+ *   other derived caches.
+ *
+ * The constant is here for future contributors adding new write paths
+ * (e.g. an in-app manual transaction entry UI). Import it and pass
+ * each member to `queryClient.invalidateQueries({ queryKey: [key] })`
+ * after the mutation succeeds. Keeps the dependency surface in one
+ * place rather than relying on grep + comment archaeology.
+ */
+export const INVESTMENT_VS_BENCHMARK_INPUT_KEYS = [
+  'user-transactions',
+  'fund-nav-history',
+  'index-snapshot',
+] as const;
+
 export interface InvestmentVsBenchmarkPoint {
   date: string;
   investedValue: number;
