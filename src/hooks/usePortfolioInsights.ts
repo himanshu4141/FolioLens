@@ -293,12 +293,27 @@ export function usePortfolioInsights(fundCards: FundCardData[]) {
     // Portfolio Insights screen render real-looking allocations instead
     // of hanging on the "Syncing composition data from AMFI disclosures"
     // banner forever.
-    queryFn: () =>
-      previewMode
-        ? Promise.resolve(
-            PREVIEW_FUND_COMPOSITIONS.filter((c) => schemeCodes.includes(c.schemeCode)),
-          )
-        : fetchCompositions(schemeCodes),
+    //
+    // Cache audit finding #9: Insights does a batch fetch (every fund
+    // the user holds), but `useFundComposition` reads with a per-scheme
+    // key shape (`['portfolio-composition', [schemeCode]]`). Without
+    // pre-warming, navigating Portfolio → Fund Detail → Composition
+    // re-fetches a single row that we just had in memory. Pre-warm the
+    // per-scheme cache from the batch result so Fund Detail tabs hit
+    // the warm cache instead of the network. Distinct preview/real
+    // shapes match what `useFundComposition` reads.
+    queryFn: async () => {
+      const rows = previewMode
+        ? PREVIEW_FUND_COMPOSITIONS.filter((c) => schemeCodes.includes(c.schemeCode))
+        : await fetchCompositions(schemeCodes);
+      for (const row of rows) {
+        const perSchemeKey = previewMode
+          ? ['portfolio-composition', 'preview', row.schemeCode]
+          : ['portfolio-composition', [row.schemeCode]];
+        queryClient.setQueryData(perSchemeKey, [row]);
+      }
+      return rows;
+    },
     enabled: schemeCodes.length > 0,
     staleTime: STALE_TIMES.PORTFOLIO_COMPOSITION,
     gcTime: PERSIST_MAX_AGE_MS,
