@@ -318,7 +318,16 @@ export function useFundDetail(fundId: string) {
       previewMode
         ? Promise.resolve(buildPreviewFundDetail(fundId))
         : fetchFundDetail(qc, userId!, fundId),
-    staleTime: 0, // always fetch fresh so current value matches portfolio
+    // Match `PORTFOLIO` so Fund Detail's currentValue stays in sync with
+    // the Portfolio cards' currentValue across screen navigation. Cache
+    // audit finding #10: `staleTime: 0` was originally chosen to "match
+    // portfolio" but achieved the opposite — Fund Detail refetched on
+    // every mount and could show a newer NAV than Portfolio's still-
+    // cached one (right after the daily NAV publish window). The
+    // matching staleTime is the correct way to keep them in sync; users
+    // who want the freshest possible NAV pull-to-refresh, which fires
+    // a refetch regardless of staleTime.
+    staleTime: STALE_TIMES.PORTFOLIO,
   });
 }
 
