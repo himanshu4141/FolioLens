@@ -20,6 +20,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { trackServerEventAwait } from '../_shared/analytics.ts';
+import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -116,15 +117,22 @@ Deno.serve(async (_req) => {
   const allSchemeCodes = [...new Set((funds ?? []).map((fund) => fund.scheme_code as number))];
 
   // Filter out recently-synced schemes so the daily cron stays cheap.
-  const cutoff = new Date(Date.now() - META_STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  // `isSchemeMetaFresh` requires both a recent timestamp AND a non-null
+  // `mfdata_family_id`. The null-family_id guard handles the partial-
+  // success bug (audit #6): if the previous sync got mfapi-only because
+  // mfdata was down, the scheme would otherwise be considered fresh and
+  // skipped for 7 days, locking the fund into category_fallback
+  // composition. Retrying is cheap; a still-down mfdata gives the same
+  // partial result, but a recovered mfdata gives real data.
   const { data: masterRows } = await supabase
     .from('scheme_master')
-    .select('scheme_code, fund_meta_synced_at')
+    .select('scheme_code, fund_meta_synced_at, mfdata_family_id')
     .in('scheme_code', allSchemeCodes);
 
+  const now = Date.now();
   const freshCodes = new Set(
     (masterRows ?? [])
-      .filter((r) => r.fund_meta_synced_at && r.fund_meta_synced_at > cutoff)
+      .filter((r) => isSchemeMetaFresh(r, META_STALE_DAYS, now))
       .map((r) => r.scheme_code as number),
   );
   const schemeCodes = allSchemeCodes.filter((c) => !freshCodes.has(c));
