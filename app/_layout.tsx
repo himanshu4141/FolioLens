@@ -177,24 +177,66 @@ function useAnalyticsLifecycle() {
     // network round-trip during web bootstrap.
     const sqliteSupported = Platform.OS !== 'web';
 
-    // Bootstrap repairs drift (full-pulls the transaction set), so if
-    // it surfaces rows that weren't already in SQLite we have to
+    // **Sign-out → sign-in race.** When SIGNED_OUT fires (typically
+    // from the global 401 handler in `queryClient.ts` when an expired
+    // JWT can't be refreshed), the handler kicks off `clearLocalDb()`
+    // *fire-and-forget*. If Supabase then auto-refreshes the session
+    // and SIGNED_IN fires before that clear finishes, the SIGNED_IN
+    // bootstrap interleaves with the in-flight clear — bootstrap reads
+    // a partial SQLite state, writes server rows on top, and clear
+    // later wipes some of them out. Net result: SQLite ends up with
+    // an arbitrary subset of transactions, with no way for delta sync
+    // to recover (PR #176's reconciliation is the recovery layer).
+    //
+    // This module-level promise serialises the two halves: any
+    // bootstrap (from `getSession` or SIGNED_IN) awaits the pending
+    // clear before reading SQLite. The promise stays bound to the
+    // last clear forever — `Promise.resolve(resolvedPromise)` is a
+    // no-op, so once the clear is done, subsequent bootstraps pay no
+    // cost.
+    let pendingSignOutCleanup: Promise<void> | null = null;
+
+    // Bootstrap repairs drift (PR #176's reconcile path), so if it
+    // surfaces rows that weren't already in SQLite we have to
     // invalidate React Query — otherwise the persisted cache rehydrates
     // with the stale (incomplete) values and screens stay on the wrong
     // numbers until the next staleTime tick. Same shape as the
     // foreground-resume sync below.
     const runBootstrap = (userId: string) => {
-      void bootstrapForUser(userId)
-        .then((result) => {
+      void (async () => {
+        try {
+          // Wait for any in-flight sign-out cleanup to finish before
+          // reading SQLite. See `pendingSignOutCleanup` above.
+          if (pendingSignOutCleanup) {
+            analytics.track('db_sync_awaiting_signout_cleanup');
+            await pendingSignOutCleanup;
+          }
+          // Diagnostic: log the pre-bootstrap local tx count so a
+          // PostHog correlation can prove or rule out the race —
+          // a count of 0 after a recent SIGNED_OUT means clear ran
+          // first; a non-zero partial count is the smoking gun.
+          let preCount: number | null = null;
+          if (Platform.OS !== 'web') {
+            try {
+              const txRepo = await import('@/src/lib/db/tx');
+              preCount = await txRepo.count();
+            } catch {
+              // Best-effort diagnostic — don't block bootstrap on it.
+            }
+          }
+          analytics.track('db_sync_bootstrap_started', {
+            local_tx_count_before: preCount,
+          });
+          const result = await bootstrapForUser(userId);
           const changed =
             result.txInserted > 0 || result.navInserted > 0 || result.idxInserted > 0;
           if (changed) {
             void queryClient.invalidateQueries();
           }
-        })
-        .catch((err) => {
+        } catch (err) {
           console.warn('[db/sync] bootstrap failed', err);
-        });
+        }
+      })();
     };
 
     authClient.getSession().then(({ data: { session } }) => {
@@ -206,6 +248,12 @@ function useAnalyticsLifecycle() {
     const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
       identify(session);
       if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
+        // If a SIGNED_OUT fired recently, `pendingSignOutCleanup` is
+        // set and `runBootstrap` will await it. Track the cascade so
+        // we can see how often it happens in the field.
+        if (pendingSignOutCleanup) {
+          analytics.track('auth_signin_after_recent_signout');
+        }
         runBootstrap(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
@@ -233,10 +281,20 @@ function useAnalyticsLifecycle() {
         });
         if (sqliteSupported) {
           // Wipe the SQLite read cache too — PII (transactions) must
-          // not survive a sign-out.
-          void clearLocalDb().catch((err) => {
-            console.warn('[db/sync] clearAll failed', err);
-          });
+          // not survive a sign-out. Bind the promise so a subsequent
+          // SIGNED_IN's bootstrap can await it — see `runBootstrap`
+          // for the race we're closing.
+          analytics.track('db_clear_local_db_started');
+          pendingSignOutCleanup = clearLocalDb()
+            .then(() => {
+              analytics.track('db_clear_local_db_completed');
+            })
+            .catch((err) => {
+              console.warn('[db/sync] clearAll failed', err);
+              analytics.track('db_clear_local_db_failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
         }
       }
     });
