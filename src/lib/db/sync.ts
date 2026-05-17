@@ -104,12 +104,14 @@ export interface SyncResult {
 }
 
 /**
- * Ensure each scope (transactions, NAVs per scheme, indexes per
- * symbol) has *some* data locally. Caller passes the lists of scheme
- * codes and index symbols the app cares about.
+ * Bootstrap / full-sync entry. Pulls the complete transaction set for
+ * the user (no watermark) and a watermark-gated delta for NAV + index
+ * history. The full-pull on transactions is what makes this idempotent
+ * *and* drift-recovering — see the inline comment in `runSync` for
+ * why this matters.
  *
- * Idempotent: safe to call on every app open. Scopes already
- * populated get skipped via watermark check.
+ * Idempotent: safe to call on every app open and on pull-to-refresh.
+ * `INSERT OR IGNORE` means rows already in SQLite are a no-op.
  */
 export async function bootstrap(
   userId: string,
@@ -120,7 +122,11 @@ export async function bootstrap(
 }
 
 /**
- * Pull only new rows since the local watermark.
+ * Pull only new rows since the local watermark. Used by the
+ * foreground-resume sync where we trust SQLite is already in step
+ * with the server (the cold-launch bootstrap is responsible for
+ * repairing drift, so by the time delta runs we just need to pick up
+ * what's new).
  */
 export async function syncDelta(
   userId: string,
@@ -145,25 +151,45 @@ async function runSync(
 
   // ── Transactions ──────────────────────────────────────────────────
   try {
-    // Always sync. The watermark naturally handles bootstrap vs delta:
-    // null watermark → first launch / fresh SQLite → full fetch;
-    // non-null watermark → fetch only rows newer than the watermark.
+    // Bootstrap = full pull (no watermark); delta = watermark-gated pull.
     //
-    // Previously this was gated on `watermark === null || mode === 'delta'`,
-    // which silently skipped the tx fetch on every cold launch when SQLite
-    // had pre-existing rows. That left server-side imports (auto-forwarded
-    // CAS via Resend Inbound, web-uploaded CAS while mobile was closed)
-    // invisible until the user backgrounded + foregrounded the app — and
-    // AppState 'change' never fires on a fresh process launch (the OS
-    // starts the app 'active' before our listener registers). NAV and
-    // index sync below have always run unconditionally; bringing tx in
-    // line keeps the three repos symmetric.
-    const watermark = await txRepo.getWatermark();
+    // The watermark is monotonic-forward by design (max(created_at) of
+    // local rows). That makes delta correct on the happy path — but it
+    // also means the watermark can never tell us a row is *missing* from
+    // SQLite. Once the local table drifts below the server (interrupted
+    // sync, an earlier bug, a race during sign-in clear/bootstrap), the
+    // watermark sits at the most-recent-row-we-have, and delta forever
+    // returns "no new rows". Pull-to-refresh inherits the same blind
+    // spot and the user is stuck looking at a partial Money Trail with
+    // no recovery path. Bootstrap is the recovery path: pull the full
+    // set on every cold launch (and on pull-to-refresh, which now also
+    // routes through this path). `INSERT OR IGNORE` makes it idempotent
+    // — the healthy case writes zero new rows, the drift case
+    // backfills whatever's missing. Transaction tables are small (tens
+    // to low-hundreds of rows for most users) so the bandwidth cost is
+    // negligible; NAV / index history below still use the watermark
+    // because those tables are orders of magnitude larger and don't
+    // exhibit the same drift pattern (no per-user write path).
+    const watermark = options.mode === 'bootstrap' ? null : await txRepo.getWatermark();
     const fresh = await fetchUserTransactionsRemote(userId, watermark);
     const before = await txRepo.count();
     await txRepo.bulkInsert(fresh);
     const after = await txRepo.count();
     txInserted = after - before;
+    // Drift = bootstrap full-pull surfaced rows that weren't already
+    // local. Track it so we can see how often this recovery path
+    // actually fires in the field.
+    if (options.mode === 'bootstrap' && before > 0 && txInserted > 0) {
+      analytics.track('db_sync_tx_drift_repaired', {
+        local_before: before,
+        server_total: fresh.length,
+        inserted: txInserted,
+      });
+      console.warn(
+        '[db/sync] tx drift repaired on bootstrap',
+        { local_before: before, server_total: fresh.length, inserted: txInserted },
+      );
+    }
     await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -252,10 +278,11 @@ export async function clearAll(): Promise<void> {
 let inFlightBootstrap: Promise<SyncResult> | null = null;
 
 /**
- * High-level entry point for the layout's mount effect. Derives the
- * scope lists from the user's fund roster + the global benchmark
- * options, then runs `bootstrap` (which is idempotent on already-
- * populated scopes).
+ * High-level entry point for the layout's mount effect and for
+ * pull-to-refresh. Derives the scope lists from the user's fund
+ * roster + the global benchmark options, then runs `bootstrap`
+ * (which does a full pull of transactions — see the inline comment
+ * in `runSync` for why a delta isn't enough).
  *
  * Returns the same Promise on repeated calls during a single launch
  * so concurrent screen mounts don't pile up parallel sync runs.
@@ -272,12 +299,24 @@ export async function bootstrapForUser(userId: string): Promise<SyncResult> {
       return await bootstrap(userId, schemeCodes, indexSymbols);
     } finally {
       // Clear the slot so the next launch (or a manual re-run) can
-      // bootstrap again. The on-disk SQLite cache survives — bootstrap
-      // is idempotent and skips populated scopes via watermark.
+      // bootstrap again. The on-disk SQLite cache survives —
+      // `INSERT OR IGNORE` makes the full-pull idempotent.
       inFlightBootstrap = null;
     }
   })();
   return inFlightBootstrap;
+}
+
+/**
+ * Pull-to-refresh entry. Same code path as `bootstrapForUser` —
+ * named separately so the call site reads as "force a full refresh"
+ * instead of "bootstrap" (which would imply first-launch). Shares
+ * the same in-flight slot so a PTR triggered while cold-launch
+ * bootstrap is still running just awaits that run instead of
+ * spawning a parallel pull.
+ */
+export async function syncFullForUser(userId: string): Promise<SyncResult> {
+  return bootstrapForUser(userId);
 }
 
 let inFlightDelta: Promise<SyncResult> | null = null;

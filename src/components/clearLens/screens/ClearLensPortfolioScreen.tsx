@@ -23,7 +23,7 @@ import {
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
-import { syncDeltaForUser } from '@/src/lib/db/sync';
+import { syncFullForUser } from '@/src/lib/db/sync';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
@@ -915,9 +915,15 @@ function ClearLensPortfolioScreenMobile() {
   // transactions from a SQLite read-through cache, and the React Query
   // entry that fronts it has its own staleTime. So a plain refetch may
   // hand back the same stale rows we already had. The right sequence is:
-  //   1. Pull fresh transactions / NAVs into SQLite from Supabase
-  //      (`syncDeltaForUser`). This is the only step that detects
-  //      server-side changes (e.g. a CAS uploaded from web).
+  //   1. Pull the FULL transaction set + NAV/index deltas into SQLite
+  //      from Supabase (`syncFullForUser`). Full-pull (not delta)
+  //      because the watermark-gated delta can't repair drift — if
+  //      SQLite ever ends up with fewer rows than the server (a partial
+  //      earlier sync, race, etc.), the watermark sits at the most-
+  //      recent-row-we-have and delta forever returns "no new rows".
+  //      Pull-to-refresh is the user's explicit "fix it" lever, so it
+  //      has to do the recovery pull. `INSERT OR IGNORE` keeps the
+  //      healthy case zero-write.
   //   2. Invalidate every React Query entry so screens that derive from
   //      transactions (portfolio totals, money trail, timelines)
   //      recompute against the freshly-synced rows.
@@ -933,9 +939,9 @@ function ClearLensPortfolioScreenMobile() {
       }
       if (Platform.OS !== 'web') {
         try {
-          await syncDeltaForUser(userId);
+          await syncFullForUser(userId);
         } catch (err) {
-          console.warn('[portfolio] delta sync failed', err);
+          console.warn('[portfolio] full sync failed', err);
         }
       }
       await queryClient.invalidateQueries();

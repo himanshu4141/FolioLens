@@ -176,23 +176,36 @@ function useAnalyticsLifecycle() {
     // network round-trip during web bootstrap.
     const sqliteSupported = Platform.OS !== 'web';
 
+    // Bootstrap repairs drift (full-pulls the transaction set), so if
+    // it surfaces rows that weren't already in SQLite we have to
+    // invalidate React Query — otherwise the persisted cache rehydrates
+    // with the stale (incomplete) values and screens stay on the wrong
+    // numbers until the next staleTime tick. Same shape as the
+    // foreground-resume sync below.
+    const runBootstrap = (userId: string) => {
+      void bootstrapForUser(userId)
+        .then((result) => {
+          const changed =
+            result.txInserted > 0 || result.navInserted > 0 || result.idxInserted > 0;
+          if (changed) {
+            void queryClient.invalidateQueries();
+          }
+        })
+        .catch((err) => {
+          console.warn('[db/sync] bootstrap failed', err);
+        });
+    };
+
     authClient.getSession().then(({ data: { session } }) => {
       identify(session);
       if (sqliteSupported && session?.user.id) {
-        // Kick off the offline-first bootstrap. Idempotent — if the
-        // local SQLite cache is already populated for this user, this
-        // resolves quickly via watermark checks.
-        void bootstrapForUser(session.user.id).catch((err) => {
-          console.warn('[db/sync] bootstrap failed', err);
-        });
+        runBootstrap(session.user.id);
       }
     });
     const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
       identify(session);
       if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
-        void bootstrapForUser(session.user.id).catch((err) => {
-          console.warn('[db/sync] bootstrap failed', err);
-        });
+        runBootstrap(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
         // Sign-out is a single audited operation: every cache or piece
