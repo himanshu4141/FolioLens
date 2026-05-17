@@ -43,6 +43,7 @@ import {
   bootstrapForUser,
   clearAll as clearLocalDb,
   syncDeltaForUser,
+  syncFullForUser,
 } from '@/src/lib/db/sync';
 
 // Required for expo-web-browser openAuthSessionAsync to complete on Android.
@@ -253,16 +254,27 @@ function useAnalyticsLifecycle() {
         // Pull any server-side changes (e.g. a CAS uploaded from web on
         // another device) into the local SQLite cache, then invalidate
         // React Query so screens recompute against the fresh rows. The
-        // single-flight guard inside `syncDeltaForUser` plus the
+        // single-flight guard inside the sync entries plus the
         // foreground-sync throttle below keep this cheap.
+        //
+        // Long-idle returns get the full reconciliation path, not a
+        // delta. Cold-launch bootstrap is what normally heals SQLite
+        // drift (see `runSync` comments) — but a user who never closes
+        // the app would otherwise stay on delta forever and miss the
+        // recovery window. Treating "back from >= APP_RETURNED_THRESHOLD"
+        // as a soft cold-launch closes that gap. Quick OS-interruption
+        // resumes (notification, control centre) still take the cheap
+        // delta path.
         if (sqliteSupported) {
           const sinceLastSync = Date.now() - lastForegroundSyncAtRef.current;
           if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
             lastForegroundSyncAtRef.current = Date.now();
+            const useFullSync = idleMs >= APP_RETURNED_THRESHOLD_MS;
             void authClient.getSession().then(({ data: { session } }) => {
               const uid = session?.user.id;
               if (!uid) return;
-              syncDeltaForUser(uid)
+              const syncCall = useFullSync ? syncFullForUser(uid) : syncDeltaForUser(uid);
+              syncCall
                 .then((result) => {
                   const changed =
                     result.txInserted > 0 ||
@@ -273,7 +285,7 @@ function useAnalyticsLifecycle() {
                   }
                 })
                 .catch((err) => {
-                  console.warn('[db/sync] foreground delta failed', err);
+                  console.warn('[db/sync] foreground sync failed', err);
                 });
             });
           }
