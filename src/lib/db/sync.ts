@@ -25,7 +25,7 @@ import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
-import { fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
+import { fetchUserTransactionCount, fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import * as txRepo from '@/src/lib/db/tx';
 import * as navRepo from '@/src/lib/db/nav';
@@ -104,14 +104,13 @@ export interface SyncResult {
 }
 
 /**
- * Bootstrap / full-sync entry. Pulls the complete transaction set for
- * the user (no watermark) and a watermark-gated delta for NAV + index
- * history. The full-pull on transactions is what makes this idempotent
- * *and* drift-recovering — see the inline comment in `runSync` for
- * why this matters.
+ * Bootstrap / reconcile entry. Does a cheap count check against
+ * Supabase first; if SQLite is in step, falls through to a watermark
+ * delta (same cost as before). On mismatch, does a full pull to
+ * repair. NAV + index history stay watermark-gated. See the inline
+ * comment in `runSync` for the cost rationale.
  *
  * Idempotent: safe to call on every app open and on pull-to-refresh.
- * `INSERT OR IGNORE` means rows already in SQLite are a no-op.
  */
 export async function bootstrap(
   userId: string,
@@ -122,11 +121,11 @@ export async function bootstrap(
 }
 
 /**
- * Pull only new rows since the local watermark. Used by the
- * foreground-resume sync where we trust SQLite is already in step
- * with the server (the cold-launch bootstrap is responsible for
- * repairing drift, so by the time delta runs we just need to pick up
- * what's new).
+ * Pure watermark delta — no drift check. Used by the short-idle
+ * foreground-resume path where we trust SQLite is already in step
+ * with the server. The bootstrap path is responsible for detecting
+ * and repairing drift, so by the time short-idle delta runs we just
+ * need to pick up what's new.
  */
 export async function syncDelta(
   userId: string,
@@ -151,44 +150,69 @@ async function runSync(
 
   // ── Transactions ──────────────────────────────────────────────────
   try {
-    // Bootstrap = full pull (no watermark); delta = watermark-gated pull.
+    // The watermark (`max(created_at)` of local rows) is monotonic-
+    // forward by design, which makes delta correct on the happy path
+    // — but it also means the watermark can never tell us a row is
+    // *missing* from SQLite. Once the local table drifts below the
+    // server (interrupted sync, an earlier bug, a race during sign-in
+    // clear/bootstrap), delta forever returns "no new rows" and the
+    // user is stuck on a partial Money Trail with no recovery path.
     //
-    // The watermark is monotonic-forward by design (max(created_at) of
-    // local rows). That makes delta correct on the happy path — but it
-    // also means the watermark can never tell us a row is *missing* from
-    // SQLite. Once the local table drifts below the server (interrupted
-    // sync, an earlier bug, a race during sign-in clear/bootstrap), the
-    // watermark sits at the most-recent-row-we-have, and delta forever
-    // returns "no new rows". Pull-to-refresh inherits the same blind
-    // spot and the user is stuck looking at a partial Money Trail with
-    // no recovery path. Bootstrap is the recovery path: pull the full
-    // set on every cold launch (and on pull-to-refresh, which now also
-    // routes through this path). `INSERT OR IGNORE` makes it idempotent
-    // — the healthy case writes zero new rows, the drift case
-    // backfills whatever's missing. Transaction tables are small (tens
-    // to low-hundreds of rows for most users) so the bandwidth cost is
-    // negligible; NAV / index history below still use the watermark
-    // because those tables are orders of magnitude larger and don't
-    // exhibit the same drift pattern (no per-user write path).
-    const watermark = options.mode === 'bootstrap' ? null : await txRepo.getWatermark();
+    // The two modes split on how aggressively we look for drift:
+    //
+    //   - `delta` — pure watermark pull, no drift check. Used by the
+    //     short-idle foreground-resume sync (AppState 'active' within
+    //     5 min of going to background). That path runs often (every
+    //     notification swipe), so the extra round-trip would add up;
+    //     drift in the middle of an active session is also a rare
+    //     pattern compared to drift around sign-in/cold-launch.
+    //
+    //   - `bootstrap` — count-check first, full pull *only on
+    //     mismatch*. Used by cold launch, pull-to-refresh, and the
+    //     long-idle foreground path. The count check is a `head: true`
+    //     query against the user_id index server-side: ~200 bytes, ~1
+    //     round-trip, no row bodies. When the count matches local
+    //     (the overwhelming majority of cold launches) we still take
+    //     the cheap watermark delta — bootstrap is no more expensive
+    //     than the previous always-delta path. Full pull only fires
+    //     when SQLite genuinely diverged from the server.
+    //
+    // NAV / index history below stay watermark-gated in both modes;
+    // those tables are orders of magnitude larger and don't have a
+    // per-user write path, so the drift pattern we're defending
+    // against doesn't apply.
+    const localCount = await txRepo.count();
+    let useFullPull = false;
+    if (options.mode === 'bootstrap' && localCount > 0) {
+      const serverCount = await fetchUserTransactionCount(userId);
+      // Treat any mismatch as drift — including server < local, which
+      // would mean a deleted row server-side that we never picked up.
+      // null = count check itself failed; fall back to the cheap delta
+      // path rather than punishing the user for a transient error.
+      if (serverCount !== null && serverCount !== localCount) {
+        useFullPull = true;
+        analytics.track('db_sync_tx_drift_detected', {
+          local: localCount,
+          server: serverCount,
+          delta: serverCount - localCount,
+        });
+        console.warn('[db/sync] tx drift detected — full pull', {
+          local: localCount,
+          server: serverCount,
+        });
+      }
+    }
+    const watermark = useFullPull ? null : await txRepo.getWatermark();
     const fresh = await fetchUserTransactionsRemote(userId, watermark);
-    const before = await txRepo.count();
     await txRepo.bulkInsert(fresh);
     const after = await txRepo.count();
-    txInserted = after - before;
-    // Drift = bootstrap full-pull surfaced rows that weren't already
-    // local. Track it so we can see how often this recovery path
-    // actually fires in the field.
-    if (options.mode === 'bootstrap' && before > 0 && txInserted > 0) {
+    txInserted = after - localCount;
+    if (useFullPull && txInserted > 0) {
       analytics.track('db_sync_tx_drift_repaired', {
-        local_before: before,
+        local_before: localCount,
         server_total: fresh.length,
         inserted: txInserted,
       });
-      console.warn(
-        '[db/sync] tx drift repaired on bootstrap',
-        { local_before: before, server_total: fresh.length, inserted: txInserted },
-      );
     }
     await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
   } catch (err) {

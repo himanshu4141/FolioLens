@@ -1,19 +1,17 @@
 /**
- * Sync-orchestrator tests. The load-bearing assertion across these
- * cases is the bootstrap vs delta split for the transaction scope:
+ * Sync-orchestrator tests for the transaction scope.
  *
- *  - **bootstrap** must do a FULL pull regardless of the local
- *    watermark. The watermark is monotonic-forward, so a SQLite
- *    table that drifted below the server (interrupted sync,
- *    earlier-bug residue, race during sign-in clear) can never
- *    self-repair via a watermark-gated delta — it would forever
- *    see "no new rows". Bootstrap is the recovery path.
- *  - **delta** must use the watermark — that's what makes
- *    foreground-resume cheap.
+ *   - **bootstrap** does a cheap server-side count check first. When
+ *     local == server we stay on the watermark-gated delta (no extra
+ *     bandwidth). When they diverge — the actual drift case — we
+ *     drop the watermark and full-pull to reconcile. Bandwidth is
+ *     paid only when we genuinely need to repair.
+ *   - **delta** is pure watermark — no count check. Used by the
+ *     short-idle foreground-resume path where the round-trip would
+ *     add up.
  *
- * NAV and index scopes stay watermark-gated in both modes; they're
- * orders of magnitude larger than tx and don't exhibit the same
- * per-user drift pattern (no client-side write path into them).
+ * NAV / index scopes stay watermark-gated in both modes — they don't
+ * have a per-user write path so the drift pattern doesn't apply.
  */
 jest.mock('@/src/lib/data/userFund', () => ({
   fundViewRepo: { from: jest.fn() },
@@ -54,30 +52,46 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
-// Capture the `.gte` arguments each chain call sees so tests can
-// assert "bootstrap didn't filter by watermark" vs "delta filtered
-// by the local watermark". One chain instance per `from()` call,
-// matching production's single-builder-per-query shape. The chain is
-// also a thenable that resolves to `response`, which mirrors how
-// PostgREST's builder works (every call returns a builder, awaiting
-// it triggers the request) — important because tx fetch tacks `.gte`
-// on *after* `.range`, so `.range` can't be the terminal mock.
-function makeChain(response: { data: unknown; error: unknown }) {
-  const calls = { gte: [] as [string, string][] };
-  const chain: any = {
-    select: jest.fn(),
-    eq: jest.fn(),
-    in: jest.fn(),
-    order: jest.fn(),
-    range: jest.fn(),
-    gte: jest.fn((col: string, val: string) => {
-      calls.gte.push([col, val]);
-      return chain;
-    }),
-    then: (resolve: (v: typeof response) => void) => resolve(response),
+interface ChainResponse {
+  data?: unknown;
+  error?: unknown;
+  count?: number | null;
+}
+
+// Each call to `from()` returns the next chain in the queue. The chain
+// records which selects + gte filters were exercised, then resolves
+// (when awaited) to the queued response. This lets a single test
+// script both the count-check call (`select('id', { count: 'exact', head: true })`)
+// and the row-data call (`select('id, fund_id, …')`) in sequence —
+// PostgREST returns `{ data, error, count }` for both shapes, so the
+// production code branches on which field it reads.
+function makeChainQueue(responses: ChainResponse[]) {
+  const calls = {
+    selects: [] as unknown[][],
+    gte: [] as [string, string][],
   };
-  ['select', 'eq', 'in', 'order', 'range'].forEach((m) => chain[m].mockReturnValue(chain));
-  return { chain, calls };
+  let i = 0;
+  function next() {
+    const response = responses[i] ?? { data: [], error: null, count: null };
+    i += 1;
+    const chain: any = {
+      select: jest.fn((...args: unknown[]) => {
+        calls.selects.push(args);
+        return chain;
+      }),
+      eq: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      range: jest.fn().mockReturnThis(),
+      gte: jest.fn((col: string, val: string) => {
+        calls.gte.push([col, val]);
+        return chain;
+      }),
+      then: (resolve: (v: ChainResponse) => void) => resolve(response),
+    };
+    return chain;
+  }
+  return { next, calls };
 }
 
 function MOCK_TX_ROW(opts: { fund_id: string; date: string; created_at: string; amount: number; units: number; id?: string }) {
@@ -95,75 +109,147 @@ function MOCK_TX_ROW(opts: { fund_id: string; date: string; created_at: string; 
   };
 }
 
+function emptyRepoMocks() {
+  (navHistoryRepo.from as jest.Mock).mockImplementation(() =>
+    makeChainQueue([{ data: [], error: null }]).next(),
+  );
+  (indexHistoryRepo.from as jest.Mock).mockImplementation(() =>
+    makeChainQueue([{ data: [], error: null }]).next(),
+  );
+}
+
 describe('sync.runSync — transactions scope', () => {
-  it('bootstrap pulls the FULL set (no watermark filter) even when SQLite has rows', async () => {
+  it('bootstrap (healthy SQLite, count matches server) takes the cheap delta path', async () => {
     // Pre-populate SQLite with two rows.
+    await txRepo.bulkInsert([
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-15T00:00:00Z', amount: 2000, units: 20 }),
+    ]);
+    expect(await txRepo.count()).toBe(2);
+
+    // First Supabase call = count check, returns 2 (matches local).
+    // Second call = the watermark delta, returns nothing new.
+    const queue = makeChainQueue([
+      { data: null, error: null, count: 2 },
+      { data: [], error: null },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    const result = await bootstrap('user-1', [], []);
+
+    // The delta query filtered by the local watermark — proof the
+    // cheap path ran (not full-pull).
+    expect(queue.calls.gte).toEqual([['created_at', '2026-05-15T00:00:00Z']]);
+    expect(await txRepo.count()).toBe(2);
+    expect(result.txInserted).toBe(0);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('bootstrap (count mismatch) drops the watermark and full-pulls to repair drift', async () => {
+    // Local has 2 rows. Server has 3 — one is missing locally.
     await txRepo.bulkInsert([
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
     ]);
     expect(await txRepo.count()).toBe(2);
 
-    // Server has those two PLUS an older row that's somehow missing
-    // locally (the drift case the fix exists for).
     const serverRows = [
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-03-01', created_at: '2026-03-01T00:00:00Z', amount: 500, units: 5 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
     ];
-    const { chain, calls } = makeChain({ data: serverRows, error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    // NAV / idx have no schemes/symbols configured so they no-op.
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
+    const queue = makeChainQueue([
+      { data: null, error: null, count: 3 },
+      { data: serverRows, error: null },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
 
     const result = await bootstrap('user-1', [], []);
 
-    // No `.gte('created_at', …)` — that's the whole point.
-    expect(calls.gte).toHaveLength(0);
-    // The previously-missing row got backfilled.
+    // No `.gte` on the data query → full pull. That's the repair signal.
+    expect(queue.calls.gte).toHaveLength(0);
     expect(await txRepo.count()).toBe(3);
     expect(result.txInserted).toBe(1);
-    expect(result.errors).toEqual([]);
   });
 
-  it('bootstrap on an empty SQLite still does a full pull', async () => {
-    // Fresh install — nothing local, no watermark either.
+  it('bootstrap on an empty SQLite skips the count check (nothing to compare) and pulls everything', async () => {
     expect(await txRepo.count()).toBe(0);
 
     const serverRows = [
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
     ];
-    const { chain, calls } = makeChain({ data: serverRows, error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
+    // Only one Supabase call expected — the data pull. No count check
+    // when there's nothing local to compare against.
+    const queue = makeChainQueue([{ data: serverRows, error: null }]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
 
     const result = await bootstrap('user-1', [], []);
-    expect(calls.gte).toHaveLength(0);
+    expect(queue.calls.gte).toHaveLength(0);
     expect(await txRepo.count()).toBe(1);
     expect(result.txInserted).toBe(1);
   });
 
-  it('bootstrap is idempotent when SQLite is already in sync — INSERT OR IGNORE keeps writes at zero', async () => {
-    const rows = [
+  it('bootstrap surfaces drift via analytics when the count check trips', async () => {
+    await txRepo.bulkInsert([
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
+    ]);
+
+    const serverRows = [
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-03-01', created_at: '2026-03-01T00:00:00Z', amount: 500, units: 5 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
     ];
-    await txRepo.bulkInsert(rows);
-    expect(await txRepo.count()).toBe(2);
+    const queue = makeChainQueue([
+      { data: null, error: null, count: 3 },
+      { data: serverRows, error: null },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
 
-    const { chain } = makeChain({ data: rows, error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
+    const { analytics } = jest.requireMock('@/src/lib/analytics') as {
+      analytics: { track: jest.Mock };
+    };
 
-    const result = await bootstrap('user-1', [], []);
-    expect(await txRepo.count()).toBe(2);
-    expect(result.txInserted).toBe(0);
+    await bootstrap('user-1', [], []);
+
+    expect(analytics.track).toHaveBeenCalledWith(
+      'db_sync_tx_drift_detected',
+      expect.objectContaining({ local: 1, server: 3, delta: 2 }),
+    );
+    expect(analytics.track).toHaveBeenCalledWith(
+      'db_sync_tx_drift_repaired',
+      expect.objectContaining({ local_before: 1, server_total: 3, inserted: 2 }),
+    );
   });
 
-  it('delta uses the local watermark — `.gte("created_at", max)` is on the Supabase chain', async () => {
+  it('bootstrap falls back to the cheap delta when the count check itself errors', async () => {
+    // Local has 2 rows. The count check returns an error (transient
+    // network blip, say). We must not turn that into a full pull —
+    // that would punish the user for an upstream hiccup. Watermark
+    // delta is the safe fallback.
+    await txRepo.bulkInsert([
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
+      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-15T00:00:00Z', amount: 2000, units: 20 }),
+    ]);
+
+    const queue = makeChainQueue([
+      { data: null, error: { message: 'network' }, count: null },
+      { data: [], error: null },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    await bootstrap('user-1', [], []);
+
+    // Data query still went through, and it used the watermark.
+    expect(queue.calls.gte).toEqual([['created_at', '2026-05-15T00:00:00Z']]);
+    expect(await txRepo.count()).toBe(2);
+  });
+
+  it('delta uses the local watermark — no count check, no full pull', async () => {
     await txRepo.bulkInsert([
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-15T00:00:00Z', amount: 2000, units: 20 }),
@@ -172,14 +258,13 @@ describe('sync.runSync — transactions scope', () => {
     const newer = MOCK_TX_ROW({
       fund_id: 'f1', date: '2026-05-16', created_at: '2026-05-16T00:00:00Z', amount: 3000, units: 30,
     });
-    const { chain, calls } = makeChain({ data: [newer], error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
+    const queue = makeChainQueue([{ data: [newer], error: null }]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
 
     const result = await syncDelta('user-1', [], []);
 
-    expect(calls.gte).toEqual([['created_at', '2026-05-15T00:00:00Z']]);
+    expect(queue.calls.gte).toEqual([['created_at', '2026-05-15T00:00:00Z']]);
     expect(result.txInserted).toBe(1);
     expect(await txRepo.count()).toBe(3);
   });
@@ -190,40 +275,12 @@ describe('sync.runSync — transactions scope', () => {
     const serverRows = [
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
     ];
-    const { chain, calls } = makeChain({ data: serverRows, error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
+    const queue = makeChainQueue([{ data: serverRows, error: null }]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
 
     await syncDelta('user-1', [], []);
-    expect(calls.gte).toHaveLength(0);
+    expect(queue.calls.gte).toHaveLength(0);
     expect(await txRepo.count()).toBe(1);
-  });
-
-  it('bootstrap surfaces drift via analytics when it backfills missing rows', async () => {
-    await txRepo.bulkInsert([
-      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
-    ]);
-
-    const serverRows = [
-      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-03-01', created_at: '2026-03-01T00:00:00Z', amount: 500, units: 5 }),
-      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),
-      MOCK_TX_ROW({ fund_id: 'f1', date: '2026-05-01', created_at: '2026-05-01T00:00:00Z', amount: 2000, units: 20 }),
-    ];
-    const { chain } = makeChain({ data: serverRows, error: null });
-    (transactionRepo.from as jest.Mock).mockReturnValue(chain);
-    (navHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-    (indexHistoryRepo.from as jest.Mock).mockReturnValue(makeChain({ data: [], error: null }).chain);
-
-    const { analytics } = jest.requireMock('@/src/lib/analytics') as {
-      analytics: { track: jest.Mock };
-    };
-
-    await bootstrap('user-1', [], []);
-
-    expect(analytics.track).toHaveBeenCalledWith(
-      'db_sync_tx_drift_repaired',
-      expect.objectContaining({ local_before: 1, server_total: 3, inserted: 2 }),
-    );
   });
 });

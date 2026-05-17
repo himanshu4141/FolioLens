@@ -88,6 +88,25 @@ export async function fetchUserTransactionsRemote(
   return rows;
 }
 
+/**
+ * Server-side count of the user's transactions. Cheap drift signal
+ * for the sync orchestrator — `head: true` returns no row bodies, so
+ * this is a couple hundred bytes over the wire and an index-only scan
+ * server-side (via `idx_transaction_user_id`). Compare against
+ * `txRepo.count()` to decide whether the watermark-gated delta is
+ * sufficient (counts match → no drift, delta is enough) or whether
+ * we have to do a full reconciliation pull. Returns null on error so
+ * the caller can fall back to the safer (heavier) full-pull path.
+ */
+export async function fetchUserTransactionCount(userId: string): Promise<number | null> {
+  const { count, error } = await transactionRepo
+    .from()
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId);
+  if (error) return null;
+  return count;
+}
+
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
   perfStart('query:userTransactions');
   if (SQLITE_AVAILABLE) {
