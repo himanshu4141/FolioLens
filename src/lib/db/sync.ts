@@ -136,8 +136,9 @@ export function shouldRebuildTxOnDrift(localCount: number, serverCount: number):
 
 /**
  * After the tx delta sync settles, count what's on the server vs what
- * we have locally. If they disagree beyond a small tolerance, drop the
- * local `tx` table and re-fetch the full transaction history.
+ * we have locally. If they disagree beyond the rebuild threshold,
+ * re-fetch the full transaction history and merge it into the local
+ * table via `INSERT OR IGNORE` — additive, not destructive.
  *
  * **Why this is needed.** The delta sync only fetches rows with
  * `created_at >= watermark`. If the local cache started life
@@ -146,6 +147,19 @@ export function shouldRebuildTxOnDrift(localCount: number, serverCount: number):
  * know about yet — those historical gaps stay forever because no
  * delta can ever reach them. May 2026 incident: a user's main install
  * was ₹8L behind a side-by-side PR install because of exactly this.
+ *
+ * **Why we don't `clear()` first.** An earlier draft did
+ * `txRepo.clear()` then `bulkInsert`. That opens a window between the
+ * two operations where SQLite is empty — if the network drops mid-
+ * rebuild, the user ends up worse off than they were with drift
+ * (empty cache → screens show "no transactions"). `INSERT OR IGNORE`
+ * over the full server set lands at the same end state for the
+ * dominant drift case ("local is missing rows server has") without
+ * the failure window. The one shape it doesn't repair is "local has
+ * rows server doesn't" (e.g. account deletion mirrored late, or a
+ * row deleted server-side) — that surfaces as a negative drift on
+ * the `tx_cache_reconciled` event so we can investigate it as a
+ * separate signal rather than silently overwriting.
  *
  * The reconciliation cost is one HTTP HEAD-style request per cold
  * launch (PostgREST `count: 'exact', head: true`); on the rare drift
@@ -177,7 +191,9 @@ async function reconcileTransactionCount(
     localCount, serverCount, drift,
   );
   try {
-    await txRepo.clear();
+    // Additive merge — see the comment above for why we don't `clear()`
+    // first. `INSERT OR IGNORE` makes this a no-op for rows already
+    // local, and writes the rows that were missing.
     const fresh = await fetchUserTransactionsRemote(userId, null);
     await txRepo.bulkInsert(fresh);
     return { drift, rebuilt: true, serverCount, localCount };
@@ -265,7 +281,16 @@ async function runSync(
   try {
     const reconciliation = await reconcileTransactionCount(userId);
     txRebuiltFromDrift = reconciliation.rebuilt;
-    if (reconciliation.drift !== null && (reconciliation.rebuilt || Math.abs(reconciliation.drift) >= 5)) {
+    // Visibility threshold ≠ rebuild threshold. We rebuild only on
+    // meaningful drift (≥5 absolute AND >5% relative — see
+    // `shouldRebuildTxOnDrift`) to avoid thrashing on the sync-race
+    // window. But we emit the analytics event on *any* non-zero
+    // drift so the below-rebuild-threshold cases are still visible
+    // in PostHog: that's the signal we'd watch to find caching bugs
+    // the auto-rebuild would otherwise mask. `rebuilt: false` rows
+    // in the event let us separate "noise we tolerated" from
+    // "actually broken, we fixed it".
+    if (reconciliation.drift !== null && reconciliation.drift !== 0) {
       analytics.track('tx_cache_reconciled', {
         mode: options.mode,
         local_count: reconciliation.localCount,
