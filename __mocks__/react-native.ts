@@ -21,3 +21,15 @@ export const Platform = { OS: 'ios' as 'ios' | 'android' | 'web' };
 export const Share = {
   share: jest.fn(),
 };
+
+// `AppState.addEventListener` is touched at module-import time inside
+// `src/lib/supabase.ts` to wire Supabase's auto-refresh on/off as the
+// app foregrounds/backgrounds. Without this stub, every test that
+// transitively imports the supabase client would crash on
+// `Cannot read properties of undefined (reading 'addEventListener')`.
+// The handler is never invoked in tests — we just need the registration
+// to be a no-op.
+export const AppState = {
+  addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+  currentState: 'active' as 'active' | 'background' | 'inactive' | 'unknown',
+};
