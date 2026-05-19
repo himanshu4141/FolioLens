@@ -6,13 +6,24 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { transactionRepo } from '@/src/lib/data/transaction';
 import { functionsClient } from '@/src/lib/functions';
+import { useSession } from '@/src/hooks/useSession';
+import { useAppStore } from '@/src/store/appStore';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import * as txRepo from '@/src/lib/db/tx';
+import * as navRepo from '@/src/lib/db/nav';
+import * as idxRepo from '@/src/lib/db/idx';
+import * as syncStateRepo from '@/src/lib/db/syncState';
+import { bootstrapForUser } from '@/src/lib/db/sync';
+import { analytics } from '@/src/lib/analytics';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { navStatusBadge } from './index';
 import {
@@ -70,6 +81,91 @@ export default function DataSyncScreen() {
 
   type SyncState = 'idle' | 'syncing' | 'done' | 'error';
   const [syncState, setSyncState] = useState<SyncState>('idle');
+
+  // ── Local cache debug surface ────────────────────────────────────────
+  // Two counts side-by-side — what SQLite has vs what Supabase has — so
+  // the user (or anyone helping them debug) can see drift live. Same
+  // shape PostHog's `db_sync_bootstrap_started.local_tx_count_before`
+  // event records, but in-app and observable in real time.
+  //
+  // Web has no SQLite layer, so the section is gated to native. The
+  // server-count query uses PostgREST `count: 'exact', head: true` —
+  // ~200 bytes over the wire, no row bodies.
+  const { session } = useSession();
+  const userId = session?.user.id ?? null;
+  // Gated behind the 7-tap-on-version easter egg in Settings → About.
+  // Off by default; flipped on per-session by `unlockDebug` in the
+  // store. SQLite gating still applies (native-only).
+  const debugUnlocked = useAppStore((s) => s.debugUnlocked);
+  const localCacheEnabled = SQLITE_AVAILABLE && Platform.OS !== 'web' && debugUnlocked;
+
+  const { data: localTxCount } = useQuery({
+    queryKey: ['debug-local-tx-count'],
+    enabled: localCacheEnabled,
+    queryFn: () => txRepo.count().catch(() => null as number | null),
+    staleTime: 0,
+  });
+  const { data: serverTxCount } = useQuery({
+    queryKey: ['debug-server-tx-count', userId],
+    enabled: localCacheEnabled && !!userId,
+    queryFn: async () => {
+      const { count, error } = await transactionRepo
+        .from()
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId!);
+      if (error) return null;
+      return count ?? 0;
+    },
+    staleTime: 0,
+  });
+
+  const driftAmount =
+    localTxCount != null && serverTxCount != null ? serverTxCount - localTxCount : null;
+  const driftSeverity: 'ok' | 'minor' | 'major' =
+    driftAmount === null ? 'ok'
+    : driftAmount === 0 ? 'ok'
+    : Math.abs(driftAmount) < 5 ? 'minor'
+    : 'major';
+
+  type ResetState = 'idle' | 'resetting' | 'done' | 'error';
+  const [resetState, setResetState] = useState<ResetState>('idle');
+
+  async function handleResetLocalCache() {
+    if (!userId || !localCacheEnabled) return;
+    setResetState('resetting');
+    analytics.track('debug_local_cache_reset_started', {
+      local_before: localTxCount ?? null,
+      server: serverTxCount ?? null,
+    });
+    try {
+      // Wipe and re-bootstrap. The next read-through (or the bootstrap
+      // itself) repopulates from Supabase. This is the recovery lever
+      // surfaced for the May 2026 drift bug — if a user reports wrong
+      // numbers, they (or support) can tap this without needing to
+      // sign out.
+      await Promise.all([
+        txRepo.clear(),
+        navRepo.clear(),
+        idxRepo.clear(),
+        syncStateRepo.clear(),
+      ]);
+      await bootstrapForUser(userId);
+      // Refresh the debug counts + every downstream tx-derived cache.
+      await queryClient.invalidateQueries({ queryKey: ['debug-local-tx-count'] });
+      await queryClient.invalidateQueries({ queryKey: ['debug-server-tx-count'] });
+      await queryClient.invalidateQueries();
+      analytics.track('debug_local_cache_reset_completed');
+      setResetState('done');
+      setTimeout(() => setResetState('idle'), 3000);
+    } catch (err) {
+      console.warn('[debug] local cache reset failed', err);
+      analytics.track('debug_local_cache_reset_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      setResetState('error');
+      setTimeout(() => setResetState('idle'), 4000);
+    }
+  }
 
   async function handleSync() {
     setSyncState('syncing');
@@ -194,6 +290,120 @@ export default function DataSyncScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {localCacheEnabled && (
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowValue}>Local cache</Text>
+                <Text style={styles.rowSub}>
+                  On-device copy of your transactions for instant load.
+                </Text>
+              </View>
+              <View style={styles.badge}>
+                <View
+                  style={[
+                    styles.badgeDot,
+                    {
+                      backgroundColor:
+                        driftSeverity === 'major' ? tokens.colors.negative
+                        : driftSeverity === 'minor' ? tokens.colors.amber
+                        : tokens.colors.emerald,
+                    },
+                  ]}
+                />
+                <Text
+                  style={[
+                    styles.badgeText,
+                    {
+                      color:
+                        driftSeverity === 'major' ? tokens.colors.negative
+                        : driftSeverity === 'minor' ? tokens.colors.amber
+                        : tokens.colors.emerald,
+                    },
+                  ]}
+                >
+                  {driftSeverity === 'major' ? 'Drift'
+                    : driftSeverity === 'minor' ? 'Catching up'
+                    : 'In sync'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.row, styles.borderTop]}>
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowValue}>On device</Text>
+                <Text style={styles.rowSub}>Transactions in SQLite right now</Text>
+              </View>
+              <Text style={styles.syncDate}>
+                {localTxCount == null ? '—' : localTxCount.toLocaleString('en-IN')}
+              </Text>
+            </View>
+
+            <View style={[styles.row, styles.borderTop]}>
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowValue}>On server</Text>
+                <Text style={styles.rowSub}>Transactions Supabase has for your account</Text>
+              </View>
+              <Text style={styles.syncDate}>
+                {serverTxCount == null ? '—' : serverTxCount.toLocaleString('en-IN')}
+              </Text>
+            </View>
+
+            <View style={[styles.row, styles.borderTop]}>
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowValue}>Reset local cache</Text>
+                <Text style={styles.rowSub}>
+                  {resetState === 'done'
+                    ? 'Reset complete — fresh copy pulled from server'
+                    : resetState === 'error'
+                      ? 'Reset failed — check your connection and try again'
+                      : driftSeverity === 'major'
+                        ? 'Recommended — local copy is missing rows the server has'
+                        : 'Wipes the on-device cache and pulls a fresh copy'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleResetLocalCache}
+                disabled={resetState === 'resetting' || !userId}
+                style={[
+                  styles.syncBtn,
+                  resetState === 'done' && styles.syncBtnDone,
+                  resetState === 'error' && styles.syncBtnError,
+                ]}
+                activeOpacity={0.75}
+              >
+                {resetState === 'resetting' ? (
+                  <ActivityIndicator size="small" color={tokens.colors.emerald} />
+                ) : (
+                  <Ionicons
+                    name={
+                      resetState === 'done' ? 'checkmark'
+                      : resetState === 'error' ? 'alert-circle-outline'
+                      : 'refresh-outline'
+                    }
+                    size={14}
+                    color={
+                      resetState === 'done' ? tokens.colors.emerald
+                      : resetState === 'error' ? tokens.colors.negative
+                      : tokens.colors.emerald
+                    }
+                  />
+                )}
+                <Text style={[
+                  styles.syncBtnText,
+                  resetState === 'done' && { color: tokens.colors.emerald },
+                  resetState === 'error' && { color: tokens.colors.negative },
+                ]}>
+                  {resetState === 'resetting' ? 'Resetting…'
+                    : resetState === 'done' ? 'Done'
+                    : resetState === 'error' ? 'Failed'
+                    : 'Reset'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Info note */}
         <View style={styles.infoNote}>

@@ -594,4 +594,16 @@ describe('resetUserScopedState', () => {
     expect(useAppStore.getState().dialog).toBeNull();
     expect(confirmFired).toBe(false);
   });
+
+  it('drops the debugUnlocked flag so the next user on the same device does not inherit it', () => {
+    // The easter-egg unlock for the data-sync debug card. If user A
+    // unlocked it via 7-tap on version, user B signing in on the same
+    // physical device must NOT see the debug surface — it'd be both
+    // a privacy leak (they'd see B's local tx counts before they
+    // unlocked it themselves) and a confusing default state.
+    useAppStore.getState().unlockDebug();
+    expect(useAppStore.getState().debugUnlocked).toBe(true);
+    useAppStore.getState().resetUserScopedState();
+    expect(useAppStore.getState().debugUnlocked).toBe(false);
+  });
 });

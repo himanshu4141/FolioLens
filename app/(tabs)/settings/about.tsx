@@ -18,6 +18,8 @@ import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useAlertDialog, useConfirmDialog } from '@/src/hooks/useDialog';
+import { useAppStore } from '@/src/store/appStore';
+import { analytics } from '@/src/lib/analytics';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -37,9 +39,16 @@ type InfoRowProps = {
   value: string;
   onPress?: () => void;
   isLast?: boolean;
+  /**
+   * Suppresses the trailing chevron + the touch-feedback opacity dip.
+   * Used by the version-row easter egg in about.tsx so the row has
+   * no visible affordance — the unlock is intentionally not
+   * discoverable without being told.
+   */
+  hideAffordance?: boolean;
 };
 
-function InfoRow({ label, value, onPress, isLast }: InfoRowProps) {
+function InfoRow({ label, value, onPress, isLast, hideAffordance }: InfoRowProps) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const Row = onPress ? TouchableOpacity : View;
@@ -47,13 +56,15 @@ function InfoRow({ label, value, onPress, isLast }: InfoRowProps) {
     <Row
       style={[styles.row, !isLast && styles.borderBottom]}
       onPress={onPress}
-      activeOpacity={0.7}
+      activeOpacity={hideAffordance ? 1 : 0.7}
     >
       <View style={styles.rowLeft}>
         <Text style={styles.rowLabel}>{label}</Text>
         <Text style={styles.rowValue}>{value}</Text>
       </View>
-      {onPress && <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />}
+      {onPress && !hideAffordance && (
+        <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
+      )}
     </Row>
   );
 }
@@ -118,6 +129,29 @@ export default function AboutScreen() {
 
   const appVersion = ExpoConstants.expoConfig?.version ?? '—';
   const updateChannel = Updates.channel ?? '—';
+
+  // 7-tap easter egg on the version row → unlocks the local-cache debug
+  // card in Settings → Data sync. Off by default; in-memory only so a
+  // cold launch re-locks. Mostly a support / engineering escape hatch
+  // for when a user reports drift in their numbers — we tell them
+  // "tap version 7 times" and they can see local vs server counts +
+  // hit the "Reset local cache" button without needing to sign out.
+  const debugUnlocked = useAppStore((s) => s.debugUnlocked);
+  const unlockDebug = useAppStore((s) => s.unlockDebug);
+  const [versionTapCount, setVersionTapCount] = useState(0);
+  function handleVersionTap() {
+    if (debugUnlocked) return;
+    const next = versionTapCount + 1;
+    setVersionTapCount(next);
+    if (next >= 7) {
+      unlockDebug();
+      analytics.track('debug_unlocked', { taps: next });
+      showAlert({
+        title: 'Debug mode on',
+        body: 'Local-cache controls are now available under Settings → Data sync. They reset on next launch.',
+      });
+    }
+  }
   const isEmbedded = Updates.isEmbeddedLaunch;
   const updateId = Updates.updateId;
   const updateIdDisplay = isEmbedded
@@ -164,7 +198,13 @@ export default function AboutScreen() {
         {/* Version info — OTA / channel rows are mobile-only;
             on web there is no EAS update channel and no OTA bundle. */}
         <View style={styles.card}>
-          <InfoRow label="Version" value={appVersion} isLast={Platform.OS === 'web'} />
+          <InfoRow
+            label="Version"
+            value={debugUnlocked ? `${appVersion} · debug` : appVersion}
+            onPress={Platform.OS !== 'web' && !debugUnlocked ? handleVersionTap : undefined}
+            hideAffordance
+            isLast={Platform.OS === 'web'}
+          />
           {Platform.OS !== 'web' ? (
             <>
               <InfoRow label="Update channel" value={updateChannel} />
