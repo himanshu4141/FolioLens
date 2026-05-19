@@ -176,23 +176,46 @@ function useAnalyticsLifecycle() {
     // network round-trip during web bootstrap.
     const sqliteSupported = Platform.OS !== 'web';
 
+    // Bootstrap is fired both from cold-launch `getSession` and from
+    // the SIGNED_IN auth event. The diagnostic event below captures the
+    // SQLite tx count *just before* bootstrap reads from it — which is
+    // the load-bearing field for the May 2026 "5 transactions in the
+    // middle" investigation: a partial count here, immediately after a
+    // SIGNED_OUT-driven `clearLocalDb()`, would prove that bootstrap
+    // raced with the cleanup (PR with the race fix lives behind this
+    // telemetry, on its own branch).
+    const runBootstrap = (userId: string) => {
+      void (async () => {
+        try {
+          let preCount: number | null = null;
+          if (Platform.OS !== 'web') {
+            try {
+              const txRepo = await import('@/src/lib/db/tx');
+              preCount = await txRepo.count();
+            } catch {
+              // Best-effort diagnostic — don't block bootstrap on it.
+            }
+          }
+          analytics.track('db_sync_bootstrap_started', {
+            local_tx_count_before: preCount,
+          });
+          await bootstrapForUser(userId);
+        } catch (err) {
+          console.warn('[db/sync] bootstrap failed', err);
+        }
+      })();
+    };
+
     authClient.getSession().then(({ data: { session } }) => {
       identify(session);
       if (sqliteSupported && session?.user.id) {
-        // Kick off the offline-first bootstrap. Idempotent — if the
-        // local SQLite cache is already populated for this user, this
-        // resolves quickly via watermark checks.
-        void bootstrapForUser(session.user.id).catch((err) => {
-          console.warn('[db/sync] bootstrap failed', err);
-        });
+        runBootstrap(session.user.id);
       }
     });
     const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
       identify(session);
       if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
-        void bootstrapForUser(session.user.id).catch((err) => {
-          console.warn('[db/sync] bootstrap failed', err);
-        });
+        runBootstrap(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
         // Sign-out is a single audited operation: every cache or piece
@@ -219,10 +242,21 @@ function useAnalyticsLifecycle() {
         });
         if (sqliteSupported) {
           // Wipe the SQLite read cache too — PII (transactions) must
-          // not survive a sign-out.
-          void clearLocalDb().catch((err) => {
-            console.warn('[db/sync] clearAll failed', err);
-          });
+          // not survive a sign-out. The start/completed/failed events
+          // make the wall-clock duration of this clear visible in
+          // PostHog — necessary to prove or rule out a race against
+          // any subsequent SIGNED_IN bootstrap.
+          analytics.track('db_clear_local_db_started');
+          void clearLocalDb()
+            .then(() => {
+              analytics.track('db_clear_local_db_completed');
+            })
+            .catch((err) => {
+              console.warn('[db/sync] clearAll failed', err);
+              analytics.track('db_clear_local_db_failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
         }
       }
     });
