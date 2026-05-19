@@ -15,6 +15,7 @@ import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { functionsClient } from '@/src/lib/functions';
 import { useSession } from '@/src/hooks/useSession';
+import { useAppStore } from '@/src/store/appStore';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import * as txRepo from '@/src/lib/db/tx';
@@ -92,7 +93,11 @@ export default function DataSyncScreen() {
   // ~200 bytes over the wire, no row bodies.
   const { session } = useSession();
   const userId = session?.user.id ?? null;
-  const localCacheEnabled = SQLITE_AVAILABLE && Platform.OS !== 'web';
+  // Gated behind the 7-tap-on-version easter egg in Settings → About.
+  // Off by default; flipped on per-session by `unlockDebug` in the
+  // store. SQLite gating still applies (native-only).
+  const debugUnlocked = useAppStore((s) => s.debugUnlocked);
+  const localCacheEnabled = SQLITE_AVAILABLE && Platform.OS !== 'web' && debugUnlocked;
 
   const { data: localTxCount } = useQuery({
     queryKey: ['debug-local-tx-count'],
@@ -102,7 +107,7 @@ export default function DataSyncScreen() {
   });
   const { data: serverTxCount } = useQuery({
     queryKey: ['debug-server-tx-count', userId],
-    enabled: !!userId,
+    enabled: localCacheEnabled && !!userId,
     queryFn: async () => {
       const { count, error } = await transactionRepo
         .from()

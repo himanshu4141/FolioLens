@@ -380,6 +380,17 @@ export interface AppStore {
   hideDialog: () => void;
 
   /**
+   * Easter-egg unlock for the Settings → Data sync local-cache debug
+   * card (drift counts, "Reset local cache" button). Off by default;
+   * flipped on by tapping the version row in Settings → About 7
+   * times. In-memory only — not in `partialize` — so a cold launch
+   * re-locks. Also dropped by `resetUserScopedState` so the next
+   * user on the same device doesn't inherit it.
+   */
+  debugUnlocked: boolean;
+  unlockDebug: () => void;
+
+  /**
    * Resets every in-memory field that's tied to the *currently signed-in
    * user* back to its first-launch default. Persisted preferences stay
    * (theme, default benchmark, etc. — see `partialize`).
@@ -556,6 +567,9 @@ export const useAppStore = create<AppStore>()(
       showDialog: (req) => set({ dialog: req }),
       hideDialog: () => set({ dialog: null }),
 
+      debugUnlocked: false,
+      unlockDebug: () => set({ debugUnlocked: true }),
+
       resetUserScopedState: () =>
         set({
           // Preview / onboarding modal state.
@@ -572,6 +586,8 @@ export const useAppStore = create<AppStore>()(
           dialog: null,
           // Ephemeral UI inputs.
           fundsSearchQuery: '',
+          // Debug unlock — never carry across users on the same device.
+          debugUnlocked: false,
         }),
     }),
     {
