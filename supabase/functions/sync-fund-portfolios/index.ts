@@ -35,6 +35,7 @@ import {
   isNumericString,
 } from '../_shared/portfolio-utils.ts';
 import { shouldSkipHoldingsSyncForEmptyClassifier } from '../_shared/amfi-xlsx-parser.ts';
+import { probeUpstream, type UpstreamProbeResult } from '../_shared/upstream-probe.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const REQUEST_DELAY_MS = 300; // stay well within mfdata.in rate limits
@@ -122,7 +123,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// A5: single retry with 2 s delay for transient 5xx / 429 errors
+// A5: single retry with 2 s delay for transient 5xx / 429 errors.
+// Cloudflare 522 / 524 are NOT retried — they mean the origin is offline,
+// not flaky; the preflight probe in the handler classifies that case and
+// short-circuits the entire fan-out before we get here.
 async function fetchJson(url: string, retries = 1): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -134,8 +138,10 @@ async function fetchJson(url: string, retries = 1): Promise<unknown> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
-    const isRetryable = err instanceof Error &&
-      (err.message.startsWith('HTTP 5') || err.message === 'HTTP 429');
+    const msg = err instanceof Error ? err.message : '';
+    const isCloudflareOriginDown = msg === 'HTTP 522' || msg === 'HTTP 524';
+    const isRetryable = !isCloudflareOriginDown &&
+      (msg.startsWith('HTTP 5') || msg === 'HTTP 429');
     if (retries > 0 && isRetryable) {
       clearTimeout(timer);
       await delay(2000);
@@ -473,6 +479,29 @@ Deno.serve(async (req) => {
   const staleSchemes = schemes.filter((s) => !freshAmfiCodes.has(s.scheme_code));
   console.log('[sync-fund-portfolios] %d schemes need richer-data refresh', staleSchemes.length);
 
+  // Preflight probe: if mfdata.in is hard-down (5xx / timeout / network),
+  // skip the per-scheme fan-out entirely. Without this, an upstream outage
+  // generates one hourly `sync_failed` event per cron tick because every
+  // per-scheme attempt errors and we emit "all errors, zero synced" → looks
+  // identical to a real bug. The category_rules fallback still runs below,
+  // so Insights stays populated. Skipped if we're already short-circuiting
+  // via the classifier-table-empty guard above — no point probing if we
+  // weren't going to call mfdata anyway.
+  let upstreamSkipped: UpstreamProbeResult | null = null;
+  if (!skipHoldingsForEmptyClassifier && staleSchemes.length > 0) {
+    const probe = await probeUpstream(`${MFDATA_BASE}/schemes/${staleSchemes[0].scheme_code}`);
+    if (probe.status === 'down') {
+      console.warn(
+        '[sync-fund-portfolios] mfdata.in upstream down — reason=%s http_status=%s, skipping AMFI fan-out',
+        probe.reason,
+        probe.httpStatus ?? 'n/a',
+      );
+      upstreamSkipped = probe;
+    } else {
+      console.log('[sync-fund-portfolios] mfdata.in preflight ok, proceeding with AMFI fan-out');
+    }
+  }
+
   let amfiSynced = 0;
   let classifierHitCount = 0;
   let classifierFallbackCount = 0;
@@ -481,11 +510,12 @@ Deno.serve(async (req) => {
   let classifierCoverageSamples = 0;
   const amfiErrors: string[] = [];
 
-  // When the classifier table is empty, run the loop with an empty work
-  // list — the precheck-confirmed `staleSchemes` set is what would have
-  // been processed; we skip mfdata calls entirely. `categorySynced` below
-  // still seeds category_rules for funds without any holdings-derived row.
-  const schemesToProcess = skipHoldingsForEmptyClassifier ? [] : staleSchemes;
+  // When either preflight has tripped (classifier table empty OR
+  // upstream hard-down), run the loop with an empty work list — we skip
+  // mfdata calls entirely. `categorySynced` below still seeds
+  // category_rules for funds without any holdings-derived row.
+  const schemesToProcess =
+    skipHoldingsForEmptyClassifier || upstreamSkipped ? [] : staleSchemes;
 
   const amfiResults = await Promise.allSettled(
     schemesToProcess.map(async (scheme, idx) => {
@@ -641,12 +671,26 @@ Deno.serve(async (req) => {
     ? Math.round((classifierCoverageSum / classifierCoverageSamples) * 100) / 100
     : 0;
 
-  // The bootstrap-empty-classifier path is a known dependency-ordering
-  // issue, not a true failure — surface it as `sync_completed` with a
-  // distinct property so an alert can fire if it persists past the
-  // first hour after `sync-stock-market-cap` is supposed to land.
+  // Event-name decision:
+  //   - upstream hard-down (preflight)         → sync_skipped_upstream_down
+  //   - tried, every attempt errored, 0 synced → sync_failed (real bug)
+  //   - otherwise                              → sync_completed
+  //
+  // The bootstrap-empty-classifier path is intentionally NOT a separate
+  // event — it surfaces as `sync_completed` with `classifier_table_empty_skip=true`
+  // so an alert can fire if it persists past the first hour after
+  // `sync-stock-market-cap` is supposed to land.
+  let eventName: 'sync_skipped_upstream_down' | 'sync_failed' | 'sync_completed';
+  if (upstreamSkipped) {
+    eventName = 'sync_skipped_upstream_down';
+  } else if (amfiErrors.length > 0 && amfiSynced === 0) {
+    eventName = 'sync_failed';
+  } else {
+    eventName = 'sync_completed';
+  }
+
   await trackServerEventAwait(
-    amfiErrors.length > 0 && amfiSynced === 0 ? 'sync_failed' : 'sync_completed',
+    eventName,
     {
       job: 'sync-fund-portfolios',
       schemes_processed: schemes.length,
@@ -662,6 +706,9 @@ Deno.serve(async (req) => {
       classifier_table_size: isinToCap.size,
       classifier_table_empty_skip: skipHoldingsForEmptyClassifier,
       elapsed_ms: elapsedMs,
+      upstream_status: upstreamSkipped ? 'down' : 'up',
+      upstream_reason: upstreamSkipped?.reason ?? null,
+      upstream_http_status: upstreamSkipped?.httpStatus ?? null,
     },
     'system:sync-fund-portfolios',
   );
@@ -673,5 +720,8 @@ Deno.serve(async (req) => {
     categorySynced,
     freshSkipped: freshAmfiCodes.size,
     errors: amfiErrors,
+    upstreamSkipped: upstreamSkipped
+      ? { reason: upstreamSkipped.reason, httpStatus: upstreamSkipped.httpStatus ?? null }
+      : null,
   });
 });
