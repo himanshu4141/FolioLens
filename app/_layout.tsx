@@ -365,11 +365,14 @@ export default function RootLayout() {
         }}
         onError={() => {
           // Restoration errors (corrupt JSON, AsyncStorage read failure)
-          // are non-fatal — the app continues with an empty cache. Surface
-          // them so we can spot a pattern.
+          // are non-fatal — the app continues with an empty cache. The
+          // rich `persister_restore_failed` analytics event (error
+          // name / message / blob size) is emitted from the persister
+          // wrapper in `queryClient.ts` where we still hold the actual
+          // exception; this callback only fires the perfMark so the
+          // local-dev console line + perf timeline still surface it.
           console.warn('[persister] cache restore failed', { buster: __BUSTER__ });
           perfNow('persister:restore_failed', { buster: __BUSTER__ });
-          analytics.track('persister_restore_failed', { buster: __BUSTER__ });
         }}
       >
         <ThemeProvider>
