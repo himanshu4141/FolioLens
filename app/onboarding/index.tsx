@@ -197,6 +197,19 @@ async function markAutoForwardSetupComplete(userId: string): Promise<void> {
   if (error) throw error;
 }
 
+// Maps an upload error message to one of four broad categories that funnel
+// dashboards can group by. The strings here are stable analytic dimensions —
+// changing them invalidates historical PostHog filters, so add new buckets
+// rather than rewording existing ones.
+type UploadErrorKind = 'read_error' | 'auth_error' | 'network_error' | 'parser_error';
+
+function categorizeUploadError(message: string): UploadErrorKind {
+  if (/read|empty|not available/i.test(message)) return 'read_error';
+  if (/session|sign in|auth/i.test(message)) return 'auth_error';
+  if (/reach|network|fetch/i.test(message)) return 'network_error';
+  return 'parser_error';
+}
+
 function OnboardingWizard() {
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
@@ -276,6 +289,11 @@ function OnboardingWizard() {
   const onboardingStartedRef = useRef(false);
   const previousStepRef = useRef<OnboardingStep | null>(null);
   const onboardingCompletedRef = useRef(false);
+  // `onboarding_path_chosen` is a one-shot per wizard session — fires the
+  // first time the user commits on Welcome (drops a PDF or taps "Get it in
+  // 2 mins"), then never again, so funnel filters can split on intent
+  // without double-counting users who flip between paths.
+  const pathChosenRef = useRef(false);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -323,8 +341,22 @@ function OnboardingWizard() {
 
   function handleSkip() {
     console.log('[onboarding:wizard] skip', { step: draft.step });
+    analytics.track('onboarding_skip_clicked', {
+      step: draft.step,
+      step_index: STEP_ORDER.indexOf(draft.step),
+      is_returning_user: !!profile?.pan,
+    });
     void clearOnboardingDraft();
     router.replace('/(tabs)');
+  }
+
+  function trackPathChosen(path: 'upload' | 'request_cas') {
+    if (pathChosenRef.current) return;
+    pathChosenRef.current = true;
+    analytics.track('onboarding_path_chosen', {
+      path,
+      is_returning_user: !!profile?.pan,
+    });
   }
 
   async function runUpload(
@@ -341,6 +373,7 @@ function OnboardingWizard() {
       mime: asset.mimeType ?? null,
       has_password_override: !!password?.trim(),
     });
+    const hadPasswordOverride = !!password?.trim();
     try {
       const result = await uploadCasPdf(asset, password);
       const elapsed = Date.now() - startedAt;
@@ -349,6 +382,12 @@ function OnboardingWizard() {
         transactions: result.transactions,
         elapsed_ms: elapsed,
       });
+      if (hadPasswordOverride) {
+        analytics.track('onboarding_password_override_used', {
+          succeeded: true,
+          elapsed_ms: elapsed,
+        });
+      }
       // Invalidate the pre-import portfolio caches (typically an empty
       // portfolio for first-time users) so Done's fund preview and the
       // eventual dashboard mount both refetch against the freshly
@@ -365,13 +404,26 @@ function OnboardingWizard() {
     } catch (err) {
       const elapsed = Date.now() - startedAt;
       const msg = err instanceof Error ? err.message : 'Upload failed.';
+      const errorKind = categorizeUploadError(msg);
       console.warn('[onboarding:upload] failed', {
         message: msg,
         elapsed_ms: elapsed,
-        likely_read_error: /read/i.test(msg),
+        error_kind: errorKind,
       });
+      analytics.track('portfolio_import_failed', {
+        source: 'cas_pdf',
+        error_kind: errorKind,
+        had_password_override: hadPasswordOverride,
+        elapsed_ms: elapsed,
+      });
+      if (hadPasswordOverride) {
+        analytics.track('onboarding_password_override_used', {
+          succeeded: false,
+          error_kind: errorKind,
+        });
+      }
       setUploadError(
-        /read/i.test(msg)
+        errorKind === 'read_error'
           ? 'Could not read the PDF file. Re-download and try again.'
           : msg,
       );
@@ -381,6 +433,7 @@ function OnboardingWizard() {
   }
 
   async function handlePdfPicked(asset: DocumentPicker.DocumentPickerAsset) {
+    trackPathChosen('upload');
     setPickedAsset(asset);
     // Fast-path: a returning user with PAN already on file doesn't need to
     // re-enter it. Server uses saved PAN (+ DOB if present) as the default
@@ -515,7 +568,15 @@ function OnboardingWizard() {
         {draft.step === 'welcome' && (
           <WelcomeStep
             onPickPdf={handlePdfPicked}
-            onRequestCas={() => dispatch({ type: 'goto', step: 'import' })}
+            onPickerDismissed={() =>
+              analytics.track('onboarding_pdf_picker_dismissed', {
+                is_returning_user: !!profile?.pan,
+              })
+            }
+            onRequestCas={() => {
+              trackPathChosen('request_cas');
+              dispatch({ type: 'goto', step: 'import' });
+            }}
             uploading={uploading}
             uploadError={uploadError}
             styles={styles}
@@ -559,6 +620,9 @@ function OnboardingWizard() {
             }}
             onAutoForwardCompleted={async () => {
               await markAutoForwardSetupComplete(session!.user.id);
+              analytics.track('onboarding_auto_refresh_setup_completed', {
+                is_returning_user: !!profile?.pan,
+              });
               await queryClient.invalidateQueries({ queryKey: userProfileQueryKey(session?.user.id) });
             }}
             onSkip={() => dispatch({ type: 'goto', step: 'done' })}
@@ -609,6 +673,7 @@ function ProgressPills({
 
 function WelcomeStep({
   onPickPdf,
+  onPickerDismissed,
   onRequestCas,
   uploading,
   uploadError,
@@ -616,6 +681,11 @@ function WelcomeStep({
   cl,
 }: {
   onPickPdf: (asset: DocumentPicker.DocumentPickerAsset) => Promise<void> | void;
+  /** Fires when the user opened the OS file picker and backed out without
+   *  picking anything. Used as a funnel-drop signal — "users see the
+   *  drop-zone but bail" is a very different problem from "users never
+   *  reach the drop-zone". */
+  onPickerDismissed: () => void;
   onRequestCas: () => void;
   uploading: boolean;
   uploadError: string | null;
@@ -639,6 +709,7 @@ function WelcomeStep({
     }
     if (picked.canceled || !picked.assets?.[0]) {
       console.log('[onboarding:upload] picker_cancelled', { canceled: picked.canceled });
+      onPickerDismissed();
       return;
     }
     await onPickPdf(picked.assets[0]);
@@ -1063,6 +1134,16 @@ function ImportStep({
       platform: Platform.OS,
       mode: Platform.OS === 'web' ? 'new_tab' : 'in_app_browser',
     });
+    const portalKind: 'rta' | 'depository' = DEPOSITORY_OPTIONS.some(
+      (p) => p.url === url,
+    )
+      ? 'depository'
+      : 'rta';
+    analytics.track('onboarding_portal_opened', {
+      portal_id: portalId,
+      portal_kind: portalKind,
+      app_family: appFamily,
+    });
     try {
       setBrowserVisited(true);
       if (Platform.OS === 'web') {
@@ -1286,7 +1367,16 @@ function ImportStep({
 
       <PrimaryButton
         label="Open the form ↗"
-        onPress={() => setSub('portal')}
+        onPress={() => {
+          // `was_default` tells us how often demat (the pre-selected tile)
+          // is actually what the user picks vs. what they switch off of —
+          // critical for validating the default-selection decision.
+          analytics.track('onboarding_app_family_selected', {
+            family: appFamily,
+            was_default: appFamily === 'demat',
+          });
+          setSub('portal');
+        }}
         styles={styles}
         cl={cl}
       />
@@ -1406,7 +1496,10 @@ function DoneStep({
 
       {showAutoRefreshNudge ? (
         <Pressable
-          onPress={onSetupAutoRefresh}
+          onPress={() => {
+            analytics.track('onboarding_done_nudge_clicked');
+            onSetupAutoRefresh();
+          }}
           style={({ pressed }) => [styles.nudgeCard, pressed && styles.nudgeCardPressed]}
         >
           <View style={styles.nudgeIconWrap}>
