@@ -30,6 +30,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MutationCache, QueryCache, QueryClient, type QueryKey } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
+import type { PersistedClient, Persister } from '@tanstack/react-query-persist-client';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
@@ -106,11 +107,82 @@ export const queryClient = new QueryClient({
   },
 });
 
-export const persister = createAsyncStoragePersister({
+const PERSIST_KEY = `foliolens.react-query-cache.${__BUSTER__}`;
+
+const basePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
-  key: `foliolens.react-query-cache.${__BUSTER__}`,
+  key: PERSIST_KEY,
   throttleTime: 1000,
 });
+
+/**
+ * Best-effort blob-size reader. `PersistQueryClientProvider`'s own
+ * `onError` callback fires with zero arguments — the actual error is
+ * swallowed inside the library — so we wrap the persister below to
+ * intercept the exception while we still have it. This helper backs
+ * the `blob_size_bytes` field on the resulting analytics event so we
+ * can see if AsyncStorage's ~6 MB Android limit is in play.
+ */
+async function readBlobSize(): Promise<number | null> {
+  try {
+    const raw = await AsyncStorage.getItem(PERSIST_KEY);
+    return raw == null ? null : raw.length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Instrumented persister wrapper.
+ *
+ * The base persister's restore/persist paths catch their own errors
+ * and surface them only as a no-op `onError()` upstream, which means
+ * the `persister_restore_failed` analytics event we ship today has no
+ * useful payload — no error message, no error name, no idea whether
+ * we're looking at JSON corruption, a write that landed truncated
+ * past Android's ~6 MB AsyncStorage limit, or something else.
+ *
+ * Wrapping here lets us emit the rich payload at the moment we still
+ * have the exception. PostHog dashboards filter on
+ * `properties.error_name` / `properties.error_message` to bucket the
+ * three suspect causes (size overflow, mid-write interrupt, stringify
+ * shape mismatch); `blob_size_bytes` is the load-bearing field for
+ * the first one.
+ *
+ * The original error is re-thrown so the library's own retry /
+ * abandon logic is unchanged.
+ */
+export const persister = {
+  persistClient: async (client: PersistedClient) => {
+    try {
+      await basePersister.persistClient(client);
+    } catch (err) {
+      const size = await readBlobSize();
+      analytics.track('persister_write_failed', {
+        buster: __BUSTER__,
+        error_message: err instanceof Error ? err.message : String(err),
+        error_name: err instanceof Error ? err.name : 'unknown',
+        blob_size_bytes: size,
+      });
+      throw err;
+    }
+  },
+  restoreClient: async () => {
+    try {
+      return await basePersister.restoreClient();
+    } catch (err) {
+      const size = await readBlobSize();
+      analytics.track('persister_restore_failed', {
+        buster: __BUSTER__,
+        error_message: err instanceof Error ? err.message : String(err),
+        error_name: err instanceof Error ? err.name : 'unknown',
+        blob_size_bytes: size,
+      });
+      throw err;
+    }
+  },
+  removeClient: () => basePersister.removeClient(),
+} satisfies Persister;
 
 // Keys allowed to land in persistent storage. Everything else stays in
 // memory only. Auth + user_profile are intentionally excluded so a
