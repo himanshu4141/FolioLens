@@ -179,17 +179,17 @@ Feature flags live in `appStore.toolsFlags`. All flags default to `false`. Each 
 
 ### 9. Onboarding / Import CAS
 
-Reusable for first-run onboarding and later imports.
+Reusable for first-run onboarding and later imports. Drop-zone hero on Welcome is the primary action; the "Get it in 2 mins →" link routes users who don't have a statement yet through a one-question app-family tile picker (Zerodha-family ⇒ CDSL/NSDL portal list; Groww-family ⇒ CAMS/KFintech portal list; "a bit of both" ⇒ combined). Acronyms (CAS, CAMS, KFintech, CDSL, NSDL) are hidden from the user surface.
 
 Main import paths:
 
-- dedicated CAS forwarding address
-- CAS request via CAMS / KFintech portal
-- direct PDF upload flow
+- direct PDF drop on Welcome (primary)
+- the request flow when no statement on hand (secondary "Get it in 2 mins" link)
+- email auto-forward via the user's private FolioLens inbox (Done-screen nudge, also reachable from Settings → Refresh portfolio)
 
-Clear Lens mode uses the same behavior with Clear Lens header, cards, status chips, shadows, radii, and button treatment.
+After a PDF is picked, the wizard shows an unlock step (PAN as the default PDF password, optional DOB, and a "My PDF uses a different password" reveal for users who set a custom one with CAMS/KFintech) — or fast-paths past it entirely for returning users with PAN already on file.
 
-Desktop renders the wizard inside the sidebar shell using `DesktopFormFrame` (centered 720 px column) and suppresses the Stack header that would otherwise duplicate the body's hero ("Import your portfolio" / "Upload a CAS PDF").
+Desktop renders the wizard inside the sidebar shell using `DesktopFormFrame` (centered 720 px column) and suppresses the Stack header that would otherwise duplicate the body's hero.
 
 ### 10. Auth (sign in + magic-link confirm)
 
