@@ -288,7 +288,12 @@ function useAnalyticsLifecycle() {
                   const changed =
                     result.txInserted > 0 ||
                     result.navInserted > 0 ||
-                    result.idxInserted > 0;
+                    result.idxInserted > 0 ||
+                    // Tx count reconciliation rebuilt the local table
+                    // from server (drift detected). The downstream RQ
+                    // entries that derive from transactions need to
+                    // be flushed too.
+                    result.txRebuiltFromDrift === true;
                   if (changed) {
                     void queryClient.invalidateQueries();
                   }
