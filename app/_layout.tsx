@@ -176,17 +176,37 @@ function useAnalyticsLifecycle() {
     // network round-trip during web bootstrap.
     const sqliteSupported = Platform.OS !== 'web';
 
-    // Bootstrap is fired both from cold-launch `getSession` and from
-    // the SIGNED_IN auth event. The diagnostic event below captures the
-    // SQLite tx count *just before* bootstrap reads from it — which is
-    // the load-bearing field for the May 2026 "5 transactions in the
-    // middle" investigation: a partial count here, immediately after a
-    // SIGNED_OUT-driven `clearLocalDb()`, would prove that bootstrap
-    // raced with the cleanup (PR with the race fix lives behind this
-    // telemetry, on its own branch).
+    // **The sign-out → sign-in race.** SIGNED_OUT kicks off
+    // `clearLocalDb()` fire-and-forget. If Supabase's SDK then auto-
+    // refreshes the session and fires SIGNED_IN before that clear
+    // finishes (which happens at least 8 times in 5 days for the
+    // reporting user per the May 2026 PostHog export — Supabase emits
+    // SIGNED_OUT silently on background token-refresh failures, without
+    // going through our 401 handler), `bootstrapForUser` interleaves
+    // with the in-flight clear. Bootstrap reads a partial SQLite,
+    // fetches a delta against whatever watermark the partial state
+    // produced, and the clear later wipes some of what bootstrap just
+    // wrote. Net result: an arbitrary subset of transactions stuck in
+    // SQLite with no way for delta sync to recover.
+    //
+    // This module-level promise serialises the two halves: any
+    // bootstrap (from `getSession` or SIGNED_IN) awaits the pending
+    // clear before reading SQLite. Once the clear is done, subsequent
+    // awaits are no-ops (`Promise.resolve(resolvedPromise)`).
+    let pendingSignOutCleanup: Promise<void> | null = null;
+
     const runBootstrap = (userId: string) => {
       void (async () => {
         try {
+          // Wait for any in-flight SIGNED_OUT cleanup to finish before
+          // reading SQLite. See `pendingSignOutCleanup` above. If the
+          // gate actually held us up, emit an event so we can see the
+          // race firing in the field — the close-the-race fix would
+          // otherwise be invisible.
+          if (pendingSignOutCleanup) {
+            analytics.track('db_sync_awaiting_signout_cleanup');
+            await pendingSignOutCleanup;
+          }
           let preCount: number | null = null;
           if (Platform.OS !== 'web') {
             try {
@@ -215,6 +235,13 @@ function useAnalyticsLifecycle() {
     const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
       identify(session);
       if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
+        // If a SIGNED_OUT fired recently, `pendingSignOutCleanup` is
+        // set and `runBootstrap` will await it before touching SQLite.
+        // Track the cascade so we can see how often it happens in
+        // the field — this is the failure pattern the gate fixes.
+        if (pendingSignOutCleanup) {
+          analytics.track('auth_signin_after_recent_signout');
+        }
         runBootstrap(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
@@ -242,12 +269,13 @@ function useAnalyticsLifecycle() {
         });
         if (sqliteSupported) {
           // Wipe the SQLite read cache too — PII (transactions) must
-          // not survive a sign-out. The start/completed/failed events
-          // make the wall-clock duration of this clear visible in
-          // PostHog — necessary to prove or rule out a race against
-          // any subsequent SIGNED_IN bootstrap.
+          // not survive a sign-out. Bind the promise to
+          // `pendingSignOutCleanup` so any subsequent SIGNED_IN
+          // bootstrap can await it before reading SQLite — see the
+          // top-of-effect comment on `pendingSignOutCleanup` for the
+          // race this closes.
           analytics.track('db_clear_local_db_started');
-          void clearLocalDb()
+          pendingSignOutCleanup = clearLocalDb()
             .then(() => {
               analytics.track('db_clear_local_db_completed');
             })
