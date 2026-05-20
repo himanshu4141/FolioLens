@@ -40,8 +40,12 @@ function emptyDb(): DatabaseState {
 function parsePrimaryKey(ddl: string): string[] {
   const match = ddl.match(/PRIMARY KEY\s*\(([^)]+)\)/i);
   if (match) return match[1].split(',').map((s) => s.trim());
-  // Inline PRIMARY KEY on a single column.
-  const inline = ddl.match(/(\w+)\s+[A-Z]+\s+PRIMARY KEY/i);
+  // Inline PRIMARY KEY on a single column. Permissive on the type
+  // declaration so e.g. `scope TEXT NOT NULL PRIMARY KEY` (the
+  // sync_state shape) matches just as well as `id INTEGER PRIMARY KEY`.
+  // Non-greedy + `[^,]` keeps the match scoped to a single column
+  // definition.
+  const inline = ddl.match(/(\w+)\s+[^,]*?PRIMARY KEY/i);
   if (inline) return [inline[1]];
   return [];
 }

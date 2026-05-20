@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { transactionRepo } from '@/src/lib/data/transaction';
@@ -39,6 +40,7 @@ export default function DataSyncScreen() {
   const tokens = useClearLensTokens();
   const colors = tokens.colors;
   const queryClient = useQueryClient();
+  const router = useRouter();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
   // `useIsRestoring` returns true while the React Query persister is
@@ -402,6 +404,18 @@ export default function DataSyncScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity
+              style={[styles.row, styles.borderTop]}
+              onPress={() => router.push('/settings/cache-debug')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowValue}>View cache contents</Text>
+                <Text style={styles.rowSub}>SQLite tables, persisted React Query blob, sync state</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
+            </TouchableOpacity>
           </View>
         )}
 

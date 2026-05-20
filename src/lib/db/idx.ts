@@ -61,6 +61,19 @@ export async function count(): Promise<number> {
   return row?.n ?? 0;
 }
 
+/**
+ * Per-symbol row count. Used by the cache debug surface so we can
+ * surface "Nifty 50 TRI has N rows locally, watermark X" per index.
+ */
+export async function countBySymbol(symbol: string): Promise<number> {
+  const db = await getDb();
+  const row = (await db.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) as n FROM idx WHERE index_symbol = ?',
+    [symbol],
+  )) as { n: number } | null;
+  return row?.n ?? 0;
+}
+
 export async function clear(): Promise<void> {
   const db = await getDb();
   await db.execAsync('DELETE FROM idx');

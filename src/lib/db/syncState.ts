@@ -26,6 +26,20 @@ export async function read(scope: string): Promise<DbSyncStateRow | null> {
   return row;
 }
 
+/**
+ * Returns every row in `sync_state`. Used by the in-app cache debug
+ * surface to render the full sync-history matrix (one row per scope:
+ * `tx:<userId>`, `nav:<schemeCode>`, `idx:<symbol>`). Order matters
+ * only for human reading — sort by `last_synced_at DESC` so the most
+ * recently-active scopes are on top.
+ */
+export async function readAll(): Promise<DbSyncStateRow[]> {
+  const db = await getDb();
+  return db.getAllAsync<DbSyncStateRow>(
+    'SELECT scope, last_synced_at, watermark_date FROM sync_state ORDER BY last_synced_at DESC',
+  );
+}
+
 export async function upsert(
   scope: string,
   lastSyncedAt: string,
