@@ -104,6 +104,22 @@ export async function count(): Promise<number> {
   return row?.n ?? 0;
 }
 
+/**
+ * Max(transaction_date) currently stored. Separate from `getWatermark`
+ * (which returns max `created_at` — the *server-side insertion*
+ * timestamp the sync orchestrator uses). The cache-debug screen
+ * surfaces this as "latest trade date locally," which is the human-
+ * recognisable date users intuitively expect to match the most
+ * recent CAS row.
+ */
+export async function getLatestTransactionDate(): Promise<string | null> {
+  const db = await getDb();
+  const row = (await db.getFirstAsync<{ max_date: string | null }>(
+    'SELECT MAX(transaction_date) as max_date FROM tx',
+  )) as { max_date: string | null } | null;
+  return row?.max_date ?? null;
+}
+
 export async function clear(): Promise<void> {
   const db = await getDb();
   await db.execAsync('DELETE FROM tx');

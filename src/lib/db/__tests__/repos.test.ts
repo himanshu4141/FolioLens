@@ -114,6 +114,16 @@ describe('tx repo', () => {
     expect(await txRepo.getWatermark()).toBe('2025-03-15T00:00:00Z');
   });
 
+  it('getLatestTransactionDate returns max(transaction_date) for the debug surface', async () => {
+    expect(await txRepo.getLatestTransactionDate()).toBeNull();
+    await txRepo.bulkInsert([
+      mkTx({ fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 }),
+      mkTx({ fund_id: 'f1', transaction_date: '2024-06-01', transaction_type: 'purchase', units: 50, amount: 6000 }),
+      mkTx({ fund_id: 'f2', transaction_date: '2024-03-01', transaction_type: 'purchase', units: 200, amount: 20000 }),
+    ]);
+    expect(await txRepo.getLatestTransactionDate()).toBe('2024-06-01');
+  });
+
   it('clear empties the table', async () => {
     await txRepo.bulkInsert([
       mkTx({ fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 }),
@@ -206,6 +216,17 @@ describe('nav repo', () => {
     await navRepo.clear();
     expect(await navRepo.count()).toBe(0);
   });
+
+  it('countBySchemeCode returns per-scheme row count for the debug surface', async () => {
+    await navRepo.bulkInsert([
+      { scheme_code: 100, nav_date: '2024-01-01', nav: 10 },
+      { scheme_code: 100, nav_date: '2024-06-01', nav: 12 },
+      { scheme_code: 200, nav_date: '2024-01-01', nav: 20 },
+    ]);
+    expect(await navRepo.countBySchemeCode(100)).toBe(2);
+    expect(await navRepo.countBySchemeCode(200)).toBe(1);
+    expect(await navRepo.countBySchemeCode(300)).toBe(0);
+  });
 });
 
 describe('idx repo', () => {
@@ -246,6 +267,17 @@ describe('idx repo', () => {
     await idxRepo.clear();
     expect(await idxRepo.count()).toBe(0);
   });
+
+  it('countBySymbol returns per-index row count for the debug surface', async () => {
+    await idxRepo.bulkInsert([
+      { index_symbol: '^NSEI', index_date: '2024-01-01', close_value: 100 },
+      { index_symbol: '^NSEI', index_date: '2024-06-01', close_value: 110 },
+      { index_symbol: '^BSESN', index_date: '2024-06-01', close_value: 60000 },
+    ]);
+    expect(await idxRepo.countBySymbol('^NSEI')).toBe(2);
+    expect(await idxRepo.countBySymbol('^BSESN')).toBe(1);
+    expect(await idxRepo.countBySymbol('^UNKNOWN')).toBe(0);
+  });
 });
 
 describe('syncState repo', () => {
@@ -270,6 +302,18 @@ describe('syncState repo', () => {
     expect(await syncStateRepo.read('tx:user-1')).not.toBeNull();
     await syncStateRepo.clear();
     expect(await syncStateRepo.read('tx:user-1')).toBeNull();
+  });
+
+  it('readAll returns every scope sorted by last_synced_at descending', async () => {
+    await syncStateRepo.upsert('tx:user-1', '2024-06-01T00:00:00Z', '2024-05-30');
+    await syncStateRepo.upsert('nav:100', '2024-08-01T00:00:00Z', '2024-07-30');
+    await syncStateRepo.upsert('idx:^NSEI', '2024-07-01T00:00:00Z', '2024-06-30');
+
+    const rows = await syncStateRepo.readAll();
+    expect(rows).toHaveLength(3);
+    expect(rows[0].scope).toBe('nav:100');     // newest
+    expect(rows[1].scope).toBe('idx:^NSEI');   // middle
+    expect(rows[2].scope).toBe('tx:user-1');   // oldest
   });
 });
 

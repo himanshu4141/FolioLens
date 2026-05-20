@@ -107,7 +107,12 @@ export const queryClient = new QueryClient({
   },
 });
 
-const PERSIST_KEY = `foliolens.react-query-cache.${__BUSTER__}`;
+/**
+ * Public so the in-app cache-debug surface can read the raw blob
+ * from AsyncStorage to surface its byte length + parsed contents.
+ * Treat as read-only — the persister owns writes.
+ */
+export const PERSIST_KEY = `foliolens.react-query-cache.${__BUSTER__}`;
 
 const basePersister = createAsyncStoragePersister({
   storage: AsyncStorage,

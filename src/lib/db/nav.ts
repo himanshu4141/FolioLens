@@ -78,6 +78,21 @@ export async function count(): Promise<number> {
   return row?.n ?? 0;
 }
 
+/**
+ * Per-scheme row count. Used by the cache debug surface to surface
+ * "scheme X has N NAV rows locally" alongside the per-scheme
+ * watermark — gives a quick visual of which schemes are fully synced
+ * vs partially.
+ */
+export async function countBySchemeCode(schemeCode: number): Promise<number> {
+  const db = await getDb();
+  const row = (await db.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) as n FROM nav WHERE scheme_code = ?',
+    [schemeCode],
+  )) as { n: number } | null;
+  return row?.n ?? 0;
+}
+
 export async function clear(): Promise<void> {
   const db = await getDb();
   await db.execAsync('DELETE FROM nav');
