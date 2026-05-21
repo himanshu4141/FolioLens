@@ -40,16 +40,18 @@ type LastImport = {
 
 const PORTFOLIO_TIPS: { icon: keyof typeof Ionicons.glyphMap; text: string }[] = [
   {
+    // Sender addresses stay explicit — the user needs the exact strings
+    // to drop into a Gmail filter / Outlook rule.
     icon: 'filter-outline',
-    text: 'Auto-forward only CAS emails from donotreply@camsonline.com and samfS@kfintech.com.',
+    text: 'Auto-forward only statement emails from donotreply@camsonline.com and samfS@kfintech.com.',
   },
   {
     icon: 'document-text-outline',
-    text: 'Manual upload remains available for CAMS, KFintech, MFCentral, CDSL, and NSDL PDFs.',
+    text: 'Manual upload works for any official mutual fund statement PDF.',
   },
   {
     icon: 'list-outline',
-    text: 'Use Detailed CAS statements so FolioLens receives transaction history, not only balances.',
+    text: 'Pick a Detailed statement (not a summary) so transaction history comes through.',
   },
 ];
 
@@ -138,7 +140,7 @@ export default function PortfolioImportScreen() {
         <View style={styles.headerCopy}>
           <Text style={styles.heading}>Refresh & import</Text>
           <Text style={styles.subheading}>
-            Auto-forward CAS to your FolioLens inbox so transactions stay current. Upload a PDF anytime as a fallback.
+            Forward future statements to your private FolioLens address and your portfolio updates itself. Upload a PDF any time as a fallback.
           </Text>
         </View>
 
@@ -153,7 +155,7 @@ export default function PortfolioImportScreen() {
                 <Text style={styles.rowValue}>FolioLens import inbox</Text>
                 <Text style={styles.rowSub}>
                   {autoForwardReady
-                    ? 'Ready for future CAMS and KFintech CAS emails.'
+                    ? 'Ready for future statement emails.'
                     : 'Set up Gmail or Outlook forwarding once.'}
                 </Text>
               </View>
@@ -228,8 +230,8 @@ export default function PortfolioImportScreen() {
               <Ionicons name="cloud-upload-outline" size={18} color={cl.emerald} />
             </View>
             <View style={styles.rowLeft}>
-              <Text style={styles.rowValue}>Refresh from CAS</Text>
-              <Text style={styles.rowSub}>Upload a fresh CAS PDF or revisit auto-forward setup.</Text>
+              <Text style={styles.rowValue}>Upload a statement</Text>
+              <Text style={styles.rowSub}>Drop a fresh statement PDF or revisit auto-forward setup.</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={cl.textTertiary} />
           </TouchableOpacity>

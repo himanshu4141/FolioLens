@@ -122,7 +122,7 @@ export default function SettingsScreen() {
             <HubRow
               icon="refresh-outline"
               title="Refresh portfolio"
-              subtitle="Auto-forward CAS, upload statements, import history"
+              subtitle="Auto-forward statements, upload a PDF, see import history"
               onPress={() => router.push('/settings/portfolio-import')}
               styles={styles}
               cl={cl}

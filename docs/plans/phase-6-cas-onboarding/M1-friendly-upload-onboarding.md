@@ -337,3 +337,97 @@ global functions denominator grew but the numerator didn't. Lowered
 the global functions threshold by 1 pp from 55 → 54; the strict
 per-path overrides (functions: 100 for `src/utils/` and
 `supabase/functions/_shared/`) are unchanged.
+
+### Direction A redesign refresh (2026-05-20, PR #174)
+
+Beta feedback after the M1 PR landed was that the wizard still felt
+confusing and word-heavy — too many acronyms (CAS / RTA / CAMS /
+KFintech / CDSL / NSDL / SOA), an Identity step that asked for an
+email field nobody understood the purpose of, and a generic success
+screen that didn't show the user what had been imported. A new
+Claude Design handoff (`onboarding-journey-redesign`, Direction A
+primary + Direction B as the auto-forward companion) restructured
+the surface around a single drop-zone hero with plain-English app
+tiles for the request flow. The state machine (`welcome → identity
+→ import → done`) is unchanged — what each step renders is not.
+
+**What changed under each step (same names, new content):**
+
+- **Welcome (A1)** — collapsed the four-bullet intro plus the
+  upload-card-on-Step-3 into a single drop-zone screen. Picking a
+  PDF here advances to Identity if no PAN is on file, or fast-paths
+  straight to upload if PAN is saved. "Don't have one yet? Get it
+  in 2 mins →" routes to the new Import sub-screen; "Skip" in the
+  top-right exits to the empty dashboard. The PAN-based
+  welcome-skip in `pickOnboardingInitialStep` was removed because
+  Welcome is now the meaningful action for both fresh and returning
+  users.
+- **Identity (A3)** — repurposed from "Tell us who you are" into
+  "One last detail to unlock your statement." Same PAN / DOB
+  fields, but the email field was dropped from the surface entirely
+  (`OnboardingDraft.email` and the `set_email` action come out of
+  `src/utils/onboardingDraft.ts`; the DB column `kfintech_email`
+  stays for legacy reads). A new "My PDF uses a different password"
+  reveal lets the user override the PAN-as-password default — the
+  field's value is sent as `x-password-override` to the parser.
+  When the user reaches Identity via `?mode=identity` without a PDF
+  on hand, the screen renders in a review mode (locked fields,
+  correction links, "Done" CTA) instead of the unlock action.
+- **Import (A2)** — replaced the holding-mode selector + three-card
+  layout with a single question: "Which apps do you use?" Three
+  tiles (Zerodha-family ⇒ demat → CDSL/NSDL portals; Groww-family
+  ⇒ non-demat → CAMS/KFintech portals; "A bit of both") with the
+  demat tile pre-selected (broker apps cover most retail users in
+  India). User never sees the underlying acronyms; the wizard maps
+  the choice to the right portal list internally. Secondary CTA
+  routes the user back to Welcome to drop a PDF they already have.
+- **Done (A4)** — added a top-4 fund preview (real names from the
+  just-imported portfolio + per-fund XIRR badges using
+  `tokens.semantic.fundAllocation`), and rewrote the auto-forward
+  nudge with the honest framing decided in the chat ("setup is
+  one-time but each new statement gets forwarded automatically").
+  Cache invalidation moved out of `handleFinish` into `runUpload`
+  so Done's `usePortfolio()` fetch warms the dashboard cache; the
+  prefetch in `handleFinish` stays as a navigation-overlap safety
+  belt.
+- **`AutoRefreshSetup` repaint (Direction B)** — new hero "Skip the
+  upload from now on." with a two-step honest explanation. All the
+  underlying Gmail / Outlook mechanics from M2 are intact; only the
+  intro section changed. The "RECOMMENDED" badge moved off the
+  manual card so auto-forward reads as the primary path with manual
+  as the universal fallback.
+
+**Settings polish (copy-only, no structural changes):**
+
+- `account.tsx`: dropped the orphaned "CAS request email" row (the
+  field is no longer captured during sign-up; `kfintech_email`
+  column stays for legacy reads). DOB hint reworded from
+  "Required for CDSL/NSDL CAS imports" to "Some demat statements
+  need this to unlock" to match the new Identity copy.
+- `portfolio-import.tsx`: acronym wall in the tips list / status
+  copy softened to "statement" language. Explicit sender addresses
+  (`donotreply@camsonline.com`, `samfS@kfintech.com`) kept where
+  Gmail filter setup needs them. Hub heading copy aligned with the
+  new Direction B framing.
+- `settings/index.tsx`: hub row subtitle drops "CAS".
+
+**State-machine helper updates:**
+
+- `pickOnboardingInitialStep` no longer auto-skips Welcome based on
+  saved PAN. Welcome is the meaningful action now; deep-link modes
+  (`identity` / `auto-refresh` / `request-cas`) still route around
+  it. Tests updated to match.
+
+**Analytics expansion** — nine new PostHog events documented in the
+canonical reference (`00-onboarding-redesign.md` → "Analytics
+Events"). Error categorisation centralised in
+`categorizeUploadError(message)` so the dimension stays consistent
+across the failure event, the local error fallback, and console
+logs. The original four funnel events (`onboarding_started`,
+`onboarding_step_completed`, `onboarding_completed`,
+`portfolio_imported`) are preserved verbatim so existing funnels
+keep working.
+
+**Validation:** `npm run typecheck`, `npm run lint`, `npx jest
+--runInBand` (1156 tests), and `npm run export:web` all pass on the
+PR head.

@@ -8,7 +8,6 @@ export interface OnboardingDraft {
   step: OnboardingStep;
   pan: string;
   dob: string | null;          // ISO YYYY-MM-DD, optional
-  email: string;
   importResult: { funds: number; transactions: number } | null;
 }
 
@@ -16,7 +15,6 @@ export const EMPTY_DRAFT: OnboardingDraft = {
   step: 'welcome',
   pan: '',
   dob: null,
-  email: '',
   importResult: null,
 };
 
@@ -25,7 +23,6 @@ export type OnboardingAction =
   | { type: 'goto'; step: OnboardingStep }
   | { type: 'set_pan'; pan: string }
   | { type: 'set_dob'; dob: string | null }
-  | { type: 'set_email'; email: string }
   | { type: 'import_complete'; funds: number; transactions: number }
   | { type: 'reset' };
 
@@ -40,8 +37,6 @@ export function reduceOnboarding(state: OnboardingDraft, action: OnboardingActio
       return { ...state, pan: action.pan.trim().toUpperCase() };
     case 'set_dob':
       return { ...state, dob: action.dob };
-    case 'set_email':
-      return { ...state, email: action.email.trim() };
     case 'import_complete':
       return {
         ...state,
@@ -92,7 +87,6 @@ export async function loadOnboardingDraft(): Promise<OnboardingDraft | null> {
       step: isOnboardingStep(parsed.step) ? parsed.step : 'welcome',
       pan: typeof parsed.pan === 'string' ? parsed.pan : '',
       dob: typeof parsed.dob === 'string' ? parsed.dob : null,
-      email: typeof parsed.email === 'string' ? parsed.email : '',
       importResult:
         parsed.importResult &&
         typeof parsed.importResult === 'object' &&

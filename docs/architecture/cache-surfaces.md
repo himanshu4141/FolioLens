@@ -61,7 +61,7 @@ When adding a new cache, walk this list and note in the inline comment which cla
 ### 4. Onboarding draft
 
 - **Where:** [`src/utils/onboardingDraft.ts`](../../src/utils/onboardingDraft.ts).
-- **Storage:** AsyncStorage at key `foliolens-onboarding-draft-v1`. Holds PAN, DOB, email, partial import result.
+- **Storage:** AsyncStorage at key `foliolens-onboarding-draft-v1`. Holds PAN, DOB, partial import result. (The `email` field was dropped from the draft in the 2026-05-20 onboarding redesign — the loader still silently discards `email` keys from older blobs via the shape-tolerant sanitiser.)
 - **Version bump:** the `-v1` suffix in the key. **Manual** — no migration; bump key when shape changes (old blob effectively discarded). Audit #16 noted this is non-versioned in spirit; defensive `sanitizeX` in the loader handles missing fields silently.
 - **Sign-out cleanup:** `clearOnboardingDraft()` from SIGNED_OUT handler (PR #164). PII must not cross sign-in boundaries.
 - **Bug class watchlist:** B (key bump on shape change), D (handled by sign-out clear).
