@@ -164,4 +164,34 @@ describe('computeInvestmentVsBenchmarkTimeline', () => {
     const last = result.points[result.points.length - 1];
     expect(last.date).toBe(navRows[navRows.length - 1].nav_date);
   });
+
+  // Close-ended NFOs record the subscription transaction on the application
+  // date but NAV history only starts at allotment. Without the cost-basis
+  // fallback the chart drops the entire subscription period, so the user sees
+  // the chart begin weeks after they actually committed money.
+  it('marks pre-NAV NFO subscriptions to cost so early commitments still appear', () => {
+    const navRows = [
+      { scheme_code: 100, nav_date: '2018-04-09', nav: 10 },
+      { scheme_code: 100, nav_date: '2018-05-09', nav: 11 },
+    ];
+    const txRows = [
+      { fund_id: 'fund-1', transaction_date: '2018-03-08', transaction_type: 'purchase', units: 2500, amount: 25000 },
+    ];
+    const idxRows = [
+      { index_date: '2018-03-08', close_value: 100 },
+      { index_date: '2018-04-09', close_value: 105 },
+      { index_date: '2018-05-09', close_value: 110 },
+    ];
+
+    const result = computeInvestmentVsBenchmarkTimeline(navRows, txRows, idxRows, [FUND], 'All');
+
+    const subscription = result.points.find((point) => point.date === '2018-03-08');
+    expect(subscription).toBeDefined();
+    expect(subscription?.investedValue).toBe(25000);
+    expect(subscription?.portfolioValue).toBe(25000);
+    expect(subscription?.benchmarkValue).toBe(25000);
+
+    const allotment = result.points.find((point) => point.date === '2018-04-09');
+    expect(allotment?.portfolioValue).toBe(25000);
+  });
 });
