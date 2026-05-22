@@ -101,6 +101,10 @@ function getUnitsAt(history: { date: string; units: number }[], targetDate: stri
   return Math.max(0, getLatestAt(history, targetDate)?.units ?? 0);
 }
 
+function getCostAt(history: { date: string; cost: number }[], targetDate: string): number {
+  return Math.max(0, getLatestAt(history, targetDate)?.cost ?? 0);
+}
+
 function getInvestedAt(history: { date: string; investedValue: number }[], targetDate: string): number {
   return Math.max(0, getLatestAt(history, targetDate)?.investedValue ?? 0);
 }
@@ -185,6 +189,7 @@ export function computeInvestmentVsBenchmarkTimeline(
   );
 
   const unitHistory = new Map<string, { date: string; units: number }[]>();
+  const costHistory = new Map<string, { date: string; cost: number }[]>();
   const investedHistory: { date: string; investedValue: number }[] = [];
   const fundUnits = new Map<string, number>();
   const fundCost = new Map<string, number>();
@@ -192,6 +197,7 @@ export function computeInvestmentVsBenchmarkTimeline(
 
   for (const fund of funds) {
     unitHistory.set(fund.id, []);
+    costHistory.set(fund.id, []);
     fundUnits.set(fund.id, 0);
     fundCost.set(fund.id, 0);
   }
@@ -218,6 +224,7 @@ export function computeInvestmentVsBenchmarkTimeline(
     }
 
     unitHistory.get(tx.fund_id)!.push({ date, units: fundUnits.get(tx.fund_id) ?? 0 });
+    costHistory.get(tx.fund_id)!.push({ date, cost: fundCost.get(tx.fund_id) ?? 0 });
     investedHistory.push({ date, investedValue: totalInvested });
     allDates.add(date);
   }
@@ -231,9 +238,19 @@ export function computeInvestmentVsBenchmarkTimeline(
       const units = getUnitsAt(unitHistory.get(fund.id) ?? [], date);
       if (units <= 0) continue;
       const navPoint = getLatestAt(navHistoryByScheme.get(fund.schemeCode) ?? [], date);
-      if (!navPoint) continue;
-      portfolioValue += units * navPoint.value;
-      hasPortfolioValue = true;
+      if (navPoint) {
+        portfolioValue += units * navPoint.value;
+        hasPortfolioValue = true;
+        continue;
+      }
+      // No NAV on/before this date — typical for NFO close-ended funds in the
+      // gap between subscription and allotment. Mark to cost so the early
+      // commitment still shows on the chart instead of dropping the point.
+      const costBasis = getCostAt(costHistory.get(fund.id) ?? [], date);
+      if (costBasis > 0) {
+        portfolioValue += costBasis;
+        hasPortfolioValue = true;
+      }
     }
 
     const benchmarkClose = benchmarkValueAt(date);
