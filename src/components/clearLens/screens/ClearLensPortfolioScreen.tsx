@@ -23,6 +23,7 @@ import {
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
+import { useUserFunds } from '@/src/hooks/useUserFunds';
 import { syncDeltaForUser } from '@/src/lib/db/sync';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
@@ -955,9 +956,20 @@ function ClearLensPortfolioScreenMobile() {
   const showFirstLoad = isRestoring || isLoading || data === undefined;
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
+  // The chart needs every fund the user has ever transacted in, not just the
+  // ones with current holdings. Close-ended NFOs that have matured (and any
+  // other fully-redeemed fund) get filtered out of `fundCards` by
+  // `usePortfolio`'s netUnits guard, which made their lifetime invested /
+  // portfolio values invisible on the chart. `useUserFunds` returns the
+  // full roster; `is_active=false` covers CAS-imported "never owned"
+  // (zero-balance, zero-txn) rows that should stay excluded.
+  const { data: userFunds } = useUserFunds();
   const fundRefs: FundRef[] = useMemo(
-    () => fundCards.map((fund) => ({ id: fund.id, schemeCode: fund.schemeCode })),
-    [fundCards],
+    () =>
+      (userFunds ?? [])
+        .filter((fund) => fund.is_active === true && fund.id != null && fund.scheme_code != null)
+        .map((fund) => ({ id: fund.id as string, schemeCode: fund.scheme_code as number })),
+    [userFunds],
   );
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
