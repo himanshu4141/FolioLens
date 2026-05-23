@@ -165,6 +165,39 @@ describe('computeInvestmentVsBenchmarkTimeline', () => {
     expect(last.date).toBe(navRows[navRows.length - 1].nav_date);
   });
 
+  // Close-ended NFOs that have matured are fully redeemed (netUnits=0), so
+  // the portfolio screen previously dropped them from the funds array — and
+  // the chart lost their entire historical contribution. Now that the
+  // screen passes every transacted fund regardless of current units, the
+  // hook must correctly include them and show the full lifecycle.
+  it('includes the full lifecycle of a fully-redeemed fund', () => {
+    const navRows = [
+      { scheme_code: 100, nav_date: '2025-01-01', nav: 10 },
+      { scheme_code: 100, nav_date: '2025-02-01', nav: 12 },
+      { scheme_code: 100, nav_date: '2025-03-01', nav: 14 },
+    ];
+    // Buy 100 units at 10, fund matures and AMC redeems all 100 units at 14.
+    const txRows = [
+      { fund_id: 'fund-1', transaction_date: '2025-01-01', transaction_type: 'purchase', units: 100, amount: 1000 },
+      { fund_id: 'fund-1', transaction_date: '2025-03-01', transaction_type: 'redemption', units: 100, amount: 1400 },
+    ];
+    const idxRows = [
+      { index_date: '2025-01-01', close_value: 100 },
+      { index_date: '2025-02-01', close_value: 110 },
+      { index_date: '2025-03-01', close_value: 120 },
+    ];
+
+    const result = computeInvestmentVsBenchmarkTimeline(navRows, txRows, idxRows, [FUND], 'All');
+
+    const subscription = result.points.find((point) => point.date === '2025-01-01');
+    expect(subscription?.investedValue).toBe(1000);
+    expect(subscription?.portfolioValue).toBe(1000);
+
+    const midway = result.points.find((point) => point.date === '2025-02-01');
+    expect(midway?.investedValue).toBe(1000);
+    expect(midway?.portfolioValue).toBe(1200);
+  });
+
   // Close-ended NFOs record the subscription transaction on the application
   // date but NAV history only starts at allotment. Without the cost-basis
   // fallback the chart drops the entire subscription period, so the user sees
