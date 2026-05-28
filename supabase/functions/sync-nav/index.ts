@@ -2,9 +2,13 @@
  * sync-nav — fetches latest NAV data from mfapi.in for all active funds
  * and upserts into nav_history.
  *
- * Triggered via cron (daily ~7 PM IST) or HTTP POST with service role key.
- * Schedule: set in Supabase Dashboard → Edge Functions → sync-nav → Schedules
- *   Recommended: "30 13 * * 1-5"  (1:30 PM UTC = 7 PM IST, weekdays)
+ * Schedule lives in pg_cron (see `supabase/migrations/20260528000000_*.sql`):
+ * hourly between 6 PM IST and 6 AM IST (EOD publish window for Indian
+ * AMCs and international FoFs), every 2 hours between 8 AM and 5 PM IST
+ * (idle daytime). Runs every day so a Friday-EOD NAV landing on Saturday
+ * morning IST gets picked up instead of waiting until Monday.
+ *
+ * Also reachable via HTTP POST with the service role key for ad-hoc runs.
  *
  * mfapi.in format: { data: [{ date: "DD-MM-YYYY", nav: "123.45" }, ...] }
  * Returns full NAV history per scheme — any missed days are backfilled on next run.

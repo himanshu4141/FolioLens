@@ -34,7 +34,7 @@ import {
 } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
-import type { TimeWindow } from '@/src/utils/navUtils';
+import { navStaleness, type TimeWindow } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
@@ -91,12 +91,14 @@ export function PortfolioHero({
   dailyChangeAmount,
   dailyChangePct,
   xirr,
+  latestNavDate,
 }: {
   totalValue: number;
   totalInvested: number;
   dailyChangeAmount: number;
   dailyChangePct: number;
   xirr: number;
+  latestNavDate?: string | null;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -104,6 +106,7 @@ export function PortfolioHero({
   const gainPct = totalInvested > 0 ? (gain / totalInvested) * 100 : 0;
   const gainColor = toneColor(toneForValue(gain));
   const dailyColor = toneColor(toneForValue(dailyChangeAmount));
+  const navStamp = navStaleness(latestNavDate ?? null);
 
   return (
     <ClearLensCard style={styles.heroCard}>
@@ -116,6 +119,17 @@ export function PortfolioHero({
           {formatSignedChange(dailyChangeAmount, dailyChangePct)}
         </Text>
       </Text>
+
+      {navStamp.label !== '' && (
+        <Text
+          style={[
+            styles.heroNavStamp,
+            navStamp.critical && styles.heroNavStampCritical,
+          ]}
+        >
+          NAV {navStamp.label}
+        </Text>
+      )}
 
       <View style={styles.heroBottomRow}>
         <View style={styles.heroBottomMetric}>
@@ -1022,6 +1036,7 @@ function ClearLensPortfolioScreenMobile() {
             dailyChangeAmount={summary.dailyChangeAmount}
             dailyChangePct={summary.dailyChangePct}
             xirr={summary.xirr}
+            latestNavDate={summary.latestNavDate}
           />
 
           <BenchmarkComparisonCard
@@ -1107,6 +1122,16 @@ function makeStyles(tokens: ClearLensTokens) {
   },
   heroTodayValue: {
     fontFamily: ClearLensFonts.bold,
+  },
+  heroNavStamp: {
+    ...ClearLensTypography.caption,
+    color: cl.mint,
+    marginTop: 4,
+    opacity: 0.85,
+  },
+  heroNavStampCritical: {
+    color: CLEAR_LENS_RED,
+    opacity: 1,
   },
   heroBottomRow: {
     flexDirection: 'row',

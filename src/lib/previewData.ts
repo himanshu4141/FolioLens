@@ -412,6 +412,7 @@ function buildFundCard(scheme: PreviewSchemeMeta): FundCardData {
     schemeCode: scheme.schemeCode,
     currentNav: scheme.currentNav,
     previousNav: scheme.previousNav,
+    currentNavDate: '2026-05-09',
     currentUnits: agg.currentUnits,
     currentValue,
     investedAmount: Math.round(agg.investedAmount * 100) / 100,

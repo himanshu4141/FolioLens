@@ -53,6 +53,11 @@ export interface FundCardData {
   schemeCode: number;
   currentNav: number | null;
   previousNav: number | null;
+  // ISO date of the NAV that `currentNav` came from. Per-fund (not
+  // portfolio-wide) so the UI can show "as of …" labels that respect
+  // each AMC's publishing cadence — HDFC/ICICI/DSP land their EOD NAV
+  // hours before PPFAS / international FoFs.
+  currentNavDate: string | null;
   currentUnits: number;
   currentValue: number | null;
   investedAmount: number;
@@ -306,6 +311,7 @@ export async function fetchPortfolioData(
         schemeCode: fund.scheme_code,
         currentNav: null,
         previousNav: null,
+        currentNavDate: null,
         currentUnits: netUnits,
         currentValue: null,
         investedAmount,
@@ -356,6 +362,7 @@ export async function fetchPortfolioData(
       schemeCode: fund.scheme_code,
       currentNav: navInfo.current,
       previousNav: navInfo.previous,
+      currentNavDate: navInfo.date,
       currentUnits: netUnits,
       currentValue,
       investedAmount,

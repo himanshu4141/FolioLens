@@ -101,6 +101,7 @@ export function ClearLensPortfolioScreenDesktop() {
           dailyChangeAmount={summary.dailyChangeAmount}
           dailyChangePct={summary.dailyChangePct}
           xirr={summary.xirr}
+          latestNavDate={summary.latestNavDate}
         />
 
         <BenchmarkComparisonCard
