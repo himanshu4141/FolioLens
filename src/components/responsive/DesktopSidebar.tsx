@@ -10,6 +10,8 @@ import { useRouter, useSegments } from 'expo-router';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useSession } from '@/src/hooks/useSession';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
+import { useLatestNavDate } from '@/src/hooks/useLatestNavDate';
+import { navStaleness } from '@/src/utils/navUtils';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -68,6 +70,9 @@ export function DesktopSidebar() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const cl = tokens.colors;
+
+  const latestNavDate = useLatestNavDate();
+  const navStamp = useMemo(() => navStaleness(latestNavDate), [latestNavDate]);
 
   const handleImportPress = useImportPortfolioPress();
   function handleQuickAction(key: 'import' | 'trail' | 'tools') {
@@ -130,6 +135,25 @@ export function DesktopSidebar() {
       </View>
 
       <View style={styles.spacer} />
+
+      {navStamp.label !== '' && (
+        <View style={styles.navStampRow}>
+          <Ionicons
+            name="time-outline"
+            size={13}
+            color={navStamp.critical ? cl.negative : cl.textTertiary}
+          />
+          <Text
+            style={[
+              styles.navStampText,
+              navStamp.critical && styles.navStampTextCritical,
+            ]}
+            numberOfLines={1}
+          >
+            NAV {navStamp.label}
+          </Text>
+        </View>
+      )}
 
       {/* The account row is a direct link to Settings — the non-account items
           surfaced by the legacy account dropdown (Import, Money Trail, Tools)
@@ -215,6 +239,21 @@ function makeStyles(tokens: ClearLensTokens) {
       flex: 1,
     },
     spacer: { flex: 1 },
+    navStampRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: ClearLensSpacing.sm,
+      paddingVertical: 4,
+    },
+    navStampText: {
+      ...ClearLensTypography.caption,
+      color: c.textTertiary,
+    },
+    navStampTextCritical: {
+      color: c.negative,
+      fontFamily: ClearLensFonts.semiBold,
+    },
     accountRow: {
       flexDirection: 'row',
       alignItems: 'center',

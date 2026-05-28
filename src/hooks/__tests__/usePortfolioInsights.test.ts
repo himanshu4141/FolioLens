@@ -36,6 +36,7 @@ function makeFundCard(overrides: Partial<FundCardData> = {}): FundCardData {
     schemeCategory: 'Large Cap Fund',
     currentNav: 100,
     previousNav: 99,
+    currentNavDate: '2024-12-01',
     currentUnits: 1000,
     currentValue: 100_000,
     investedAmount: 80_000,

@@ -189,7 +189,7 @@ export function FundListItem({
   const { base, planBadge } = parseFundName(fund.schemeName);
   const gain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
   const gainPct = gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
-  const stale = navStaleness(latestNavDate);
+  const stale = navStaleness(fund.currentNavDate ?? latestNavDate);
   const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(fund.schemeCategory);
   const categoryColor = isDebtLike ? CLEAR_LENS_DEBT : tokens.semantic.asset.equity;
   const dailyColor = (fund.dailyChangePct ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;

@@ -7,7 +7,7 @@ Clear Lens is the only app design. It ships in two colour schemes — **light** 
 The same Clear Lens screens render in two layout modes, gated on viewport width by the `useResponsiveLayout()` hook (`src/components/responsive/`):
 
 - **Mobile** — viewport width < 1024 px, OR any iOS / Android binary regardless of width. Top FolioLens header, bottom tabs, and a stacked single-column body. Title sits in a body-level eyebrow + h1 + subtitle block.
-- **Desktop** — viewport width ≥ 1024 px on web. The bottom tab bar is hidden and a 240 px Clear Lens sidebar renders to the left with logo, primary nav, Quick Actions, and an account row that links to Settings. The same `<Tabs>` navigator stays mounted across the breakpoint so resizing preserves the active route. The body retains the same eyebrow + h1 + subtitle title block.
+- **Desktop** — viewport width ≥ 1024 px on web. The bottom tab bar is hidden and a 240 px Clear Lens sidebar renders to the left with logo, primary nav, Quick Actions, a "NAV {as of …}" freshness stamp (backed by `useLatestNavDate`, reads `MAX(nav_date)` from SQLite), and an account row that links to Settings. The same `<Tabs>` navigator stays mounted across the breakpoint so resizing preserves the active route. The body retains the same eyebrow + h1 + subtitle title block.
 
 Native binaries (iOS, Android) are hard-locked to mobile.
 
@@ -50,7 +50,7 @@ The Portfolio tab is the default landing screen.
 
 Clear Lens includes:
 
-- dark value hero with total value, today's move, overall gain/loss, and SIP-aware XIRR
+- dark value hero with total value, today's move, "NAV {as of …}" freshness stamp (portfolio-wide latest), overall gain/loss, and SIP-aware XIRR
 - benchmark comparison chip and benchmark selector
 - `How your money grew` chart with invested, portfolio, and benchmark worth
 - range controls: `1M`, `3M`, `6M`, `1Y`, `3Y`, `All`
@@ -87,7 +87,7 @@ Includes:
 - search
 - sort bottom sheet with current value, invested amount, XIRR, benchmark lead, 1-day change, and alphabetical options
 - compact fund rows with value and portfolio share
-- expandable fund cards with Today and XIRR (right-aligned MetricRow), invested, gain/loss, redeemed, booked P&L (only when realized activity exists), NAV staleness, "NAV · last 30 days" labelled sparkline, and `View transactions`
+- expandable fund cards with Today and XIRR (right-aligned MetricRow), invested, gain/loss, redeemed, booked P&L (only when realized activity exists), per-fund NAV staleness ("as of …" reflects each AMC's own EOD publish cadence — HDFC/ICICI/DSP land first, PPFAS and international FoFs trail by hours), "NAV · last 30 days" labelled sparkline, and `View transactions`
 
 Desktop variant (`ClearLensFundsScreenDesktop`) replaces the mobile allocation overview with a fund-level summary card: allocation strip, holdings count, top-3 concentration, largest holding (name + % of portfolio), and today's best/worst movers among the user's funds — explicitly *not* portfolio-level metrics like Portfolio value or Your XIRR (those live on Portfolio). The per-fund cards use a hierarchical desktop layout (`FundDesktopCard`): title row + alpha-pp badge ("vs benchmark"), big primary current value with smaller XIRR + Today stats, and a footer with explicit Invested ▏ Gain split. The mobile expanded card and the desktop card stay deliberately separate.
 

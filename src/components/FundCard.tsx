@@ -41,7 +41,12 @@ export function FundCard({
   const hasRedemptions = fund.redeemedUnits > 0;
   const isPressable = !fund.navUnavailable;
   const { base: fundBaseName, planBadge } = parseFundName(fund.schemeName);
-  const cardStaleness = navStaleness(latestNavDate);
+  // Prefer the per-fund NAV date so an AMC with a slow EOD release shows
+  // "as of Mon 27" while a fast AMC in the same portfolio reads "today".
+  // Falls back to the portfolio-wide `latestNavDate` for callers that
+  // haven't migrated yet (and for fully-redeemed funds where the per-
+  // fund date is null).
+  const cardStaleness = navStaleness(fund.currentNavDate ?? latestNavDate);
 
   const unrealizedGain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
   const unrealizedPct =

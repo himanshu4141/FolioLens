@@ -187,8 +187,18 @@ async function runSync(
 
       for (const [sinceDate, codes] of bucketByDate) {
         const rows = await fetchAllNavRows(codes, sinceDate);
+        // Count net inserts, not fetched rows. `fetchAllNavRows` uses
+        // `.gte(sinceDate)` (inclusive on the watermark), so the boundary
+        // row is always re-fetched even when nothing new is upstream.
+        // `INSERT OR IGNORE` drops it on the SQLite side, but counting
+        // `rows.length` here would still flag every sync as "changed",
+        // firing a phantom `queryClient.invalidateQueries()` in the
+        // foreground handler and leaving the user with a spinner that
+        // doesn't change any values.
+        const before = await navRepo.count();
         await navRepo.bulkInsert(rows);
-        navInserted += rows.length;
+        const after = await navRepo.count();
+        navInserted += after - before;
         for (const code of codes) {
           await syncStateRepo.upsert(
             `nav:${code}`,
@@ -209,8 +219,11 @@ async function runSync(
     try {
       const wm = await idxRepo.getWatermark(symbol);
       const rows = await fetchAllIndexRows(symbol, wm);
+      // Net delta, same reasoning as nav above.
+      const before = await idxRepo.count();
       await idxRepo.bulkInsert(rows);
-      idxInserted += rows.length;
+      const after = await idxRepo.count();
+      idxInserted += after - before;
       await syncStateRepo.upsert(
         `idx:${symbol}`,
         nowIso,
