@@ -1,19 +1,17 @@
 /**
- * Compare Funds — deep-redesign (M3v2). Hero + prose key-differences summary
- * + tabbed detail.
+ * Compare Funds — "What's Different" (Option C, M3v3).
  *
- * Picks any fund from scheme_master (universal picker), not just user-held.
- * Computes 1Y/3Y/5Y CAGR + Sharpe / Sortino / Std dev locally from
- * nav_history (MFData's numbers are unreliable per the accuracy comparison).
- * Surfaces MFData-derived beta + r_squared + period_returns only with
- * category gating + composition guards (see src/utils/mfdataGuards.ts).
+ * A single vertical scroll of six neutral finding cards: Returns (dark hero)
+ * → Risk → Cost → What's inside → Overlap → The basics. Each card leads with
+ * a data-built, non-prescriptive headline and hides raw numbers behind a
+ * "See the numbers" reveal. No tabs, no winner badges, no recommendations.
  *
- * The original prose-only PR (#100) and its M3 plan are superseded by this
- * screen and the M3v2 ExecPlan
- * (docs/plans/phase-4-tools-hub/M3v2-compare-funds-deep-redesign.md).
+ * Supersedes the tabbed M3v2 screen.
+ * Design spec: design_handoff_compare_redesign/README.md + Option C spec.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  Animated,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,12 +21,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
-import { useResponsiveLayout } from '@/src/components/responsive';
 import { useAppStore } from '@/src/store/appStore';
 import {
   ClearLensFonts,
@@ -46,7 +42,6 @@ import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioCompos
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
-import { shortSchemeName } from '@/src/utils/schemeName';
 import {
   computeRiskMetrics,
   computeTrailingReturns,
@@ -54,14 +49,8 @@ import {
 } from '@/src/utils/computedFundMetrics';
 import {
   isCompositionImplausible,
-  isLaunchDateDirectPlanIntroduction,
   readMfdataBeta,
-  readMfdataPeriodReturn,
-  readMfdataRSquared,
-  readMfdataRank,
 } from '@/src/utils/mfdataGuards';
-import { computeHoldingOverlap } from '@/src/utils/holdingOverlap';
-import { formatCurrency } from '@/src/utils/formatting';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { fetchFundNavHistory } from '@/src/hooks/useFundDetail';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
@@ -74,42 +63,14 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 const MAX_FUNDS = 3;
 const MIN_FUNDS = 2;
 
-type TabKey = 'returns' | 'risk' | 'asset_mix' | 'sectors' | 'holdings' | 'other';
+// Stable A/B/C identity colors — NOT theme tokens (read on both light/dark).
+const BADGE_LETTERS = ['A', 'B', 'C'] as const;
+const BADGE_COLORS = ['#10B981', '#6E73C4', '#F59E0B'] as const;
+const BADGE_SOFT_COLORS = ['#ECFDF5', '#EEF1F8', '#FFF8E6'] as const;
 
-/**
- * Wraps each comparison-table block. On mobile we keep a horizontal
- * ScrollView so a 3-fund row that exceeds the phone width can scroll.
- * On desktop the 3-fund table (label 160 + 3 × cell) always fits inside
- * the list-tier 960 frame, so we drop the scroller and use a plain View
- * with `width: '100%'` — that gives the flex cells (`flex: 1`) an actual
- * parent width to flex against, which makes the table fill the card
- * rather than collapse to its natural left-aligned width.
- */
-function TableScrollHost({ children }: { children: ReactNode }) {
-  const { layout } = useResponsiveLayout();
-  if (layout === 'desktop') {
-    return <View style={{ width: '100%' }}>{children}</View>;
-  }
-  // Multi-line JSX form so a bulk rename of the call-site single-line
-  // shape doesn't sweep this internal usage.
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-    >
-      {children}
-    </ScrollView>
-  );
-}
-
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'returns', label: 'Returns' },
-  { key: 'risk', label: 'Risk' },
-  { key: 'asset_mix', label: 'Asset mix' },
-  { key: 'sectors', label: 'Sectors' },
-  { key: 'holdings', label: 'Holdings' },
-  { key: 'other', label: 'Other' },
-];
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface SchemeMasterRow {
   schemeCode: number;
@@ -144,22 +105,33 @@ interface CompositionRow {
   midCapPct: number | null;
   smallCapPct: number | null;
   notClassifiedPct: number | null;
-  /**
-   * 'amfi' = cap pcts derived from real holdings via the AMFI classifier.
-   * 'category_fallback' = had holdings but classifier coverage was zero, so
-   *   we kept SEBI category defaults for visual continuity. UI shows a
-   *   disclaimer.
-   * 'category_rules' = no holdings disclosed; pure SEBI default. UI shows
-   *   the same disclaimer.
-   */
   source: 'amfi' | 'category_fallback' | 'category_rules' | string | null;
   sectorAllocation: Record<string, number> | null;
   topHoldings: { name: string; isin: string; sector: string; pctOfNav: number }[] | null;
   rawDebtHoldings: { name?: string; weight_pct?: number; credit_rating?: string }[] | null;
 }
 
+type Metrics = {
+  trailing: TrailingPeriodReturns;
+  sharpe: number | null;
+  sortino: number | null;
+  stdDev: number | null;
+  monthlyObservations: number;
+  maxDrawdown: number | null;
+};
+
+interface CompareFundData {
+  code: number;
+  badgeLetter: string;
+  badgeColor: string;
+  badgeSoft: string;
+  scheme: SchemeMasterRow;
+  metrics: Metrics | null;
+  composition: CompositionRow | null;
+}
+
 // ---------------------------------------------------------------------------
-// Data fetchers
+// Data fetchers (kept verbatim from M3v2)
 // ---------------------------------------------------------------------------
 
 async function fetchSchemes(
@@ -168,9 +140,6 @@ async function fetchSchemes(
 ): Promise<SchemeMasterRow[]> {
   if (schemeCodes.length === 0) return [];
   perfStart('query:compare:schemes');
-  // Each scheme is fetched through the shared `['scheme-master', code]`
-  // cache that Fund Detail also uses. Navigating Compare → Fund Detail
-  // (or vice versa) on the same scheme hits the warm cache.
   const rows = await Promise.all(
     schemeCodes.map((code) =>
       qc.fetchQuery({
@@ -211,7 +180,6 @@ async function fetchSchemes(
 async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<CompositionRow[]> {
   if (schemeCodes.length === 0) return [];
   perfStart('query:compare:compositions');
-  // Get the latest composition row per scheme.
   const { data, error } = await fundPortfolioCompositionRepo
     .from()
     .select(
@@ -248,16 +216,6 @@ async function fetchNavHistoryForCodes(
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
   perfStart('query:compare:navHistory');
-  // Per-scheme reads go through the shared `['fund-nav-history', code]`
-  // cache — the same key Fund Detail's `useFundNavHistory` populates. A
-  // user who opened a fund's detail page first and then lands on Compare
-  // pays zero network cost for that scheme's NAV history.
-  //
-  // `fetchFundNavHistory` paginates internally; previously this function
-  // duplicated that pagination loop. Routing through the shared fetcher
-  // keeps a single source of truth for "give me one scheme's NAV
-  // history" and means future caching layers (SQLite read-through, etc.)
-  // only need to plug in once.
   const entries = await Promise.all(
     schemeCodes.map(async (code) => {
       const rows = await qc.fetchQuery({
@@ -278,6 +236,1398 @@ async function fetchNavHistoryForCodes(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function computeMaxDrawdown(series: NavPoint[]): number | null {
+  const today = new Date();
+  const cutoff = new Date(today);
+  cutoff.setFullYear(cutoff.getFullYear() - 5);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+  const sorted = [...series]
+    .filter((p) => p.date >= cutoffStr && Number.isFinite(p.value) && p.value > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted.length < 10) return null;
+  let peak = sorted[0].value;
+  let maxDD = 0;
+  for (const p of sorted) {
+    if (p.value > peak) peak = p.value;
+    const dd = (p.value - peak) / peak;
+    if (dd < maxDD) maxDD = dd;
+  }
+  return maxDD < -0.001 ? maxDD : null;
+}
+
+function hasHistory(metrics: Metrics | null): boolean {
+  if (!metrics) return false;
+  const { y1, y3, y5 } = metrics.trailing;
+  return y1 != null || y3 != null || y5 != null;
+}
+
+function fundDisplayName(scheme: SchemeMasterRow): string {
+  return scheme.schemeCategory ?? scheme.familyName ?? scheme.schemeName;
+}
+
+function returnsHeadline(funds: CompareFundData[]): string {
+  const eligible = funds
+    .filter((f) => f.metrics?.trailing.y3 != null)
+    .map((f) => ({ f, v: f.metrics!.trailing.y3! }));
+  if (eligible.length < 2) return 'Returns over the last three years.';
+  const sorted = [...eligible].sort((a, b) => b.v - a.v);
+  const hi = sorted[0];
+  const lo = sorted[sorted.length - 1];
+  return `Over 3Y, ${fundDisplayName(hi.f.scheme)} returned ${(hi.v * 100).toFixed(1)}%; ${fundDisplayName(lo.f.scheme)} returned ${(lo.v * 100).toFixed(1)}%.`;
+}
+
+function tradeOffHolds(funds: CompareFundData[]): boolean {
+  const eligible = funds.filter(
+    (f) => f.metrics?.trailing.y3 != null && f.metrics?.maxDrawdown != null,
+  );
+  if (eligible.length < 2) return false;
+  const topReturn = eligible.reduce((m, f) =>
+    f.metrics!.trailing.y3! > m.metrics!.trailing.y3! ? f : m,
+  );
+  const sortedByDD = [...eligible].sort(
+    (a, b) => a.metrics!.maxDrawdown! - b.metrics!.maxDrawdown!,
+  );
+  const ddRank = sortedByDD.findIndex((f) => f.code === topReturn.code);
+  return ddRank < 2;
+}
+
+function launchMonthsAgo(launchDate: string | null): number {
+  if (!launchDate) return 0;
+  const d = new Date(launchDate);
+  const now = new Date();
+  return Math.max(0, Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24 * 30)));
+}
+
+function launchYear(launchDate: string | null): string {
+  if (!launchDate) return '—';
+  return new Date(launchDate).getFullYear().toString();
+}
+
+function fmtAumCr(aumCr: number | null): string {
+  if (aumCr == null) return '—';
+  if (aumCr >= 1000) return `₹${(aumCr / 1000).toFixed(1)}K Cr`;
+  return `₹${aumCr.toLocaleString('en-IN')} Cr`;
+}
+
+function fmtPct(v: number | null, digits = 1): string {
+  if (v == null) return '—';
+  return `${(v * 100).toFixed(digits)}%`;
+}
+
+function fmtDrawdown(v: number | null): string {
+  if (v == null) return '—';
+  return `–${Math.abs(v * 100).toFixed(0)}%`;
+}
+
+// ---------------------------------------------------------------------------
+// FundBadge atom
+// ---------------------------------------------------------------------------
+
+function FundBadge({
+  letter,
+  color,
+  size = 22,
+  radius = 7,
+}: {
+  letter: string;
+  color: string;
+  size?: number;
+  radius?: number;
+}) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: radius,
+        backgroundColor: color,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
+    >
+      <Text
+        style={{
+          color: '#fff',
+          fontSize: Math.round(size * 0.48),
+          fontFamily: ClearLensFonts.extraBold,
+          lineHeight: size,
+          includeFontPadding: false,
+        }}
+      >
+        {letter}
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FundChip atom
+// ---------------------------------------------------------------------------
+
+function FundChip({
+  letter,
+  color,
+  soft,
+  label,
+  onRemove,
+}: {
+  letter: string;
+  color: string;
+  soft: string;
+  label: string;
+  onRemove?: () => void;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: ClearLensSpacing.sm,
+        paddingLeft: 3,
+        paddingRight: onRemove ? 4 : 12,
+        height: 28,
+        borderRadius: ClearLensRadii.full,
+        backgroundColor: soft,
+      }}
+    >
+      <FundBadge letter={letter} color={color} size={22} radius={ClearLensRadii.full} />
+      <Text
+        style={{
+          fontSize: 12,
+          fontFamily: ClearLensFonts.semiBold,
+          color: '#0A1430',
+          flexShrink: 1,
+        }}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+      {onRemove ? (
+        <TouchableOpacity
+          onPress={onRemove}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}
+          accessibilityLabel={`Remove ${label}`}
+        >
+          <Ionicons name="close" size={13} color="#7B8AA3" />
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FindingCard frame
+// ---------------------------------------------------------------------------
+
+function FindingCard({
+  headline,
+  sub,
+  tone = 'light',
+  tokens,
+  children,
+}: {
+  headline: string;
+  sub?: string;
+  tone?: 'light' | 'dark';
+  tokens: ClearLensTokens;
+  children?: ReactNode;
+}) {
+  const cl = tokens.colors;
+  const dark = tone === 'dark';
+  return (
+    <View
+      style={[
+        {
+          borderRadius: ClearLensRadii.xl,
+          padding: 18,
+          gap: 14,
+          backgroundColor: dark ? cl.heroSurface : cl.surface,
+          borderWidth: dark ? 0 : 1,
+          borderColor: cl.borderLight,
+        },
+        dark
+          ? { shadowColor: '#000', shadowOffset: { width: 0, height: 24 }, shadowOpacity: 0.22, shadowRadius: 60, elevation: 8 }
+          : ClearLensShadow,
+      ]}
+    >
+      <View style={{ gap: 4 }}>
+        <Text
+          style={{
+            fontFamily: ClearLensFonts.extraBold,
+            fontSize: 21,
+            lineHeight: 27,
+            letterSpacing: -0.21,
+            color: dark ? cl.textOnDark : cl.navy,
+          }}
+        >
+          {headline}
+        </Text>
+        {sub ? (
+          <Text
+            style={{
+              fontSize: 12,
+              fontFamily: ClearLensFonts.medium,
+              lineHeight: 18,
+              color: dark ? cl.textOnDarkMuted : cl.textTertiary,
+            }}
+          >
+            {sub}
+          </Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BarRow & BarsViz
+// ---------------------------------------------------------------------------
+
+function BarRow({
+  letter,
+  color,
+  label,
+  value,
+  widthFraction,
+  dark,
+  tokens,
+}: {
+  letter: string;
+  color: string;
+  label: string;
+  value: string;
+  widthFraction: number;
+  dark?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const trackBg = dark ? 'rgba(255,255,255,0.08)' : cl.surfaceSoft;
+  const pct = Math.max(0.12, Math.min(1, widthFraction)) * 100;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+      <FundBadge letter={letter} color={color} size={22} radius={7} />
+      <View style={{ flex: 1, height: 32, borderRadius: 9, backgroundColor: trackBg, overflow: 'hidden' }}>
+        <View
+          style={{
+            width: `${pct}%` as unknown as number,
+            height: '100%',
+            borderRadius: 9,
+            backgroundColor: color,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: 12,
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 11,
+              fontFamily: ClearLensFonts.bold,
+              color: '#fff',
+              opacity: 0.95,
+            }}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          <Text
+            style={{
+              fontFamily: ClearLensFonts.extraBold,
+              fontSize: 13,
+              color: '#fff',
+              fontVariant: ['tabular-nums'],
+            }}
+          >
+            {value}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function BarsViz({
+  funds,
+  valFn,
+  formatFn,
+  dark,
+  tokens,
+}: {
+  funds: CompareFundData[];
+  valFn: (f: CompareFundData) => number | null;
+  formatFn: (v: number) => string;
+  dark?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const numerics = funds.map(valFn).filter((v): v is number => v != null).map(Math.abs);
+  const maxVal = Math.max(...numerics, 1);
+
+  return (
+    <View style={{ gap: 10 }}>
+      {funds.map((f) => {
+        const v = valFn(f);
+        if (v == null) return null;
+        const fraction = Math.abs(v) / maxVal;
+        return (
+          <BarRow
+            key={f.code}
+            letter={f.badgeLetter}
+            color={f.badgeColor}
+            label={fundDisplayName(f.scheme)}
+            value={formatFn(v)}
+            widthFraction={fraction}
+            dark={dark}
+            tokens={tokens}
+          />
+        );
+      })}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NumbersReveal — "See the numbers" collapsible
+// ---------------------------------------------------------------------------
+
+type RevealRow = { label: string; cells: string[] };
+
+function NumbersReveal({
+  funds,
+  rows,
+  dark,
+  tokens,
+}: {
+  funds: CompareFundData[];
+  rows: RevealRow[];
+  dark?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const [open, setOpen] = useState(false);
+  const chevronAnim = useRef(new Animated.Value(0)).current;
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    Animated.timing(chevronAnim, {
+      toValue: next ? 1 : 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const chevronRotate = chevronAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '180deg'],
+  });
+
+  const mutedColor = dark ? cl.textOnDarkMuted : cl.textTertiary;
+  const dividerColor = dark ? 'rgba(255,255,255,0.12)' : cl.borderLight;
+
+  return (
+    <View>
+      <TouchableOpacity
+        onPress={toggle}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingTop: 6,
+          minHeight: 40,
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={open ? 'Hide the numbers' : 'See the numbers'}
+        accessibilityState={{ expanded: open }}
+      >
+        <Text
+          style={{
+            fontSize: 11,
+            fontFamily: ClearLensFonts.bold,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            color: mutedColor,
+          }}
+        >
+          {open ? 'Hide the numbers' : 'See the numbers'}
+        </Text>
+        <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
+          <Ionicons name="chevron-down" size={14} color={mutedColor} />
+        </Animated.View>
+      </TouchableOpacity>
+
+      {open ? (
+        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: dividerColor, gap: 8 }}>
+          {/* Badge header row */}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <View style={{ width: 80 }} />
+            {funds.map((f) => (
+              <View key={f.code} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+                <Text
+                  style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, color: mutedColor }}
+                  numberOfLines={1}
+                >
+                  {fundDisplayName(f.scheme)}
+                </Text>
+              </View>
+            ))}
+          </View>
+          {/* Data rows */}
+          {rows.map((row) => (
+            <View key={row.label} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+              <Text
+                style={{ width: 80, fontSize: 10, fontFamily: ClearLensFonts.medium, color: mutedColor }}
+                numberOfLines={2}
+              >
+                {row.label}
+              </Text>
+              {row.cells.map((cell, i) => (
+                <Text
+                  key={i}
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    fontFamily: ClearLensFonts.bold,
+                    color: dark ? cl.textOnDark : cl.navy,
+                    fontVariant: ['tabular-nums'],
+                  }}
+                >
+                  {cell}
+                </Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EmptyState — 0 funds
+// ---------------------------------------------------------------------------
+
+function EmptyState({
+  tokens,
+  onAdd,
+}: {
+  tokens: ClearLensTokens;
+  onAdd: () => void;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View style={{ gap: 18 }}>
+      {/* Hero copy */}
+      <View style={{ paddingHorizontal: ClearLensSpacing.xs, paddingTop: ClearLensSpacing.md, gap: 4 }}>
+        <Text
+          style={{
+            fontSize: 10,
+            fontFamily: ClearLensFonts.bold,
+            letterSpacing: 1.4,
+            textTransform: 'uppercase',
+            color: cl.emerald,
+          }}
+        >
+          COMPARE
+        </Text>
+        <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 26, lineHeight: 32, color: cl.navy }}>
+          Two or more funds, side-by-side.
+        </Text>
+        <Text style={{ fontFamily: ClearLensFonts.medium, fontSize: 13, color: cl.textSecondary, lineHeight: 19 }}>
+          Pick funds from your portfolio or search the full list.
+        </Text>
+      </View>
+
+      {/* Slot diagram */}
+      <View
+        style={{
+          backgroundColor: cl.surface,
+          borderRadius: ClearLensRadii.lg,
+          borderWidth: 1,
+          borderColor: cl.borderLight,
+          ...ClearLensShadow,
+          padding: ClearLensSpacing.md,
+          gap: 12,
+        }}
+      >
+        <Text
+          style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 1.2, textTransform: 'uppercase', color: cl.textTertiary }}
+        >
+          Add up to {MAX_FUNDS} funds
+        </Text>
+        <View style={{ gap: 8 }}>
+          {BADGE_LETTERS.slice(0, MAX_FUNDS).map((letter, i) => (
+            <TouchableOpacity
+              key={letter}
+              onPress={i === 0 ? onAdd : undefined}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+                padding: 12,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderStyle: 'dashed',
+                borderColor: cl.border,
+                backgroundColor: cl.surfaceSoft,
+                minHeight: 44,
+              }}
+              activeOpacity={i === 0 ? 0.7 : 1}
+            >
+              <View
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 7,
+                  backgroundColor: cl.surface,
+                  borderWidth: 1,
+                  borderStyle: 'dashed',
+                  borderColor: cl.border,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, color: cl.textTertiary }}>{letter}</Text>
+              </View>
+              <Text style={{ flex: 1, fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+                {i === 0 ? 'Tap to add a fund' : 'Empty slot'}
+              </Text>
+              {i === 0 ? (
+                <Ionicons name="add" size={14} color={cl.emerald} />
+              ) : null}
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <Text
+        style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 17, paddingHorizontal: 4 }}
+      >
+        Compare works best with funds in the same category. Mixing categories is supported — we'll flag it.
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OneFundState — 1 fund selected
+// ---------------------------------------------------------------------------
+
+function OneFundState({
+  fund,
+  tokens,
+  onRemove,
+  onAdd,
+}: {
+  fund: CompareFundData;
+  tokens: ClearLensTokens;
+  onRemove: () => void;
+  onAdd: () => void;
+}) {
+  const cl = tokens.colors;
+  const { scheme, metrics, badgeLetter, badgeColor } = fund;
+
+  return (
+    <View style={{ gap: 14 }}>
+      <Text
+        style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 1.4, textTransform: 'uppercase', color: cl.textTertiary }}
+      >
+        Comparing · 1 of {MAX_FUNDS}
+      </Text>
+
+      {/* Single-fund summary card */}
+      <View
+        style={{
+          backgroundColor: cl.surface,
+          borderRadius: ClearLensRadii.lg,
+          borderWidth: 1,
+          borderColor: cl.borderLight,
+          ...ClearLensShadow,
+          padding: ClearLensSpacing.md,
+          gap: 14,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <FundBadge letter={badgeLetter} color={badgeColor} size={32} radius={10} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 13, fontFamily: ClearLensFonts.bold, color: cl.navy }} numberOfLines={1}>
+              {scheme.familyName ?? scheme.schemeName} {scheme.schemeCategory ?? ''}
+            </Text>
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary }} numberOfLines={1}>
+              {scheme.schemeCategory ?? ''}{scheme.benchmark ? ` · ${scheme.benchmark}` : ''}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={onRemove}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
+            accessibilityLabel="Remove fund"
+          >
+            <Ionicons name="close" size={14} color={cl.textTertiary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* 1Y / 3Y / 5Y strip */}
+        <View
+          style={{
+            flexDirection: 'row',
+            gap: 8,
+            paddingVertical: 12,
+            borderTopWidth: 1,
+            borderBottomWidth: 1,
+            borderColor: cl.borderLight,
+          }}
+        >
+          {(['y1', 'y3', 'y5'] as const).map((k) => {
+            const label = k === 'y1' ? '1Y' : k === 'y3' ? '3Y' : '5Y';
+            const v = metrics?.trailing[k] ?? null;
+            return (
+              <View key={k} style={{ flex: 1, gap: 2 }}>
+                <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+                  {label}
+                </Text>
+                <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 18, lineHeight: 24, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+                  {fmtPct(v)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+              Fund size
+            </Text>
+            <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+              {fmtAumCr(scheme.aumCr)}
+            </Text>
+          </View>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+              Expense
+            </Text>
+            <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+              {scheme.expenseRatio != null ? `${scheme.expenseRatio.toFixed(2)}%` : '—'}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Add-next CTA */}
+      <TouchableOpacity
+        onPress={onAdd}
+        style={{
+          borderWidth: 1,
+          borderStyle: 'dashed',
+          borderColor: cl.border,
+          borderRadius: ClearLensRadii.xl,
+          padding: 20,
+          backgroundColor: cl.surfaceSoft,
+          alignItems: 'center',
+          gap: 10,
+          minHeight: 44,
+        }}
+        activeOpacity={0.7}
+      >
+        <View
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: ClearLensRadii.full,
+            backgroundColor: cl.surface,
+            borderWidth: 1,
+            borderStyle: 'dashed',
+            borderColor: cl.border,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Ionicons name="add" size={18} color={cl.emerald} />
+        </View>
+        <Text style={{ fontSize: 14, fontFamily: ClearLensFonts.bold, color: cl.navy, textAlign: 'center' }}>
+          Add a second fund to start comparing
+        </Text>
+        <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, textAlign: 'center', lineHeight: 18 }}>
+          Pick another fund and we'll show their returns, risk and cost side-by-side.
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NoHistoryBanner
+// ---------------------------------------------------------------------------
+
+function NoHistoryBanner({
+  fund,
+  tokens,
+}: {
+  fund: CompareFundData;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const months = launchMonthsAgo(fund.scheme.launchDate);
+  const familyName = fund.scheme.familyName ?? fund.scheme.schemeName;
+
+  return (
+    <View
+      style={{
+        borderRadius: ClearLensRadii.lg,
+        backgroundColor: cl.mint50,
+        borderWidth: 1,
+        borderColor: cl.borderLight,
+        padding: 14,
+        flexDirection: 'row',
+        gap: 10,
+        alignItems: 'flex-start',
+      }}
+    >
+      <FundBadge letter={fund.badgeLetter} color={fund.badgeColor} size={26} radius={8} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, color: cl.navy }}>
+          {familyName} launched {months > 0 ? `${months} months ago` : 'recently'}.
+        </Text>
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, marginTop: 2, lineHeight: 17 }}>
+          It has no return history yet, so it's left out of the Returns and Risk comparisons. It still appears in Cost, What's inside, Overlap, and The basics.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CrossCategoryBanner
+// ---------------------------------------------------------------------------
+
+function CrossCategoryBanner({
+  categories,
+  tokens,
+}: {
+  categories: string[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={{
+        borderRadius: ClearLensRadii.md,
+        backgroundColor: cl.warningBg,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        flexDirection: 'row',
+        gap: 10,
+        alignItems: 'flex-start',
+      }}
+    >
+      <View
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: ClearLensRadii.full,
+          backgroundColor: cl.surface,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          marginTop: 1,
+        }}
+      >
+        <Ionicons name="information-circle-outline" size={13} color={cl.warning} />
+      </View>
+      <Text style={{ flex: 1, fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.navy, lineHeight: 18 }}>
+        <Text style={{ fontFamily: ClearLensFonts.bold }}>Different categories. </Text>
+        {categories.join(', ')} funds hold different kinds of companies by design — their returns aren't directly comparable.
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// UndoSnackbar
+// ---------------------------------------------------------------------------
+
+function UndoSnackbar({
+  badgeLetter,
+  badgeColor,
+  schemeName,
+  onUndo,
+  tokens,
+}: {
+  badgeLetter: string;
+  badgeColor: string;
+  schemeName: string;
+  onUndo: () => void;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={{
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        bottom: 24,
+        backgroundColor: cl.heroSurface,
+        borderRadius: ClearLensRadii.md,
+        padding: 12,
+        paddingHorizontal: 14,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 16 },
+        shadowOpacity: 0.32,
+        shadowRadius: 40,
+        elevation: 10,
+      }}
+    >
+      <FundBadge letter={badgeLetter} color={badgeColor} size={22} radius={6} />
+      <Text style={{ flex: 1, fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.textOnDark, lineHeight: 18 }}>
+        {schemeName} removed
+      </Text>
+      <TouchableOpacity
+        onPress={onUndo}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        style={{ minHeight: 40, alignItems: 'center', justifyContent: 'center' }}
+        accessibilityLabel="Undo remove"
+      >
+        <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, letterSpacing: 0.6, textTransform: 'uppercase', color: cl.mint }}>
+          Undo
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FundStrip — eyebrow + chips + Add button
+// ---------------------------------------------------------------------------
+
+function FundStripView({
+  fundData,
+  selectedCodes,
+  tokens,
+  onRemove,
+  onAdd,
+}: {
+  fundData: CompareFundData[];
+  selectedCodes: number[];
+  tokens: ClearLensTokens;
+  onRemove: (fund: CompareFundData) => void;
+  onAdd: () => void;
+}) {
+  const cl = tokens.colors;
+  const atMax = selectedCodes.length >= MAX_FUNDS;
+
+  return (
+    <View style={{ gap: 8, paddingBottom: 2 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text
+          style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 1.4, textTransform: 'uppercase', color: cl.textTertiary }}
+        >
+          Comparing · {selectedCodes.length} of {MAX_FUNDS}
+        </Text>
+        {!atMax ? (
+          <TouchableOpacity
+            onPress={onAdd}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{ minHeight: 40, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Text
+              style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.emeraldDeep }}
+            >
+              + Add fund
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+        {fundData.map((f) => (
+          <FundChip
+            key={f.code}
+            letter={f.badgeLetter}
+            color={f.badgeColor}
+            soft={f.badgeSoft}
+            label={fundDisplayName(f.scheme)}
+            onRemove={() => onRemove(f)}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Returns card (dark hero)
+// ---------------------------------------------------------------------------
+
+function ReturnsCard({
+  fundData,
+  fundsWithHistory,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  fundsWithHistory: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const allSameCategory = fundData.length > 0 && fundData.every(
+    (f) => f.scheme.schemeCategory === fundData[0].scheme.schemeCategory,
+  );
+
+  const headline = returnsHeadline(fundsWithHistory);
+  const sub = allSameCategory
+    ? 'Same category — a direct comparison.'
+    : 'These sit in different fund categories, so they hold different things by design.';
+
+  return (
+    <FindingCard headline={headline} sub={sub} tone="dark" tokens={tokens}>
+      <BarsViz
+        funds={fundsWithHistory}
+        valFn={(f) => f.metrics?.trailing.y3 ?? null}
+        formatFn={(v) => `${(v * 100).toFixed(1)}%`}
+        dark
+        tokens={tokens}
+      />
+      <NumbersReveal
+        funds={fundsWithHistory}
+        dark
+        tokens={tokens}
+        rows={[
+          {
+            label: '1Y return',
+            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y1 ?? null)),
+          },
+          {
+            label: '3Y return',
+            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y3 ?? null)),
+          },
+          {
+            label: '5Y return',
+            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y5 ?? null)),
+          },
+        ]}
+      />
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Risk card
+// ---------------------------------------------------------------------------
+
+function RiskCard({
+  fundsWithHistory,
+  tokens,
+}: {
+  fundsWithHistory: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const ddVals = fundsWithHistory
+    .map((f) => f.metrics?.maxDrawdown ?? null)
+    .filter((v): v is number => v != null)
+    .map((v) => Math.abs(v * 100));
+
+  const ddLo = ddVals.length ? Math.min(...ddVals) : null;
+  const ddHi = ddVals.length ? Math.max(...ddVals) : null;
+
+  const useTradeOff = tradeOffHolds(fundsWithHistory);
+  const headline = useTradeOff
+    ? 'Higher returns came with deeper drops.'
+    : ddLo != null && ddHi != null && Math.abs(ddHi - ddLo) > 0.5
+    ? `The worst historical drop ranges from ${ddLo.toFixed(0)}% to ${ddHi.toFixed(0)}%.`
+    : 'Historical drops vary across these funds.';
+
+  const sub = useTradeOff && ddLo != null && ddHi != null
+    ? `Worst peak-to-trough drop ranged from ${ddLo.toFixed(0)}% to ${ddHi.toFixed(0)}% over 5 years.`
+    : 'Worst peak-to-trough drop over the last 5 years.';
+
+  return (
+    <FindingCard headline={headline} sub={sub} tokens={tokens}>
+      <BarsViz
+        funds={fundsWithHistory}
+        valFn={(f) => f.metrics?.maxDrawdown != null ? Math.abs(f.metrics.maxDrawdown) : null}
+        formatFn={(v) => `–${(v * 100).toFixed(0)}%`}
+        tokens={tokens}
+      />
+      <NumbersReveal
+        funds={fundsWithHistory}
+        tokens={tokens}
+        rows={[
+          {
+            label: 'Volatility',
+            cells: fundsWithHistory.map((f) =>
+              f.metrics?.stdDev != null ? `${(f.metrics.stdDev * 100).toFixed(1)}%` : '—',
+            ),
+          },
+          {
+            label: 'Sharpe ratio',
+            cells: fundsWithHistory.map((f) =>
+              f.metrics?.sharpe != null ? f.metrics.sharpe.toFixed(2) : '—',
+            ),
+          },
+          {
+            label: 'Beta',
+            cells: fundsWithHistory.map((f) => {
+              const beta = readMfdataBeta(f.scheme.riskRatios, f.scheme.schemeCategory);
+              return beta != null ? beta.toFixed(2) : '—';
+            }),
+          },
+        ]}
+      />
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost card
+// ---------------------------------------------------------------------------
+
+function CostCard({
+  fundData,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+
+  const costs = fundData.map((f) => ({
+    fund: f,
+    cost5y: f.scheme.expenseRatio != null
+      ? Math.round(100000 * (f.scheme.expenseRatio / 100) * 5)
+      : null,
+  }));
+
+  const validCosts = costs.filter((c) => c.cost5y != null).map((c) => c.cost5y as number);
+  const minCost = validCosts.length > 0 ? Math.min(...validCosts) : null;
+  const maxCost = validCosts.length > 0 ? Math.max(...validCosts) : null;
+  const range = minCost != null && maxCost != null ? maxCost - minCost : 0;
+
+  const headline = range < 200
+    ? 'Costs are close — the spread is under ₹200 over 5 years on ₹1L.'
+    : `Costs differ by ₹${range.toLocaleString('en-IN')} over 5 years on ₹1L.`;
+
+  return (
+    <FindingCard headline={headline} sub="Expense ratio is what the fund charges per year." tokens={tokens}>
+      {/* Mint callout tile */}
+      {minCost != null && maxCost != null ? (
+        <View
+          style={{
+            backgroundColor: cl.mint50,
+            borderRadius: ClearLensRadii.md,
+            padding: 14,
+            paddingHorizontal: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <View style={{ gap: 2 }}>
+            <Text
+              style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.6, textTransform: 'uppercase', color: cl.emeraldDeep }}
+            >
+              5Y cost on ₹1L
+            </Text>
+            <Text
+              style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 18, lineHeight: 24, color: cl.navy, fontVariant: ['tabular-nums'] }}
+            >
+              ₹{minCost.toLocaleString('en-IN')}–₹{maxCost.toLocaleString('en-IN')}
+            </Text>
+          </View>
+          <Text
+            style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 22, lineHeight: 26, color: cl.emeraldDeep, fontVariant: ['tabular-nums'] }}
+          >
+            {range < 200 ? '≈ same' : `₹${range.toLocaleString('en-IN')} gap`}
+          </Text>
+        </View>
+      ) : null}
+
+      <NumbersReveal
+        funds={fundData}
+        tokens={tokens}
+        rows={[
+          {
+            label: 'Expense ratio',
+            cells: fundData.map((f) =>
+              f.scheme.expenseRatio != null ? `${f.scheme.expenseRatio.toFixed(2)}%` : '—',
+            ),
+          },
+          {
+            label: 'Exit load',
+            cells: fundData.map((f) => {
+              const el = f.scheme.exitLoad;
+              if (!el) return '—';
+              return el.split(' if')[0] ?? el;
+            }),
+          },
+        ]}
+      />
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// What's inside card
+// ---------------------------------------------------------------------------
+
+function WhatsInsideCard({
+  fundData,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const sem = tokens.semantic;
+
+  return (
+    <FindingCard
+      headline="What each fund holds, in equity terms."
+      sub="Same money, different mixes. Compare the size of each company group."
+      tokens={tokens}
+    >
+      <View style={{ gap: 12 }}>
+        {fundData.map((f) => {
+          const comp = f.composition;
+          const large = comp?.largeCapPct ?? 0;
+          const mid = comp?.midCapPct ?? 0;
+          const small = comp?.smallCapPct ?? 0;
+          const other = comp?.notClassifiedPct ?? Math.max(0, 100 - large - mid - small);
+
+          return (
+            <View key={f.code} style={{ gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={18} radius={5} />
+                <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.textSecondary, flex: 1 }}>
+                  {fundDisplayName(f.scheme)}
+                </Text>
+                <Text
+                  style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}
+                >
+                  {large.toFixed(0)}L · {mid.toFixed(0)}M · {small.toFixed(0)}S
+                </Text>
+              </View>
+              {/* Stacked bar */}
+              <View style={{ height: 10, borderRadius: ClearLensRadii.full, flexDirection: 'row', overflow: 'hidden', backgroundColor: cl.surfaceSoft }}>
+                {large > 0 ? <View style={{ width: `${large}%` as unknown as number, backgroundColor: sem.marketCap.large }} /> : null}
+                {mid > 0 ? <View style={{ width: `${mid}%` as unknown as number, backgroundColor: sem.marketCap.mid }} /> : null}
+                {small > 0 ? <View style={{ width: `${small}%` as unknown as number, backgroundColor: sem.marketCap.small }} /> : null}
+                {other > 0 ? <View style={{ width: `${other}%` as unknown as number, backgroundColor: sem.marketCap.other }} /> : null}
+              </View>
+            </View>
+          );
+        })}
+
+        {/* Legend */}
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, paddingTop: 4 }}>
+          {[
+            { color: sem.marketCap.large, label: 'Large' },
+            { color: sem.marketCap.mid, label: 'Mid' },
+            { color: sem.marketCap.small, label: 'Small' },
+            { color: sem.marketCap.other, label: 'Other' },
+          ].map((s) => (
+            <View key={s.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: s.color }} />
+              <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+                {s.label}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Overlap card
+// ---------------------------------------------------------------------------
+
+function OverlapCard({
+  fundData,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+
+  const pairs: { a: CompareFundData; b: CompareFundData; shared: number }[] = [];
+  const tops = fundData.map((f) =>
+    new Set((f.composition?.topHoldings ?? []).slice(0, 5).map((h) => h.name)),
+  );
+  for (let i = 0; i < fundData.length; i++) {
+    for (let j = i + 1; j < fundData.length; j++) {
+      const shared = [...tops[i]].filter((n) => tops[j].has(n)).length;
+      pairs.push({ a: fundData[i], b: fundData[j], shared });
+    }
+  }
+
+
+
+  const totalShared = pairs.reduce((s, p) => s + p.shared, 0);
+  const headline = totalShared === 0
+    ? "Top holdings don't repeat across these funds."
+    : 'Some top holdings repeat across these funds.';
+
+  const cols = pairs.length <= 3 ? pairs.length : 3;
+
+  return (
+    <FindingCard
+      headline={headline}
+      sub="How many of each fund's top 5 names also appear in another fund's top 5."
+      tokens={tokens}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          gap: 10,
+        }}
+      >
+        {pairs.map((pair, i) => (
+          <View
+            key={i}
+            style={{
+              width: cols === 1 ? '100%' : `${(100 / cols - 2)}%` as unknown as number,
+              minWidth: 80,
+              flex: 1,
+              backgroundColor: cl.surfaceSoft,
+              borderRadius: ClearLensRadii.md,
+              padding: 12,
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            {/* Overlapping badge pair */}
+            <View style={{ flexDirection: 'row' }}>
+              <FundBadge letter={pair.a.badgeLetter} color={pair.a.badgeColor} size={22} radius={ClearLensRadii.full} />
+              <View style={{ marginLeft: -8 }}>
+                <FundBadge letter={pair.b.badgeLetter} color={pair.b.badgeColor} size={22} radius={ClearLensRadii.full} />
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 1 }}>
+              <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 22, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+                {pair.shared}
+              </Text>
+              <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+                /5
+              </Text>
+            </View>
+            <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+              shared
+            </Text>
+          </View>
+        ))}
+      </View>
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The basics card
+// ---------------------------------------------------------------------------
+
+function BasicsCard({
+  fundData,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+
+  const rows: { label: string; cells: string[] }[] = [
+    {
+      label: 'AMC',
+      cells: fundData.map((f) => f.scheme.amcName ?? '—'),
+    },
+    {
+      label: 'Fund size',
+      cells: fundData.map((f) => fmtAumCr(f.scheme.aumCr)),
+    },
+    {
+      label: 'Benchmark',
+      cells: fundData.map((f) => f.scheme.benchmark ?? '—'),
+    },
+    {
+      label: 'Exit load',
+      cells: fundData.map((f) => {
+        const el = f.scheme.exitLoad;
+        if (!el) return '—';
+        return el.split(' if')[0] ?? el;
+      }),
+    },
+    {
+      label: 'Launched',
+      cells: fundData.map((f) => launchYear(f.scheme.launchDate)),
+    },
+  ];
+
+  return (
+    <FindingCard headline="The basics." tokens={tokens}>
+      <View style={{ gap: 0 }}>
+        {/* Header row */}
+        <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: cl.borderLight }}>
+          <View style={{ width: 80 }} />
+          {fundData.map((f) => (
+            <View key={f.code} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+              <Text
+                style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, color: cl.textTertiary, flex: 1 }}
+                numberOfLines={1}
+              >
+                {fundDisplayName(f.scheme)}
+              </Text>
+            </View>
+          ))}
+        </View>
+        {rows.map((row, idx) => (
+          <View
+            key={row.label}
+            style={{
+              flexDirection: 'row',
+              gap: 8,
+              paddingVertical: 8,
+              borderTopWidth: idx === 0 ? 0 : 1,
+              borderTopColor: cl.borderLight,
+            }}
+          >
+            <Text
+              style={{ width: 80, fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary }}
+            >
+              {row.label}
+            </Text>
+            {row.cells.map((cell, i) => (
+              <Text
+                key={i}
+                style={{
+                  flex: 1,
+                  fontSize: 12,
+                  fontFamily: ClearLensFonts.semiBold,
+                  color: cl.navy,
+                }}
+                numberOfLines={2}
+              >
+                {cell}
+              </Text>
+            ))}
+          </View>
+        ))}
+      </View>
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -293,17 +1643,17 @@ export function ClearLensCompareFundsScreen() {
 
   const [selectedCodes, setSelectedCodes] = useState<number[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabKey>('returns');
-
-  // One-shot seed flag — flips true the first time we either auto-seed or
-  // the user makes any change to the selection. Without this, removing all
-  // chips would re-trigger the useEffect below and the screen would silently
-  // re-pick the user's first two holdings, making it impossible to clear out
-  // the defaults to start a fresh comparison.
   const hasSeededRef = useRef(false);
 
-  // Auto-seed selection with the user's first two held funds — only on the
-  // initial render, never again after the user has interacted.
+  const [snackbar, setSnackbar] = useState<{
+    code: number;
+    familyName: string;
+    badgeLetter: string;
+    badgeColor: string;
+  } | null>(null);
+  const snackbarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-seed first MIN_FUNDS held funds on initial load.
   const userFundsQuery = useQuery({
     queryKey: ['compare:user-held-seed', userId],
     enabled: !!userId,
@@ -334,11 +1684,6 @@ export function ClearLensCompareFundsScreen() {
             { body: { scheme_code: code } },
           );
           if (error) throw new Error(`fetch-fund-snapshot: ${error.message}`);
-          // Refresh the dependent queries — scheme_master and the
-          // composition table were just touched. Invalidate both the
-          // shared per-scheme entry (`['scheme-master', code]`) so any
-          // other screen reading it picks up the new row, and the
-          // Compare-derived wrapper so this screen re-renders.
           queryClient.invalidateQueries({ queryKey: ['scheme-master', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:schemes'] });
           queryClient.invalidateQueries({ queryKey: ['compare:compositions'] });
@@ -354,8 +1699,6 @@ export function ClearLensCompareFundsScreen() {
             { body: { scheme_code: code } },
           );
           if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
-          // Invalidate the shared per-scheme NAV cache (shared with
-          // Fund Detail) and the Compare-derived wrapper.
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
           return data;
@@ -364,6 +1707,7 @@ export function ClearLensCompareFundsScreen() {
       },
     ]),
   });
+  void hydrationQueries;
 
   const schemesQuery = useQuery({
     queryKey: ['compare:schemes', selectedCodes],
@@ -384,14 +1728,7 @@ export function ClearLensCompareFundsScreen() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // We still declare `hydrationQueries` above for its side effect —
-  // each entry's `queryFn` invokes the on-demand edge function and
-  // invalidates the dependent data queries when it lands. The UI is no
-  // longer gated on whether those are still in flight (see the
-  // `isLoading` computation below), so the variable isn't read here.
-  void hydrationQueries;
-
-  // Order the schemes to match selection order.
+  // Preserve selection order from selectedCodes.
   const schemes = useMemo<SchemeMasterRow[]>(() => {
     if (!schemesQuery.data) return [];
     const byCode = new Map(schemesQuery.data.map((s) => [s.schemeCode, s]));
@@ -401,21 +1738,12 @@ export function ClearLensCompareFundsScreen() {
   const compositionsByCode = useMemo(() => {
     const map = new Map<number, CompositionRow>();
     for (const row of compositionsQuery.data ?? []) {
-      // Apply the read-time composition guard.
       if (isCompositionImplausible(row.equityPct, row.debtPct, row.cashPct, row.otherPct)) continue;
       map.set(row.schemeCode, row);
     }
     return map;
   }, [compositionsQuery.data]);
 
-  // Locally-computed metrics from NAV history.
-  type Metrics = {
-    trailing: TrailingPeriodReturns;
-    sharpe: number | null;
-    sortino: number | null;
-    stdDev: number | null;
-    monthlyObservations: number;
-  };
   const metricsByCode = useMemo(() => {
     const map = new Map<number, Metrics>();
     const navMap = navHistoryQuery.data;
@@ -424,29 +1752,26 @@ export function ClearLensCompareFundsScreen() {
       const series = navMap.get(code) ?? [];
       const trailing = computeTrailingReturns(series);
       const risk = computeRiskMetrics(series, { windowYears: 3 });
-      map.set(code, {
-        trailing,
-        sharpe: risk.sharpe,
-        sortino: risk.sortino,
-        stdDev: risk.stdDev,
-        monthlyObservations: risk.monthlyObservations,
-      });
+      const maxDrawdown = computeMaxDrawdown(series);
+      map.set(code, { trailing, ...risk, maxDrawdown });
     }
     return map;
   }, [navHistoryQuery.data, selectedCodes]);
 
-  // Hero — best performer over the longest common return window.
-  const hero = useMemo(() => deriveHero(schemes, metricsByCode), [schemes, metricsByCode]);
-
-  // Prose key differences (render after hero).
-  const keyDifferences = useMemo(
-    () => deriveKeyDifferences(schemes, compositionsByCode, metricsByCode),
-    [schemes, compositionsByCode, metricsByCode],
-  );
+  // Assembled per-fund data with badge identity.
+  const fundData = useMemo<CompareFundData[]>(() => {
+    return schemes.map((scheme, i) => ({
+      code: scheme.schemeCode,
+      badgeLetter: BADGE_LETTERS[i] ?? String.fromCharCode(65 + i),
+      badgeColor: BADGE_COLORS[i] ?? '#888888',
+      badgeSoft: BADGE_SOFT_COLORS[i] ?? tokens.colors.surfaceSoft,
+      scheme,
+      metrics: metricsByCode.get(scheme.schemeCode) ?? null,
+      composition: compositionsByCode.get(scheme.schemeCode) ?? null,
+    }));
+  }, [schemes, metricsByCode, compositionsByCode, tokens.colors.surfaceSoft]);
 
   const handleToggle = (scheme: SchemeSearchResult) => {
-    // Any explicit user pick (or unpick) blocks the auto-seed effect — the
-    // user has signalled they want their own selection.
     hasSeededRef.current = true;
     setSelectedCodes((prev) => {
       if (prev.includes(scheme.schemeCode)) return prev.filter((c) => c !== scheme.schemeCode);
@@ -455,65 +1780,79 @@ export function ClearLensCompareFundsScreen() {
     });
   };
 
-  const handleRemove = (schemeCode: number) => {
+  const handleRemove = (fund: CompareFundData) => {
     hasSeededRef.current = true;
-    setSelectedCodes((prev) => prev.filter((c) => c !== schemeCode));
+    if (snackbarTimer.current) clearTimeout(snackbarTimer.current);
+    setSelectedCodes((prev) => prev.filter((c) => c !== fund.code));
+    setSnackbar({
+      code: fund.code,
+      familyName: fund.scheme.familyName ?? fundDisplayName(fund.scheme),
+      badgeLetter: fund.badgeLetter,
+      badgeColor: fund.badgeColor,
+    });
+    snackbarTimer.current = setTimeout(() => setSnackbar(null), 4000);
   };
 
-  // On web, direct-URL loads (or a deep link) leave the navigation stack
-  // empty — `router.back()` then resolves to a no-op and the chevron looks
-  // broken. Fall back to the Tools hub so the chevron always goes somewhere
-  // sensible.
+  const handleUndoRemove = () => {
+    if (snackbarTimer.current) clearTimeout(snackbarTimer.current);
+    if (snackbar) {
+      setSelectedCodes((prev) => {
+        if (prev.includes(snackbar.code) || prev.length >= MAX_FUNDS) return prev;
+        return [...prev, snackbar.code];
+      });
+    }
+    setSnackbar(null);
+  };
+
   const handleBack = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/tools');
   };
 
+  // Preview / logged-out states
   if (previewMode) {
     return (
       <ClearLensScreen>
         <ClearLensHeader onPressBack={handleBack} />
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.titleBlock}>
             <Text style={styles.eyebrow}>Compare funds</Text>
             <Text style={styles.title}>Side-by-side on the metrics that matter</Text>
             <Text style={styles.subtitle}>
-              Returns, risk, asset mix, sectors, top holdings — across up to four
-              funds at once.
+              Returns, risk, cost, holdings — across up to {MAX_FUNDS} funds at once.
             </Text>
           </View>
           <ToolsPreviewSampleCard
             bannerMessage="A sample comparison of HDFC Mid-Cap vs HDFC Hybrid Equity. Sign up to compare any two funds with their real history."
             heroLabel="HDFC Mid-Cap vs HDFC Hybrid Equity"
             heroValue="+6.3% / yr"
-            heroSubtitle="HDFC Mid-Cap led HDFC Hybrid Equity by 6.3% annualised over 3Y"
+            heroSubtitle="Over 3Y, HDFC Mid-Cap returned 18.5%; HDFC Hybrid Equity returned 12.2%."
             chart={{
               series: [
                 {
                   label: 'HDFC Mid-Cap',
                   color: tokens.colors.emerald,
-                  // ₹1 invested grows along a 21.4% XIRR path.
                   points: [100, 109, 121, 135, 142, 158, 174, 186, 197, 215, 232, 248],
                 },
                 {
                   label: 'HDFC Hybrid Equity',
                   color: tokens.colors.textTertiary,
-                  // 15.1% XIRR — milder slope.
                   points: [100, 106, 113, 121, 128, 135, 142, 149, 156, 164, 172, 178],
                 },
               ],
             }}
             rows={[
-              { label: '3Y XIRR — HDFC Mid-Cap', value: '21.4%', tone: 'positive' },
-              { label: '3Y XIRR — HDFC Hybrid Equity', value: '15.1%' },
-              { label: 'Volatility — HDFC Mid-Cap', value: '18.6%' },
-              { label: 'Volatility — HDFC Hybrid Equity', value: '11.2%', tone: 'positive' },
-              { label: 'Expense ratio — Mid-Cap (Direct)', value: '0.65%', tone: 'positive' },
-              { label: 'Expense ratio — Hybrid (Direct IDCW)', value: '0.78%' },
-              { label: 'Equity allocation', value: '95% vs 71%' },
-              { label: 'Top-3 sector overlap', value: '24%' },
+              { label: '3Y — HDFC Mid-Cap', value: '18.5%', tone: 'positive' },
+              { label: '3Y — HDFC Hybrid Equity', value: '12.2%' },
+              { label: 'Max drawdown — Mid-Cap', value: '–26%' },
+              { label: 'Max drawdown — Hybrid', value: '–14%' },
+              { label: 'Expense ratio — Mid-Cap', value: '0.65%' },
+              { label: 'Expense ratio — Hybrid', value: '0.78%' },
             ]}
-            footnote="Sample numbers. Once you import a real CAS, compare any funds across the full Returns / Risk / Asset mix / Sectors / Holdings tabs."
+            footnote="Sample numbers. Sign up to compare any funds with their real history."
           />
         </ScrollView>
       </ClearLensScreen>
@@ -524,175 +1863,131 @@ export function ClearLensCompareFundsScreen() {
     return (
       <ClearLensScreen>
         <ClearLensHeader onPressBack={handleBack} />
-        <View style={styles.center}><Text style={styles.emptyTitle}>Sign in to use this tool</Text></View>
+        <View style={styles.center}>
+          <Text style={styles.emptyTitle}>Sign in to use this tool</Text>
+        </View>
       </ClearLensScreen>
     );
   }
 
-  // Show the spinner only while the Postgres reads are in flight. The
-  // on-demand hydration queries (`fetch-fund-snapshot`, `fetch-fund-nav`)
-  // run in parallel and call `invalidateQueries` when they land, so any
-  // freshly-backfilled rows flow into the data queries automatically.
-  //
-  // Previously this gate also waited on `isHydrating`, which meant cold
-  // loads paid the full 5–10s edge-function latency before showing
-  // anything — even when every scheme was already in our DB. Now the
-  // UI paints as soon as the SQL reads complete (typically <1s) and
-  // any later refetch from a hydration write just refreshes the cards
-  // in place.
   const isLoading = selectedCodes.length > 0
     && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading);
 
+  const hasError = schemesQuery.isError || navHistoryQuery.isError || compositionsQuery.isError;
+
+  const fundsWithHistory = fundData.filter((f) => hasHistory(f.metrics));
+  const fundsWithoutHistory = fundData.filter((f) => !hasHistory(f.metrics));
+  const uniqueCategories = [
+    ...new Set(fundData.map((f) => f.scheme.schemeCategory).filter((c): c is string => !!c)),
+  ];
+  const isCrossCategory = uniqueCategories.length > 1;
+
+  const renderContent = () => {
+    if (fundData.length === 0 && !isLoading) {
+      return <EmptyState tokens={tokens} onAdd={() => setPickerOpen(true)} />;
+    }
+
+    if (fundData.length === 1) {
+      return (
+        <OneFundState
+          fund={fundData[0]}
+          tokens={tokens}
+          onRemove={() => handleRemove(fundData[0])}
+          onAdd={() => setPickerOpen(true)}
+        />
+      );
+    }
+
+    if (isLoading) {
+      return (
+        <View style={styles.center}>
+          <Text style={styles.helperText}>Crunching the numbers…</Text>
+        </View>
+      );
+    }
+
+    if (hasError) {
+      return (
+        <View style={styles.center}>
+          <Text style={styles.emptyTitle}>Something went wrong</Text>
+          <Text style={styles.helperText}>Check your connection and try again.</Text>
+          <TouchableOpacity
+            onPress={() => {
+              schemesQuery.refetch();
+              navHistoryQuery.refetch();
+              compositionsQuery.refetch();
+            }}
+            style={styles.retryButton}
+          >
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <View style={{ gap: 18 }}>
+        {/* Fund strip */}
+        <FundStripView
+          fundData={fundData}
+          selectedCodes={selectedCodes}
+          tokens={tokens}
+          onRemove={handleRemove}
+          onAdd={() => setPickerOpen(true)}
+        />
+
+        {/* Banners */}
+        {fundsWithoutHistory.length > 0
+          ? fundsWithoutHistory.map((f) => (
+              <NoHistoryBanner key={f.code} fund={f} tokens={tokens} />
+            ))
+          : null}
+        {isCrossCategory ? (
+          <CrossCategoryBanner categories={uniqueCategories} tokens={tokens} />
+        ) : null}
+
+        {/* Finding cards */}
+        {fundsWithHistory.length >= 2 ? (
+          <ReturnsCard fundData={fundData} fundsWithHistory={fundsWithHistory} tokens={tokens} />
+        ) : null}
+        {fundsWithHistory.length >= 2 ? (
+          <RiskCard fundsWithHistory={fundsWithHistory} tokens={tokens} />
+        ) : null}
+        <CostCard fundData={fundData} tokens={tokens} />
+        <WhatsInsideCard fundData={fundData} tokens={tokens} />
+        <OverlapCard fundData={fundData} tokens={tokens} />
+        <BasicsCard fundData={fundData} tokens={tokens} />
+
+        {/* Footer */}
+        <Text style={styles.disclaimer}>
+          Past performance is not indicative of future returns. FolioLens does not recommend funds.
+        </Text>
+        <PortfolioDisclaimer />
+      </View>
+    );
+  };
+
   return (
     <ClearLensScreen>
-      <ClearLensHeader onPressBack={() => router.back()} />
+      <ClearLensHeader onPressBack={handleBack} />
+      <View style={styles.screenBody}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {renderContent()}
+        </ScrollView>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.titleBlock}>
-          <Text style={styles.eyebrow}>Compare Funds</Text>
-          <Text style={styles.title}>Side by side, no spin</Text>
-          <Text style={styles.subtitle}>
-            Pick two or three funds — yours or any in our catalog. We&apos;ll line up the numbers
-            and call out the key differences.
-          </Text>
-        </View>
-
-        {/* Selected fund chips + Add */}
-        <View style={styles.chipsCard}>
-          <Text style={styles.inputLabel}>Selected funds</Text>
-          <View style={styles.chipRow}>
-            {schemes.map((scheme) => (
-              <View key={scheme.schemeCode} style={styles.fundChip}>
-                <Text style={styles.fundChipName} numberOfLines={1}>
-                  {shortSchemeName(scheme.schemeName)}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => handleRemove(scheme.schemeCode)}
-                  hitSlop={8}
-                >
-                  <Ionicons name="close-circle" size={18} color={tokens.colors.textTertiary} />
-                </TouchableOpacity>
-              </View>
-            ))}
-            {selectedCodes.length < MAX_FUNDS ? (
-              <TouchableOpacity style={styles.addChip} onPress={() => setPickerOpen(true)} activeOpacity={0.75}>
-                <Ionicons name="add" size={16} color={tokens.colors.emerald} />
-                <Text style={styles.addChipText}>Add fund</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
-
-        {selectedCodes.length < MIN_FUNDS ? (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>
-              Pick at least {MIN_FUNDS} funds to compare.
-            </Text>
-          </View>
-        ) : isLoading ? (
-          <View style={styles.center}><Text style={styles.helperText}>Crunching the numbers…</Text></View>
-        ) : (
-          <>
-            {/* Hero */}
-            {hero ? (
-              <View style={styles.banner}>
-                <Text style={styles.bannerLabel}>{hero.windowLabel} · best performer</Text>
-                <Text style={styles.bannerValue} numberOfLines={2}>
-                  {hero.leaderName}
-                </Text>
-                <Text style={styles.bannerSubtitle}>
-                  <Text style={styles.bannerGainUp}>
-                    +{(hero.leaderReturn * 100).toFixed(1)}%/yr
-                  </Text>
-                  {hero.deltaPp != null
-                    ? ` — ${hero.deltaPp.toFixed(1)} pp ahead of ${joinNames(hero.otherNames)}.`
-                    : ` — close to ${joinNames(hero.otherNames)} over the same window.`}
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.banner}>
-                <Text style={styles.bannerLabel}>Limited common history</Text>
-                <Text style={styles.bannerValue}>Pick details by tab</Text>
-                <Text style={styles.bannerSubtitle}>
-                  At least one of these funds is too new to share a 1-year window with the others. Use the tabs below for what we do have.
-                </Text>
-              </View>
-            )}
-
-            {/* Key differences — one structured tile per insight */}
-            {keyDifferences.length > 0 ? (
-              <View style={styles.insightsSection}>
-                <View style={styles.insightsHeader}>
-                  <Text style={styles.insightsEyebrow}>What sets them apart</Text>
-                  <Text style={styles.insightsTitle}>Key differences</Text>
-                </View>
-                <View style={styles.insightsList}>
-                  {keyDifferences.map((insight, idx) => (
-                    <KeyDifferenceCard
-                      key={`${insight.kind}-${idx}`}
-                      insight={insight}
-                      tokens={tokens}
-                    />
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {/* Tab strip */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.tabBar}
-            >
-              {TABS.map((tab) => {
-                const isActive = activeTab === tab.key;
-                return (
-                  <TouchableOpacity
-                    key={tab.key}
-                    style={[styles.tabPill, isActive && styles.tabPillActive]}
-                    onPress={() => setActiveTab(tab.key)}
-                    activeOpacity={0.76}
-                  >
-                    <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                      {tab.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            {/* Active tab */}
-            <View style={styles.tabContent}>
-              {activeTab === 'returns' && (
-                <ReturnsTab schemes={schemes} metricsByCode={metricsByCode} tokens={tokens} />
-              )}
-              {activeTab === 'risk' && (
-                <RiskTab schemes={schemes} metricsByCode={metricsByCode} tokens={tokens} />
-              )}
-              {activeTab === 'asset_mix' && (
-                <AssetMixTab schemes={schemes} compositionsByCode={compositionsByCode} tokens={tokens} />
-              )}
-              {activeTab === 'sectors' && (
-                <SectorsTab schemes={schemes} compositionsByCode={compositionsByCode} tokens={tokens} />
-              )}
-              {activeTab === 'holdings' && (
-                <HoldingsTab schemes={schemes} compositionsByCode={compositionsByCode} tokens={tokens} />
-              )}
-              {activeTab === 'other' && (
-                <OtherTab schemes={schemes} tokens={tokens} />
-              )}
-            </View>
-
-            <Text style={styles.disclaimer}>
-              Trailing returns and risk metrics are computed from NAV history; other metadata
-              comes from the latest disclosed scheme details. Past performance is not indicative
-              of future returns. We don&apos;t recommend or rate funds.
-            </Text>
-
-            <PortfolioDisclaimer />
-          </>
-        )}
-      </ScrollView>
+        {snackbar ? (
+          <UndoSnackbar
+            badgeLetter={snackbar.badgeLetter}
+            badgeColor={snackbar.badgeColor}
+            schemeName={snackbar.familyName}
+            onUndo={handleUndoRemove}
+            tokens={tokens}
+          />
+        ) : null}
+      </View>
 
       <UniversalFundPicker
         visible={pickerOpen}
@@ -708,973 +2003,18 @@ export function ClearLensCompareFundsScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Hero + key-differences derivation
-// ---------------------------------------------------------------------------
-
-interface HeroSummary {
-  windowLabel: string;
-  leaderName: string;
-  leaderReturn: number;
-  otherNames: string[];
-  deltaPp: number | null;
-}
-
-function deriveHero(
-  schemes: SchemeMasterRow[],
-  metricsByCode: Map<number, { trailing: TrailingPeriodReturns }>,
-): HeroSummary | null {
-  if (schemes.length < MIN_FUNDS) return null;
-
-  type Entry = { code: number; name: string; value: number };
-  const windows: { years: number; label: string; key: 'y3' | 'y1' }[] = [
-    { years: 3, label: '3 years', key: 'y3' },
-    { years: 1, label: '1 year', key: 'y1' },
-  ];
-  for (const w of windows) {
-    const entries: Entry[] = [];
-    let allHave = true;
-    for (const scheme of schemes) {
-      const m = metricsByCode.get(scheme.schemeCode);
-      const v = m?.trailing[w.key];
-      if (v == null || !Number.isFinite(v)) {
-        // Try MFData fallback (period_returns) — this is biased but better than nothing.
-        const mfdataField = w.years === 3 ? 'return_3y' : 'return_1y';
-        const fallback = readMfdataPeriodReturn(scheme.periodReturns, mfdataField);
-        if (fallback == null) { allHave = false; break; }
-        // MFData returns are in % so divide by 100.
-        entries.push({ code: scheme.schemeCode, name: shortSchemeName(scheme.schemeName), value: fallback / 100 });
-      } else {
-        entries.push({ code: scheme.schemeCode, name: shortSchemeName(scheme.schemeName), value: v });
-      }
-    }
-    if (allHave && entries.length === schemes.length) {
-      const sorted = [...entries].sort((a, b) => b.value - a.value);
-      const leader = sorted[0];
-      const next = sorted[1];
-      const spreadPp = (sorted[0].value - sorted[sorted.length - 1].value) * 100;
-      return {
-        windowLabel: w.label.charAt(0).toUpperCase() + w.label.slice(1),
-        leaderName: leader.name,
-        leaderReturn: leader.value,
-        otherNames: sorted.slice(1).map((x) => x.name),
-        deltaPp: spreadPp < 1 ? null : (leader.value - next.value) * 100,
-      };
-    }
-  }
-  return null;
-}
-
-/**
- * Structured insight tile — drives both the data derivation and the
- * `KeyDifferenceCard` render. Splitting `headline` (the one number that
- * matters) from `subject` (the fund or pair it applies to) and
- * `caption` (the comparison or context) is what makes the new card
- * layout scannable instead of a paragraph blob.
- */
-type KeyDiffKind = 'cost' | 'volatility' | 'overlap' | 'asset_mix';
-
-interface KeyDiffInsight {
-  kind: KeyDiffKind;
-  eyebrow: string;          // small-caps label — "LOWEST COST", "STEADIER RIDE", etc.
-  headline: string;         // the hero metric — "0.65%/yr", "11.2%", "42%"
-  subject: string;          // who the headline applies to — fund name or pair
-  caption?: string;         // optional supporting context line
-}
-
-function deriveKeyDifferences(
-  schemes: SchemeMasterRow[],
-  compositionsByCode: Map<number, CompositionRow>,
-  metricsByCode: Map<number, { sharpe: number | null; stdDev: number | null }>,
-): KeyDiffInsight[] {
-  const out: KeyDiffInsight[] = [];
-  if (schemes.length < MIN_FUNDS) return out;
-
-  // 1. Cost (lowest expense ratio)
-  const erEntries = schemes
-    .map((s) => ({ name: shortSchemeName(s.schemeName), er: s.expenseRatio }))
-    .filter((e) => e.er != null) as { name: string; er: number }[];
-  if (erEntries.length === schemes.length) {
-    erEntries.sort((a, b) => a.er - b.er);
-    const cheapest = erEntries[0];
-    const priciest = erEntries[erEntries.length - 1];
-    if (priciest.er - cheapest.er >= 0.1) {
-      out.push({
-        kind: 'cost',
-        eyebrow: 'Lowest cost',
-        headline: `${cheapest.er.toFixed(2)}%/yr`,
-        subject: cheapest.name,
-        caption: `vs ${priciest.name} at ${priciest.er.toFixed(2)}%/yr`,
-      });
-    } else {
-      out.push({
-        kind: 'cost',
-        eyebrow: 'Cost',
-        headline: `${cheapest.er.toFixed(2)}–${priciest.er.toFixed(2)}%/yr`,
-        subject: `Similar across all ${schemes.length}`,
-      });
-    }
-  }
-
-  // 2. Volatility (lowest std dev)
-  const stdEntries = schemes
-    .map((s) => ({
-      name: shortSchemeName(s.schemeName),
-      stdDev: metricsByCode.get(s.schemeCode)?.stdDev ?? null,
-    }))
-    .filter((e) => e.stdDev != null) as { name: string; stdDev: number }[];
-  if (stdEntries.length === schemes.length && stdEntries.length >= 2) {
-    stdEntries.sort((a, b) => a.stdDev - b.stdDev);
-    const calmest = stdEntries[0];
-    const wildest = stdEntries[stdEntries.length - 1];
-    if ((wildest.stdDev - calmest.stdDev) * 100 >= 2) {
-      out.push({
-        kind: 'volatility',
-        eyebrow: 'Steadier ride',
-        headline: `${(calmest.stdDev * 100).toFixed(1)}%`,
-        subject: calmest.name,
-        caption: `vs ${wildest.name} at ${(wildest.stdDev * 100).toFixed(1)}%`,
-      });
-    }
-  }
-
-  // 3. Holding overlap (highest pair)
-  const overlaps: { aName: string; bName: string; pct: number }[] = [];
-  for (let i = 0; i < schemes.length; i++) {
-    for (let j = i + 1; j < schemes.length; j++) {
-      const a = schemes[i];
-      const b = schemes[j];
-      const aH = compositionsByCode.get(a.schemeCode)?.topHoldings ?? null;
-      const bH = compositionsByCode.get(b.schemeCode)?.topHoldings ?? null;
-      const overlap = computeHoldingOverlap(aH, bH);
-      overlaps.push({
-        aName: shortSchemeName(a.schemeName),
-        bName: shortSchemeName(b.schemeName),
-        pct: overlap.overlapPct,
-      });
-    }
-  }
-  if (overlaps.length > 0) {
-    overlaps.sort((a, b) => b.pct - a.pct);
-    const top = overlaps[0];
-    if (top.pct >= 25) {
-      out.push({
-        kind: 'overlap',
-        eyebrow: 'Highest holding overlap',
-        headline: `${top.pct.toFixed(0)}%`,
-        subject: `${top.aName} ↔ ${top.bName}`,
-        caption: 'Meaningful share of the same names',
-      });
-    } else if (top.pct >= 5) {
-      out.push({
-        kind: 'overlap',
-        eyebrow: 'Holding overlap',
-        headline: `${top.pct.toFixed(0)}%`,
-        subject: `Peak: ${top.aName} ↔ ${top.bName}`,
-        caption: 'Each fund mostly picks its own names',
-      });
-    } else {
-      out.push({
-        kind: 'overlap',
-        eyebrow: 'Holding overlap',
-        headline: `${top.pct.toFixed(0)}%`,
-        subject: 'Low across the board',
-        caption: 'Each fund stakes out different names',
-      });
-    }
-  }
-
-  // 4. Asset mix divergence
-  const equitySplit = schemes
-    .map((s) => ({
-      name: shortSchemeName(s.schemeName),
-      equity: compositionsByCode.get(s.schemeCode)?.equityPct ?? null,
-    }))
-    .filter((e) => e.equity != null) as { name: string; equity: number }[];
-  if (equitySplit.length === schemes.length && equitySplit.length >= 2) {
-    equitySplit.sort((a, b) => b.equity - a.equity);
-    const mostEquity = equitySplit[0];
-    const leastEquity = equitySplit[equitySplit.length - 1];
-    if (mostEquity.equity - leastEquity.equity >= 15) {
-      out.push({
-        kind: 'asset_mix',
-        eyebrow: 'Asset mix',
-        headline: `${mostEquity.equity.toFixed(0)}% vs ${leastEquity.equity.toFixed(0)}%`,
-        subject: `${mostEquity.name} vs ${leastEquity.name}`,
-        caption: 'Equity allocation',
-      });
-    }
-  }
-
-  return out;
-}
-
-const INSIGHT_ICONS: Record<KeyDiffKind, keyof typeof Ionicons.glyphMap> = {
-  cost: 'cash-outline',
-  volatility: 'pulse-outline',
-  overlap: 'git-network-outline',
-  asset_mix: 'pie-chart-outline',
-};
-
-/**
- * Card render for a single Key-differences insight. Layout (top → bottom):
- *
- *   [icon] EYEBROW         ← row, emerald accent
- *   headline metric         ← hero size, navy
- *   subject                 ← body, secondary text
- *   caption (optional)      ← caption, tertiary text
- *
- * A thin emerald left stripe visually groups the four insights without
- * needing a bordered outer card. Each insight breathes inside its own
- * `surfaceSoft`-tinted tile.
- */
-function KeyDifferenceCard({
-  insight,
-  tokens,
-}: {
-  insight: KeyDiffInsight;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const cl = tokens.colors;
-  return (
-    <View style={styles.insightCard}>
-      <View style={styles.insightAccent} />
-      <View style={styles.insightBody}>
-        <View style={styles.insightEyebrowRow}>
-          <Ionicons name={INSIGHT_ICONS[insight.kind]} size={14} color={cl.emerald} />
-          <Text style={styles.insightEyebrow}>{insight.eyebrow}</Text>
-        </View>
-        <Text style={styles.insightHeadline}>{insight.headline}</Text>
-        <Text style={styles.insightSubject}>{insight.subject}</Text>
-        {insight.caption ? (
-          <Text style={styles.insightCaption}>{insight.caption}</Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Returns tab
-// ---------------------------------------------------------------------------
-
-function ReturnsTab({
-  schemes,
-  metricsByCode,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  metricsByCode: Map<number, { trailing: TrailingPeriodReturns }>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  const periods: { key: 'y1' | 'y3' | 'y5'; label: string; mfField: 'return_1y' | 'return_3y' | 'return_5y'; rankField: 'rank_1y' | 'rank_3y' | 'rank_5y' }[] = [
-    { key: 'y1', label: '1Y', mfField: 'return_1y', rankField: 'rank_1y' },
-    { key: 'y3', label: '3Y', mfField: 'return_3y', rankField: 'rank_3y' },
-    { key: 'y5', label: '5Y', mfField: 'return_5y', rankField: 'rank_5y' },
-  ];
-
-  type Cell = { value: number | null; source: 'computed' | 'mfdata' | null; rank: number | null };
-  function cellFor(scheme: SchemeMasterRow, period: typeof periods[number]): Cell {
-    const computed = metricsByCode.get(scheme.schemeCode)?.trailing[period.key] ?? null;
-    if (computed != null && Number.isFinite(computed)) {
-      return { value: computed, source: 'computed', rank: null };
-    }
-    const mfdata = readMfdataPeriodReturn(scheme.periodReturns, period.mfField);
-    if (mfdata != null) {
-      const rank = readMfdataRank(scheme.periodReturns, period.rankField);
-      return { value: mfdata / 100, source: 'mfdata', rank };
-    }
-    return { value: null, source: null, rank: null };
-  }
-
-  return (
-    <View style={styles.tabCard}>
-      <Text style={styles.tabIntro}>
-        Annualised return per period. Computed from NAV history when we have ≥{`${period(periods[0].key)}`}; otherwise from MFData (which can be a few weeks stale).
-      </Text>
-      <TableScrollHost>
-        <View>
-          <View style={styles.tableHeaderRow}>
-            <View style={styles.cellLabel} />
-            {schemes.map((s) => (
-              <View key={s.schemeCode} style={styles.cell}>
-                <Text style={styles.cellHeader} numberOfLines={2}>
-                  {shortSchemeName(s.schemeName)}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {periods.map((p, idx) => {
-            const cells = schemes.map((s) => cellFor(s, p));
-            const numericCells = cells.filter((c) => c.value != null) as { value: number; source: 'computed' | 'mfdata'; rank: number | null }[];
-            const leaderValue = numericCells.length > 0 ? Math.max(...numericCells.map((c) => c.value)) : null;
-            return (
-              <View key={p.key} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-                <View style={styles.cellLabel}>
-                  <Text style={styles.cellLabelText}>{p.label}</Text>
-                </View>
-                {schemes.map((s, i) => {
-                  const cell = cells[i];
-                  const isLeader = cell.value != null && leaderValue != null && Math.abs(cell.value - leaderValue) < 1e-9 && numericCells.length > 1;
-                  return (
-                    <View key={s.schemeCode} style={styles.cell}>
-                      <Text style={[styles.cellValue, isLeader && styles.cellValueLeader]}>
-                        {cell.value != null ? `${(cell.value * 100).toFixed(1)}%` : '—'}
-                      </Text>
-                      {cell.source === 'mfdata' ? (
-                        <Text style={styles.cellSource}>MFData</Text>
-                      ) : null}
-                      {cell.rank != null ? (
-                        <Text style={styles.cellSource}>rank {cell.rank}</Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-              </View>
-            );
-          })}
-        </View>
-      </TableScrollHost>
-      <Text style={styles.tabFootnote}>
-        Bolded: leader for the period (when ≥2 funds have data and there&apos;s a clear leader).
-      </Text>
-    </View>
-  );
-}
-
-function period(key: 'y1' | 'y3' | 'y5'): string {
-  return key === 'y1' ? '1 year' : key === 'y3' ? '3 years' : '5 years';
-}
-
-// ---------------------------------------------------------------------------
-// Risk tab
-// ---------------------------------------------------------------------------
-
-function RiskTab({
-  schemes,
-  metricsByCode,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  metricsByCode: Map<number, { sharpe: number | null; sortino: number | null; stdDev: number | null; monthlyObservations: number }>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  // Per-fund derived data. Doing this once outside the row loop keeps each
-  // cell renderer cheap.
-  const perFund = schemes.map((scheme) => ({
-    scheme,
-    metrics: metricsByCode.get(scheme.schemeCode) ?? null,
-    beta: readMfdataBeta(scheme.riskRatios, scheme.schemeCategory),
-    r2: readMfdataRSquared(scheme.riskRatios, scheme.schemeCategory),
-  }));
-
-  type Row = {
-    key: 'std' | 'sharpe' | 'sortino' | 'beta' | 'r2';
-    label: string;
-    hint: string;
-    cell: (f: typeof perFund[number]) => string;
-    visible: boolean;
-  };
-  const anyBetaOrR2 = perFund.some((f) => f.beta != null || f.r2 != null);
-  const rows: Row[] = [
-    {
-      key: 'std',
-      label: 'Std deviation',
-      hint: 'How wildly returns swing month to month. Lower = smoother ride.',
-      cell: (f) => (f.metrics?.stdDev != null ? `${(f.metrics.stdDev * 100).toFixed(1)}%` : '—'),
-      visible: true,
-    },
-    {
-      key: 'sharpe',
-      label: 'Sharpe',
-      hint: 'Return per unit of risk. Higher = more reward for the bumps.',
-      cell: (f) => (f.metrics?.sharpe != null ? f.metrics.sharpe.toFixed(2) : '—'),
-      visible: true,
-    },
-    {
-      key: 'sortino',
-      label: 'Sortino',
-      hint: 'Like Sharpe, but counts only downside swings as risk. Higher = better at avoiding losses.',
-      cell: (f) => (f.metrics?.sortino != null ? f.metrics.sortino.toFixed(2) : '—'),
-      visible: true,
-    },
-    {
-      key: 'beta',
-      label: 'Beta',
-      hint: 'How much the fund moves with the market. 1 = in step. < 1 = steadier.',
-      cell: (f) => (f.beta != null ? f.beta.toFixed(2) : '—'),
-      visible: anyBetaOrR2,
-    },
-    {
-      key: 'r2',
-      label: 'R²',
-      hint: 'How closely the fund tracks its benchmark. 100% = identical movement.',
-      cell: (f) => (f.r2 != null ? `${f.r2.toFixed(0)}%` : '—'),
-      visible: anyBetaOrR2,
-    },
-  ];
-  const visibleRows = rows.filter((r) => r.visible);
-
-  // Per-fund footnote: short window for risk metrics. Build once so the
-  // footer below the table can list "DSP Mid Cap (12 months), HDFC Mid Cap (8 months)".
-  const shortWindowNotes = perFund
-    .filter((f) => (f.metrics?.monthlyObservations ?? 0) < 36)
-    .map((f) => `${shortSchemeName(f.scheme.schemeName)} (${f.metrics?.monthlyObservations ?? 0} months)`);
-
-  return (
-    <View style={styles.tabCard}>
-      <Text style={styles.tabIntro}>
-        Risk metrics over the trailing 3 years. Computed locally from monthly returns;
-        Beta and R² come from MFData and only show for equity / hybrid funds.
-      </Text>
-      <TableScrollHost>
-        <View>
-          <View style={styles.tableHeaderRow}>
-            <View style={styles.cellLabelWide} />
-            {schemes.map((s) => (
-              <View key={s.schemeCode} style={styles.cell}>
-                <Text style={styles.cellHeader} numberOfLines={2}>
-                  {shortSchemeName(s.schemeName)}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {visibleRows.map((row, idx) => (
-            <View key={row.key} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-              <View style={styles.cellLabelWide}>
-                <Text style={styles.cellLabelText}>{row.label}</Text>
-                <Text style={styles.cellLabelHint}>{row.hint}</Text>
-              </View>
-              {perFund.map((f) => (
-                <View key={f.scheme.schemeCode} style={styles.cell}>
-                  <Text style={styles.cellValue}>{row.cell(f)}</Text>
-                </View>
-              ))}
-            </View>
-          ))}
-        </View>
-      </TableScrollHost>
-      {!anyBetaOrR2 ? (
-        <Text style={styles.tabFootnote}>
-          Beta and R² aren&apos;t shown for these categories — they apply to equity / hybrid funds.
-        </Text>
-      ) : null}
-      {shortWindowNotes.length > 0 ? (
-        <Text style={styles.tabFootnote}>
-          Short risk-metric window: {shortWindowNotes.join('; ')}. Anything under 36 months of returns
-          means a shorter sample than the standard 3-year benchmark.
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Asset mix tab
-// ---------------------------------------------------------------------------
-
-function AssetMixTab({
-  schemes,
-  compositionsByCode,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  compositionsByCode: Map<number, CompositionRow>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  const headerCells = (
-    <View style={styles.tableHeaderRow}>
-      <View style={styles.cellLabel} />
-      {schemes.map((s) => (
-        <View key={s.schemeCode} style={styles.cell}>
-          <Text style={styles.cellHeader} numberOfLines={2}>
-            {shortSchemeName(s.schemeName)}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-
-  const rows: { label: string; pluck: (c: CompositionRow) => number | null | undefined }[] = [
-    { label: 'Equity', pluck: (c) => c.equityPct },
-    { label: 'Debt', pluck: (c) => c.debtPct },
-    { label: 'Cash', pluck: (c) => c.cashPct },
-    { label: 'Other', pluck: (c) => c.otherPct },
-  ];
-  // Only show the "Not classified" row when at least one fund has a
-  // non-trivial slice — keeps the table tidy for funds with full coverage
-  // while being honest about disclosure gaps. The 1% threshold absorbs
-  // floating-point dust without hiding meaningful gaps (Parag Parikh's
-  // foreign-equity sleeve is typically 20%+, well above the threshold).
-  const showNotClassifiedRow = [...compositionsByCode.values()].some(
-    (c) => (c.notClassifiedPct ?? 0) > 1,
-  );
-
-  const capRows: { label: string; pluck: (c: CompositionRow) => number | null | undefined }[] = [
-    { label: 'Large cap', pluck: (c) => c.largeCapPct },
-    { label: 'Mid cap', pluck: (c) => c.midCapPct },
-    { label: 'Small cap', pluck: (c) => c.smallCapPct },
-    ...(showNotClassifiedRow
-      ? [{ label: 'Not classified', pluck: (c: CompositionRow) => c.notClassifiedPct }]
-      : []),
-  ];
-
-  // Any compared fund whose row was stamped from SEBI category averages
-  // (either because nothing matched the AMFI list or no holdings were
-  // disclosed at all) gets called out in a footnote. Keeps comparisons
-  // honest without burying the user in source-tag jargon.
-  const fallbackSchemes = schemes.filter((s) => {
-    const src = compositionsByCode.get(s.schemeCode)?.source;
-    return src === 'category_rules' || src === 'category_fallback';
-  });
-
-  return (
-    <View style={styles.tabCard}>
-      <Text style={styles.tabIntro}>
-        Where each fund parks its money. Cap mix is shown when a fund has equity exposure.
-      </Text>
-      <TableScrollHost>
-        <View>
-          {headerCells}
-          {rows.map((r, idx) => (
-            <View key={r.label} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-              <View style={styles.cellLabel}><Text style={styles.cellLabelText}>{r.label}</Text></View>
-              {schemes.map((s) => {
-                const c = compositionsByCode.get(s.schemeCode);
-                const v = c ? r.pluck(c) : null;
-                return (
-                  <View key={s.schemeCode} style={styles.cell}>
-                    <Text style={styles.cellValue}>{v != null ? `${v.toFixed(0)}%` : '—'}</Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </TableScrollHost>
-
-      <Text style={styles.subhead}>Market cap mix</Text>
-      <TableScrollHost>
-        <View>
-          {headerCells}
-          {capRows.map((r, idx) => (
-            <View key={r.label} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-              <View style={styles.cellLabel}><Text style={styles.cellLabelText}>{r.label}</Text></View>
-              {schemes.map((s) => {
-                const c = compositionsByCode.get(s.schemeCode);
-                const v = c ? r.pluck(c) : null;
-                return (
-                  <View key={s.schemeCode} style={styles.cell}>
-                    <Text style={styles.cellValue}>{v != null ? `${v.toFixed(0)}%` : '—'}</Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </TableScrollHost>
-      {fallbackSchemes.length > 0 ? (
-        <Text style={styles.tabFootnote}>
-          {fallbackSchemes.length === schemes.length
-            ? 'Cap mix shown is the SEBI category average — these funds haven’t disclosed enough holdings yet.'
-            : `Cap mix for ${fallbackSchemes
-                .map((s) => shortSchemeName(s.schemeName))
-                .join(', ')} is the SEBI category average — fund hasn’t disclosed enough holdings yet.`}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sectors tab — top sectors + credit-rating breakdown for debt holdings
-// ---------------------------------------------------------------------------
-
-function SectorsTab({
-  schemes,
-  compositionsByCode,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  compositionsByCode: Map<number, CompositionRow>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  // Build sector union (top 8 sectors by max weight across funds).
-  const sectorWeightsByName = new Map<string, number>();
-  for (const s of schemes) {
-    const sec = compositionsByCode.get(s.schemeCode)?.sectorAllocation;
-    if (!sec) continue;
-    for (const [name, weight] of Object.entries(sec)) {
-      const w = Number(weight);
-      if (!Number.isFinite(w)) continue;
-      const existing = sectorWeightsByName.get(name) ?? 0;
-      if (w > existing) sectorWeightsByName.set(name, w);
-    }
-  }
-  const topSectors = [...sectorWeightsByName.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([name]) => name);
-
-  // Credit rating union for debt funds.
-  const creditByCode = new Map<number, { rating: string; weight: number }[]>();
-  for (const s of schemes) {
-    const debt = compositionsByCode.get(s.schemeCode)?.rawDebtHoldings ?? null;
-    if (!debt || debt.length === 0) continue;
-    const buckets = new Map<string, number>();
-    for (const h of debt) {
-      const rating = (h.credit_rating ?? 'Unrated').trim() || 'Unrated';
-      const w = Number(h.weight_pct ?? 0);
-      if (!Number.isFinite(w)) continue;
-      buckets.set(rating, (buckets.get(rating) ?? 0) + w);
-    }
-    creditByCode.set(
-      s.schemeCode,
-      [...buckets.entries()]
-        .map(([rating, weight]) => ({ rating, weight }))
-        .sort((a, b) => b.weight - a.weight),
-    );
-  }
-  const hasAnyCredit = [...creditByCode.values()].some((arr) => arr.length > 0);
-  const creditUnion = new Set<string>();
-  for (const arr of creditByCode.values()) for (const e of arr) creditUnion.add(e.rating);
-  const creditOrder = ['SOV', 'AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-', 'BB+', 'BB', 'B+', 'B', 'Cash Equivalent', 'Unrated'];
-  const orderedRatings = [...creditUnion].sort((a, b) => {
-    const ai = creditOrder.indexOf(a);
-    const bi = creditOrder.indexOf(b);
-    if (ai >= 0 && bi >= 0) return ai - bi;
-    if (ai >= 0) return -1;
-    if (bi >= 0) return 1;
-    return a.localeCompare(b);
-  });
-
-  const headerCells = (
-    <View style={styles.tableHeaderRow}>
-      <View style={styles.cellLabel} />
-      {schemes.map((s) => (
-        <View key={s.schemeCode} style={styles.cell}>
-          <Text style={styles.cellHeader} numberOfLines={2}>
-            {shortSchemeName(s.schemeName)}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-
-  return (
-    <View style={styles.tabCard}>
-      {topSectors.length > 0 ? (
-        <>
-          <Text style={styles.tabIntro}>
-            Top sector exposures across the selected funds (aggregated from disclosed holdings).
-          </Text>
-          <TableScrollHost>
-            <View>
-              {headerCells}
-              {topSectors.map((sectorName, idx) => (
-                <View key={sectorName} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-                  <View style={styles.cellLabel}><Text style={styles.cellLabelText} numberOfLines={2}>{sectorName}</Text></View>
-                  {schemes.map((s) => {
-                    const v = compositionsByCode.get(s.schemeCode)?.sectorAllocation?.[sectorName];
-                    const num = typeof v === 'number' ? v : null;
-                    return (
-                      <View key={s.schemeCode} style={styles.cell}>
-                        <Text style={styles.cellValue}>{num != null ? `${num.toFixed(1)}%` : '—'}</Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          </TableScrollHost>
-        </>
-      ) : (
-        <Text style={styles.tabIntro}>
-          No sector data disclosed for these funds yet.
-        </Text>
-      )}
-
-      {hasAnyCredit ? (
-        <>
-          <Text style={styles.subhead}>Credit rating mix</Text>
-          <TableScrollHost>
-            <View>
-              {headerCells}
-              {orderedRatings.map((rating, idx) => (
-                <View key={rating} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-                  <View style={styles.cellLabel}><Text style={styles.cellLabelText}>{rating}</Text></View>
-                  {schemes.map((s) => {
-                    const arr = creditByCode.get(s.schemeCode) ?? [];
-                    const entry = arr.find((e) => e.rating === rating);
-                    return (
-                      <View key={s.schemeCode} style={styles.cell}>
-                        <Text style={styles.cellValue}>{entry ? `${entry.weight.toFixed(1)}%` : '—'}</Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          </TableScrollHost>
-          <Text style={styles.tabFootnote}>
-            SOV = government securities. AAA / AA / A grades indicate corporate credit quality (high to lower).
-          </Text>
-        </>
-      ) : null}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Holdings tab
-// ---------------------------------------------------------------------------
-
-function HoldingsTab({
-  schemes,
-  compositionsByCode,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  compositionsByCode: Map<number, CompositionRow>;
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  // Equity union — top 25 holding names ranked by max weight across funds.
-  const eqWeightsByName = new Map<string, number>();
-  for (const s of schemes) {
-    const top = compositionsByCode.get(s.schemeCode)?.topHoldings ?? null;
-    if (!top) continue;
-    for (const h of top) {
-      const w = Number(h.pctOfNav);
-      if (!Number.isFinite(w)) continue;
-      const existing = eqWeightsByName.get(h.name) ?? 0;
-      if (w > existing) eqWeightsByName.set(h.name, w);
-    }
-  }
-  const topEquityNames = [...eqWeightsByName.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 25)
-    .map(([name]) => name);
-
-  // Debt union — top 25 debt holdings.
-  const debtWeightsByName = new Map<string, number>();
-  for (const s of schemes) {
-    const debt = compositionsByCode.get(s.schemeCode)?.rawDebtHoldings ?? null;
-    if (!debt) continue;
-    for (const h of debt) {
-      const name = h.name;
-      const w = Number(h.weight_pct ?? 0);
-      if (!name || !Number.isFinite(w)) continue;
-      const existing = debtWeightsByName.get(name) ?? 0;
-      if (w > existing) debtWeightsByName.set(name, w);
-    }
-  }
-  const topDebtNames = [...debtWeightsByName.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 25)
-    .map(([name]) => name);
-
-  const headerCells = (
-    <View style={styles.tableHeaderRow}>
-      <View style={styles.cellLabelWide} />
-      {schemes.map((s) => (
-        <View key={s.schemeCode} style={styles.cell}>
-          <Text style={styles.cellHeader} numberOfLines={2}>
-            {shortSchemeName(s.schemeName)}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-
-  return (
-    <View style={styles.tabCard}>
-      {topEquityNames.length > 0 ? (
-        <>
-          <Text style={styles.tabIntro}>
-            Top 25 equity holdings across the selected funds. Empty cell = the fund doesn&apos;t hold the name.
-          </Text>
-          <TableScrollHost>
-            <View>
-              {headerCells}
-              {topEquityNames.map((name, idx) => (
-                <View key={name} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-                  <View style={styles.cellLabelWide}>
-                    <Text style={styles.cellLabelText} numberOfLines={2}>{name}</Text>
-                  </View>
-                  {schemes.map((s) => {
-                    const top = compositionsByCode.get(s.schemeCode)?.topHoldings ?? null;
-                    const entry = top?.find((h) => h.name === name);
-                    return (
-                      <View key={s.schemeCode} style={styles.cell}>
-                        <Text style={styles.cellValue}>
-                          {entry ? `${entry.pctOfNav.toFixed(2)}%` : '—'}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          </TableScrollHost>
-        </>
-      ) : null}
-
-      {topDebtNames.length > 0 ? (
-        <>
-          <Text style={styles.subhead}>Top debt holdings</Text>
-          <TableScrollHost>
-            <View>
-              {headerCells}
-              {topDebtNames.map((name, idx) => (
-                <View key={name} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-                  <View style={styles.cellLabelWide}>
-                    <Text style={styles.cellLabelText} numberOfLines={2}>{name}</Text>
-                  </View>
-                  {schemes.map((s) => {
-                    const debt = compositionsByCode.get(s.schemeCode)?.rawDebtHoldings ?? null;
-                    const entry = debt?.find((h) => h.name === name);
-                    return (
-                      <View key={s.schemeCode} style={styles.cell}>
-                        <Text style={styles.cellValue}>
-                          {entry && entry.weight_pct != null ? `${entry.weight_pct.toFixed(2)}%` : '—'}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          </TableScrollHost>
-        </>
-      ) : null}
-
-      {topEquityNames.length === 0 && topDebtNames.length === 0 ? (
-        <Text style={styles.tabIntro}>
-          No holdings disclosed for these funds yet.
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Other tab — fund metadata
-// ---------------------------------------------------------------------------
-
-function OtherTab({
-  schemes,
-  tokens,
-}: {
-  schemes: SchemeMasterRow[];
-  tokens: ClearLensTokens;
-}) {
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-
-  const fundAge = (launch: string | null): string => {
-    if (!launch) return '—';
-    const d = new Date(launch);
-    if (Number.isNaN(d.getTime())) return '—';
-    const ms = Date.now() - d.getTime();
-    const years = ms / (365.25 * 24 * 60 * 60 * 1000);
-    if (years < 1) return `${Math.max(0, Math.round(years * 12))}m`;
-    return `${years.toFixed(1)}y`;
-  };
-
-  type Row = { label: string; render: (s: SchemeMasterRow) => string };
-  const rows: Row[] = [
-    { label: 'Category', render: (s) => s.schemeCategory ?? '—' },
-    { label: 'Plan type', render: (s) => s.planType ? s.planType[0].toUpperCase() + s.planType.slice(1) : '—' },
-    { label: 'Benchmark', render: (s) => s.benchmark ?? '—' },
-    { label: 'Expense ratio', render: (s) => s.expenseRatio != null ? `${s.expenseRatio.toFixed(2)}%/yr` : '—' },
-    { label: 'AUM', render: (s) => s.aumCr != null ? formatCurrency(s.aumCr * 1_00_00_000) : '—' },
-    { label: 'Exit load', render: (s) => s.exitLoad ?? '—' },
-    {
-      label: 'Fund age',
-      render: (s) => {
-        if (!s.launchDate) return '—';
-        const age = fundAge(s.launchDate);
-        if (isLaunchDateDirectPlanIntroduction(s.launchDate)) {
-          return `${age} (direct plan since ${s.launchDate.slice(0, 10)})`;
-        }
-        return `${age} (since ${s.launchDate.slice(0, 10)})`;
-      },
-    },
-    { label: 'Min SIP', render: (s) => s.minSipAmount != null ? formatCurrency(s.minSipAmount) : '—' },
-    { label: 'Min lumpsum', render: (s) => s.minLumpsum != null ? formatCurrency(s.minLumpsum) : '—' },
-    { label: 'Min addl', render: (s) => s.minAdditional != null ? formatCurrency(s.minAdditional) : '—' },
-    { label: 'AMC', render: (s) => s.amcName ?? '—' },
-    { label: 'Riskometer', render: (s) => s.riskLabel ?? '—' },
-    { label: 'Morningstar', render: (s) => s.morningstarRating != null ? `${'★'.repeat(s.morningstarRating)}${'☆'.repeat(Math.max(0, 5 - s.morningstarRating))}` : '—' },
-  ];
-
-  const headerCells = (
-    <View style={styles.tableHeaderRow}>
-      <View style={styles.cellLabel} />
-      {schemes.map((s) => (
-        <View key={s.schemeCode} style={styles.cell}>
-          <Text style={styles.cellHeader} numberOfLines={2}>
-            {shortSchemeName(s.schemeName)}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-
-  return (
-    <View style={styles.tabCard}>
-      <Text style={styles.tabIntro}>
-        Scheme metadata. Some fields fill in 24h after a fund is added — sync runs daily.
-      </Text>
-      <TableScrollHost>
-        <View>
-          {headerCells}
-          {rows.map((r, idx) => (
-            <View key={r.label} style={[styles.tableRow, idx > 0 && styles.tableRowDividerTop]}>
-              <View style={styles.cellLabel}><Text style={styles.cellLabelText}>{r.label}</Text></View>
-              {schemes.map((s) => (
-                <View key={s.schemeCode} style={styles.cell}>
-                  <Text style={styles.cellValue} numberOfLines={2}>{r.render(s)}</Text>
-                </View>
-              ))}
-            </View>
-          ))}
-        </View>
-      </TableScrollHost>
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function joinNames(names: string[]): string {
-  if (names.length === 0) return '';
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-}
-
-// ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
 function makeStyles(tokens: ClearLensTokens) {
   const cl = tokens.colors;
   return StyleSheet.create({
+    screenBody: {
+      flex: 1,
+    },
     scrollContent: {
       paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
+      paddingTop: ClearLensSpacing.sm,
       paddingBottom: ClearLensSpacing.xxl,
       gap: ClearLensSpacing.sm,
     },
@@ -1686,7 +2026,8 @@ function makeStyles(tokens: ClearLensTokens) {
       paddingVertical: ClearLensSpacing.lg,
       gap: ClearLensSpacing.sm,
     },
-    helperText: { ...ClearLensTypography.body, color: cl.textTertiary },
+    helperText: { ...ClearLensTypography.body, color: cl.textTertiary, textAlign: 'center' },
+    emptyTitle: { ...ClearLensTypography.h2, color: cl.navy, textAlign: 'center' },
     titleBlock: {
       gap: 4,
       paddingHorizontal: ClearLensSpacing.xs,
@@ -1699,294 +2040,24 @@ function makeStyles(tokens: ClearLensTokens) {
     },
     title: { ...ClearLensTypography.h1, color: cl.navy },
     subtitle: { ...ClearLensTypography.body, color: cl.textSecondary },
-    emptyTitle: { ...ClearLensTypography.h2, color: cl.navy, textAlign: 'center' },
-
-    chipsCard: {
-      backgroundColor: cl.surface,
-      borderRadius: ClearLensRadii.lg,
-      borderWidth: 1,
-      borderColor: cl.border,
-      ...ClearLensShadow,
-      padding: ClearLensSpacing.md,
-      gap: ClearLensSpacing.sm,
-    },
-    inputLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textTertiary,
-      letterSpacing: 0.4,
-    },
-    chipRow: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: ClearLensSpacing.xs,
-    },
-    fundChip: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: ClearLensSpacing.xs,
-      paddingVertical: 6,
-      paddingHorizontal: ClearLensSpacing.sm,
-      borderRadius: ClearLensRadii.full,
-      backgroundColor: cl.surfaceSoft,
-      borderWidth: 1,
-      borderColor: cl.borderLight,
-      maxWidth: '100%',
-    },
-    fundChipName: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.navy,
-      flexShrink: 1,
-    },
-    addChip: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingVertical: 6,
-      paddingHorizontal: ClearLensSpacing.sm,
-      borderRadius: ClearLensRadii.full,
-      borderWidth: 1,
-      borderColor: cl.emerald,
-      borderStyle: 'dashed',
-    },
-    addChipText: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 13,
-      color: cl.emerald,
-    },
-
-    banner: {
-      backgroundColor: cl.heroSurface,
-      borderRadius: ClearLensRadii.lg,
-      padding: ClearLensSpacing.md,
-      gap: 4,
-    },
-    bannerLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textOnDarkMuted,
-      textTransform: 'uppercase',
-    },
-    bannerValue: {
-      ...ClearLensTypography.h1,
-      color: cl.textOnDark,
-    },
-    bannerSubtitle: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textOnDarkMuted,
-      paddingTop: ClearLensSpacing.xs,
-      lineHeight: 19,
-    },
-    bannerGainUp: {
-      color: cl.positive,
-      fontFamily: ClearLensFonts.semiBold,
-    },
-
-    // Key differences — section wrapper. No outer border or shadow: each
-    // insight tile carries its own visual weight so the section reads as a
-    // panel of cards rather than a paragraph inside a card.
-    insightsSection: {
-      gap: ClearLensSpacing.sm,
-      paddingTop: ClearLensSpacing.xs,
-    },
-    insightsHeader: {
-      gap: 2,
-    },
-    insightsEyebrow: {
-      ...ClearLensTypography.label,
-      color: cl.emerald,
-      textTransform: 'uppercase',
-      letterSpacing: 0.6,
-    },
-    insightsTitle: {
-      ...ClearLensTypography.h2,
-      color: cl.navy,
-    },
-    insightsList: {
-      gap: ClearLensSpacing.sm,
-    },
-    insightCard: {
-      flexDirection: 'row',
-      backgroundColor: cl.surfaceSoft,
-      borderRadius: ClearLensRadii.lg,
-      overflow: 'hidden',
-    },
-    insightAccent: {
-      width: 3,
-      backgroundColor: cl.emerald,
-    },
-    insightBody: {
-      flex: 1,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: ClearLensSpacing.sm,
-      gap: 4,
-    },
-    insightEyebrowRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
-      paddingBottom: 2,
-    },
-    insightEyebrow: {
-      ...ClearLensTypography.label,
-      color: cl.emerald,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      fontFamily: ClearLensFonts.semiBold,
-    },
-    insightHeadline: {
-      ...ClearLensTypography.h2,
-      color: cl.navy,
-      fontFamily: ClearLensFonts.extraBold,
-    },
-    insightSubject: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-      fontFamily: ClearLensFonts.semiBold,
-    },
-    insightCaption: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      paddingTop: 2,
-    },
-
-    tabBar: {
-      flexDirection: 'row',
-      gap: ClearLensSpacing.xs,
-      paddingVertical: ClearLensSpacing.xs,
-    },
-    tabPill: {
-      paddingHorizontal: ClearLensSpacing.sm + 2,
-      paddingVertical: 8,
-      borderRadius: ClearLensRadii.full,
-      borderWidth: 1,
-      borderColor: cl.borderLight,
-      backgroundColor: cl.surface,
-    },
-    tabPillActive: {
-      borderColor: cl.emerald,
-      backgroundColor: cl.emerald,
-    },
-    tabLabel: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 13,
-      color: cl.textSecondary,
-    },
-    tabLabelActive: {
-      color: cl.textOnDark,
-    },
-
-    tabContent: {
-      gap: ClearLensSpacing.sm,
-    },
-    tabCard: {
-      backgroundColor: cl.surface,
-      borderRadius: ClearLensRadii.lg,
-      borderWidth: 1,
-      borderColor: cl.border,
-      ...ClearLensShadow,
-      padding: ClearLensSpacing.md,
-      gap: ClearLensSpacing.sm,
-    },
-    tabIntro: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textSecondary,
-      lineHeight: 19,
-    },
-    tabFootnote: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      lineHeight: 16,
-    },
-    subhead: {
-      ...ClearLensTypography.label,
-      color: cl.textTertiary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.4,
-      paddingTop: ClearLensSpacing.sm,
-    },
-
-    tableHeaderRow: {
-      flexDirection: 'row',
-      paddingVertical: ClearLensSpacing.xs,
-    },
-    tableRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      paddingVertical: 10,
-    },
-    tableRowDividerTop: {
-      borderTopWidth: 1,
-      borderTopColor: cl.borderLight,
-    },
-    cellLabel: {
-      width: 110,
-      paddingRight: ClearLensSpacing.xs,
-    },
-    cellLabelWide: {
-      width: 160,
-      paddingRight: ClearLensSpacing.xs,
-    },
-    cellLabelText: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textSecondary,
-    },
-    cellLabelHint: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      lineHeight: 15,
-      paddingTop: 2,
-    },
-    // Fund-column cells grow to fill the available width inside the card —
-    // same flex-stretch pattern Funds dashboard cards / Money Trail rows /
-    // Settings rows use. `minWidth: 130` preserves the original column width
-    // as the floor on phone-width viewports; `maxWidth: 220` prevents
-    // 1- or 2-fund comparisons on a desktop 960-frame from over-stretching
-    // each cell to ~400 px (which would make the single number per cell
-    // feel lost).
-    cell: {
-      flex: 1,
-      minWidth: 130,
-      maxWidth: 220,
-      paddingRight: ClearLensSpacing.xs,
-      gap: 2,
-    },
-    cellHeader: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.3,
-    },
-    cellValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 13,
-      color: cl.navy,
-    },
-    cellValueLeader: {
-      color: cl.emerald,
-    },
-    cellSource: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-    },
-
-    errorBox: {
-      padding: ClearLensSpacing.md,
-      borderRadius: ClearLensRadii.md,
-      backgroundColor: cl.surfaceSoft,
-      borderWidth: 1,
-      borderColor: cl.borderLight,
-    },
-    errorText: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textSecondary,
-      lineHeight: 18,
-    },
     disclaimer: {
-      ...ClearLensTypography.caption,
+      fontSize: 11,
+      fontFamily: ClearLensFonts.medium,
       color: cl.textTertiary,
-      textAlign: 'center',
-      paddingHorizontal: ClearLensSpacing.sm,
       lineHeight: 17,
-      marginTop: ClearLensSpacing.xs,
+      paddingHorizontal: 4,
+    },
+    retryButton: {
+      paddingVertical: ClearLensSpacing.sm,
+      paddingHorizontal: ClearLensSpacing.lg,
+      backgroundColor: cl.mint50,
+      borderRadius: ClearLensRadii.full,
+      marginTop: ClearLensSpacing.sm,
+    },
+    retryText: {
+      ...ClearLensTypography.label,
+      color: cl.emeraldDeep,
+      fontFamily: ClearLensFonts.bold,
     },
   });
 }
