@@ -1,4 +1,4 @@
-import { shortSchemeName } from '../schemeName';
+import { fundComparisonCategory, shortSchemeName } from '../schemeName';
 
 describe('shortSchemeName', () => {
   it('trims direct plan + growth suffix', () => {
@@ -34,5 +34,44 @@ describe('shortSchemeName', () => {
 
   it('handles whitespace around the suffix', () => {
     expect(shortSchemeName('Quant Active Fund   -  Direct Plan - Growth   ')).toBe('Quant Active Fund');
+  });
+});
+
+describe('fundComparisonCategory', () => {
+  it('parses the SEBI equity sub-category from the scheme name', () => {
+    expect(fundComparisonCategory('Mirae Asset Large Cap Fund', 'Equity')).toBe('Large Cap');
+    expect(fundComparisonCategory('HDFC Mid-Cap Opportunities Fund', 'Equity')).toBe('Mid Cap');
+    expect(fundComparisonCategory('SBI Small Cap Fund', 'Equity')).toBe('Small Cap');
+    expect(fundComparisonCategory('Parag Parikh Flexi Cap Fund', 'Equity')).toBe('Flexi Cap');
+    expect(fundComparisonCategory('Kotak Multicap Fund', 'Equity')).toBe('Multi Cap');
+  });
+
+  it('prefers "Large & Mid Cap" over the narrower cap rules', () => {
+    expect(fundComparisonCategory('Canara Robeco Large & Mid Cap Fund', 'Equity')).toBe('Large & Mid Cap');
+    expect(fundComparisonCategory('SBI Large and Mid Cap Fund', 'Equity')).toBe('Large & Mid Cap');
+  });
+
+  it('maps common large-cap synonyms', () => {
+    expect(fundComparisonCategory('Axis Bluechip Fund', 'Equity')).toBe('Large Cap');
+    expect(fundComparisonCategory('HDFC Top 100 Fund', 'Equity')).toBe('Large Cap');
+  });
+
+  it('parses style/thematic equity categories', () => {
+    expect(fundComparisonCategory('Axis ELSS Tax Saver Fund', 'Equity')).toBe('ELSS');
+    expect(fundComparisonCategory('SBI Focused Equity Fund', 'Equity')).toBe('Focused');
+    expect(fundComparisonCategory('ICICI Prudential Value Discovery Fund', 'Equity')).toBe('Value');
+    expect(fundComparisonCategory('SBI Contra Fund', 'Equity')).toBe('Contra');
+    expect(fundComparisonCategory('ICICI Prudential Technology Fund', 'Equity')).toBe('Sectoral / Thematic');
+  });
+
+  it('falls back to the broad category when no sub-category is in the name', () => {
+    expect(fundComparisonCategory('HDFC Corporate Bond Fund', 'Debt')).toBe('Debt');
+    expect(fundComparisonCategory('Some Custom Fund', null)).toBe('Other');
+  });
+
+  it('treats two funds in the same sub-category as comparable', () => {
+    const a = fundComparisonCategory('Mirae Asset Large Cap Fund - Direct Plan - Growth', 'Equity');
+    const b = fundComparisonCategory('Nippon India Large Cap Fund', 'Equity');
+    expect(a).toBe(b);
   });
 });

@@ -46,6 +46,17 @@ numbers" reveal.
 - `EmptyState`, `OneFundState` — 0/1-fund flow states
 - `NoHistoryBanner`, `CrossCategoryBanner` — contextual banners
 - `UndoSnackbar` — navy bottom snackbar with 4s auto-dismiss + UNDO
+- `fundComparisonCategory()` (`schemeName.ts`) — resolves the SEBI sub-category
+  (Large/Mid/Flexi/…) from the AMFI scheme name, since `scheme_category` is only
+  the broad class (Equity/Debt/Hybrid) for CAS-imported holdings. Powers the
+  cross-category banner + the Returns "same/different category" subline.
+
+## Labels & identity
+- Bars, chips, and per-fund rows are labelled with the **fund name**
+  (`shortSchemeName(schemeName)`), not the category — every equity fund would
+  otherwise read "Equity". The A/B/C badge carries colour identity.
+- Category comparisons (cross-category banner, Returns subline) run on
+  `fundComparisonCategory()` so Large Cap vs Mid Cap vs Flexi Cap is flagged.
 
 ## Card headlines (neutral, data-built)
 - **Returns**: `Over 3Y, {hiCat} returned {hi}%; {loCat} returned {lo}%.`

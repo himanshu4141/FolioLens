@@ -42,6 +42,7 @@ import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioCompos
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { type SchemeSearchResult } from '@/src/utils/fundSearch';
+import { fundComparisonCategory, shortSchemeName } from '@/src/utils/schemeName';
 import {
   computeRiskMetrics,
   computeTrailingReturns,
@@ -264,7 +265,17 @@ function hasHistory(metrics: Metrics | null): boolean {
 }
 
 function fundDisplayName(scheme: SchemeMasterRow): string {
-  return scheme.schemeCategory ?? scheme.familyName ?? scheme.schemeName;
+  // schemeName is the full AMFI name; shortSchemeName trims the plan/option
+  // suffix. We deliberately avoid schemeCategory ("Equity") and familyName
+  // (the AMC family) here — neither distinguishes one fund from another.
+  return shortSchemeName(scheme.schemeName);
+}
+
+// The SEBI sub-category we compare on. scheme_category alone is too broad
+// (every equity fund is just "Equity"), so we resolve Large/Mid/Flexi/etc.
+// from the scheme name — this is what powers the cross-category banner.
+function fundCategory(scheme: SchemeMasterRow): string {
+  return fundComparisonCategory(scheme.schemeName, scheme.schemeCategory);
 }
 
 function returnsHeadline(funds: CompareFundData[]): string {
@@ -521,10 +532,12 @@ function BarRow({
         >
           <Text
             style={{
+              flexShrink: 1,
               fontSize: 11,
               fontFamily: ClearLensFonts.bold,
               color: '#fff',
               opacity: 0.95,
+              marginRight: 8,
             }}
             numberOfLines={1}
           >
@@ -532,6 +545,7 @@ function BarRow({
           </Text>
           <Text
             style={{
+              flexShrink: 0,
               fontFamily: ClearLensFonts.extraBold,
               fontSize: 13,
               color: '#fff',
@@ -851,10 +865,10 @@ function OneFundState({
           <FundBadge letter={badgeLetter} color={badgeColor} size={32} radius={10} />
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={{ fontSize: 13, fontFamily: ClearLensFonts.bold, color: cl.navy }} numberOfLines={1}>
-              {scheme.familyName ?? scheme.schemeName} {scheme.schemeCategory ?? ''}
+              {fundDisplayName(scheme)}
             </Text>
             <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary }} numberOfLines={1}>
-              {scheme.schemeCategory ?? ''}{scheme.benchmark ? ` · ${scheme.benchmark}` : ''}
+              {fundCategory(scheme)}{scheme.benchmark ? ` · ${scheme.benchmark}` : ''}
             </Text>
           </View>
           <TouchableOpacity
@@ -1172,7 +1186,7 @@ function ReturnsCard({
   tokens: ClearLensTokens;
 }) {
   const allSameCategory = fundData.length > 0 && fundData.every(
-    (f) => f.scheme.schemeCategory === fundData[0].scheme.schemeCategory,
+    (f) => fundCategory(f.scheme) === fundCategory(fundData[0].scheme),
   );
 
   const headline = returnsHeadline(fundsWithHistory);
@@ -1853,9 +1867,7 @@ export function ClearLensCompareFundsScreen() {
 
   const fundsWithHistory = fundData.filter((f) => hasHistory(f.metrics));
   const fundsWithoutHistory = fundData.filter((f) => !hasHistory(f.metrics));
-  const uniqueCategories = [
-    ...new Set(fundData.map((f) => f.scheme.schemeCategory).filter((c): c is string => !!c)),
-  ];
+  const uniqueCategories = [...new Set(fundData.map((f) => fundCategory(f.scheme)))];
   const isCrossCategory = uniqueCategories.length > 1;
 
   const renderContent = () => {
