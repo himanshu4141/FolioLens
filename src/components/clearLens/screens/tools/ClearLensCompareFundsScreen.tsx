@@ -9,7 +9,7 @@
  * Supersedes the tabbed M3v2 screen.
  * Design spec: design_handoff_compare_redesign/README.md + Option C spec.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
   ScrollView,
@@ -41,7 +41,7 @@ import { functionsClient } from '@/src/lib/functions';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
-import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
+import { type SchemeSearchResult } from '@/src/utils/fundSearch';
 import {
   computeRiskMetrics,
   computeTrailingReturns,
@@ -61,7 +61,6 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 // ---------------------------------------------------------------------------
 
 const MAX_FUNDS = 3;
-const MIN_FUNDS = 2;
 
 // Stable A/B/C identity colors — NOT theme tokens (read on both light/dark).
 const BADGE_LETTERS = ['A', 'B', 'C'] as const;
@@ -1638,7 +1637,6 @@ export function ClearLensCompareFundsScreen() {
 
   const [selectedCodes, setSelectedCodes] = useState<number[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const hasSeededRef = useRef(false);
 
   const [snackbar, setSnackbar] = useState<{
     code: number;
@@ -1647,21 +1645,6 @@ export function ClearLensCompareFundsScreen() {
     badgeColor: string;
   } | null>(null);
   const snackbarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Auto-seed first MIN_FUNDS held funds on initial load.
-  const userFundsQuery = useQuery({
-    queryKey: ['compare:user-held-seed', userId],
-    enabled: !!userId,
-    queryFn: () => (userId ? fetchUserHeldSchemes(userId) : Promise.resolve([] as SchemeSearchResult[])),
-    staleTime: 5 * 60 * 1000,
-  });
-  useEffect(() => {
-    if (hasSeededRef.current) return;
-    if ((userFundsQuery.data?.length ?? 0) >= MIN_FUNDS) {
-      setSelectedCodes(userFundsQuery.data!.slice(0, MIN_FUNDS).map((f) => f.schemeCode));
-      hasSeededRef.current = true;
-    }
-  }, [userFundsQuery.data]);
 
   // On-demand hydration for compared funds. The monthly openfolio-sync cron
   // only pre-seeds HELD funds, so a Compare pick nobody holds is hydrated here
@@ -1767,7 +1750,6 @@ export function ClearLensCompareFundsScreen() {
   }, [schemes, metricsByCode, compositionsByCode, tokens.colors.surfaceSoft]);
 
   const handleToggle = (scheme: SchemeSearchResult) => {
-    hasSeededRef.current = true;
     setSelectedCodes((prev) => {
       if (prev.includes(scheme.schemeCode)) return prev.filter((c) => c !== scheme.schemeCode);
       if (prev.length >= MAX_FUNDS) return prev;
@@ -1776,7 +1758,6 @@ export function ClearLensCompareFundsScreen() {
   };
 
   const handleRemove = (fund: CompareFundData) => {
-    hasSeededRef.current = true;
     if (snackbarTimer.current) clearTimeout(snackbarTimer.current);
     setSelectedCodes((prev) => prev.filter((c) => c !== fund.code));
     setSnackbar({

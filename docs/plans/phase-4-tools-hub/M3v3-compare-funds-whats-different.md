@@ -23,12 +23,12 @@ numbers" reveal.
 - `shortSchemeName` as column header (replaced by A/B/C badges)
 - `TableScrollHost` horizontal scroll wrapper (Option C row-based vizzes eliminate the need)
 - `ReturnsTab`, `RiskTab`, `AssetMixTab`, `SectorsTab`, `HoldingsTab`, `OtherTab` components
+- `hasSeededRef` + auto-seed of held funds — the tool now opens to the empty state so the user picks funds intentionally
 
 ## What's kept
 - All three data fetchers (`fetchSchemes`, `fetchCompositionsForCodes`, `fetchNavHistoryForCodes`)
 - All TanStack Query keys + stale times
 - Hydration `useQueries` (on-demand edge function calls)
-- `hasSeededRef` + auto-seed logic for `MIN_FUNDS`
 - `handleToggle` + `UniversalFundPicker` wiring
 - `previewMode` branch + `ToolsPreviewSampleCard`
 - `PortfolioDisclaimer` footer
