@@ -59,7 +59,16 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // hold the thinner SIP+one-redemption shape, so existing devices that
 // opened preview before this OTA would keep showing the old Money
 // Trail. Bump forces a clean re-read on next launch.
-export const __BUSTER__ = 'v4';
+//
+// v5 (2026-05-28): `FundCardData` gained `currentNavDate` so the Fund
+// list / Portfolio fund cards can render per-AMC NAV freshness ("as
+// of …" reflects each AMC's own EOD cadence rather than the
+// portfolio-wide latest). Cached v4 entries lack the field — call
+// sites already fall back to the portfolio-wide `latestNavDate` via
+// `??`, but bumping here gets every user the correct per-fund stamp
+// on the very next launch instead of waiting for the persisted cache
+// to expire (~24h).
+export const __BUSTER__ = 'v5';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
