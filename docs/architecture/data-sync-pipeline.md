@@ -7,7 +7,7 @@ Five edge functions on independent schedules keep prices, scheme metadata, fund 
 ```mermaid
 graph LR
   subgraph PgCron["pg_cron jobs<br/>(Postgres scheduler)"]
-    cron_nav["sync-nav<br/>0 * * * 1-5"]
+    cron_nav["sync-nav<br/>30 0,2,4,6,8,10,12-23 * * *"]
     cron_index["sync-index<br/>5 * * * 1-5"]
     cron_portfolios["sync-fund-portfolios<br/>10 * * * *"]
     cron_meta["sync-fund-meta<br/>0 2 * * *"]
@@ -78,9 +78,12 @@ gantt
   dateFormat HH:mm
   axisFormat %H:%M
 
-  section Hourly (weekday)
-  sync-nav (00:00 mark)                  :a1, 00:00, 5m
-  sync-index (00:05 mark)                :a2, 00:05, 5m
+  section sync-nav (bimodal, 7 days)
+  EOD window — hourly (12:30→00:30)      :a1a, 12:30, 5m
+  Daytime — every 2h (02:30, 04:30, …)   :a1b, 02:30, 5m
+
+  section sync-index (weekday)
+  sync-index (every hour at :05)         :a2, 00:05, 5m
 
   section Hourly (always)
   sync-fund-portfolios (00:10 mark)      :a3, 00:10, 5m
@@ -89,7 +92,9 @@ gantt
   sync-fund-meta (02:00 UTC)             :a4, 02:00, 5m
 ```
 
-There's no explicit fan-out or wait — `sync-index` is scheduled 5 minutes after `sync-nav` so the home-screen "Live" badge has both fresh NAVs and fresh benchmark closes by the time it renders, but neither blocks the other.
+`sync-nav` runs on a bimodal schedule — hourly during the EOD publish window (6 PM → 6 AM IST, i.e. 12:30 → 00:30 UTC) when AMCs actually push NAVs to mfapi, and every 2 hours during the daytime (8 AM → 5 PM IST, i.e. 02:30 → 10:30 UTC at even hours) to catch late corrections without burning compute on idle hours. Runs every day (not weekday-only) so a Friday-EOD NAV that lands Saturday morning IST gets picked up instead of waiting until Monday. Different AMCs land their NAVs at very different times — HDFC / ICICI / DSP typically hit mfapi within an hour of EOD, while PPFAS and international FoFs can take 4–6 hours longer; the dense EOD window catches both extremes.
+
+`sync-index` still runs hourly weekday-only at `:05`. It no longer co-runs with `sync-nav` (which is at `:30`), but the home-screen NAV stamp + benchmark badge tolerate independent freshness — each is shown with its own "as of …" timestamp.
 
 `sync-stock-market-cap` runs on its own monthly track at 00:30 UTC on the 1st (not shown — its cadence is monthly, not daily). AMFI publishes the categorization list twice a year, so ~10 of 12 runs are no-ops; the monthly cadence keeps us resilient to AMFI shifting its publication window.
 

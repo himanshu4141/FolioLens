@@ -54,7 +54,7 @@ For each of the 5 scheduled jobs in
 - Drop the corresponding `cron.schedule` entry.
 
 Schedules to preserve:
-- `sync-nav-hourly` — `0 * * * 1-5`
+- `sync-nav-hourly` — `30 0,2,4,6,8,10,12,13,14,15,16,17,18,19,20,21,22,23 * * *` (bimodal: hourly through the EOD publish window 6 PM → 6 AM IST, every 2h during the day 8 AM → 5 PM IST, 7 days)
 - `sync-index-hourly` — `5 * * * 1-5`
 - `sync-portfolio-composition-hourly` — `10 * * * *`
 - `sync-fund-meta-daily` — `0 2 * * *`

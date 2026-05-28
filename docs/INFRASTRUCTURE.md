@@ -77,7 +77,7 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `cas-webhook-resend` | Vercel inbound router | Receives Resend-signed CAS webhook payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, calls Vercel parser, imports | M2 (PR #93) |
 | `request-cas` | App "Sync portfolio" tap | Triggers KFintech CAS email via CASParser API | **Deprecated**, retired in M2.6 |
 | `create-inbound-session` | First onboarding | Creates a per-user CASParser inbound mailbox | **Deprecated**, retired in M2.6 |
-| `sync-nav` | pg_cron (hourly) | Pulls NAV history from mfapi.in for every active scheme | Active |
+| `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Pulls NAV history from mfapi.in for every active scheme | Active |
 | `sync-index` | pg_cron (hourly) | Pulls benchmark index closes from yahoo finance | Active |
 | `sync-fund-portfolios` | pg_cron (monthly) | Pulls AMFI portfolio composition disclosures | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes scheme metadata (AUM, expense ratio, risk) | Active |
