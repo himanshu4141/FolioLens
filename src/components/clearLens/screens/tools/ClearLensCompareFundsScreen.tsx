@@ -317,11 +317,6 @@ function fmtPct(v: number | null, digits = 1): string {
   return `${(v * 100).toFixed(digits)}%`;
 }
 
-function fmtDrawdown(v: number | null): string {
-  if (v == null) return '—';
-  return `–${Math.abs(v * 100).toFixed(0)}%`;
-}
-
 // ---------------------------------------------------------------------------
 // FundBadge atom
 // ---------------------------------------------------------------------------
@@ -809,7 +804,7 @@ function EmptyState({
       <Text
         style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 17, paddingHorizontal: 4 }}
       >
-        Compare works best with funds in the same category. Mixing categories is supported — we'll flag it.
+        {"Compare works best with funds in the same category. Mixing categories is supported — we'll flag it."}
       </Text>
     </View>
   );
@@ -955,7 +950,7 @@ function OneFundState({
           Add a second fund to start comparing
         </Text>
         <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, textAlign: 'center', lineHeight: 18 }}>
-          Pick another fund and we'll show their returns, risk and cost side-by-side.
+          {"Pick another fund and we'll show their returns, risk and cost side-by-side."}
         </Text>
       </TouchableOpacity>
     </View>
@@ -996,7 +991,7 @@ function NoHistoryBanner({
           {familyName} launched {months > 0 ? `${months} months ago` : 'recently'}.
         </Text>
         <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, marginTop: 2, lineHeight: 17 }}>
-          It has no return history yet, so it's left out of the Returns and Risk comparisons. It still appears in Cost, What's inside, Overlap, and The basics.
+          {"It has no return history yet, so it's left out of the Returns and Risk comparisons. It still appears in Cost, What's inside, Overlap, and The basics."}
         </Text>
       </View>
     </View>
@@ -1043,7 +1038,7 @@ function CrossCategoryBanner({
       </View>
       <Text style={{ flex: 1, fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.navy, lineHeight: 18 }}>
         <Text style={{ fontFamily: ClearLensFonts.bold }}>Different categories. </Text>
-        {categories.join(', ')} funds hold different kinds of companies by design — their returns aren't directly comparable.
+        {categories.join(', ')} funds hold different kinds of companies by design — their returns aren&apos;t directly comparable.
       </Text>
     </View>
   );
