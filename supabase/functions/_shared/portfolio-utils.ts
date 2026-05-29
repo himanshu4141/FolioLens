@@ -172,3 +172,108 @@ export function classifyHoldings(
     annotated,
   };
 }
+
+/**
+ * Derives a canonical SEBI category key from a scheme's display name.
+ *
+ * AMFI sometimes returns the generic single-word category `"Equity"` (or
+ * `"Hybrid"` / `"Debt"`) for funds that actually belong to a specific
+ * SEBI sub-bucket — DSP Mid Cap Fund, for instance, is filed as
+ * `scheme_category = 'Equity'`. The composition pipeline previously
+ * mapped that to a flexi-cap proxy (`38/33/29`) and every such fund
+ * displayed identical cap mixes on the Compare tab regardless of how it
+ * actually invests.
+ *
+ * This helper rescues the sub-bucket from the scheme_name. The returned
+ * key matches the lowercase keys used in the `CATEGORY_RULES` tables in
+ * `sync-fund-portfolios/` and `fetch-fund-snapshot/`. Pattern order
+ * matters: longer / more specific patterns (e.g. `"large & mid cap"`)
+ * are checked before their substrings (`"large cap"`, `"mid cap"`) so a
+ * "Large & Mid Cap Fund" doesn't get classified as a large-cap fund.
+ *
+ * Returns `null` when nothing matches — callers should fall through to
+ * their existing category-based lookup or the final fallback.
+ */
+export function deriveSchemeCategoryFromName(
+  schemeName: string | null | undefined,
+): string | null {
+  if (!schemeName) return null;
+  const name = schemeName.toLowerCase();
+
+  // Order matters — check longer/more-specific patterns first.
+  // Each entry: [substrings to match (any), canonical CATEGORY_RULES key].
+  const PATTERNS: Array<[string[], string]> = [
+    // Equity sub-buckets — most specific first.
+    [['large & mid cap', 'large and mid cap', 'largemidcap', 'large-mid cap'], 'large & mid cap fund'],
+    [['multi cap'], 'multi cap fund'],
+    [['flexi cap', 'flexicap'], 'flexi cap fund'],
+    [['mid cap', 'midcap'], 'mid cap fund'],
+    [['small cap', 'smallcap'], 'small cap fund'],
+    [['large cap', 'largecap', 'bluechip', 'top 100', 'top 200'], 'large cap fund'],
+    [['focused'], 'focused fund'],
+    [['contra'], 'contra fund'],
+    [['dividend yield'], 'dividend yield fund'],
+    [['value'], 'value fund'],
+    [['elss', 'tax saver', 'tax plan', 'long term equity', 'long-term equity'], 'elss'],
+    [['sectoral', 'thematic', 'banking and financial', 'banking & financial',
+      'pharma', 'healthcare', 'technology', 'infrastructure', 'consumption',
+      'energy', 'manufacturing', 'business cycle', 'transport', 'logistics',
+      'commodities', 'natural resources', 'india opportunities'], 'sectoral/thematic'],
+
+    // Hybrid sub-buckets — order matters because "balanced" vs "balanced advantage".
+    [['balanced advantage', 'dynamic asset allocation'], 'balanced advantage fund'],
+    [['aggressive hybrid'], 'aggressive hybrid fund'],
+    [['conservative hybrid'], 'conservative hybrid fund'],
+    [['equity savings'], 'equity savings fund'],
+    [['multi asset'], 'multi asset allocation'],
+    [['balanced hybrid'], 'balanced hybrid fund'],
+    [['arbitrage'], 'arbitrage fund'],
+
+    // Passive / FoF. ETF is checked before nifty/sensex because most ETFs
+    // also reference a benchmark in their name (e.g. "Nifty BeES ETF").
+    [['fund of fund', 'fund of funds', 'fof'], 'fund of funds domestic'],
+    [['etf', ' bees'], 'other etfs'],
+    [['index fund', 'nifty', 'sensex', ' bse '], 'index funds'],
+
+    // Debt sub-buckets.
+    [['overnight'], 'overnight fund'],
+    [['liquid'], 'liquid fund'],
+    [['ultra short'], 'ultra short duration fund'],
+    [['low duration'], 'low duration fund'],
+    [['money market'], 'money market fund'],
+    [['short duration', 'short term'], 'short duration fund'],
+    [['medium to long duration'], 'medium to long duration'],
+    [['medium duration'], 'medium duration fund'],
+    [['long duration'], 'long duration fund'],
+    [['dynamic bond'], 'dynamic bond fund'],
+    [['corporate bond'], 'corporate bond fund'],
+    [['credit risk'], 'credit risk fund'],
+    [['banking and psu', 'banking & psu'], 'banking and psu fund'],
+    [['gilt'], 'gilt fund'],
+    [['floater', 'floating rate'], 'floater fund'],
+
+    // Solution-oriented.
+    [['retirement'], 'solution oriented - retirement'],
+    [["children's", 'childrens', 'children'], 'solution oriented - childrens'],
+  ];
+
+  for (const [needles, key] of PATTERNS) {
+    if (needles.some((n) => name.includes(n))) return key;
+  }
+  return null;
+}
+
+/**
+ * Generic categories that AMFI / mfdata.in occasionally return as the bare
+ * single-word value (`"Equity"`, `"Hybrid"`, `"Debt"`, `"Other"`). These are
+ * useless for choosing a category-rules row — every equity scheme would hit
+ * the same flexi-cap proxy. When the persisted scheme_category is one of
+ * these, the resolver should prefer a sub-bucket derived from scheme_name.
+ */
+export function isGenericSchemeCategory(
+  schemeCategory: string | null | undefined,
+): boolean {
+  if (!schemeCategory) return true;
+  const key = schemeCategory.toLowerCase().trim();
+  return key === 'equity' || key === 'debt' || key === 'hybrid' || key === 'other' || key === '';
+}
