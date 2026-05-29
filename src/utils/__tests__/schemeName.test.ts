@@ -38,74 +38,51 @@ describe('shortSchemeName', () => {
 });
 
 describe('fundComparisonCategory', () => {
-  it('parses the SEBI equity sub-category from the scheme name', () => {
-    expect(fundComparisonCategory('Mirae Asset Large Cap Fund', 'Equity')).toBe('Large Cap');
-    expect(fundComparisonCategory('HDFC Mid-Cap Opportunities Fund', 'Equity')).toBe('Mid Cap');
-    expect(fundComparisonCategory('SBI Small Cap Fund', 'Equity')).toBe('Small Cap');
-    expect(fundComparisonCategory('Parag Parikh Flexi Cap Fund', 'Equity')).toBe('Flexi Cap');
-    expect(fundComparisonCategory('Kotak Multicap Fund', 'Equity')).toBe('Multi Cap');
+  it('maps each curated canonical sebi key to its label', () => {
+    expect(fundComparisonCategory('large cap fund', 'Equity')).toBe('Large Cap');
+    expect(fundComparisonCategory('mid cap fund', 'Equity')).toBe('Mid Cap');
+    expect(fundComparisonCategory('small cap fund', 'Equity')).toBe('Small Cap');
+    expect(fundComparisonCategory('flexi cap fund', 'Equity')).toBe('Flexi Cap');
+    expect(fundComparisonCategory('multi cap fund', 'Equity')).toBe('Multi Cap');
+    expect(fundComparisonCategory('large & mid cap fund', 'Equity')).toBe('Large & Mid Cap');
+    expect(fundComparisonCategory('elss', 'Equity')).toBe('ELSS');
+    expect(fundComparisonCategory('focused fund', 'Equity')).toBe('Focused');
+    expect(fundComparisonCategory('value fund', 'Equity')).toBe('Value');
+    expect(fundComparisonCategory('contra fund', 'Equity')).toBe('Contra');
+    expect(fundComparisonCategory('dividend yield fund', 'Equity')).toBe('Dividend Yield');
+    expect(fundComparisonCategory('sectoral/thematic', 'Equity')).toBe('Sectoral / Thematic');
   });
 
-  it('prefers "Large & Mid Cap" over the narrower cap rules', () => {
-    expect(fundComparisonCategory('Canara Robeco Large & Mid Cap Fund', 'Equity')).toBe('Large & Mid Cap');
-    expect(fundComparisonCategory('SBI Large and Mid Cap Fund', 'Equity')).toBe('Large & Mid Cap');
+  it('title-cases canonical keys that are not in the curated label map', () => {
+    expect(fundComparisonCategory('liquid fund', 'Debt')).toBe('Liquid Fund');
+    expect(fundComparisonCategory('gilt fund', 'Debt')).toBe('Gilt Fund');
+    expect(fundComparisonCategory('aggressive hybrid fund', 'Hybrid')).toBe('Aggressive Hybrid Fund');
   });
 
-  it('maps common large-cap synonyms', () => {
-    expect(fundComparisonCategory('Axis Bluechip Fund', 'Equity')).toBe('Large Cap');
-    expect(fundComparisonCategory('HDFC Top 100 Fund', 'Equity')).toBe('Large Cap');
+  it('is case-insensitive and trims the sebi key', () => {
+    expect(fundComparisonCategory('  MID CAP FUND ', 'Equity')).toBe('Mid Cap');
   });
 
-  it('parses style/thematic equity categories', () => {
-    expect(fundComparisonCategory('Axis ELSS Tax Saver Fund', 'Equity')).toBe('ELSS');
-    expect(fundComparisonCategory('SBI Focused Equity Fund', 'Equity')).toBe('Focused');
-    expect(fundComparisonCategory('ICICI Prudential Value Discovery Fund', 'Equity')).toBe('Value');
-    expect(fundComparisonCategory('SBI Contra Fund', 'Equity')).toBe('Contra');
-    expect(fundComparisonCategory('ICICI Prudential Technology Fund', 'Equity')).toBe('Sectoral / Thematic');
+  it('does not parse the scheme name — only the authoritative sebi_category counts', () => {
+    // A "Large Cap Fund" by name but persisted as mid cap reads as Mid Cap; the
+    // app never re-derives category from the name (single source of truth).
+    expect(fundComparisonCategory('mid cap fund', 'Equity')).toBe('Mid Cap');
   });
 
-  it('falls back to the broad category when no sub-category is in the name', () => {
-    expect(fundComparisonCategory('HDFC Corporate Bond Fund', 'Debt')).toBe('Debt');
-    expect(fundComparisonCategory('Some Custom Fund', null)).toBe('Other');
+  it('falls back to the broad asset class when sebi_category is NULL', () => {
+    expect(fundComparisonCategory(null, 'Equity')).toBe('Equity');
+    expect(fundComparisonCategory(null, 'Debt')).toBe('Debt');
+    expect(fundComparisonCategory(undefined, 'Hybrid')).toBe('Hybrid');
   });
 
-  it('does not emit a bespoke "International" bucket the backend can never persist', () => {
-    // The name parser is a strict subset of deriveSchemeCategoryFromName, which
-    // has no international key — so an international equity fund falls back to
-    // its broad class rather than a frontend-only label.
-    expect(fundComparisonCategory('Motilal Oswal Nasdaq 100 FOF', 'Equity')).toBe('Equity');
-    expect(fundComparisonCategory('PGIM India Global Equity Opportunities Fund', 'Equity')).toBe('Equity');
+  it('falls back to "Other" when neither sebi_category nor broad class is set', () => {
+    expect(fundComparisonCategory(null, null)).toBe('Other');
+    expect(fundComparisonCategory('   ', null)).toBe('Other');
   });
 
-  it('treats two funds in the same sub-category as comparable', () => {
-    const a = fundComparisonCategory('Mirae Asset Large Cap Fund - Direct Plan - Growth', 'Equity');
-    const b = fundComparisonCategory('Nippon India Large Cap Fund', 'Equity');
-    expect(a).toBe(b);
-  });
-
-  describe('sebi_category preference', () => {
-    it('prefers the persisted sebi_category over the parsed name', () => {
-      // Name parser would say "Flexi Cap"; the authoritative sebi key wins.
-      expect(
-        fundComparisonCategory('Some Renamed Flexi Cap Fund', 'Equity', 'mid cap fund'),
-      ).toBe('Mid Cap');
-    });
-
-    it('maps each known canonical key to its label', () => {
-      expect(fundComparisonCategory('x', 'Equity', 'large & mid cap fund')).toBe('Large & Mid Cap');
-      expect(fundComparisonCategory('x', 'Equity', 'elss')).toBe('ELSS');
-      expect(fundComparisonCategory('x', 'Equity', 'sectoral/thematic')).toBe('Sectoral / Thematic');
-    });
-
-    it('is case-insensitive on the sebi key', () => {
-      expect(fundComparisonCategory('x', 'Equity', 'MID CAP FUND')).toBe('Mid Cap');
-    });
-
-    it('falls back to the name parser when sebi_category is null or unmapped', () => {
-      expect(fundComparisonCategory('SBI Small Cap Fund', 'Equity', null)).toBe('Small Cap');
-      // A debt sub-bucket isn't in the equity-label map → fall through to the
-      // name/broad logic, which returns the broad class for non-equity.
-      expect(fundComparisonCategory('HDFC Liquid Fund', 'Debt', 'liquid fund')).toBe('Debt');
-    });
+  it('treats two funds with the same sebi_category as comparable', () => {
+    expect(fundComparisonCategory('large cap fund', 'Equity')).toBe(
+      fundComparisonCategory('large cap fund', 'Equity'),
+    );
   });
 });

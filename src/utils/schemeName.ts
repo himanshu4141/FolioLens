@@ -18,9 +18,11 @@ export function shortSchemeName(name: string): string {
 
 /**
  * Human-readable labels for the canonical lowercase SEBI keys persisted in
- * `scheme_master.sebi_category` (and used by CATEGORY_RULES). Only the keys the
- * Compare banner actually distinguishes are mapped here; anything else falls
- * back to the name parser / broad class.
+ * `scheme_master.sebi_category`. The Compare screen reads this authoritative
+ * value directly — there is no client-side name parsing — so this map only
+ * needs to prettify the keys the UI commonly shows. Anything not listed is
+ * title-cased from the raw key, and a NULL `sebi_category` falls back to the
+ * broad asset class.
  */
 const SEBI_KEY_LABELS: Record<string, string> = {
   'large & mid cap fund': 'Large & Mid Cap',
@@ -38,72 +40,41 @@ const SEBI_KEY_LABELS: Record<string, string> = {
 };
 
 /**
- * Resolve the category used to decide whether two funds are "directly
- * comparable" (e.g. the Compare Funds cross-category banner).
+ * Title-case a raw canonical SEBI key for display when it isn't in the curated
+ * label map above (e.g. `"liquid fund"` → `"Liquid Fund"`).
+ */
+function titleCaseSebiKey(key: string): string {
+  return key
+    .split(/\s+/)
+    .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
+
+/**
+ * The category used to label a fund and to decide whether two funds are
+ * "directly comparable" (the Compare Funds cross-category banner).
  *
- * Prefers the authoritative `scheme_master.sebi_category` (the persisted
- * granular SEBI sub-bucket, populated by the sync writers + backfill) when it
- * maps to a known label. Falls back to parsing the scheme name for funds that
- * haven't been re-synced yet (`sebi_category IS NULL`), then to the broad
- * class.
+ * Reads the AUTHORITATIVE `scheme_master.sebi_category` — the persisted granular
+ * SEBI sub-bucket written by the sync edge functions + backfill
+ * (`resolveSebiCategory` / `deriveSchemeCategoryFromName`) — and maps it to a
+ * display label. There is deliberately NO client-side name parsing: category
+ * resolution lives in exactly one place (the data pipeline), so the app can
+ * never disagree with its own source of truth.
  *
- * `scheme_category` alone is only the broad SEBI class (Equity / Debt / Hybrid
- * / Other), so it can't tell a Large Cap fund from a Mid Cap fund. AMFI scheme
- * names almost always embed the sub-category ("… Large Cap Fund").
- *
- * TEMPORARY FALLBACK. The name-parsing branch below is read-time scaffolding
- * that exists only while `sebi_category` is unpopulated (the backfill is
- * blocked on mfdata.in being down). Once the universe is backfilled, the
- * frontend should trust the persisted value outright and this branch should be
- * deleted — name derivation belongs in exactly one place, the backend
- * `deriveSchemeCategoryFromName` (the unit-tested source of truth that *writes*
- * the column) + its lock-step backfill copy. Until then, every bucket this
- * parser can emit MUST be a strict subset of that backend vocabulary, so the
- * frontend can never label a fund into a bucket the authoritative column can't
- * hold (that's why there's no bespoke "International" branch here — the backend
- * resolver has no such key).
+ * When `sebi_category` is still NULL (a fund not yet synced / backfilled) we
+ * fall back to the broad asset class (`scheme_category`: Equity / Debt / Hybrid
+ * / Other) — coarser, but still authoritative — rather than guessing from the
+ * name.
  *
  * Returns a stable, human-readable label suitable for the banner copy.
  */
 export function fundComparisonCategory(
-  schemeName: string,
-  broadCategory: string | null,
-  sebiCategory?: string | null,
+  sebiCategory: string | null | undefined,
+  broadCategory: string | null | undefined,
 ): string {
-  // Authoritative persisted value wins when it maps to a known label.
   if (sebiCategory) {
-    const label = SEBI_KEY_LABELS[sebiCategory.toLowerCase().trim()];
-    if (label) return label;
+    const key = sebiCategory.toLowerCase().trim();
+    if (key) return SEBI_KEY_LABELS[key] ?? titleCaseSebiKey(key);
   }
-
-  // The cap/style sub-categories below only apply to equity funds. For Debt /
-  // Hybrid / Other the broad class is the right comparison unit, and parsing
-  // names there would misfire (e.g. "Banking & PSU Debt Fund").
-  if (broadCategory && !/equity/i.test(broadCategory)) return broadCategory;
-
-  const n = schemeName.toLowerCase();
-
-  // Order matters: more specific phrases first so "Large & Mid Cap" doesn't
-  // get swallowed by the "Large Cap" / "Mid Cap" rules below.
-  if (/large\s*(&|and)\s*mid\s*cap/.test(n)) return 'Large & Mid Cap';
-  if (/flexi[\s-]*cap/.test(n)) return 'Flexi Cap';
-  if (/multi[\s-]*cap/.test(n)) return 'Multi Cap';
-  if (/small[\s-]*cap/.test(n)) return 'Small Cap';
-  if (/mid[\s-]*cap/.test(n)) return 'Mid Cap';
-  if (/large[\s-]*cap|blue[\s-]*chip|top\s*(100|200)\b/.test(n)) return 'Large Cap';
-  if (/elss|tax\s*saver|tax\s*saving|long\s*term\s*equity/.test(n)) return 'ELSS';
-  if (/focused/.test(n)) return 'Focused';
-  if (/dividend\s*yield/.test(n)) return 'Dividend Yield';
-  if (/\bcontra\b/.test(n)) return 'Contra';
-  if (/\bvalue\b/.test(n)) return 'Value';
-  // Sector & thematic funds rarely say "sectoral"/"thematic" in the name —
-  // they name the sector directly. Catch the common ones.
-  if (
-    /sectoral|thematic|technology|\bdigital\b|pharma|health\s*care|healthcare|\bbank|financial\s*services|\binfra|infrastructure|consumption|\bconsumer|\benergy\b|\bpower\b|fmcg|\bauto\b|realty|real\s*estate|\bpsu\b|\bmnc\b|commodit|natural\s*resource|manufactur|transport|logistics/.test(n)
-  ) {
-    return 'Sectoral / Thematic';
-  }
-
-  // No SEBI equity sub-category in the name — fall back to the broad class.
   return broadCategory ?? 'Other';
 }

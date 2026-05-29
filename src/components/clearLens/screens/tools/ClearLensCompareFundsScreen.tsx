@@ -274,11 +274,12 @@ function fundDisplayName(scheme: SchemeMasterRow): string {
 }
 
 // The SEBI sub-category we compare on. scheme_category alone is too broad
-// (every equity fund is just "Equity"), so we prefer the persisted granular
-// sebi_category and fall back to resolving Large/Mid/Flexi/etc. from the scheme
-// name — this is what powers the cross-category banner.
+// (every equity fund is just "Equity"), so we read the authoritative persisted
+// sebi_category and fall back to the broad class when it's NULL (not yet
+// synced/backfilled). No client-side name parsing — the data pipeline is the
+// single source of truth. This is what powers the cross-category banner.
 function fundCategory(scheme: SchemeMasterRow): string {
-  return fundComparisonCategory(scheme.schemeName, scheme.schemeCategory, scheme.sebiCategory);
+  return fundComparisonCategory(scheme.sebiCategory, scheme.schemeCategory);
 }
 
 function returnsHeadline(funds: CompareFundData[]): string {
