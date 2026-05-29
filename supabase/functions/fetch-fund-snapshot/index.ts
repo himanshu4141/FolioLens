@@ -577,7 +577,13 @@ async function seedCategoryRules(
     raw_debt_holdings: null,
     source: 'category_rules',
     synced_at: new Date().toISOString(),
-  }, { onConflict: 'scheme_code,portfolio_date,source', ignoreDuplicates: true });
+    // Update (not ignore) on conflict: category_rules is a deterministic
+    // function of (scheme_category, scheme_name), so a re-run is always
+    // equal-or-better, never staler. ignoreDuplicates:true used to silently
+    // skip the write, which trapped funds on the stale 38/33/29 flexi-cap
+    // proxy even after PR #188 taught getCategoryRules to derive the real
+    // sub-bucket from scheme_name (e.g. DSP Mid Cap → 8/75/17).
+  }, { onConflict: 'scheme_code,portfolio_date,source', ignoreDuplicates: false });
 
   if (error) {
     console.error('[fetch-fund-snapshot] scheme=%d category-rules seed error: %s', schemeCode, error.message);
