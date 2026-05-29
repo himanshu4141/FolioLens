@@ -51,6 +51,18 @@ const SEBI_KEY_LABELS: Record<string, string> = {
  * / Other), so it can't tell a Large Cap fund from a Mid Cap fund. AMFI scheme
  * names almost always embed the sub-category ("… Large Cap Fund").
  *
+ * TEMPORARY FALLBACK. The name-parsing branch below is read-time scaffolding
+ * that exists only while `sebi_category` is unpopulated (the backfill is
+ * blocked on mfdata.in being down). Once the universe is backfilled, the
+ * frontend should trust the persisted value outright and this branch should be
+ * deleted — name derivation belongs in exactly one place, the backend
+ * `deriveSchemeCategoryFromName` (the unit-tested source of truth that *writes*
+ * the column) + its lock-step backfill copy. Until then, every bucket this
+ * parser can emit MUST be a strict subset of that backend vocabulary, so the
+ * frontend can never label a fund into a bucket the authoritative column can't
+ * hold (that's why there's no bespoke "International" branch here — the backend
+ * resolver has no such key).
+ *
  * Returns a stable, human-readable label suitable for the banner copy.
  */
 export function fundComparisonCategory(
@@ -84,7 +96,6 @@ export function fundComparisonCategory(
   if (/dividend\s*yield/.test(n)) return 'Dividend Yield';
   if (/\bcontra\b/.test(n)) return 'Contra';
   if (/\bvalue\b/.test(n)) return 'Value';
-  if (/intern?ational|\bglobal\b|overseas|\bus\s|nasdaq|\bworld\b/.test(n)) return 'International';
   // Sector & thematic funds rarely say "sectoral"/"thematic" in the name —
   // they name the sector directly. Catch the common ones.
   if (

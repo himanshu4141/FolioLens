@@ -69,6 +69,14 @@ describe('fundComparisonCategory', () => {
     expect(fundComparisonCategory('Some Custom Fund', null)).toBe('Other');
   });
 
+  it('does not emit a bespoke "International" bucket the backend can never persist', () => {
+    // The name parser is a strict subset of deriveSchemeCategoryFromName, which
+    // has no international key — so an international equity fund falls back to
+    // its broad class rather than a frontend-only label.
+    expect(fundComparisonCategory('Motilal Oswal Nasdaq 100 FOF', 'Equity')).toBe('Equity');
+    expect(fundComparisonCategory('PGIM India Global Equity Opportunities Fund', 'Equity')).toBe('Equity');
+  });
+
   it('treats two funds in the same sub-category as comparable', () => {
     const a = fundComparisonCategory('Mirae Asset Large Cap Fund - Direct Plan - Growth', 'Equity');
     const b = fundComparisonCategory('Nippon India Large Cap Fund', 'Equity');
