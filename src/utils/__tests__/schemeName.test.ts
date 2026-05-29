@@ -74,4 +74,30 @@ describe('fundComparisonCategory', () => {
     const b = fundComparisonCategory('Nippon India Large Cap Fund', 'Equity');
     expect(a).toBe(b);
   });
+
+  describe('sebi_category preference', () => {
+    it('prefers the persisted sebi_category over the parsed name', () => {
+      // Name parser would say "Flexi Cap"; the authoritative sebi key wins.
+      expect(
+        fundComparisonCategory('Some Renamed Flexi Cap Fund', 'Equity', 'mid cap fund'),
+      ).toBe('Mid Cap');
+    });
+
+    it('maps each known canonical key to its label', () => {
+      expect(fundComparisonCategory('x', 'Equity', 'large & mid cap fund')).toBe('Large & Mid Cap');
+      expect(fundComparisonCategory('x', 'Equity', 'elss')).toBe('ELSS');
+      expect(fundComparisonCategory('x', 'Equity', 'sectoral/thematic')).toBe('Sectoral / Thematic');
+    });
+
+    it('is case-insensitive on the sebi key', () => {
+      expect(fundComparisonCategory('x', 'Equity', 'MID CAP FUND')).toBe('Mid Cap');
+    });
+
+    it('falls back to the name parser when sebi_category is null or unmapped', () => {
+      expect(fundComparisonCategory('SBI Small Cap Fund', 'Equity', null)).toBe('Small Cap');
+      // A debt sub-bucket isn't in the equity-label map → fall through to the
+      // name/broad logic, which returns the broad class for non-equity.
+      expect(fundComparisonCategory('HDFC Liquid Fund', 'Debt', 'liquid fund')).toBe('Debt');
+    });
+  });
 });

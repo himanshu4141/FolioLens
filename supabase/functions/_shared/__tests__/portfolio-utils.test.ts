@@ -7,6 +7,8 @@ import {
   classifyHoldings,
   deriveSchemeCategoryFromName,
   isGenericSchemeCategory,
+  resolveSebiCategory,
+  broadCategoryFromSebi,
   type CategoryComposition,
   type DebtHolding,
   type EquityHolding,
@@ -584,5 +586,96 @@ describe('deriveSchemeCategoryFromName', () => {
       expect(deriveSchemeCategoryFromName('DSP MID CAP FUND')).toBe('mid cap fund');
       expect(deriveSchemeCategoryFromName('dsp mid cap fund')).toBe('mid cap fund');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSebiCategory
+// ---------------------------------------------------------------------------
+
+describe('resolveSebiCategory', () => {
+  it('prefers a specific scheme_category (lowercased) over the name', () => {
+    // Even if the name says "Mid Cap", a specific category wins as-is.
+    expect(resolveSebiCategory('Flexi Cap Fund', 'Foo Mid Cap Fund')).toBe('flexi cap fund');
+    expect(resolveSebiCategory('Liquid Fund', null)).toBe('liquid fund');
+  });
+
+  it('derives from the name when scheme_category is the bare asset class', () => {
+    expect(resolveSebiCategory('Equity', 'DSP Mid Cap Fund - Direct - Growth')).toBe('mid cap fund');
+    expect(resolveSebiCategory('Equity', 'DSP Small Cap Fund')).toBe('small cap fund');
+    expect(resolveSebiCategory('Debt', 'HDFC Corporate Bond Fund')).toBe('corporate bond fund');
+  });
+
+  it('derives from the name when scheme_category is blank/null', () => {
+    expect(resolveSebiCategory(null, 'SBI Bluechip Fund')).toBe('large cap fund');
+    expect(resolveSebiCategory('', 'Axis ELSS Tax Saver Fund')).toBe('elss');
+  });
+
+  it('returns null when neither source disambiguates', () => {
+    expect(resolveSebiCategory('Equity', 'Random Scheme XYZ')).toBeNull();
+    expect(resolveSebiCategory(null, null)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// broadCategoryFromSebi
+// ---------------------------------------------------------------------------
+
+describe('broadCategoryFromSebi', () => {
+  it('maps equity sub-buckets to Equity', () => {
+    expect(broadCategoryFromSebi('large cap fund')).toBe('Equity');
+    expect(broadCategoryFromSebi('mid cap fund')).toBe('Equity');
+    expect(broadCategoryFromSebi('elss')).toBe('Equity');
+    expect(broadCategoryFromSebi('sectoral/thematic')).toBe('Equity');
+    expect(broadCategoryFromSebi('index funds')).toBe('Equity');
+  });
+
+  it('maps debt sub-buckets to Debt', () => {
+    expect(broadCategoryFromSebi('liquid fund')).toBe('Debt');
+    expect(broadCategoryFromSebi('gilt fund')).toBe('Debt');
+    expect(broadCategoryFromSebi('corporate bond fund')).toBe('Debt');
+  });
+
+  it('maps hybrid + solution-oriented + arbitrage + domestic FoF to Hybrid', () => {
+    expect(broadCategoryFromSebi('aggressive hybrid fund')).toBe('Hybrid');
+    expect(broadCategoryFromSebi('balanced advantage fund')).toBe('Hybrid');
+    expect(broadCategoryFromSebi('arbitrage fund')).toBe('Hybrid');
+    expect(broadCategoryFromSebi('equity savings fund')).toBe('Hybrid');
+    expect(broadCategoryFromSebi('fund of funds domestic')).toBe('Hybrid');
+    expect(broadCategoryFromSebi('solution oriented - retirement')).toBe('Hybrid');
+  });
+
+  it('maps overseas FoF to Other', () => {
+    expect(broadCategoryFromSebi('fund of funds investing overseas')).toBe('Other');
+  });
+
+  it('is case-insensitive and returns null for unknown/blank keys', () => {
+    expect(broadCategoryFromSebi('MID CAP FUND')).toBe('Equity');
+    expect(broadCategoryFromSebi('not a real key')).toBeNull();
+    expect(broadCategoryFromSebi(null)).toBeNull();
+    expect(broadCategoryFromSebi('')).toBeNull();
+  });
+
+  it('covers every CATEGORY_RULES key the resolver can emit', () => {
+    // Guards against a new sub-bucket being added to the name parser without a
+    // broad mapping (which would silently leave scheme_category un-normalised).
+    const keys = [
+      'large cap fund', 'mid cap fund', 'small cap fund', 'multi cap fund',
+      'flexi cap fund', 'large & mid cap fund', 'elss', 'value fund',
+      'contra fund', 'focused fund', 'sectoral/thematic', 'dividend yield fund',
+      'aggressive hybrid fund', 'balanced hybrid fund', 'conservative hybrid fund',
+      'balanced advantage fund', 'dynamic asset allocation', 'multi asset allocation',
+      'equity savings fund', 'arbitrage fund', 'overnight fund', 'liquid fund',
+      'ultra short duration fund', 'low duration fund', 'money market fund',
+      'short duration fund', 'medium duration fund', 'medium to long duration',
+      'long duration fund', 'dynamic bond fund', 'corporate bond fund',
+      'credit risk fund', 'banking and psu fund', 'gilt fund', 'floater fund',
+      'index funds', 'other etfs', 'fund of funds investing overseas',
+      'fund of funds domestic', 'solution oriented - retirement',
+      'solution oriented - childrens',
+    ];
+    for (const k of keys) {
+      expect(broadCategoryFromSebi(k)).not.toBeNull();
+    }
   });
 });

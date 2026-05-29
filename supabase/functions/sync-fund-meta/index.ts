@@ -33,6 +33,7 @@ import {
 } from '../_shared/openfolio.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import { resolveB1Field } from '../_shared/b1-field-resolution.ts';
+import { resolveSebiCategory, broadCategoryFromSebi } from '../_shared/portfolio-utils.ts';
 
 const META_STALE_DAYS = 7;
 const MFDATA_USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -71,6 +72,7 @@ interface MFDataSchemePayload {
   family_name?: string | null;
   amc_name?: string | null;
   amc_slug?: string | null;
+  category?: string | null;
   benchmark?: string | null;
   related_variants?: unknown[] | null;
   returns?: Record<string, unknown> | null;
@@ -168,8 +170,20 @@ Deno.serve(async (req) => {
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
     .from('scheme_master')
-    .select('scheme_code, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios')
+    .select('scheme_code, scheme_name, scheme_category, sebi_category, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios')
     .in('scheme_code', allSchemeCodes);
+
+  // scheme_name / existing category are needed to resolve sebi_category for
+  // funds mfdata files under the bare "Equity"/"Debt"/"Hybrid". Keyed by code.
+  const masterByCode = new Map<number, { scheme_name: string | null; scheme_category: string | null }>(
+    (masterRows ?? []).map((r) => [
+      r.scheme_code as number,
+      {
+        scheme_name: (r.scheme_name as string | null) ?? null,
+        scheme_category: (r.scheme_category as string | null) ?? null,
+      },
+    ]),
+  );
 
   const now = Date.now();
   const freshCodes = new Set(
@@ -417,6 +431,24 @@ Deno.serve(async (req) => {
         if (mfdata.amc_name != null) payload.amc_name = mfdata.amc_name;
         if (mfdata.amc_slug != null) payload.amc_slug = mfdata.amc_slug;
         payload.mfdata_meta_synced_at = syncedAt;
+      }
+
+      // ── Two-field category model: resolve the granular SEBI sub-bucket ────
+      // (2026-05-29). Prefer mfdata.category when specific, else derive from
+      // the scheme name; normalise scheme_category to the broad asset class.
+      // Falls back to the persisted name/category when no fresh category came
+      // through. Writes into the same `payload` upserted below.
+      {
+        const existingMaster = masterByCode.get(schemeCode);
+        const sebiCategory = resolveSebiCategory(
+          mfdata?.category ?? existingMaster?.scheme_category ?? null,
+          existingMaster?.scheme_name ?? null,
+        );
+        if (sebiCategory) {
+          payload.sebi_category = sebiCategory;
+          const broad = broadCategoryFromSebi(sebiCategory);
+          if (broad) payload.scheme_category = broad;
+        }
       }
 
       // ── 6. Upsert ─────────────────────────────────────────────────────────

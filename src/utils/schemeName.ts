@@ -17,22 +17,53 @@ export function shortSchemeName(name: string): string {
 }
 
 /**
+ * Human-readable labels for the canonical lowercase SEBI keys persisted in
+ * `scheme_master.sebi_category` (and used by CATEGORY_RULES). Only the keys the
+ * Compare banner actually distinguishes are mapped here; anything else falls
+ * back to the name parser / broad class.
+ */
+const SEBI_KEY_LABELS: Record<string, string> = {
+  'large & mid cap fund': 'Large & Mid Cap',
+  'flexi cap fund': 'Flexi Cap',
+  'multi cap fund': 'Multi Cap',
+  'small cap fund': 'Small Cap',
+  'mid cap fund': 'Mid Cap',
+  'large cap fund': 'Large Cap',
+  'elss': 'ELSS',
+  'focused fund': 'Focused',
+  'dividend yield fund': 'Dividend Yield',
+  'contra fund': 'Contra',
+  'value fund': 'Value',
+  'sectoral/thematic': 'Sectoral / Thematic',
+};
+
+/**
  * Resolve the category used to decide whether two funds are "directly
  * comparable" (e.g. the Compare Funds cross-category banner).
  *
- * `scheme_master.scheme_category` is only the broad SEBI class
- * (Equity / Debt / Hybrid / Other) for CAS-imported holdings, so it can't tell
- * a Large Cap fund from a Mid Cap fund — they're all "Equity". AMFI scheme
- * names, however, almost always embed the SEBI sub-category ("… Large Cap
- * Fund", "… Flexi Cap Fund"). We parse that from the name and fall back to the
- * broad category when nothing matches.
+ * Prefers the authoritative `scheme_master.sebi_category` (the persisted
+ * granular SEBI sub-bucket, populated by the sync writers + backfill) when it
+ * maps to a known label. Falls back to parsing the scheme name for funds that
+ * haven't been re-synced yet (`sebi_category IS NULL`), then to the broad
+ * class.
+ *
+ * `scheme_category` alone is only the broad SEBI class (Equity / Debt / Hybrid
+ * / Other), so it can't tell a Large Cap fund from a Mid Cap fund. AMFI scheme
+ * names almost always embed the sub-category ("… Large Cap Fund").
  *
  * Returns a stable, human-readable label suitable for the banner copy.
  */
 export function fundComparisonCategory(
   schemeName: string,
   broadCategory: string | null,
+  sebiCategory?: string | null,
 ): string {
+  // Authoritative persisted value wins when it maps to a known label.
+  if (sebiCategory) {
+    const label = SEBI_KEY_LABELS[sebiCategory.toLowerCase().trim()];
+    if (label) return label;
+  }
+
   // The cap/style sub-categories below only apply to equity funds. For Debt /
   // Hybrid / Other the broad class is the right comparison unit, and parsing
   // names there would misfire (e.g. "Banking & PSU Debt Fund").

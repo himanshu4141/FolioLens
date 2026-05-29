@@ -22,6 +22,7 @@ export interface SchemeMasterDbRow {
   scheme_code: number;
   scheme_name: string | null;
   scheme_category: string | null;
+  sebi_category: string | null;
   benchmark_index: string | null;
   declared_benchmark_name: string | null;
   expense_ratio: number | null;
@@ -46,7 +47,7 @@ export interface SchemeMasterDbRow {
 }
 
 const SCHEME_MASTER_COLUMNS =
-  'scheme_code, scheme_name, scheme_category, benchmark_index, declared_benchmark_name, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, morningstar_rating, risk_label, period_returns, risk_ratios, fund_manager, portfolio_turnover, ter_date';
+  'scheme_code, scheme_name, scheme_category, sebi_category, benchmark_index, declared_benchmark_name, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, morningstar_rating, risk_label, period_returns, risk_ratios, fund_manager, portfolio_turnover, ter_date';
 
 export async function fetchSchemeMaster(
   schemeCode: number,

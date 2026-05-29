@@ -277,3 +277,78 @@ export function isGenericSchemeCategory(
   const key = schemeCategory.toLowerCase().trim();
   return key === 'equity' || key === 'debt' || key === 'hybrid' || key === 'other' || key === '';
 }
+
+/** The four broad asset classes used by the `scheme_master.scheme_category` column. */
+export type BroadCategory = 'Equity' | 'Debt' | 'Hybrid' | 'Other';
+
+/**
+ * Maps a canonical SEBI sub-bucket key (the lowercase form used by
+ * `CATEGORY_RULES` and returned by `deriveSchemeCategoryFromName` /
+ * `resolveSebiCategory`) to its broad asset class.
+ *
+ * Solution-oriented schemes (retirement / children's) hold a mix of equity and
+ * debt; they're grouped under `Hybrid` for asset-mix purposes. Overseas FoFs
+ * map to `Other` (the underlying is foreign securities we don't classify),
+ * domestic FoFs to `Hybrid` (the proxy split is genuinely mixed).
+ *
+ * Returns `null` for an unrecognised key — callers should leave the broad
+ * column untouched rather than guess.
+ */
+export function broadCategoryFromSebi(
+  sebiKey: string | null | undefined,
+): BroadCategory | null {
+  if (!sebiKey) return null;
+  const key = sebiKey.toLowerCase().trim();
+
+  const EQUITY = new Set([
+    'large cap fund', 'mid cap fund', 'small cap fund', 'multi cap fund',
+    'flexi cap fund', 'large & mid cap fund', 'elss', 'value fund',
+    'contra fund', 'focused fund', 'sectoral/thematic', 'dividend yield fund',
+    'index funds', 'other etfs',
+  ]);
+  const HYBRID = new Set([
+    'aggressive hybrid fund', 'balanced hybrid fund', 'conservative hybrid fund',
+    'balanced advantage fund', 'dynamic asset allocation', 'multi asset allocation',
+    'equity savings fund', 'arbitrage fund', 'fund of funds domestic',
+    'solution oriented - retirement', 'solution oriented - childrens',
+  ]);
+  const DEBT = new Set([
+    'overnight fund', 'liquid fund', 'ultra short duration fund', 'low duration fund',
+    'money market fund', 'short duration fund', 'medium duration fund',
+    'medium to long duration', 'long duration fund', 'dynamic bond fund',
+    'corporate bond fund', 'credit risk fund', 'banking and psu fund', 'gilt fund',
+    'floater fund',
+  ]);
+
+  if (EQUITY.has(key)) return 'Equity';
+  if (HYBRID.has(key)) return 'Hybrid';
+  if (DEBT.has(key)) return 'Debt';
+  if (key === 'fund of funds investing overseas') return 'Other';
+  return null;
+}
+
+/**
+ * Resolves the authoritative SEBI sub-bucket for a scheme, persisted to
+ * `scheme_master.sebi_category`. This is the canonical granular value the
+ * Compare screen and `getCategoryRules` lookups depend on.
+ *
+ * The supplied `schemeCategory` (from mfdata.in or the AMFI seed) is preferred
+ * when it's already specific — but mfdata files many funds under the bare word
+ * `"Equity"` (DSP Mid Cap, half the ICICI lineup, …), which is the exact root
+ * cause of the "38/33/29" Compare bug (PR #188). When the category is generic /
+ * blank, we fall back to deriving the bucket from the scheme name.
+ *
+ * Returns the lowercase canonical key (e.g. `"mid cap fund"`), or `null` when
+ * neither source disambiguates — callers should leave `sebi_category` null and
+ * let the read-time name parser keep covering that fund until a better signal
+ * arrives.
+ */
+export function resolveSebiCategory(
+  schemeCategory: string | null | undefined,
+  schemeName: string | null | undefined,
+): string | null {
+  if (!isGenericSchemeCategory(schemeCategory)) {
+    return (schemeCategory as string).toLowerCase().trim();
+  }
+  return deriveSchemeCategoryFromName(schemeName);
+}

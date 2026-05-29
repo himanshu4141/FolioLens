@@ -251,6 +251,7 @@ export type Database = {
           scheme_category: string | null
           scheme_code: number
           scheme_name: string
+          sebi_category: string | null
           ter_date: string | null
           updated_at: string
         }
@@ -286,6 +287,7 @@ export type Database = {
           scheme_category?: string | null
           scheme_code: number
           scheme_name: string
+          sebi_category?: string | null
           ter_date?: string | null
           updated_at?: string
         }
@@ -321,6 +323,7 @@ export type Database = {
           scheme_category?: string | null
           scheme_code?: number
           scheme_name?: string
+          sebi_category?: string | null
           ter_date?: string | null
           updated_at?: string
         }
