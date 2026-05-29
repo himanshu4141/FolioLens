@@ -33,6 +33,8 @@ import {
   isEquityHoldingsCorrupted,
   isEquityPctPlausible,
   isNumericString,
+  deriveSchemeCategoryFromName,
+  isGenericSchemeCategory,
 } from '../_shared/portfolio-utils.ts';
 import { shouldSkipHoldingsSyncForEmptyClassifier } from '../_shared/amfi-xlsx-parser.ts';
 import { probeUpstream, type UpstreamProbeResult } from '../_shared/upstream-probe.ts';
@@ -104,10 +106,31 @@ const FALLBACK_COMPOSITION: CategoryComposition = {
   large: 50, mid: 30, small: 20,
 };
 
-function getCategoryRules(schemeCategory: string): CategoryComposition {
-  const key = schemeCategory.toLowerCase().trim();
+function getCategoryRules(
+  schemeCategory: string | null | undefined,
+  schemeName?: string | null,
+): CategoryComposition {
+  // When AMFI/mfdata return the bare single-word "Equity" (or "Hybrid" /
+  // "Debt" / "Other"), the legacy lookup landed on a flexi-cap proxy
+  // (38/33/29) for every equity scheme — that's the root of the bug where
+  // DSP Large/Mid/Small/Large&Mid all displayed the same cap mix on the
+  // Compare tab. Resolving the sub-bucket from scheme_name first rescues
+  // these funds before they fall through to the proxy.
+  if (isGenericSchemeCategory(schemeCategory)) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+  }
+
+  const key = (schemeCategory ?? '').toLowerCase().trim();
   if (CATEGORY_RULES[key]) return CATEGORY_RULES[key];
-  if (GENERIC_CATEGORY_MAP[key]) return GENERIC_CATEGORY_MAP[key];
+  if (GENERIC_CATEGORY_MAP[key]) {
+    // Last-resort generic bucket. Try scheme_name one more time — even a
+    // non-generic-looking scheme_category might be e.g. "Equity Scheme"
+    // and benefit from the same rescue.
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+    return GENERIC_CATEGORY_MAP[key];
+  }
   // Partial match: only fire when the key has 2+ words to avoid 'equity' matching 'equity savings fund'
   if (key.split(' ').length >= 2) {
     for (const [pattern, comp] of Object.entries(CATEGORY_RULES)) {
@@ -116,6 +139,10 @@ function getCategoryRules(schemeCategory: string): CategoryComposition {
       }
     }
   }
+  // Final attempt — scheme_name resolution even when category is completely
+  // unrecognised.
+  const derivedKey = deriveSchemeCategoryFromName(schemeName);
+  if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
   return FALLBACK_COMPOSITION;
 }
 
@@ -236,9 +263,10 @@ interface EnrichedPortfolio {
 function buildPortfolioFromHoldings(
   holdings: MfdataHoldings,
   schemeCategory: string,
+  schemeName: string | null,
   isinToCap: Map<string, MarketCapCategory>,
 ): EnrichedPortfolio {
-  const catRules = getCategoryRules(schemeCategory);
+  const catRules = getCategoryRules(schemeCategory, schemeName);
 
   // A3: validate equity_pct before trusting it
   const rawEquityPct = holdings.equity_pct;
@@ -366,6 +394,7 @@ interface SchemeRow {
   id: string;
   scheme_code: number;
   scheme_category: string;
+  scheme_name: string | null;
 }
 
 /**
@@ -414,10 +443,13 @@ Deno.serve(async (req) => {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  // Load all active funds across all users (global data — not per-user)
+  // Load all active funds across all users (global data — not per-user).
+  // scheme_name is pulled so that schemes filed under the bare
+  // single-word category "Equity" / "Hybrid" / "Debt" can still be
+  // mapped to their actual SEBI sub-bucket via name-based heuristics.
   const { data: funds, error: fundsError } = await supabase
     .from('fund')
-    .select('id, scheme_code, scheme_category')
+    .select('id, scheme_code, scheme_category, scheme_name')
     .eq('is_active', true);
 
   if (fundsError) {
@@ -544,7 +576,12 @@ Deno.serve(async (req) => {
           return { schemeCode: scheme.scheme_code, synced: 0, error: 'no_holdings' };
         }
 
-        const portfolio = buildPortfolioFromHoldings(holdings, scheme.scheme_category, isinToCap);
+        const portfolio = buildPortfolioFromHoldings(
+          holdings,
+          scheme.scheme_category,
+          scheme.scheme_name,
+          isinToCap,
+        );
         if (portfolio.classifierOutcome === 'amfi') classifierHitCount += 1;
         else classifierFallbackCount += 1;
         if (portfolio.classifierMisses > 0 && portfolio.classifierHits === 0) {
@@ -627,7 +664,7 @@ Deno.serve(async (req) => {
 
   if (needsCategoryRules.length > 0) {
     const categoryRows = needsCategoryRules.map((scheme) => {
-      const comp = getCategoryRules(scheme.scheme_category);
+      const comp = getCategoryRules(scheme.scheme_category, scheme.scheme_name);
       const notClassified = Math.max(0, 100 - comp.large - comp.mid - comp.small);
       return {
         scheme_code: scheme.scheme_code,

@@ -40,6 +40,8 @@ import {
   isDebtDataCorrupted,
   isEquityHoldingsCorrupted,
   isEquityPctPlausible,
+  deriveSchemeCategoryFromName,
+  isGenericSchemeCategory,
 } from '../_shared/portfolio-utils.ts';
 import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
@@ -117,11 +119,32 @@ const FALLBACK_COMPOSITION: CategoryComposition = {
   large: 50, mid: 30, small: 20,
 };
 
-function getCategoryRules(schemeCategory: string | null | undefined): CategoryComposition {
-  if (!schemeCategory) return FALLBACK_COMPOSITION;
+function getCategoryRules(
+  schemeCategory: string | null | undefined,
+  schemeName?: string | null,
+): CategoryComposition {
+  // When AMFI/mfdata return the bare single-word "Equity" (or "Hybrid" /
+  // "Debt" / "Other"), the legacy lookup landed on a flexi-cap proxy
+  // (38/33/29) for every equity scheme. Resolving the sub-bucket from
+  // scheme_name first rescues funds like DSP Mid Cap / Small Cap / Large
+  // Cap / Large & Mid Cap before they fall through to the proxy.
+  if (isGenericSchemeCategory(schemeCategory)) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+  }
+
+  if (!schemeCategory) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+    return FALLBACK_COMPOSITION;
+  }
   const key = schemeCategory.toLowerCase().trim();
   if (CATEGORY_RULES[key]) return CATEGORY_RULES[key];
-  if (GENERIC_CATEGORY_MAP[key]) return GENERIC_CATEGORY_MAP[key];
+  if (GENERIC_CATEGORY_MAP[key]) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+    return GENERIC_CATEGORY_MAP[key];
+  }
   if (key.split(' ').length >= 2) {
     for (const [pattern, comp] of Object.entries(CATEGORY_RULES)) {
       if (key.includes(pattern) || pattern.includes(key.split(' ').slice(0, 3).join(' '))) {
@@ -129,6 +152,8 @@ function getCategoryRules(schemeCategory: string | null | undefined): CategoryCo
       }
     }
   }
+  const derivedKey = deriveSchemeCategoryFromName(schemeName);
+  if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
   return FALLBACK_COMPOSITION;
 }
 
@@ -234,13 +259,15 @@ interface MetaResult {
   status: 'fetched' | 'cache_hit' | 'failed';
   family_id?: number | null;
   scheme_category?: string | null;
+  scheme_name?: string | null;
 }
 
 async function syncMeta(schemeCode: number): Promise<MetaResult> {
-  // Cache check.
+  // Cache check. scheme_name is pulled so generic categories like
+  // "Equity" can be resolved into a SEBI sub-bucket downstream.
   const { data: existing } = await supabase
     .from('scheme_master')
-    .select('fund_meta_synced_at, mfdata_family_id, scheme_category')
+    .select('fund_meta_synced_at, mfdata_family_id, scheme_category, scheme_name')
     .eq('scheme_code', schemeCode)
     .maybeSingle();
 
@@ -257,6 +284,7 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
       status: 'cache_hit',
       family_id: (existing!.mfdata_family_id as number | null) ?? null,
       scheme_category: existing!.scheme_category as string | null,
+      scheme_name: (existing!.scheme_name as string | null) ?? null,
     };
   }
 
@@ -325,6 +353,7 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
     status: 'fetched',
     family_id: mfdata?.family_id ?? null,
     scheme_category: mfdata?.category ?? existing?.scheme_category ?? null,
+    scheme_name: (existing?.scheme_name as string | null) ?? null,
   };
 }
 
@@ -343,6 +372,7 @@ async function syncComposition(
   schemeCode: number,
   familyId: number | null,
   schemeCategory: string | null,
+  schemeName: string | null,
   isinToCap: Map<string, MarketCapCategory>,
 ): Promise<CompositionResult> {
   const now = new Date();
@@ -372,17 +402,17 @@ async function syncComposition(
 
   // No family_id → fall back to category rules.
   if (familyId == null) {
-    const res = await seedCategoryRules(schemeCode, schemeCategory);
+    const res = await seedCategoryRules(schemeCode, schemeCategory, schemeName);
     return { ...res, classifierOutcome: 'category_rules', classifierCoveragePct: null, equityHoldingsCount: 0 };
   }
 
   const holdings = await mfdataGet<MfdataHoldings>(`/families/${familyId}/holdings`);
   if (!holdings || !holdings.equity_holdings || holdings.equity_holdings.length === 0) {
-    const res = await seedCategoryRules(schemeCode, schemeCategory);
+    const res = await seedCategoryRules(schemeCode, schemeCategory, schemeName);
     return { ...res, classifierOutcome: 'category_rules', classifierCoveragePct: null, equityHoldingsCount: 0 };
   }
 
-  const portfolio = buildPortfolio(holdings, schemeCategory ?? '', isinToCap);
+  const portfolio = buildPortfolio(holdings, schemeCategory ?? '', schemeName, isinToCap);
   const portfolioDate = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
 
   const sourceTag = portfolio.classifierOutcome === 'amfi' ? 'amfi' : 'category_fallback';
@@ -428,9 +458,10 @@ async function syncComposition(
 async function seedCategoryRules(
   schemeCode: number,
   schemeCategory: string | null,
+  schemeName: string | null,
 ): Promise<{ status: 'category_rules' | 'failed' }> {
   const today = new Date().toISOString().split('T')[0];
-  const comp = getCategoryRules(schemeCategory);
+  const comp = getCategoryRules(schemeCategory, schemeName);
   const notClassified = Math.max(0, 100 - comp.large - comp.mid - comp.small);
 
   const { error } = await supabase.from('fund_portfolio_composition').upsert({
@@ -477,9 +508,10 @@ interface BuiltPortfolio {
 function buildPortfolio(
   holdings: MfdataHoldings,
   schemeCategory: string,
+  schemeName: string | null,
   isinToCap: Map<string, MarketCapCategory>,
 ): BuiltPortfolio {
-  const catRules = getCategoryRules(schemeCategory);
+  const catRules = getCategoryRules(schemeCategory, schemeName);
 
   const rawEquityPct = holdings.equity_pct;
   const equityPctValid = typeof rawEquityPct === 'number' && isEquityPctPlausible(rawEquityPct, catRules);
@@ -674,13 +706,27 @@ Deno.serve(async (req) => {
   let compositionResult: CompositionResult;
   if (metaResult.status === 'failed') {
     // Best-effort composition with category fallback only — we don't have a
-    // family_id and may not have a category either.
-    compositionResult = await syncComposition(schemeCode, null, null, isinToCap);
+    // family_id and may not have a category either. Even when meta failed
+    // we may still have scheme_master.scheme_name from a prior AMFI seed,
+    // so pull it directly here for the name-based sub-bucket rescue.
+    const { data: fallbackName } = await supabase
+      .from('scheme_master')
+      .select('scheme_name')
+      .eq('scheme_code', schemeCode)
+      .maybeSingle();
+    compositionResult = await syncComposition(
+      schemeCode,
+      null,
+      null,
+      (fallbackName?.scheme_name as string | null) ?? null,
+      isinToCap,
+    );
   } else {
     compositionResult = await syncComposition(
       schemeCode,
       metaResult.family_id ?? null,
       metaResult.scheme_category ?? null,
+      metaResult.scheme_name ?? null,
       isinToCap,
     );
   }

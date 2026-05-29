@@ -5,6 +5,8 @@ import {
   isEquityPctPlausible,
   isEquityHoldingsCorrupted,
   classifyHoldings,
+  deriveSchemeCategoryFromName,
+  isGenericSchemeCategory,
   type CategoryComposition,
   type DebtHolding,
   type EquityHolding,
@@ -397,5 +399,190 @@ describe('classifyHoldings', () => {
     ];
     const result = classifyHoldings(holdings, map);
     expect(result.largeCapPct).toBe(13.56);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isGenericSchemeCategory
+// ---------------------------------------------------------------------------
+
+describe('isGenericSchemeCategory', () => {
+  it('returns true for null/undefined/empty', () => {
+    expect(isGenericSchemeCategory(null)).toBe(true);
+    expect(isGenericSchemeCategory(undefined)).toBe(true);
+    expect(isGenericSchemeCategory('')).toBe(true);
+    expect(isGenericSchemeCategory('   ')).toBe(true);
+  });
+
+  it('returns true for bare single-word categories', () => {
+    expect(isGenericSchemeCategory('Equity')).toBe(true);
+    expect(isGenericSchemeCategory('equity')).toBe(true);
+    expect(isGenericSchemeCategory('Debt')).toBe(true);
+    expect(isGenericSchemeCategory('Hybrid')).toBe(true);
+    expect(isGenericSchemeCategory('Other')).toBe(true);
+    expect(isGenericSchemeCategory(' Equity ')).toBe(true);
+  });
+
+  it('returns false for specific SEBI sub-buckets', () => {
+    expect(isGenericSchemeCategory('Large Cap Fund')).toBe(false);
+    expect(isGenericSchemeCategory('Mid Cap Fund')).toBe(false);
+    expect(isGenericSchemeCategory('Small Cap Fund')).toBe(false);
+    expect(isGenericSchemeCategory('Flexi Cap Fund')).toBe(false);
+    expect(isGenericSchemeCategory('Liquid Fund')).toBe(false);
+    expect(isGenericSchemeCategory('ELSS')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveSchemeCategoryFromName
+// ---------------------------------------------------------------------------
+
+describe('deriveSchemeCategoryFromName', () => {
+  it('returns null for null/empty input', () => {
+    expect(deriveSchemeCategoryFromName(null)).toBeNull();
+    expect(deriveSchemeCategoryFromName(undefined)).toBeNull();
+    expect(deriveSchemeCategoryFromName('')).toBeNull();
+  });
+
+  it('returns null for unrecognized names', () => {
+    expect(deriveSchemeCategoryFromName('DSP Healthcare Fund — Direct Plan — IDCW')).not.toBe(
+      'large cap fund',
+    );
+    expect(deriveSchemeCategoryFromName('Random Scheme XYZ Direct Growth')).toBeNull();
+  });
+
+  // The DSP funds that triggered this fix.
+  describe('DSP funds (the smoking-gun cases)', () => {
+    it('DSP Large & Mid Cap Fund → large & mid cap fund (NOT large cap)', () => {
+      expect(deriveSchemeCategoryFromName('DSP Large & Mid Cap Fund - Direct Plan - Growth')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('DSP Mid Cap Fund → mid cap fund', () => {
+      expect(deriveSchemeCategoryFromName('DSP Mid Cap Fund - Direct Plan - Growth')).toBe(
+        'mid cap fund',
+      );
+    });
+    it('DSP Small Cap Fund → small cap fund', () => {
+      expect(deriveSchemeCategoryFromName('DSP Small Cap Fund - Direct Plan - Growth')).toBe(
+        'small cap fund',
+      );
+    });
+    it('DSP Large Cap Fund → large cap fund', () => {
+      expect(deriveSchemeCategoryFromName('DSP Large Cap Fund - Direct Plan - Growth')).toBe(
+        'large cap fund',
+      );
+    });
+    it('DSP Flexi Cap Fund → flexi cap fund', () => {
+      expect(deriveSchemeCategoryFromName('DSP Flexi Cap Fund - Direct Plan - Growth')).toBe(
+        'flexi cap fund',
+      );
+    });
+  });
+
+  describe('equity sub-buckets', () => {
+    it('handles "Large and Mid Cap" spelling', () => {
+      expect(deriveSchemeCategoryFromName('Mirae Asset Large and Mid Cap Fund')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('handles bluechip → large cap', () => {
+      expect(deriveSchemeCategoryFromName('SBI Bluechip Fund')).toBe('large cap fund');
+    });
+    it('multi cap → multi cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Nippon India Multi Cap Fund')).toBe('multi cap fund');
+    });
+    it('focused fund', () => {
+      expect(deriveSchemeCategoryFromName('Axis Focused 25 Fund')).toBe('focused fund');
+    });
+    it('value fund', () => {
+      expect(deriveSchemeCategoryFromName('HSBC Value Fund')).toBe('value fund');
+    });
+    it('contra fund', () => {
+      expect(deriveSchemeCategoryFromName('SBI Contra Fund')).toBe('contra fund');
+    });
+    it('ELSS / tax saver', () => {
+      expect(deriveSchemeCategoryFromName('Axis Long Term Equity Fund')).toBe('elss');
+      expect(deriveSchemeCategoryFromName('Mirae Asset Tax Saver Fund')).toBe('elss');
+    });
+    it('sectoral / thematic', () => {
+      expect(deriveSchemeCategoryFromName('ICICI Pru Pharma Healthcare Fund')).toBe(
+        'sectoral/thematic',
+      );
+      expect(deriveSchemeCategoryFromName('Tata Digital India Fund (Technology)')).toBe(
+        'sectoral/thematic',
+      );
+    });
+  });
+
+  describe('hybrid / advantage', () => {
+    it('aggressive hybrid', () => {
+      expect(deriveSchemeCategoryFromName('HDFC Hybrid Equity Fund (Aggressive Hybrid)')).toBe(
+        'aggressive hybrid fund',
+      );
+    });
+    it('balanced advantage → balanced advantage fund (not balanced hybrid)', () => {
+      expect(deriveSchemeCategoryFromName('HDFC Balanced Advantage Fund')).toBe(
+        'balanced advantage fund',
+      );
+    });
+    it('equity savings', () => {
+      expect(deriveSchemeCategoryFromName('Kotak Equity Savings Fund')).toBe('equity savings fund');
+    });
+    it('multi asset', () => {
+      expect(deriveSchemeCategoryFromName('ICICI Pru Multi Asset Fund')).toBe(
+        'multi asset allocation',
+      );
+    });
+  });
+
+  describe('debt sub-buckets', () => {
+    it('liquid', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla SL Liquid Fund')).toBe('liquid fund');
+    });
+    it('overnight', () => {
+      expect(deriveSchemeCategoryFromName('SBI Overnight Fund')).toBe('overnight fund');
+    });
+    it('corporate bond', () => {
+      expect(deriveSchemeCategoryFromName('HDFC Corporate Bond Fund')).toBe('corporate bond fund');
+    });
+    it('gilt', () => {
+      expect(deriveSchemeCategoryFromName('SBI Magnum Gilt Fund')).toBe('gilt fund');
+    });
+  });
+
+  describe('passive / FoF', () => {
+    it('index fund', () => {
+      expect(deriveSchemeCategoryFromName('UTI Nifty 50 Index Fund')).toBe('index funds');
+    });
+    it('ETF', () => {
+      expect(deriveSchemeCategoryFromName('Nippon India ETF Nifty BeES')).toBe('other etfs');
+    });
+    it('fund of funds', () => {
+      expect(deriveSchemeCategoryFromName('Motilal Oswal NASDAQ 100 Fund of Funds')).toBe(
+        'fund of funds domestic',
+      );
+    });
+  });
+
+  describe('pattern ordering safety', () => {
+    it('"Mid Cap" inside "Large & Mid Cap" does not win', () => {
+      // The longer pattern is checked first.
+      expect(deriveSchemeCategoryFromName('Foo Large & Mid Cap Foo')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('"balanced advantage" wins over "balanced hybrid" when only advantage is present', () => {
+      expect(deriveSchemeCategoryFromName('Foo Balanced Advantage Bar')).toBe(
+        'balanced advantage fund',
+      );
+    });
+    it('"long term equity" → elss (not long duration)', () => {
+      expect(deriveSchemeCategoryFromName('Axis Long Term Equity Fund')).toBe('elss');
+    });
+    it('handles case insensitivity', () => {
+      expect(deriveSchemeCategoryFromName('DSP MID CAP FUND')).toBe('mid cap fund');
+      expect(deriveSchemeCategoryFromName('dsp mid cap fund')).toBe('mid cap fund');
+    });
   });
 });

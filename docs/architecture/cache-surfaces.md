@@ -94,7 +94,7 @@ When adding a new cache, walk this list and note in the inline comment which cla
 
 - **Where:** [`fund_portfolio_composition`](../../supabase/migrations/20260420000000_portfolio_insights_schema.sql) populated by [`sync-fund-portfolios`](../../supabase/functions/sync-fund-portfolios/index.ts) hourly cron + [`fetch-fund-snapshot`](../../supabase/functions/fetch-fund-snapshot/index.ts) on demand.
 - **Source tagging:** `source` column distinguishes `'amfi'` (real holdings classified) / `'category_fallback'` (had holdings but classifier returned 0 coverage) / `'category_rules'` (no holdings disclosed). Client UI surfaces a disclaimer for the latter two.
-- **Bug class watchlist:** A (the empty-map race — sync-fund-portfolios variant covered in audit #7, Phase 2), C/F (mfdata partial-success TTL trap — audit #6, Phase 3), K (mfdata holdings stored verbatim — audit #8, Phase 4).
+- **Bug class watchlist:** A (the empty-map race — sync-fund-portfolios variant covered in audit #7, Phase 2), C/F (mfdata partial-success TTL trap — audit #6, Phase 3), K (mfdata holdings stored verbatim — audit #8, Phase 4), H (the fallback proxy `GENERIC_CATEGORY_MAP['equity']` was treated as a "generic equity bucket" when it's really a flexi-cap-shaped guess — audit #23 / PR #188 / [postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md)).
 
 ## Audit findings tracker
 
@@ -122,6 +122,7 @@ When adding a new cache, walk this list and note in the inline comment which cla
 | 20 | `fetch-fund-nav` TTL boundary `<=` | C | LOW | #2 | Tracked, not scheduled |
 | 21 | `usePortfolioInsights.syncMutation` lacks `onError` | F | LOW | #1 | ⏳ Phase 4 (cheap) |
 | 22 | category_rules date inconsistency | C | LOW | #8 | Tracked, not scheduled |
+| 23 | `GENERIC_CATEGORY_MAP['equity']` is a flexi-cap proxy (38/33/29), misnamed as a generic equity bucket — every fund with `scheme_category = 'Equity'` lands there | H | HIGH | #8 | ✅ PR #188 (`deriveSchemeCategoryFromName` rescues sub-bucket from scheme_name; [postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md)) |
 
 ## When adding a new cache — checklist
 

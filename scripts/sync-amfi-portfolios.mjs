@@ -83,10 +83,91 @@ const GENERIC_CATEGORY_MAP = {
 
 const FALLBACK_COMPOSITION = { equity: 80, debt: 10, cash: 10, other: 0, large: 50, mid: 30, small: 20 };
 
-function getCategoryRules(schemeCategory) {
-  const key = schemeCategory.toLowerCase().trim();
+// scheme_name → SEBI sub-bucket. Mirrors `deriveSchemeCategoryFromName`
+// in `_shared/portfolio-utils.ts` (covered by unit tests). Kept in lock-step
+// here because this Node script can't import the .ts shared helper from a
+// GitHub Actions runner without a build step.
+//
+// Order matters: longer / more-specific patterns are checked first so
+// "Large & Mid Cap" doesn't get classified as "Large Cap".
+const NAME_PATTERNS = [
+  [['large & mid cap', 'large and mid cap', 'largemidcap', 'large-mid cap'], 'large & mid cap fund'],
+  [['multi cap'], 'multi cap fund'],
+  [['flexi cap', 'flexicap'], 'flexi cap fund'],
+  [['mid cap', 'midcap'], 'mid cap fund'],
+  [['small cap', 'smallcap'], 'small cap fund'],
+  [['large cap', 'largecap', 'bluechip', 'top 100', 'top 200'], 'large cap fund'],
+  [['focused'], 'focused fund'],
+  [['contra'], 'contra fund'],
+  [['dividend yield'], 'dividend yield fund'],
+  [['value'], 'value fund'],
+  [['elss', 'tax saver', 'tax plan', 'long term equity', 'long-term equity'], 'elss'],
+  [['sectoral', 'thematic', 'banking and financial', 'banking & financial',
+    'pharma', 'healthcare', 'technology', 'infrastructure', 'consumption',
+    'energy', 'manufacturing', 'business cycle', 'transport', 'logistics',
+    'commodities', 'natural resources', 'india opportunities'], 'sectoral/thematic'],
+  [['balanced advantage', 'dynamic asset allocation'], 'balanced advantage fund'],
+  [['aggressive hybrid'], 'aggressive hybrid fund'],
+  [['conservative hybrid'], 'conservative hybrid fund'],
+  [['equity savings'], 'equity savings fund'],
+  [['multi asset'], 'multi asset allocation'],
+  [['balanced hybrid'], 'balanced hybrid fund'],
+  [['arbitrage'], 'arbitrage fund'],
+  [['fund of fund', 'fund of funds', 'fof'], 'fund of funds domestic'],
+  [['etf', ' bees'], 'other etfs'],
+  [['index fund', 'nifty', 'sensex', ' bse '], 'index funds'],
+  [['overnight'], 'overnight fund'],
+  [['liquid'], 'liquid fund'],
+  [['ultra short'], 'ultra short duration fund'],
+  [['low duration'], 'low duration fund'],
+  [['money market'], 'money market fund'],
+  [['short duration', 'short term'], 'short duration fund'],
+  [['medium to long duration'], 'medium to long duration'],
+  [['medium duration'], 'medium duration fund'],
+  [['long duration'], 'long duration fund'],
+  [['dynamic bond'], 'dynamic bond fund'],
+  [['corporate bond'], 'corporate bond fund'],
+  [['credit risk'], 'credit risk fund'],
+  [['banking and psu', 'banking & psu'], 'banking and psu fund'],
+  [['gilt'], 'gilt fund'],
+  [['floater', 'floating rate'], 'floater fund'],
+  [['retirement'], 'solution oriented - retirement'],
+  [["children's", 'childrens', 'children'], 'solution oriented - childrens'],
+];
+
+function deriveSchemeCategoryFromName(schemeName) {
+  if (!schemeName) return null;
+  const name = schemeName.toLowerCase();
+  for (const [needles, key] of NAME_PATTERNS) {
+    if (needles.some((n) => name.includes(n))) return key;
+  }
+  return null;
+}
+
+function isGenericSchemeCategory(schemeCategory) {
+  if (!schemeCategory) return true;
+  const key = String(schemeCategory).toLowerCase().trim();
+  return key === 'equity' || key === 'debt' || key === 'hybrid' || key === 'other' || key === '';
+}
+
+function getCategoryRules(schemeCategory, schemeName) {
+  // When AMFI / mfdata return the bare single-word "Equity" / "Hybrid" /
+  // "Debt" / "Other", rescue the sub-bucket from scheme_name first. The
+  // legacy fallback to the flexi-cap proxy (38/33/29) was responsible for
+  // every DSP {Large,Mid,Small,Large&Mid} Cap Fund showing identical
+  // market-cap mixes on the Compare tab.
+  if (isGenericSchemeCategory(schemeCategory)) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+  }
+
+  const key = (schemeCategory ?? '').toLowerCase().trim();
   if (CATEGORY_RULES[key]) return CATEGORY_RULES[key];
-  if (GENERIC_CATEGORY_MAP[key]) return GENERIC_CATEGORY_MAP[key];
+  if (GENERIC_CATEGORY_MAP[key]) {
+    const derivedKey = deriveSchemeCategoryFromName(schemeName);
+    if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
+    return GENERIC_CATEGORY_MAP[key];
+  }
   // Partial match: only fire when the key has 2+ words to avoid 'equity' matching 'equity savings fund'
   if (key.split(' ').length >= 2) {
     for (const [pattern, comp] of Object.entries(CATEGORY_RULES)) {
@@ -95,6 +176,8 @@ function getCategoryRules(schemeCategory) {
       }
     }
   }
+  const derivedKey = deriveSchemeCategoryFromName(schemeName);
+  if (derivedKey && CATEGORY_RULES[derivedKey]) return CATEGORY_RULES[derivedKey];
   return FALLBACK_COMPOSITION;
 }
 
@@ -135,8 +218,8 @@ async function getFamilyHoldings(familyId) {
   return data?.data ?? null;
 }
 
-function buildPortfolioFromHoldings(holdings, schemeCategory) {
-  const catRules = getCategoryRules(schemeCategory);
+function buildPortfolioFromHoldings(holdings, schemeCategory, schemeName) {
+  const catRules = getCategoryRules(schemeCategory, schemeName);
 
   // Overseas FoFs hold foreign securities — the mfdata.in holdings data will show the
   // underlying stocks as equity, which is wrong. Use category_rules directly (other=100).
@@ -227,10 +310,12 @@ async function main() {
   const portfolioDate = new Date(now.getFullYear(), now.getMonth(), 0)
     .toISOString().split('T')[0]; // last day of previous month
 
-  // Load all active funds
+  // Load all active funds. scheme_name is pulled so schemes filed under the
+  // bare single-word category "Equity" / "Hybrid" can still be mapped to
+  // their actual SEBI sub-bucket via name-based heuristics.
   const { data: funds, error: fundsError } = await supabase
     .from('fund')
-    .select('id, scheme_code, scheme_category')
+    .select('id, scheme_code, scheme_category, scheme_name')
     .eq('is_active', true);
 
   if (fundsError) {
@@ -294,7 +379,7 @@ async function main() {
       }
 
       // Step 3: build portfolio row
-      const portfolio = buildPortfolioFromHoldings(holdings, scheme.scheme_category);
+      const portfolio = buildPortfolioFromHoldings(holdings, scheme.scheme_category, scheme.scheme_name);
       const notClassified = Math.max(0, 100 - portfolio.largeCapPct - portfolio.midCapPct - portfolio.smallCapPct);
 
       const { error } = await supabase
@@ -347,7 +432,7 @@ async function main() {
   if (needsFallback.length > 0) {
     const today = now.toISOString().split('T')[0];
     const categoryRows = needsFallback.map((scheme) => {
-      const comp = getCategoryRules(scheme.scheme_category);
+      const comp = getCategoryRules(scheme.scheme_category, scheme.scheme_name);
       const notClassified = Math.max(0, 100 - comp.large - comp.mid - comp.small);
       return {
         scheme_code: scheme.scheme_code,
