@@ -32,6 +32,21 @@ On swap-day, the implementation of `from()` (or the named functions)
 becomes whatever the new backend is — `fetch()`, `trpcClient.foo.query()`,
 etc. The consumer code stays put.
 
+## External-API wrappers (not table repos)
+
+A few files here wrap an **external HTTP API** rather than a Supabase table.
+They follow the same swap-point + mock-boundary principle but expose typed
+functions instead of `from()`:
+
+- `composition.ts` — the OpenFolio-Data holdings API ([docs](../../../docs/plans/openfolio-holdings-integration.md)).
+  Sole app-side owner of the OpenFolio base URL + `X-API-Key` (env
+  `OPENFOLIO_API_BASE` / `OPENFOLIO_API_KEY`); exposes typed `getComposition` /
+  `listComposition`. Tests of consumers mock `@/src/lib/data/composition`, never
+  the network. NOTE: in M1–M4 the API is called server-side from edge functions
+  (Deno can't import `src/`), so the runtime client + mapping live in the Deno
+  twin `supabase/functions/_shared/openfolio.ts`; this file mirrors the same
+  contract for the app boundary.
+
 ## Tests
 
 Tests of code that uses these repos mock the repo, not the underlying
