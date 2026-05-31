@@ -102,6 +102,7 @@ export type Database = {
         Row: {
           cash_pct: number
           debt_pct: number
+          disclosure_date: string | null
           equity_pct: number
           id: string
           large_cap_pct: number | null
@@ -114,12 +115,14 @@ export type Database = {
           sector_allocation: Json | null
           small_cap_pct: number | null
           source: string
+          source_url: string | null
           synced_at: string
           top_holdings: Json | null
         }
         Insert: {
           cash_pct?: number
           debt_pct?: number
+          disclosure_date?: string | null
           equity_pct?: number
           id?: string
           large_cap_pct?: number | null
@@ -132,12 +135,14 @@ export type Database = {
           sector_allocation?: Json | null
           small_cap_pct?: number | null
           source?: string
+          source_url?: string | null
           synced_at?: string
           top_holdings?: Json | null
         }
         Update: {
           cash_pct?: number
           debt_pct?: number
+          disclosure_date?: string | null
           equity_pct?: number
           id?: string
           large_cap_pct?: number | null
@@ -150,6 +155,7 @@ export type Database = {
           sector_allocation?: Json | null
           small_cap_pct?: number | null
           source?: string
+          source_url?: string | null
           synced_at?: string
           top_holdings?: Json | null
         }

@@ -45,6 +45,11 @@ import {
 } from '../_shared/portfolio-utils.ts';
 import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
+import {
+  createOpenFolioClient,
+  mapCompositionToRow,
+  resolveOpenFolioCredentials,
+} from '../_shared/openfolio.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -363,9 +368,75 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
 
 interface CompositionResult {
   status: 'fetched' | 'cache_hit' | 'category_rules' | 'no_holdings' | 'failed';
-  classifierOutcome: 'amfi' | 'category_fallback' | 'category_rules' | null;
+  classifierOutcome: 'official' | 'amfi' | 'category_fallback' | 'category_rules' | null;
   classifierCoveragePct: number | null;
   equityHoldingsCount: number;
+}
+
+/**
+ * Official-first: try OpenFolio-Data for this exact AMFI scheme_code before
+ * falling back to mfdata/category. Returns the upserted result, or null when
+ * OpenFolio is unconfigured / has no snapshot / errored — the caller then
+ * proceeds to the existing mfdata path. Never throws.
+ */
+const OFFICIAL_STALE_DAYS = 35;
+
+async function syncOfficialComposition(schemeCode: number): Promise<CompositionResult | null> {
+  // Recency cache: an 'official' row is refreshed monthly, so a row synced in
+  // the last 35 days is fresh. This guards against re-hitting OpenFolio on
+  // every fund pick (official rows are dated to the prior month-end, so the
+  // caller's current-month gate won't recognise them as cached).
+  const { data: existingOfficial } = await supabase
+    .from('fund_portfolio_composition')
+    .select('portfolio_date, synced_at')
+    .eq('scheme_code', schemeCode)
+    .eq('source', 'official')
+    .order('portfolio_date', { ascending: false })
+    .limit(1);
+  if (existingOfficial && existingOfficial.length > 0) {
+    const syncedAtMs = new Date(existingOfficial[0].synced_at as string).getTime();
+    if (Number.isFinite(syncedAtMs) && Date.now() - syncedAtMs < OFFICIAL_STALE_DAYS * 86_400_000) {
+      console.log('[fetch-fund-snapshot] scheme=%d official cache hit (%s)', schemeCode, existingOfficial[0].portfolio_date);
+      return { status: 'cache_hit', classifierOutcome: 'official', classifierCoveragePct: null, equityHoldingsCount: 0 };
+    }
+  }
+
+  let client: ReturnType<typeof createOpenFolioClient>;
+  try {
+    client = createOpenFolioClient(resolveOpenFolioCredentials(Deno.env));
+  } catch (err) {
+    console.warn('[fetch-fund-snapshot] scheme=%d OpenFolio not configured: %s', schemeCode, String(err));
+    return null;
+  }
+
+  let composition;
+  try {
+    composition = await client.getComposition(schemeCode, { top: 50 });
+  } catch (err) {
+    console.warn('[fetch-fund-snapshot] scheme=%d OpenFolio fetch failed: %s', schemeCode, String(err));
+    return null;
+  }
+  if (!composition) {
+    console.log('[fetch-fund-snapshot] scheme=%d no OpenFolio snapshot, falling back', schemeCode);
+    return null;
+  }
+
+  const row = mapCompositionToRow(composition, schemeCode, new Date().toISOString());
+  const { error } = await supabase
+    .from('fund_portfolio_composition')
+    .upsert(row, { onConflict: 'scheme_code,portfolio_date,source' });
+  if (error) {
+    console.error('[fetch-fund-snapshot] scheme=%d official upsert error: %s', schemeCode, error.message);
+    return { status: 'failed', classifierOutcome: null, classifierCoveragePct: null, equityHoldingsCount: 0 };
+  }
+
+  console.log('[fetch-fund-snapshot] scheme=%d official composition upserted (date=%s)', schemeCode, row.portfolio_date);
+  return {
+    status: 'fetched',
+    classifierOutcome: 'official',
+    classifierCoveragePct: null,
+    equityHoldingsCount: row.top_holdings?.length ?? 0,
+  };
 }
 
 async function syncComposition(
@@ -378,15 +449,15 @@ async function syncComposition(
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
 
-  // Cache check — current-month real-holdings row already present (either
-  // a classifier hit or a category_fallback). category_rules never short-
+  // Cache check — current-month real-holdings row already present ('official',
+  // a classifier hit, or a category_fallback). category_rules never short-
   // circuits the lookup, because it's the last-resort path.
   const { data: existing } = await supabase
     .from('fund_portfolio_composition')
     .select('source, portfolio_date')
     .eq('scheme_code', schemeCode)
     .gte('portfolio_date', currentMonthStart)
-    .in('source', ['amfi', 'category_fallback'])
+    .in('source', ['official', 'amfi', 'category_fallback'])
     .limit(1);
 
   if (existing && existing.length > 0) {
@@ -394,11 +465,16 @@ async function syncComposition(
       schemeCode, existing[0].portfolio_date, existing[0].source);
     return {
       status: 'cache_hit',
-      classifierOutcome: existing[0].source as 'amfi' | 'category_fallback',
+      classifierOutcome: existing[0].source as 'official' | 'amfi' | 'category_fallback',
       classifierCoveragePct: null,
       equityHoldingsCount: 0,
     };
   }
+
+  // Official-first: OpenFolio-Data is the primary source. If it has a snapshot
+  // for this scheme, upsert it and we're done — mfdata is only the backup.
+  const official = await syncOfficialComposition(schemeCode);
+  if (official) return official;
 
   // No family_id → fall back to category rules.
   if (familyId == null) {
