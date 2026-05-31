@@ -161,3 +161,41 @@ implementation diverged from the plan above:
   carry 196–210 real debt instruments with provenance URLs; equity funds carry asset mix + 25–27
   sectors + 50 top holdings; `official` coexists with `category_*` rows (exactly one `official` row
   per scheme — upsert idempotency holds).
+
+### Prod rollout runbook (project `ohcaaioabjvzewfysqgh`) — NOT yet applied
+
+Prod is **untouched**. The prod release tag (`v*`) hasn't been cut and more PRs land first, so the
+steps below are deferred and each requires explicit per-change approval at release time. Run them
+**in order, from a clean checkout of `main` after this PR merges**:
+
+1. **Migration** — link to prod and push (CLI only, never MCP):
+   ```bash
+   supabase link --project-ref ohcaaioabjvzewfysqgh --password "$SUPABASE_PROD_DB_PASSWORD"
+   supabase db push --linked --password "$SUPABASE_PROD_DB_PASSWORD"   # applies 20260531000000
+   ```
+   Prereq: prod `public.app_config` already has `supabase_functions_base_url` (every existing cron
+   uses it — verify with a read). Verify after: `source_url`/`disclosure_date` columns exist and
+   `cron.job` shows `openfolio-composition-monthly` at `30 1 15 * *`.
+2. **Function secrets** — same OpenFolio API serves dev + prod, so reuse the same base + key:
+   ```bash
+   supabase secrets set --project-ref ohcaaioabjvzewfysqgh \
+     OPENFOLIO_API_BASE="$OPENFOLIO_API_BASE_URL" OPENFOLIO_API_KEY="$OPENFOLIO_API_KEY"
+   ```
+3. **Deploy edge functions** (all `--no-verify-jwt`):
+   ```bash
+   supabase functions deploy openfolio-sync       --no-verify-jwt --project-ref ohcaaioabjvzewfysqgh
+   supabase functions deploy fetch-fund-snapshot   --no-verify-jwt --project-ref ohcaaioabjvzewfysqgh
+   supabase functions deploy sync-fund-portfolios  --no-verify-jwt --project-ref ohcaaioabjvzewfysqgh
+   ```
+4. **One-time backfill** — POST the prod function once:
+   ```bash
+   curl -X POST "$EXPO_PUBLIC_SUPABASE_PROD_URL/functions/v1/openfolio-sync" \
+     -H "apikey: $EXPO_PUBLIC_SUPABASE_PROD_PUBLISHABLE_KEY" \
+     -H "Authorization: Bearer $EXPO_PUBLIC_SUPABASE_PROD_PUBLISHABLE_KEY" \
+     -H "Content-Type: application/json" -d '{"mode":"backfill"}'
+   ```
+   Verify via read-only MCP: `count(*) where source='official'` > 0, and a spot scheme has real
+   debt/sector data. The monthly cron then maintains it (next natural fire: the 15th).
+
+All five prod actions (migration, secrets, deploy, cron, backfill) are gated behind explicit
+approval and must not be applied before the prod tag is cut.
