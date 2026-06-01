@@ -40,32 +40,54 @@ const TOP = 50; // top equity holdings / sectors per scheme (mirrors existing to
 const MAX_PAGES = 500; // headroom far above any real scheme count (50 AMCs); count-based break stops earlier
 
 /**
- * Load the universe of schemes we track from scheme_master: real AMFI codes
- * (primary match key) and an ISIN → code map (secondary match key).
+ * Load the universe of schemes we pre-seed composition for: the **active held
+ * funds** (the `fund` table — same scope as `sync-fund-portfolios`), keyed by
+ * AMFI plan code (primary) with an ISIN → code map (secondary). We deliberately
+ * do NOT use `scheme_master` here: that's the full ~37.6k AMFI catalog, and
+ * under the v2 contract every family exposes all its plans, so matching the
+ * catalog would write an `official` row for every plan of every OpenFolio
+ * family (~8–10k rows) — bloating the table and blowing the sync wall-clock.
+ * Funds nobody holds are hydrated on-demand by `fetch-fund-snapshot` (Compare).
  */
 async function loadUniverse(
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<SchemeUniverse> {
   const knownCodes = new Set<number>();
-  const isinToCode = new Map<string, number>();
   const PAGE = 1000;
   let from = 0;
   while (true) {
     const { data, error } = await supabase
-      .from('scheme_master')
-      .select('scheme_code, isin')
+      .from('fund')
+      .select('scheme_code')
+      .eq('is_active', true)
       .range(from, from + PAGE - 1);
     if (error) {
-      console.error('[openfolio-sync] scheme_master load failed: %s', error.message);
+      console.error('[openfolio-sync] held-funds load failed: %s', error.message);
       break;
     }
     if (!data || data.length === 0) break;
-    for (const row of data as { scheme_code: number; isin: string | null }[]) {
-      knownCodes.add(row.scheme_code);
-      if (row.isin) isinToCode.set(String(row.isin).trim().toUpperCase(), row.scheme_code);
-    }
+    for (const row of data as { scheme_code: number }[]) knownCodes.add(row.scheme_code);
     if (data.length < PAGE) break;
     from += PAGE;
+  }
+
+  // ISIN secondary key, restricted to held codes (so an ISIN match still
+  // resolves to a scheme we serve). Looked up from scheme_master in chunks.
+  const isinToCode = new Map<string, number>();
+  const codes = [...knownCodes];
+  const CHUNK = 500;
+  for (let i = 0; i < codes.length; i += CHUNK) {
+    const { data, error } = await supabase
+      .from('scheme_master')
+      .select('scheme_code, isin')
+      .in('scheme_code', codes.slice(i, i + CHUNK));
+    if (error) {
+      console.error('[openfolio-sync] scheme_master isin load failed: %s', error.message);
+      break;
+    }
+    for (const row of (data ?? []) as { scheme_code: number; isin: string | null }[]) {
+      if (row.isin) isinToCode.set(String(row.isin).trim().toUpperCase(), row.scheme_code);
+    }
   }
   return { knownCodes, isinToCode };
 }
