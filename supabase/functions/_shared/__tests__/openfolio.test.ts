@@ -397,8 +397,8 @@ describe('runOpenFolioSync', () => {
       client,
       universe: UNI,
       syncedAt: SYNCED_AT,
-      upsertRow: async (row) => {
-        rows.push(row);
+      upsertRows: async (batch) => {
+        rows.push(...batch);
         return { error: null };
       },
     });
@@ -415,19 +415,18 @@ describe('runOpenFolioSync', () => {
 
   it('is idempotent — re-running upserts the same rows on the conflict key', async () => {
     const seen = new Map<string, CompositionRow>();
-    const upsertRow = async (row: CompositionRow) => {
-      seen.set(`${row.scheme_code}|${row.portfolio_date}|${row.source}`, row);
+    const upsertRows = async (batch: CompositionRow[]) => {
+      for (const row of batch) seen.set(`${row.scheme_code}|${row.portfolio_date}|${row.source}`, row);
       return { error: null };
     };
     const pages = () => clientServing([pageOf([comp({ scheme_code: 100 })])]);
-    await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRow });
-    await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRow });
+    await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRows });
+    await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRows });
     expect(seen.size).toBe(1); // same conflict key both runs
   });
 
-  it('counts per-record upsert errors and thrown errors without aborting the sweep', async () => {
+  it('isolates a failed batch per-row (return-error + thrown errors) without aborting the sweep', async () => {
     const logs: string[] = [];
-    let call = 0;
     const stats = await runOpenFolioSync({
       client: clientServing([
         pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' }), comp({ scheme_code: 300 })]),
@@ -435,10 +434,12 @@ describe('runOpenFolioSync', () => {
       universe: UNI,
       syncedAt: SYNCED_AT,
       log: (m) => logs.push(m),
-      upsertRow: async () => {
-        call += 1;
-        if (call === 1) return { error: 'duplicate key' };
-        if (call === 2) throw new Error('connection reset');
+      // Batch (>1 row) fails → per-row fallback exercises return-error + both throw paths.
+      upsertRows: async (batch) => {
+        if (batch.length > 1) return { error: 'batch write failed' };
+        const code = batch[0].scheme_code;
+        if (code === 100) return { error: 'duplicate key' };
+        if (code === 200) throw new Error('connection reset');
         throw 'string failure';
       },
     });
@@ -449,6 +450,52 @@ describe('runOpenFolioSync', () => {
     expect(stats.errors.some((e) => e.includes('connection reset'))).toBe(true);
     expect(stats.errors.some((e) => e.includes('string failure'))).toBe(true);
     expect(logs.length).toBeGreaterThan(0);
+  });
+
+  it('counts a per-record mapping failure without dropping the rest of the page', async () => {
+    // A matched item that passes the date guard but throws while mapping
+    // (e.g. a pathological payload) must be counted, not abort the page.
+    const bad = {
+      scheme_code: 100,
+      disclosure_date: '2026-04-30',
+      get asset_mix(): never {
+        throw new Error('map boom');
+      },
+    } as unknown as OpenFolioComposition;
+    const written: number[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([pageOf([bad, comp({ scheme_code: 200, code_source: 'amfi_navall' })])]),
+      universe: UNI,
+      syncedAt: SYNCED_AT,
+      upsertRows: async (batch) => {
+        written.push(...batch.map((r) => r.scheme_code));
+        return { error: null };
+      },
+    });
+    expect(stats.failed).toBe(1);
+    expect(stats.errors.some((e) => e.includes('map boom'))).toBe(true);
+    expect(stats.upserted).toBe(1); // the good row still written
+    expect(written).toEqual([200]);
+  });
+
+  it('recovers a thrown batch via per-row retry (per-row success path)', async () => {
+    const written: number[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([
+        pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })]),
+      ]),
+      universe: UNI,
+      syncedAt: SYNCED_AT,
+      // The batch call throws; each single-row retry succeeds.
+      upsertRows: async (batch) => {
+        if (batch.length > 1) throw new Error('payload too large');
+        written.push(batch[0].scheme_code);
+        return { error: null };
+      },
+    });
+    expect(stats.upserted).toBe(2);
+    expect(stats.failed).toBe(0);
+    expect(written.sort()).toEqual([100, 200]);
   });
 
   it('walks multiple pages until a short page ends the sweep', async () => {
@@ -464,8 +511,8 @@ describe('runOpenFolioSync', () => {
       pageSize: 2,
       updatedSince: '2026-04-01',
       amc: 'PPFAS',
-      upsertRow: async (row) => {
-        rows.push(row);
+      upsertRows: async (batch) => {
+        rows.push(...batch);
         return { error: null };
       },
     });
@@ -484,7 +531,7 @@ describe('runOpenFolioSync', () => {
       universe: UNI,
       syncedAt: SYNCED_AT,
       pageSize: 2,
-      upsertRow: async () => ({ error: null }),
+      upsertRows: async () => ({ error: null }),
     });
     expect(stats.pagesFetched).toBe(1);
     expect(client.listComposition).toHaveBeenCalledTimes(1);
@@ -501,7 +548,7 @@ describe('runOpenFolioSync', () => {
       syncedAt: SYNCED_AT,
       pageSize: 2,
       maxPages: 1,
-      upsertRow: async () => ({ error: null }),
+      upsertRows: async () => ({ error: null }),
     });
     expect(stats.pagesFetched).toBe(1);
   });
@@ -517,8 +564,8 @@ describe('runOpenFolioSync', () => {
       ]),
       universe: UNI,
       syncedAt: SYNCED_AT, // 2026 → referenceYear 2026
-      upsertRow: async (row) => {
-        rows.push(row);
+      upsertRows: async (batch) => {
+        rows.push(...batch);
         return { error: null };
       },
     });
@@ -538,7 +585,7 @@ describe('runOpenFolioSync', () => {
       pageSize: 2,
       maxPages: 1,
       log: (m) => logs.push(m),
-      upsertRow: async () => ({ error: null }),
+      upsertRows: async () => ({ error: null }),
     });
     expect(stats.truncated).toBe(true);
     expect(stats.itemsFetched).toBeLessThan(stats.totalCount);
@@ -550,7 +597,7 @@ describe('runOpenFolioSync', () => {
       client: clientServing([pageOf([comp({ scheme_code: 100 })], 1, 100)]),
       universe: UNI,
       syncedAt: SYNCED_AT,
-      upsertRow: async () => ({ error: null }),
+      upsertRows: async () => ({ error: null }),
     });
     expect(stats.truncated).toBe(false);
   });
@@ -563,7 +610,7 @@ describe('runOpenFolioSync', () => {
       client,
       universe: UNI,
       syncedAt: SYNCED_AT,
-      upsertRow: async () => ({ error: null }),
+      upsertRows: async () => ({ error: null }),
     });
     expect(stats.itemsFetched).toBe(0);
     expect(stats.totalCount).toBe(0);

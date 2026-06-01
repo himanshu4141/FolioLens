@@ -124,10 +124,10 @@ Deno.serve(async (req) => {
 
   const syncedAt = new Date().toISOString();
 
-  const upsertRow = async (row: CompositionRow) => {
+  const upsertRows = async (rows: CompositionRow[]) => {
     const { error } = await supabase
       .from('fund_portfolio_composition')
-      .upsert(row, { onConflict: 'scheme_code,portfolio_date,source' });
+      .upsert(rows, { onConflict: 'scheme_code,portfolio_date,source' });
     return { error: error?.message ?? null };
   };
 
@@ -136,7 +136,7 @@ Deno.serve(async (req) => {
     stats = await runOpenFolioSync({
       client,
       universe,
-      upsertRow,
+      upsertRows,
       syncedAt,
       log: (msg) => console.log(msg),
       pageSize: PAGE_SIZE,

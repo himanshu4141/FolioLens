@@ -448,8 +448,14 @@ export interface UpsertResult {
 export interface OpenFolioSyncDeps {
   client: Pick<OpenFolioClient, 'listComposition'>;
   universe: SchemeUniverse;
-  /** Sink for a mapped row — the edge function wires this to a Supabase upsert. */
-  upsertRow(row: CompositionRow): Promise<UpsertResult>;
+  /**
+   * Sink for a batch of mapped rows — the edge function wires this to a single
+   * Supabase array-upsert. Batching (one call per page instead of one per row)
+   * keeps the full sweep well under the synchronous-invocation wall-clock; a
+   * per-row sweep of ~hundreds of upserts blew past the 60s gateway timeout and
+   * left coverage partial.
+   */
+  upsertRows(rows: CompositionRow[]): Promise<UpsertResult>;
   syncedAt: string;
   log?: (msg: string) => void;
   pageSize?: number;
@@ -506,6 +512,37 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
     errors: [],
   };
 
+  // Flush a page's mapped rows in one array-upsert. On a batch error, isolate
+  // per-row so a single bad row never loses the whole page (preserves the
+  // "one bad record never aborts the sweep" guarantee).
+  async function flushRows(rows: CompositionRow[]): Promise<void> {
+    if (rows.length === 0) return;
+    let res: UpsertResult;
+    try {
+      res = await deps.upsertRows(rows);
+    } catch (err) {
+      res = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!res?.error) {
+      stats.upserted += rows.length;
+      return;
+    }
+    for (const row of rows) {
+      try {
+        const r = await deps.upsertRows([row]);
+        if (r?.error) {
+          stats.failed += 1;
+          stats.errors.push(`${row.scheme_code}: ${r.error}`);
+        } else {
+          stats.upserted += 1;
+        }
+      } catch (err) {
+        stats.failed += 1;
+        stats.errors.push(`${row.scheme_code}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   for (let page = 1; page <= maxPages; page++) {
     const result = await deps.client.listComposition({
       page,
@@ -523,6 +560,7 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
         `(count=${stats.totalCount}, pageSize=${pageSize})`,
     );
 
+    const pageRows: CompositionRow[] = [];
     for (const item of items) {
       if (!item) {
         stats.unmatched += 1;
@@ -550,19 +588,14 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
       }
 
       try {
-        const row = mapCompositionToRow(item, match.schemeCode, deps.syncedAt);
-        const { error } = await deps.upsertRow(row);
-        if (error) {
-          stats.failed += 1;
-          stats.errors.push(`${match.schemeCode}: ${error}`);
-        } else {
-          stats.upserted += 1;
-        }
+        pageRows.push(mapCompositionToRow(item, match.schemeCode, deps.syncedAt));
       } catch (err) {
         stats.failed += 1;
         stats.errors.push(`${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+
+    await flushRows(pageRows);
 
     // Stop when the last page is short or we've covered the reported count.
     if (items.length < pageSize) break;
