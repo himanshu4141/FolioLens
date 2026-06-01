@@ -244,20 +244,26 @@ describe('resolveSchemeCode', () => {
 // ---------------------------------------------------------------------------
 
 describe('isPlausibleDisclosureDate', () => {
-  it('accepts a valid YYYY-MM-DD within [2000, referenceYear + 1]', () => {
-    expect(isPlausibleDisclosureDate('2026-04-30', 2026)).toBe(true);
-    expect(isPlausibleDisclosureDate('2027-01-31', 2026)).toBe(true); // ref+1 slack
-    expect(isPlausibleDisclosureDate('2000-01-01', 2026)).toBe(true);
+  const TODAY = '2026-06-01';
+
+  it('accepts a valid past month-end YYYY-MM-DD in [2000-01-01, today]', () => {
+    expect(isPlausibleDisclosureDate('2026-04-30', TODAY)).toBe(true);
+    expect(isPlausibleDisclosureDate('2000-01-01', TODAY)).toBe(true);
+    expect(isPlausibleDisclosureDate(TODAY, TODAY)).toBe(true); // boundary: today is allowed
   });
 
-  it('rejects garbage / out-of-range / malformed dates', () => {
-    expect(isPlausibleDisclosureDate('2055-08-18', 2026)).toBe(false); // upstream artifact
-    expect(isPlausibleDisclosureDate('1999-12-31', 2026)).toBe(false);
-    expect(isPlausibleDisclosureDate('2028-01-01', 2026)).toBe(false); // beyond ref+1
-    expect(isPlausibleDisclosureDate('30-04-2026', 2026)).toBe(false);
-    expect(isPlausibleDisclosureDate('', 2026)).toBe(false);
-    expect(isPlausibleDisclosureDate(null, 2026)).toBe(false);
-    expect(isPlausibleDisclosureDate(undefined, 2026)).toBe(false);
+  it('rejects any future date (a disclosure is always a past month-end)', () => {
+    expect(isPlausibleDisclosureDate('2027-05-28', TODAY)).toBe(false); // ~1yr-future build artifact
+    expect(isPlausibleDisclosureDate('2055-08-18', TODAY)).toBe(false); // wild artifact
+    expect(isPlausibleDisclosureDate('2026-06-02', TODAY)).toBe(false); // one day future
+  });
+
+  it('rejects too-old / malformed / missing dates', () => {
+    expect(isPlausibleDisclosureDate('1999-12-31', TODAY)).toBe(false);
+    expect(isPlausibleDisclosureDate('30-04-2026', TODAY)).toBe(false);
+    expect(isPlausibleDisclosureDate('', TODAY)).toBe(false);
+    expect(isPlausibleDisclosureDate(null, TODAY)).toBe(false);
+    expect(isPlausibleDisclosureDate(undefined, TODAY)).toBe(false);
   });
 });
 

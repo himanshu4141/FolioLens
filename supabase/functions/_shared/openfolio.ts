@@ -312,18 +312,23 @@ export function resolveSchemeCode(
 /**
  * Guard against implausible disclosure dates. `disclosure_date` becomes the
  * row's `portfolio_date`, and the read selector tie-breaks on most-recent
- * date — so a garbage future date (e.g. an upstream parse artifact like
- * "2055-08-18") would silently win over every real row. Accept only a valid
- * `YYYY-MM-DD` whose year is in [2000, referenceYear + 1]. The +1 slack covers
- * a December month-end disclosed in early January / UTC boundaries.
+ * date — so a garbage date would silently win over every real row.
+ *
+ * A portfolio disclosure is always a PAST month-end, so accept only a valid
+ * `YYYY-MM-DD` in `[2000-01-01, today]` — no future dates. `today` is passed
+ * in (YYYY-MM-DD) so the check stays deterministic for tests. We compare as
+ * strings: ISO `YYYY-MM-DD` sorts lexicographically the same as chronologically.
+ *
+ * Observed upstream artifacts this rejects: "2055-08-18", and "2027-05-28"
+ * (a ~1-year-future date from an April-2026 build — the earlier year+1 slack
+ * wrongly let that through).
  */
 export function isPlausibleDisclosureDate(
   date: string | null | undefined,
-  referenceYear: number,
+  today: string,
 ): boolean {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
-  const year = Number(date.slice(0, 4));
-  return year >= 2000 && year <= referenceYear + 1;
+  return date >= '2000-01-01' && date <= today;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,9 +488,9 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
   const maxPages = deps.maxPages ?? 100;
   const log = deps.log ?? (() => {});
 
-  // Reference year for the disclosure-date plausibility guard, taken from the
+  // "Today" for the disclosure-date plausibility guard, taken from the
   // caller-supplied syncedAt so the core stays deterministic for tests.
-  const referenceYear = Number(deps.syncedAt.slice(0, 4)) || 2000;
+  const today = deps.syncedAt.slice(0, 10);
 
   const stats: OpenFolioSyncStats = {
     pagesFetched: 0,
@@ -535,7 +540,7 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
       if (match.matchedBy === 'scheme_code') stats.matchedByCode += 1;
       else stats.matchedByIsin += 1;
 
-      if (!isPlausibleDisclosureDate(item.disclosure_date, referenceYear)) {
+      if (!isPlausibleDisclosureDate(item.disclosure_date, today)) {
         stats.skippedBadDate += 1;
         log(
           `[openfolio-sync] skip scheme_code=${match.schemeCode} ` +

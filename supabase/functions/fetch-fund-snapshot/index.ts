@@ -422,7 +422,7 @@ async function syncOfficialComposition(schemeCode: number): Promise<CompositionR
     return null;
   }
 
-  if (!isPlausibleDisclosureDate(composition.disclosure_date, new Date().getFullYear())) {
+  if (!isPlausibleDisclosureDate(composition.disclosure_date, new Date().toISOString().slice(0, 10))) {
     console.warn(
       '[fetch-fund-snapshot] scheme=%d implausible OpenFolio disclosure_date=%s, falling back',
       schemeCode, composition.disclosure_date,
