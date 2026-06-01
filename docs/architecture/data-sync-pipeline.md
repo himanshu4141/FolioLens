@@ -1,6 +1,6 @@
 # Data Sync Pipeline — pg_cron + Edge Functions + External APIs
 
-Five edge functions on independent schedules keep prices, scheme metadata, fund composition, benchmark indices, and the AMFI stock market-cap classification list fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are deployed with `--no-verify-jwt`, and all are idempotent (re-running is safe). On-demand triggers for `sync-stock-market-cap` go through a `workflow_dispatch` wrapper in `.github/workflows/sync-stock-market-cap.yml` so manual runs leave an Actions audit trail + a PostHog `stock_market_cap_dispatch_completed` event.
+Edge functions on independent schedules keep prices, scheme metadata, fund composition, and benchmark indices fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are deployed with `--no-verify-jwt`, and all are idempotent (re-running is safe). (The AMFI stock market-cap classification list previously had its own `sync-stock-market-cap` function + monthly cron + `workflow_dispatch` wrapper; these were removed on 2026-06-01 — OpenFolio-Data now supplies the cap split. See the deprecation note in the `sync-stock-market-cap` section below.)
 
 ## Where things live
 
@@ -206,6 +206,14 @@ sequenceDiagram
 `META_STALE_DAYS = 7` keeps mfdata.in calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
 
 ## sync-stock-market-cap
+
+> **⚠️ Deprecated (2026-06-01).** The `sync-stock-market-cap` edge function + its monthly cron +
+> the manual dispatch workflow have been **removed**: OpenFolio-Data now publishes a real per-fund
+> `cap_mix`, so the `source='official'` rows carry the Large/Mid/Small split directly. The
+> `stock_market_cap` table is **frozen** (no longer refreshed) and the mfdata/`amfi` classifier
+> still reads its last snapshot until Phase 2 drops the table + the classifier. Full plan:
+> [`docs/plans/deprecate-stock-market-cap.md`](../plans/deprecate-stock-market-cap.md). The
+> sequence below is retained for historical reference.
 
 ```mermaid
 sequenceDiagram
