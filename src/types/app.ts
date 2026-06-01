@@ -49,15 +49,19 @@ export type TimeWindow = '1M' | '3M' | '6M' | '1Y' | '3Y' | 'ALL';
 // ---------------------------------------------------------------------------
 
 /**
+ * Holdings provenance, highest precedence first (see
+ * `src/utils/compositionSource.ts` for the rank used by the best-row selector):
+ * - 'official' — parsed AMC monthly disclosures from OpenFolio-Data: real
+ *   ISIN-bearing equity AND debt holdings, sectors, and cap split.
  * - 'amfi' — large/mid/small cap pcts derived from the per-fund AMFI
- *   classifier (real, fund-specific data).
+ *   classifier over mfdata.in holdings (enrichment / backup source).
  * - 'category_fallback' — fund disclosed holdings but classifier coverage
  *   was zero (e.g. all foreign equity, or AMFI list missed every ISIN).
  *   Cap pcts are SEBI category averages; UI surfaces a disclaimer.
  * - 'category_rules' — no holdings disclosed at all. Cap pcts are SEBI
  *   category averages; UI surfaces the same disclaimer.
  */
-export type CompositionSource = 'category_rules' | 'category_fallback' | 'amfi';
+export type CompositionSource = 'official' | 'category_rules' | 'category_fallback' | 'amfi';
 
 export interface HoldingItem {
   name: string;

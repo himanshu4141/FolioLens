@@ -79,7 +79,8 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `create-inbound-session` | First onboarding | Creates a per-user CASParser inbound mailbox | **Deprecated**, retired in M2.6 |
 | `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Pulls NAV history from mfapi.in for every active scheme | Active |
 | `sync-index` | pg_cron (hourly) | Pulls benchmark index closes from yahoo finance | Active |
-| `sync-fund-portfolios` | pg_cron (monthly) | Pulls AMFI portfolio composition disclosures | Active |
+| `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
+| `sync-fund-portfolios` | pg_cron (hourly) | **Backup** holdings source: mfdata.in portfolio composition → `source='amfi'` (now outranked by `official`) | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes scheme metadata (AUM, expense ratio, risk) | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
 | `demo-signup` | In-app "Try with sample data" sheet (pre-auth) | Captures email + marketing consent + UTM/referrer attribution into `public.demo_signup`. Idempotent on email — re-submissions bump `signup_count` instead of erroring. Service-role insert path; RLS on the table denies direct client writes. | Active |
@@ -113,7 +114,7 @@ Each Supabase project needs the row populated **once**, via the Dashboard SQL Ed
 
 Re-running is safe; the `ON CONFLICT` upsert overwrites the existing value. If the row is missing the call sites' `NULL || '/sync-nav'` evaluates to NULL and `net.http_post` errors loudly — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
 
-All current pg_net call sites — the four cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`), the M5 `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
+All current pg_net call sites — the cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`, `openfolio-composition-monthly`), the M5 `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
 
 `notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
 
@@ -329,6 +330,8 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `POSTHOG_PROJECT_KEY` | same `phc_...` as the client SDKs use; enables server-side `cas_parse_*` / `cas_inbound_*` / `sync_*` events | same |
 | `POSTHOG_HOST` | optional; defaults to `https://us.i.posthog.com`. Set to `https://eu.i.posthog.com` if the PostHog project is on EU Cloud | same |
 | `APP_ENVIRONMENT` | `dev` — tags every server-side event so dashboards can filter prod from dev when one PostHog project ingests both | `production` |
+| `OPENFOLIO_API_BASE` | OpenFolio-Data REST API base URL (the GCP Cloud Run URL). Read by `openfolio-sync` + `fetch-fund-snapshot` via `_shared/openfolio.ts`. Same value dev + prod (one API serves both). Falls back to `OPENFOLIO_API_BASE_URL` if that name is used instead. | same |
+| `OPENFOLIO_API_KEY` | OpenFolio-Data `X-API-Key`. Same value dev + prod. | same |
 
 **Removed in Issue #107**: `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`, `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, and `RESEND_NOTIFICATION_FROM` no longer live on Supabase. After deploying this PR, delete those four secrets from both DEV and PROD Supabase project dashboards. They moved to the Vercel project (see "Inbound router" section below).
 

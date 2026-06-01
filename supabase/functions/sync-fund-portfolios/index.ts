@@ -505,7 +505,10 @@ Deno.serve(async (req) => {
     .select('scheme_code, source, portfolio_date')
     .in('scheme_code', schemeCodes)
     .gte('portfolio_date', currentMonthStart.toISOString().split('T')[0])
-    .in('source', ['amfi', 'category_fallback']);
+    // 'official' (OpenFolio) outranks 'amfi' — when it's present and fresh,
+    // the read path uses it regardless, so there's no need to re-fetch
+    // mfdata for that scheme this cycle. mfdata stays a backup source.
+    .in('source', ['official', 'amfi', 'category_fallback']);
 
   const freshAmfiCodes = new Set((existing ?? []).map((r: { scheme_code: number }) => r.scheme_code));
   const staleSchemes = schemes.filter((s) => !freshAmfiCodes.has(s.scheme_code));
@@ -657,7 +660,7 @@ Deno.serve(async (req) => {
     .select('scheme_code')
     .in('scheme_code', schemeCodes)
     .gte('portfolio_date', currentMonthStart.toISOString().split('T')[0])
-    .in('source', ['amfi', 'category_fallback']);
+    .in('source', ['official', 'amfi', 'category_fallback']);
 
   const amfiCodeSet = new Set((nowHasAmfi ?? []).map((r: { scheme_code: number }) => r.scheme_code));
   const needsCategoryRules = schemes.filter((s) => !amfiCodeSet.has(s.scheme_code));

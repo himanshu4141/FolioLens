@@ -43,6 +43,7 @@ import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { functionsClient } from '@/src/lib/functions';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
+import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchUserHeldSchemes, type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { shortSchemeName } from '@/src/utils/schemeName';
@@ -220,20 +221,10 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
     .order('portfolio_date', { ascending: false });
   perfEnd('query:compare:compositions', { rows: data?.length ?? 0, codes: schemeCodes.length });
   if (error) throw new Error(`fetchCompositions: ${error.message}`);
-  // Pick the first (= latest) per scheme_code, preferring real-holdings
-  // sources ('amfi' or 'category_fallback') over the last-resort
-  // 'category_rules' default.
-  const latest = new Map<number, typeof data[number]>();
-  const realHoldingsSource = (s: string | null) => s === 'amfi' || s === 'category_fallback';
-  for (const row of data ?? []) {
-    const existing = latest.get(row.scheme_code);
-    if (!existing) {
-      latest.set(row.scheme_code, row);
-    } else if (!realHoldingsSource(existing.source) && realHoldingsSource(row.source)) {
-      latest.set(row.scheme_code, row);
-    }
-  }
-  return [...latest.values()].map((row) => ({
+  // Pick the best row per scheme_code by explicit source precedence
+  // (official > amfi > category_fallback > category_rules), tie-broken by
+  // most recent date (the query already orders date DESC).
+  return pickBestCompositionRows(data ?? []).map((row) => ({
     schemeCode: row.scheme_code,
     equityPct: row.equity_pct,
     debtPct: row.debt_pct,
@@ -327,8 +318,10 @@ export function ClearLensCompareFundsScreen() {
     }
   }, [userFundsQuery.data]);
 
-  // On-demand safety net for picks the universe-backfill cron hasn't covered
-  // yet. Idempotent — both edge functions are no-ops when the cache is fresh.
+  // On-demand hydration for compared funds. The monthly openfolio-sync cron
+  // only pre-seeds HELD funds, so a Compare pick nobody holds is hydrated here
+  // (fetch-fund-snapshot is official-first → writes its `official` row live).
+  // Idempotent — both edge functions are no-ops when the cache is fresh.
   // We invalidate the dependent queries on success so the screen rerenders
   // with the freshly-hydrated rows.
   const hydrationQueries = useQueries({

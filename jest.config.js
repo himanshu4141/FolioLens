@@ -25,6 +25,7 @@ const config = {
     'supabase/functions/_shared/portfolio-utils.ts', // pure composition helpers with dedicated tests
     'supabase/functions/_shared/gmail-verification.ts', // pure Gmail-forwarding helpers with dedicated tests
     'supabase/functions/_shared/upstream-probe.ts', // third-party health probe with dedicated tests
+    'supabase/functions/_shared/openfolio.ts', // OpenFolio client + pure mapping/matching/sync core with dedicated tests
     '!src/**/*.test.ts',
     '!src/types/**',          // pure type declarations — nothing executable to cover
     '!src/lib/supabase.ts',   // React Native + Supabase bootstrap — not runnable in Node

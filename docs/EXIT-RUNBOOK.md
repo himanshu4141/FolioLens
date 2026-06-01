@@ -57,6 +57,7 @@ Schedules to preserve:
 - `sync-nav-hourly` — `30 0,2,4,6,8,10,12,13,14,15,16,17,18,19,20,21,22,23 * * *` (bimodal: hourly through the EOD publish window 6 PM → 6 AM IST, every 2h during the day 8 AM → 5 PM IST, 7 days)
 - `sync-index-hourly` — `5 * * * 1-5`
 - `sync-portfolio-composition-hourly` — `10 * * * *`
+- `openfolio-composition-monthly` — `30 1 15 * *`
 - `sync-fund-meta-daily` — `0 2 * * *`
 - `regenerate-index-snapshots-daily` — `0 14 * * 1-5`
 
@@ -93,14 +94,15 @@ The functions, roughly ordered by simplicity:
 2. `delete-account` — calls auth admin API. Replace the admin call with
    the new provider's equivalent.
 3. `fetch-fund-nav` — calls mfapi.in, writes nav_history.
-4. `fetch-fund-snapshot` — calls mfdata.in, writes scheme_master + composition.
+4. `fetch-fund-snapshot` — OpenFolio-Data first, then mfdata.in; writes scheme_master + composition.
 5. `sync-nav` — paginated mfapi.in for held schemes.
 6. `sync-index` — three index sources (NSE / EODHD / Yahoo).
 7. `sync-fund-meta` — mfdata.in with 7-day staleness window.
-8. `sync-fund-portfolios` — SEBI rules + mfdata.in.
-9. `regenerate-index-snapshots` — writes to the new bucket from step 1.
-10. `cas-webhook-resend` — HMAC-signed inbound webhook from the Vercel router.
-11. `parse-cas-pdf` — relay to the Vercel Python parser; already mostly
+8. `sync-fund-portfolios` — SEBI rules + mfdata.in (`amfi`, backup source).
+9. `openfolio-sync` — OpenFolio-Data bulk API → `official` composition rows. Base URL + key live in `_shared/openfolio.ts`; the app-side twin is `src/lib/data/composition.ts`.
+10. `regenerate-index-snapshots` — writes to the new bucket from step 1.
+11. `cas-webhook-resend` — HMAC-signed inbound webhook from the Vercel router.
+12. `parse-cas-pdf` — relay to the Vercel Python parser; already mostly
     just forwarding.
 
 Update `src/lib/functions/index.ts` to point at the new endpoints. All
@@ -117,8 +119,10 @@ Two options:
 - **Write a typed backend** (tRPC / Hono / Fastify). More work, but
   every read/write becomes a deliberate endpoint with input validation.
 
-Either way, the surface to rewrite is the 9 files in `src/lib/data/`
+Either way, the surface to rewrite is the table-repo files in `src/lib/data/`
 plus `src/lib/supabase.ts`. No hook, screen, or component file changes.
+(`src/lib/data/composition.ts` is not a table repo — it wraps the external
+OpenFolio-Data HTTP API and is unaffected by a Postgres/Data-API swap.)
 
 ### 6. Auth (~6 weeks — the long pole)
 

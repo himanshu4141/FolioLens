@@ -14,6 +14,7 @@ import { authClient } from '@/src/lib/auth';
 import { functionsClient } from '@/src/lib/functions';
 import { analytics } from '@/src/lib/analytics';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
+import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { parseFundName } from '@/src/utils/fundName';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { PERSIST_MAX_AGE_MS } from '@/src/lib/queryClient';
@@ -56,25 +57,24 @@ const STALE_DAYS = 35;
 export async function fetchCompositions(schemeCodes: number[]): Promise<FundPortfolioComposition[]> {
   if (!schemeCodes.length) return [];
 
-  // Fetch the single best row per scheme_code:
-  // prefer 'amfi' over 'category_rules', then most recent date.
-  // 'amfi' < 'category_rules' alphabetically, so ASC puts amfi first.
+  // Fetch every row for these schemes, then pick the single best per
+  // scheme_code by explicit source precedence (official > amfi >
+  // category_fallback > category_rules), tie-broken by most recent date.
+  // We order by date DESC up front so pickBestCompositionRows' date tie-break
+  // is a no-op for the common case, then it resolves source precedence — a
+  // plain alphabetical `source` sort no longer works now that 'official'
+  // exists (it would sort last). See src/utils/compositionSource.ts.
   const { data, error } = await fundPortfolioCompositionRepo
     .from()
     .select('scheme_code, portfolio_date, equity_pct, debt_pct, cash_pct, other_pct, large_cap_pct, mid_cap_pct, small_cap_pct, not_classified_pct, sector_allocation, top_holdings, source')
     .in('scheme_code', schemeCodes)
     .order('scheme_code', { ascending: true })
-    .order('source', { ascending: true }) // 'amfi' < 'category_rules' — ASC puts amfi first
     .order('portfolio_date', { ascending: false });
 
   if (error) throw error;
 
-  // Deduplicate: keep the first (best) row per scheme_code
-  const seen = new Set<number>();
   const rows: FundPortfolioComposition[] = [];
-  for (const row of data ?? []) {
-    if (seen.has(row.scheme_code)) continue;
-    seen.add(row.scheme_code);
+  for (const row of pickBestCompositionRows(data ?? [])) {
     rows.push({
       schemeCode: row.scheme_code,
       portfolioDate: row.portfolio_date,

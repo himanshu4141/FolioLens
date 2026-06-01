@@ -13,6 +13,7 @@ This document captures the outcome of the technical discovery session. It record
 | **NAV data** | mfapi.in | Free, JSON, no auth, 9000+ schemes, historical NAV going back years. Sourced from AMFI. |
 | **Index data** | `yfinance` (Python, server-side) | Free, sufficient for daily EOD fetch. Must be server-side — NSE direct calls fail in browser due to CORS. Fallback chain required (see below). |
 | **Benchmark mapping** | SEBI category lookup table (hardcoded) | mfapi.in and AMFI flat file contain no benchmark data. Using `scheme_category` from mfapi.in + hardcoded SEBI category-to-benchmark table covers ~80% of funds deterministically. |
+| **Holdings / composition** | OpenFolio-Data (primary, official) → mfdata.in (backup) → SEBI category rules (fallback) | Our own [OpenFolio-Data](https://github.com/himanshu4141/OpenFolio-Data) service parses AMCs' SEBI-mandated monthly portfolio disclosures into an authed REST API (`X-API-Key`). It gives truthful, ISIN-bearing equity **and** debt holdings, sectors, and asset mix — mfdata.in has null ISINs and corrupted debt data, so it's demoted to backup/enrichment. FolioLens stays HTTP-only and reads its own Postgres at request time; a monthly cron (`openfolio-sync`, 15th) syncs into `fund_portfolio_composition` as `source='official'`. |
 | **CAS import** | CASParser.in — email forwarding (primary) | User forwards their CAMS CAS email to a dedicated CASParser.in inbox. User-initiated, no persistent access, no credential sharing. 0.2 credits per parse (50 refreshes/month on free tier). Lower friction than QR for ongoing refreshes. |
 | **CAS parsing** | CASParser.in API | Supabase Edge Functions are Deno (TypeScript only) — no Python runtime. CASParser.in handles parsing and keeps the entire backend on Supabase. Gmail OAuth feature explicitly not used. |
 | **XIRR calculation** | Client-side TypeScript | Standard algorithm, no external dependency needed. Accounts for every SIP instalment timing. |
@@ -87,6 +88,18 @@ Standard mappings:
 **Stability**: Benchmarks rarely change — only during SEBI regulatory events (~2-3 times per decade industry-wide). Safe to treat as stable within a regulatory era. Store with a `valid_from` date.
 
 **Edge cases**: ELSS and thematic/sectoral funds are heterogeneous — category default may not be accurate. Override with per-fund data scraped from Value Research Online as needed.
+
+### Holdings / Composition — OpenFolio-Data (primary), mfdata.in (backup)
+
+**Source**: [OpenFolio-Data](https://github.com/himanshu4141/OpenFolio-Data) — our own Python data product (separate repo, deployed on GCP `asia-south1`) that parses AMCs' SEBI-mandated monthly portfolio disclosures into a clean dataset + an authed REST API.
+
+**Why we built it**: no reliable free holdings API exists. mfdata.in (the prior source) returns **null ISINs** on the free tier (so cap-split can never be real from it), holdings totals exceeding 100%, and corrupted `debt_holdings`. Official AMC disclosures are the only trustworthy, ISIN-bearing source. Decision record: `docs/research/2026-05-29-holdings-source-openfolio-data.md`. Integration: `docs/plans/openfolio-holdings-integration.md`.
+
+**Contract** (`v2.0.0`, pinned against the live API): `GET /v1/composition?page=&page_size=&updated_since=&amc=&top=` (bulk, paginated `{count,page,page_size,items[]}`) and `GET /v1/schemes/{scheme_id}/composition` (single — `scheme_id` resolves a **family_id, any plan code, or any plan ISIN**; malformed → 404). Auth via `X-API-Key` header (`/health` is open). Identity is the **family** (the shared portfolio): each item carries `family_id` (`OF-`+12hex) + `plans: [{plan_code, plan_name, isins[]}]` (every plan of the family, each with its own code + ISIN(s)) — there is no top-level `scheme_code`/`isin`. Each composition also carries asset mix (equity/arbitrage/debt/cash/other + derivatives memo), cap mix (large/mid/small/unclassified), sectors, top holdings, debt holdings (ISIN, rating, maturity, YTM), and provenance (`disclosure_date`, `source_url`).
+
+**Integration**: FolioLens stays HTTP-only and reads its own Postgres at request time — no runtime dependency on the external API. The `openfolio-sync` edge function (monthly cron, 15th) pages the bulk endpoint and, for each family, writes one `source='official'` row per **held** plan code it covers (matched against the active `fund` table — AMFI plan code primary, plan ISIN secondary), so every plan variant a CAS could reference is pre-seeded from one call. Funds nobody holds are hydrated **on-demand** by `fetch-fund-snapshot` (official-first) when viewed in Compare / Fund Detail. Precedence: `official` > `amfi` (mfdata) > `category_fallback` > `category_rules`. The single edge-side owner of the base URL + key is `supabase/functions/_shared/openfolio.ts` (secrets `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY`); the app-side wrapper is `src/lib/data/composition.ts`.
+
+**Mapping notes**: `arbitrage_pct` folds into `equity_pct`; `cap_mix` maps 1:1 (% of NAV), nulls preserved (never zero-filled) — OpenFolio supplies real Large/Mid/Small from its own ISIN→cap classification. A `disclosure_date` guard rejects any future/garbage date (`[2000-01-01, today]`) so a leaked bond-maturity date can't win the most-recent-date tie-break.
 
 ### CAS Import — CASParser.in Email Forwarding
 
