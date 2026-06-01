@@ -35,8 +35,9 @@ import {
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 300; // contract max is 500; 300 keeps page payloads bounded for debt-heavy funds
 const TOP = 50; // top equity holdings / sectors per scheme (mirrors existing top_holdings cap)
+const MAX_PAGES = 500; // headroom far above any real scheme count (50 AMCs); count-based break stops earlier
 
 /**
  * Load the universe of schemes we track from scheme_master: real AMFI codes
@@ -140,6 +141,7 @@ Deno.serve(async (req) => {
       log: (msg) => console.log(msg),
       pageSize: PAGE_SIZE,
       top: TOP,
+      maxPages: MAX_PAGES,
       updatedSince,
       amc,
     });
@@ -150,12 +152,14 @@ Deno.serve(async (req) => {
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    '[openfolio-sync] completed — upserted=%d matched_code=%d matched_isin=%d unmatched=%d failed=%d elapsed_ms=%d',
+    '[openfolio-sync] completed — upserted=%d matched_code=%d matched_isin=%d unmatched=%d skipped_bad_date=%d failed=%d truncated=%s elapsed_ms=%d',
     stats.upserted,
     stats.matchedByCode,
     stats.matchedByIsin,
     stats.unmatched,
+    stats.skippedBadDate,
     stats.failed,
+    stats.truncated,
     elapsedMs,
   );
 
@@ -172,8 +176,10 @@ Deno.serve(async (req) => {
       matched_by_code: stats.matchedByCode,
       matched_by_isin: stats.matchedByIsin,
       unmatched: stats.unmatched,
+      skipped_bad_date: stats.skippedBadDate,
       upserted: stats.upserted,
       failed: stats.failed,
+      truncated: stats.truncated,
       elapsed_ms: elapsedMs,
     },
     'system:openfolio-sync',

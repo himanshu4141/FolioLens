@@ -47,6 +47,7 @@ import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import {
   createOpenFolioClient,
+  isPlausibleDisclosureDate,
   mapCompositionToRow,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
@@ -418,6 +419,14 @@ async function syncOfficialComposition(schemeCode: number): Promise<CompositionR
   }
   if (!composition) {
     console.log('[fetch-fund-snapshot] scheme=%d no OpenFolio snapshot, falling back', schemeCode);
+    return null;
+  }
+
+  if (!isPlausibleDisclosureDate(composition.disclosure_date, new Date().getFullYear())) {
+    console.warn(
+      '[fetch-fund-snapshot] scheme=%d implausible OpenFolio disclosure_date=%s, falling back',
+      schemeCode, composition.disclosure_date,
+    );
     return null;
   }
 

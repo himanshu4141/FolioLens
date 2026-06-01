@@ -309,6 +309,23 @@ export function resolveSchemeCode(
   return null;
 }
 
+/**
+ * Guard against implausible disclosure dates. `disclosure_date` becomes the
+ * row's `portfolio_date`, and the read selector tie-breaks on most-recent
+ * date — so a garbage future date (e.g. an upstream parse artifact like
+ * "2055-08-18") would silently win over every real row. Accept only a valid
+ * `YYYY-MM-DD` whose year is in [2000, referenceYear + 1]. The +1 slack covers
+ * a December month-end disclosed in early January / UTC boundaries.
+ */
+export function isPlausibleDisclosureDate(
+  date: string | null | undefined,
+  referenceYear: number,
+): boolean {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const year = Number(date.slice(0, 4));
+  return year >= 2000 && year <= referenceYear + 1;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP client (thin wrapper — the one place that holds base URL + API key)
 // ---------------------------------------------------------------------------
@@ -445,8 +462,12 @@ export interface OpenFolioSyncStats {
   matchedByCode: number;
   matchedByIsin: number;
   unmatched: number;
+  /** Matched our universe but skipped — disclosure_date was implausible. */
+  skippedBadDate: number;
   upserted: number;
   failed: number;
+  /** True when the sweep stopped before covering the reported totalCount. */
+  truncated: boolean;
   errors: string[];
 }
 
@@ -462,6 +483,10 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
   const maxPages = deps.maxPages ?? 100;
   const log = deps.log ?? (() => {});
 
+  // Reference year for the disclosure-date plausibility guard, taken from the
+  // caller-supplied syncedAt so the core stays deterministic for tests.
+  const referenceYear = Number(deps.syncedAt.slice(0, 4)) || 2000;
+
   const stats: OpenFolioSyncStats = {
     pagesFetched: 0,
     itemsFetched: 0,
@@ -469,8 +494,10 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
     matchedByCode: 0,
     matchedByIsin: 0,
     unmatched: 0,
+    skippedBadDate: 0,
     upserted: 0,
     failed: 0,
+    truncated: false,
     errors: [],
   };
 
@@ -508,6 +535,15 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
       if (match.matchedBy === 'scheme_code') stats.matchedByCode += 1;
       else stats.matchedByIsin += 1;
 
+      if (!isPlausibleDisclosureDate(item.disclosure_date, referenceYear)) {
+        stats.skippedBadDate += 1;
+        log(
+          `[openfolio-sync] skip scheme_code=${match.schemeCode} ` +
+            `implausible disclosure_date=${item.disclosure_date ?? 'none'}`,
+        );
+        continue;
+      }
+
       try {
         const row = mapCompositionToRow(item, match.schemeCode, deps.syncedAt);
         const { error } = await deps.upsertRow(row);
@@ -528,10 +564,22 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
     if (stats.totalCount > 0 && page * pageSize >= stats.totalCount) break;
   }
 
+  // No silent caps: if we stopped (hit maxPages) before covering the reported
+  // total, say so loudly so coverage gaps aren't mistaken for "synced
+  // everything".
+  if (stats.totalCount > 0 && stats.itemsFetched < stats.totalCount) {
+    stats.truncated = true;
+    log(
+      `[openfolio-sync] WARN truncated — fetched ${stats.itemsFetched} of ${stats.totalCount} ` +
+        `schemes after ${stats.pagesFetched} pages (maxPages=${maxPages}); raise maxPages/pageSize`,
+    );
+  }
+
   log(
     `[openfolio-sync] done — pages=${stats.pagesFetched} fetched=${stats.itemsFetched} ` +
       `matched_code=${stats.matchedByCode} matched_isin=${stats.matchedByIsin} ` +
-      `unmatched=${stats.unmatched} upserted=${stats.upserted} failed=${stats.failed}`,
+      `unmatched=${stats.unmatched} skipped_bad_date=${stats.skippedBadDate} ` +
+      `upserted=${stats.upserted} failed=${stats.failed} truncated=${stats.truncated}`,
   );
 
   return stats;

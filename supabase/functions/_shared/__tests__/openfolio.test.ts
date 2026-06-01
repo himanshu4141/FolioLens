@@ -1,6 +1,7 @@
 import {
   COMPOSITION_SOURCE_RANK,
   compositionSourceRank,
+  isPlausibleDisclosureDate,
   mapCompositionToRow,
   resolveSchemeCode,
   resolveOpenFolioCredentials,
@@ -235,6 +236,28 @@ describe('resolveSchemeCode', () => {
   it('returns null when neither scheme_code nor ISIN resolve', () => {
     expect(resolveSchemeCode(comp({ scheme_code: 4242, isin: 'INEUNKNOWN' }), universe)).toBeNull();
     expect(resolveSchemeCode(comp({ scheme_code: 4242, isin: null }), universe)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Disclosure-date plausibility guard
+// ---------------------------------------------------------------------------
+
+describe('isPlausibleDisclosureDate', () => {
+  it('accepts a valid YYYY-MM-DD within [2000, referenceYear + 1]', () => {
+    expect(isPlausibleDisclosureDate('2026-04-30', 2026)).toBe(true);
+    expect(isPlausibleDisclosureDate('2027-01-31', 2026)).toBe(true); // ref+1 slack
+    expect(isPlausibleDisclosureDate('2000-01-01', 2026)).toBe(true);
+  });
+
+  it('rejects garbage / out-of-range / malformed dates', () => {
+    expect(isPlausibleDisclosureDate('2055-08-18', 2026)).toBe(false); // upstream artifact
+    expect(isPlausibleDisclosureDate('1999-12-31', 2026)).toBe(false);
+    expect(isPlausibleDisclosureDate('2028-01-01', 2026)).toBe(false); // beyond ref+1
+    expect(isPlausibleDisclosureDate('30-04-2026', 2026)).toBe(false);
+    expect(isPlausibleDisclosureDate('', 2026)).toBe(false);
+    expect(isPlausibleDisclosureDate(null, 2026)).toBe(false);
+    expect(isPlausibleDisclosureDate(undefined, 2026)).toBe(false);
   });
 });
 
@@ -475,6 +498,55 @@ describe('runOpenFolioSync', () => {
       upsertRow: async () => ({ error: null }),
     });
     expect(stats.pagesFetched).toBe(1);
+  });
+
+  it('skips matched schemes whose disclosure_date is implausible (no bogus future row)', async () => {
+    const rows: CompositionRow[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([
+        pageOf([
+          comp({ scheme_code: 100, disclosure_date: '2055-08-18' }), // upstream artifact → skip
+          comp({ scheme_code: 200, code_source: 'amfi_navall', disclosure_date: '2026-04-30' }), // good
+        ]),
+      ]),
+      universe: UNI,
+      syncedAt: SYNCED_AT, // 2026 → referenceYear 2026
+      upsertRow: async (row) => {
+        rows.push(row);
+        return { error: null };
+      },
+    });
+    expect(stats.skippedBadDate).toBe(1);
+    expect(stats.upserted).toBe(1);
+    expect(rows.map((r) => r.scheme_code)).toEqual([200]);
+  });
+
+  it('flags truncation (no silent cap) when maxPages stops short of the reported count', async () => {
+    const logs: string[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([
+        pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })], 999, 2),
+      ]),
+      universe: UNI,
+      syncedAt: SYNCED_AT,
+      pageSize: 2,
+      maxPages: 1,
+      log: (m) => logs.push(m),
+      upsertRow: async () => ({ error: null }),
+    });
+    expect(stats.truncated).toBe(true);
+    expect(stats.itemsFetched).toBeLessThan(stats.totalCount);
+    expect(logs.some((m) => m.includes('truncated'))).toBe(true);
+  });
+
+  it('does not flag truncation on a clean full sweep', async () => {
+    const stats = await runOpenFolioSync({
+      client: clientServing([pageOf([comp({ scheme_code: 100 })], 1, 100)]),
+      universe: UNI,
+      syncedAt: SYNCED_AT,
+      upsertRow: async () => ({ error: null }),
+    });
+    expect(stats.truncated).toBe(false);
   });
 
   it('tolerates a malformed page with no items array and a non-numeric count', async () => {
