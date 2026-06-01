@@ -1,6 +1,6 @@
 # ExecPlan: adapt to OpenFolio-Data v2.0.0 (family_id + plans[])
 
-Status: Planned — execute when OpenFolio v2.0.0 is live in prod + data rebuilt. Folds into PR #190.
+Status: DONE — implemented + validated on dev (2026-06-01). Folds into PR #190. OpenFolio v2.0.0 is live in prod; #190 must merge in lockstep.
 Date: 2026-06-01
 Upstream: OpenFolio-Data [PR #27](https://github.com/himanshu4141/OpenFolio-Data/pull/27) (merged — future-date parser fix) + [PR #28](https://github.com/himanshu4141/OpenFolio-Data/pull/28) (`v2.0.0` BREAKING — identity model).
 

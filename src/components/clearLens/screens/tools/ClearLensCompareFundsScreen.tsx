@@ -318,8 +318,10 @@ export function ClearLensCompareFundsScreen() {
     }
   }, [userFundsQuery.data]);
 
-  // On-demand safety net for picks the universe-backfill cron hasn't covered
-  // yet. Idempotent — both edge functions are no-ops when the cache is fresh.
+  // On-demand hydration for compared funds. The monthly openfolio-sync cron
+  // only pre-seeds HELD funds, so a Compare pick nobody holds is hydrated here
+  // (fetch-fund-snapshot is official-first → writes its `official` row live).
+  // Idempotent — both edge functions are no-ops when the cache is fresh.
   // We invalidate the dependent queries on success so the screen rerenders
   // with the freshly-hydrated rows.
   const hydrationQueries = useQueries({

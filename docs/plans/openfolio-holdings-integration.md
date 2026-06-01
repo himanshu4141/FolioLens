@@ -132,13 +132,10 @@ implementation diverged from the plan above:
   equity+debt+cash+other ≈ 100.
 - **Cap-split mapping.** OpenFolio's `cap_mix` (large/mid/small/unclassified) is already "% of
   NAV" — the same convention our mfdata classifier produces — so it maps 1:1, nulls preserved
-  (never zero-filled). **Known limitation:** as of 2026-05-31 OpenFolio returns
-  `cap_bucket: "unclassified"` for equity holdings (its ISIN→cap classification isn't populated
-  yet), so `official` equity rows currently show the cap split as `not_classified` rather than
-  Large/Mid/Small. This is honest ("unknown", per "trust the numbers"), and asset mix / sectors /
-  debt holdings are still real. **Follow-up:** either OpenFolio populates `cap_mix`, or we derive
-  the split from `official` holdings' ISINs via our `stock_market_cap` table (the field-precedence
-  table above already specifies this) — deferred so M1–M4 stays one PR.
+  (never zero-filled). _(Resolved: an early build returned all-`unclassified` cap buckets;
+  OpenFolio populated its ISIN→cap classification on 2026-06-01, so `official` equity rows now
+  carry real Large/Mid/Small — verified on dev. The stale all-`unclassified` rows from that window
+  were cleared and re-backfilled.)_
 - **Write-path precedence.** `official` was added to the "already has holdings data" source sets in
   `sync-fund-portfolios` (both freshness checks) and `fetch-fund-snapshot` (cache check), and a
   35-day `synced_at` recency guard was added to the on-demand official path so it doesn't re-hit
@@ -148,19 +145,51 @@ implementation diverged from the plan above:
   'category_rules'`, which silently breaks because `'official'` sorts last) with an explicit
   rank in `src/utils/compositionSource.ts` (`pickBestCompositionRows`), used by both
   `usePortfolioInsights.fetchCompositions` and `ClearLensCompareFundsScreen`.
-- **Sync scope.** The bulk sync writes `official` rows only for schemes in our `scheme_master`
-  universe (AMFI code primary, ISIN secondary); OpenFolio rows outside our universe are
-  logged+skipped, keeping the table scoped to funds we serve.
+- **Sync scope.** The bulk sync writes `official` rows only for the **active held funds** (the
+  `fund` table — same scope as `sync-fund-portfolios`); families touching none of our schemes are
+  logged+skipped. Funds nobody holds are hydrated on-demand by `fetch-fund-snapshot` (Compare).
+  _(Initially scoped to `scheme_master`, the full ~37.6k AMFI catalog; narrowed to held funds
+  during the v2 migration — see below — because matching the catalog against v2's full `plans[]`
+  would write ~10k rows and blow the sync wall-clock.)_
+
+### Post-launch hardening (2026-06-01)
+Real full-coverage data (50 AMCs, ~2000 schemes) surfaced three issues, all fixed in this PR:
+- **Disclosure-date guard.** OpenFolio leaked bond/FMP **maturity** dates into `disclosure_date`
+  (`2055-08-18`, then a `2027-05-28`). `isPlausibleDisclosureDate` rejects anything outside
+  `[2000-01-01, today]` (no future dates) — bad records are skipped (`skippedBadDate`) and fall
+  back to amfi/category, never poisoning the most-recent-date tie-break. (OpenFolio's own
+  parser fix is their PR #27.)
+- **Pagination + no silent caps.** `PAGE_SIZE` 100→300, `maxPages` 500, plus a `truncated` stat +
+  WARN so a coverage cap is never silent.
+- **Batched upserts.** One array-upsert per page instead of one per row — a per-row sweep of
+  hundreds/thousands of upserts blew the 60s synchronous-invocation gateway timeout (`HTTP 000`)
+  and left coverage partial; the batched sweep completes in ~18s.
+
+### v2.0.0 contract migration (2026-06-01) — OpenFolio PR #28
+OpenFolio cut a breaking `v2.0.0`: top-level `scheme_code`/`isin` **removed**, replaced by
+`family_id` (`OF-`+12hex) + `plans: [{plan_code, plan_name, isins[]}]` (every plan of the shared-
+portfolio family). Validated against the live API (resolve by family_id / plan code / plan ISIN;
+malformed → 404). Our changes (full plan: `docs/plans/openfolio-v2-contract-migration.md`):
+- Types updated (both wrappers); `mapCompositionToRow` unchanged (already keyed by our `schemeCode`).
+- `resolveSchemeCode` (one match) → **`resolveSchemeCodes`** (a list): one `official` row per held
+  plan code a family covers — so Regular + Direct of the same fund both pre-seed from one bulk item
+  (**closes the plan-variant pre-seed gap**, e.g. DSP ELSS Regular).
+- **Coordination:** #190 now targets OpenFolio v2.0.0 (live in prod) and must merge in lockstep —
+  merging to `main` auto-deploys the edge functions to dev.
 
 ### Dev validation (project `imkgazlrxtlhkfptkzjc`)
 - Migration applied via `supabase db push` (CLI); `source_url`/`disclosure_date` columns present;
   `cron.job` shows `openfolio-composition-monthly` at `30 1 15 * *` calling `/openfolio-sync`.
 - Function secrets `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` set; `openfolio-sync`,
   `fetch-fund-snapshot`, `sync-fund-portfolios` deployed (`--no-verify-jwt`).
-- One-time `mode:"backfill"` run → **251 `official` rows / 251 schemes**. Spot checks: debt funds
-  carry 196–210 real debt instruments with provenance URLs; equity funds carry asset mix + 25–27
-  sectors + 50 top holdings; `official` coexists with `category_*` rows (exactly one `official` row
-  per scheme — upsert idempotency holds).
+- Final `mode:"backfill"` against the full v2 dataset (50 AMCs / ~2000 families): HTTP 200 in ~18s,
+  2000/2000 swept, `truncated:false`, `skippedBadDate:0` (post OpenFolio PR #27), 0 failed.
+  **34 / 35 held funds carry an `official` row** — the one miss is a *matured* fund OpenFolio
+  correctly 404s (falls back to category). Spot checks: real Large/Mid/Small cap splits (a midcap
+  index fund reads ~96% mid; Next-50 ~80% large), real debt instruments with provenance URLs,
+  sectors + top holdings; both plan variants of a fund pre-seed from one family item;
+  `future_dated_rows = 0`; `official` coexists with `category_*` rows (one `official` row per
+  scheme — upsert idempotency holds).
 
 ### Prod rollout runbook (project `ohcaaioabjvzewfysqgh`) — NOT yet applied
 
