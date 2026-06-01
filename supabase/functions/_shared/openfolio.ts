@@ -67,13 +67,26 @@ export interface OpenFolioProvenance {
   fetched_at?: string | null;
 }
 
+/**
+ * One AMFI plan within a scheme family (Regular/Direct × Growth/IDCW…). Every
+ * plan shares the family's portfolio but has its own AMFI code + ISIN(s)
+ * (growth + IDCW payout/reinvest). A plan with no ISIN is still listed with
+ * `isins: []` (honest — never a borrowed ISIN). OpenFolio-Data v2.0.0.
+ */
+export interface OpenFolioPlan {
+  plan_code: number;
+  plan_name?: string | null;
+  isins: string[];
+}
+
 export interface OpenFolioComposition {
-  scheme_code: number;
-  isin?: string | null;
+  /** `OF-` + 12 hex — the family (shared portfolio) identity. v2 join key. */
+  family_id: string;
+  /** Every AMFI plan in the family, each with its own code + ISIN(s). */
+  plans: OpenFolioPlan[];
   amc: string;
   scheme_name: string;
   sebi_category?: string | null;
-  /** hardcoded | amfi_navall (real AMFI code) | synthetic (placeholder) */
   code_source?: string;
   disclosure_date: string;
   provenance?: OpenFolioProvenance;
@@ -276,37 +289,39 @@ export interface SchemeUniverse {
 
 export interface SchemeMatch {
   schemeCode: number;
-  matchedBy: 'scheme_code' | 'isin';
+  matchedBy: 'plan_code' | 'isin';
 }
 
 /**
- * Resolve an OpenFolio composition to a scheme_code we track.
- *
- * Primary: the AMFI scheme_code, unless OpenFolio flagged it `synthetic`
- * (a placeholder, not a real AMFI code — those never match our universe and
- * skip straight to the ISIN path). Secondary: the scheme's ISIN against
- * scheme_master.isin. Returns null when neither resolves — the caller logs
- * and skips, leaving the scheme on its mfdata/category fallback.
+ * Resolve an OpenFolio v2 composition to EVERY scheme_code we track that the
+ * family covers. A family's portfolio is shared across all its plans, so for
+ * each plan we (a) match the `plan_code` against our universe and (b) match any
+ * of the plan's ISINs against scheme_master. We write one `official` row per
+ * matched held plan code — so a user holding the Regular plan and another
+ * holding the Direct plan of the same fund both get pre-seeded from one bulk
+ * item (closes the plan-variant pre-seed gap). Returns [] when the family
+ * touches none of our schemes — the caller skips it (mfdata/category fallback).
  */
-export function resolveSchemeCode(
+export function resolveSchemeCodes(
   item: OpenFolioComposition,
   universe: SchemeUniverse,
-): SchemeMatch | null {
-  if (
-    item.code_source !== 'synthetic' &&
-    typeof item.scheme_code === 'number' &&
-    universe.knownCodes.has(item.scheme_code)
-  ) {
-    return { schemeCode: item.scheme_code, matchedBy: 'scheme_code' };
+): SchemeMatch[] {
+  const byCode = new Map<number, SchemeMatch>();
+  for (const plan of Array.isArray(item.plans) ? item.plans : []) {
+    if (typeof plan?.plan_code === 'number' && universe.knownCodes.has(plan.plan_code)) {
+      byCode.set(plan.plan_code, { schemeCode: plan.plan_code, matchedBy: 'plan_code' });
+    }
+    for (const rawIsin of Array.isArray(plan?.isins) ? plan.isins : []) {
+      const isin = (rawIsin ?? '').trim().toUpperCase();
+      if (!isin) continue;
+      const code = universe.isinToCode.get(isin);
+      // A direct plan_code match outranks an ISIN match for the same scheme.
+      if (code != null && !byCode.has(code)) {
+        byCode.set(code, { schemeCode: code, matchedBy: 'isin' });
+      }
+    }
   }
-
-  const isin = (item.isin ?? '').trim().toUpperCase();
-  if (isin) {
-    const code = universe.isinToCode.get(isin);
-    if (code != null) return { schemeCode: code, matchedBy: 'isin' };
-  }
-
-  return null;
+  return [...byCode.values()];
 }
 
 /**
@@ -566,32 +581,36 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
         stats.unmatched += 1;
         continue;
       }
-      const match = resolveSchemeCode(item, deps.universe);
-      if (!match) {
+      const matches = resolveSchemeCodes(item, deps.universe);
+      if (matches.length === 0) {
         stats.unmatched += 1;
         log(
-          `[openfolio-sync] skip unmatched scheme_code=${item.scheme_code} ` +
-            `isin=${item.isin ?? 'none'} code_source=${item.code_source ?? 'n/a'}`,
+          `[openfolio-sync] skip family=${item.family_id ?? 'none'} ` +
+            `(${(item.plans ?? []).length} plans, none in our universe)`,
         );
         continue;
       }
-      if (match.matchedBy === 'scheme_code') stats.matchedByCode += 1;
-      else stats.matchedByIsin += 1;
 
+      // Date guard is item-level — one disclosure_date per family — so a bad
+      // date skips the whole family, not each plan.
       if (!isPlausibleDisclosureDate(item.disclosure_date, today)) {
         stats.skippedBadDate += 1;
         log(
-          `[openfolio-sync] skip scheme_code=${match.schemeCode} ` +
+          `[openfolio-sync] skip family=${item.family_id ?? 'none'} ` +
             `implausible disclosure_date=${item.disclosure_date ?? 'none'}`,
         );
         continue;
       }
 
-      try {
-        pageRows.push(mapCompositionToRow(item, match.schemeCode, deps.syncedAt));
-      } catch (err) {
-        stats.failed += 1;
-        stats.errors.push(`${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`);
+      for (const match of matches) {
+        if (match.matchedBy === 'plan_code') stats.matchedByCode += 1;
+        else stats.matchedByIsin += 1;
+        try {
+          pageRows.push(mapCompositionToRow(item, match.schemeCode, deps.syncedAt));
+        } catch (err) {
+          stats.failed += 1;
+          stats.errors.push(`${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 

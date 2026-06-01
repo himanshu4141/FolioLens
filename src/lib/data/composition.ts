@@ -67,9 +67,17 @@ export interface OpenFolioProvenance {
   fetched_at?: string | null;
 }
 
+export interface OpenFolioPlan {
+  plan_code: number;
+  plan_name?: string | null;
+  isins: string[];
+}
+
 export interface OpenFolioComposition {
-  scheme_code: number;
-  isin?: string | null;
+  /** `OF-` + 12 hex — the family (shared portfolio) identity. v2 join key. */
+  family_id: string;
+  /** Every AMFI plan in the family, each with its own code + ISIN(s). */
+  plans: OpenFolioPlan[];
   amc: string;
   scheme_name: string;
   sebi_category?: string | null;

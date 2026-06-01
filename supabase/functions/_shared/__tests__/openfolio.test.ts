@@ -3,7 +3,7 @@ import {
   compositionSourceRank,
   isPlausibleDisclosureDate,
   mapCompositionToRow,
-  resolveSchemeCode,
+  resolveSchemeCodes,
   resolveOpenFolioCredentials,
   createOpenFolioClient,
   runOpenFolioSync,
@@ -19,8 +19,8 @@ import {
 
 function comp(overrides: Partial<OpenFolioComposition> = {}): OpenFolioComposition {
   return {
-    scheme_code: 122639,
-    isin: 'INF879O01027',
+    family_id: 'OF-ed707265ce8a',
+    plans: [{ plan_code: 122639, plan_name: 'Direct Growth', isins: ['INF879O01027'] }],
     amc: 'PPFAS Mutual Fund',
     scheme_name: 'Parag Parikh Flexi Cap Fund',
     sebi_category: 'Flexi Cap Fund',
@@ -60,6 +60,18 @@ function comp(overrides: Partial<OpenFolioComposition> = {}): OpenFolioCompositi
 }
 
 const SYNCED_AT = '2026-05-31T12:00:00.000Z';
+
+// Build a composition whose family carries the given plans (plan_code + ISINs).
+function withPlans(
+  plans: { plan_code: number; isins?: string[] }[],
+  overrides: Partial<OpenFolioComposition> = {},
+): OpenFolioComposition {
+  return comp({
+    family_id: `OF-fam${plans[0]?.plan_code ?? 0}`,
+    plans: plans.map((p) => ({ plan_code: p.plan_code, plan_name: 'Plan', isins: p.isins ?? [] })),
+    ...overrides,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Source precedence
@@ -210,32 +222,47 @@ describe('mapCompositionToRow', () => {
 // Scheme matching
 // ---------------------------------------------------------------------------
 
-describe('resolveSchemeCode', () => {
+describe('resolveSchemeCodes', () => {
   const universe: SchemeUniverse = {
-    knownCodes: new Set([122639, 100100]),
+    knownCodes: new Set([122639, 122640, 100100]),
     isinToCode: new Map([['INF879O01027', 122639], ['INESECONDARY01', 555555]]),
   };
 
-  it('matches a known AMFI scheme_code directly', () => {
-    expect(resolveSchemeCode(comp({ scheme_code: 122639 }), universe)).toEqual({
-      schemeCode: 122639,
-      matchedBy: 'scheme_code',
-    });
+  it('matches a held plan_code directly', () => {
+    expect(resolveSchemeCodes(withPlans([{ plan_code: 122639 }]), universe)).toEqual([
+      { schemeCode: 122639, matchedBy: 'plan_code' },
+    ]);
   });
 
-  it('skips the code match for synthetic codes and resolves via ISIN', () => {
-    const item = comp({ scheme_code: 9999999, code_source: 'synthetic', isin: 'inesecondary01' });
-    expect(resolveSchemeCode(item, universe)).toEqual({ schemeCode: 555555, matchedBy: 'isin' });
+  it('returns one match per held plan in a multi-plan family (Regular + Direct)', () => {
+    const item = withPlans([
+      { plan_code: 122639 }, // held
+      { plan_code: 122640 }, // held (other plan, same family)
+      { plan_code: 999999 }, // not held
+    ]);
+    expect(resolveSchemeCodes(item, universe).map((m) => m.schemeCode).sort()).toEqual([122639, 122640]);
   });
 
-  it('uses ISIN as the secondary key when the code is unknown', () => {
-    const item = comp({ scheme_code: 4242, code_source: 'amfi_navall', isin: 'INESECONDARY01' });
-    expect(resolveSchemeCode(item, universe)).toEqual({ schemeCode: 555555, matchedBy: 'isin' });
+  it('matches by any plan ISIN when the plan_code is not held (skipping blank ISINs)', () => {
+    // '' is a blank NAVAll cell — skipped; the real ISIN still resolves.
+    const item = withPlans([{ plan_code: 4242, isins: ['', 'inesecondary01'] }]); // code unknown, ISIN known
+    expect(resolveSchemeCodes(item, universe)).toEqual([{ schemeCode: 555555, matchedBy: 'isin' }]);
   });
 
-  it('returns null when neither scheme_code nor ISIN resolve', () => {
-    expect(resolveSchemeCode(comp({ scheme_code: 4242, isin: 'INEUNKNOWN' }), universe)).toBeNull();
-    expect(resolveSchemeCode(comp({ scheme_code: 4242, isin: null }), universe)).toBeNull();
+  it('prefers a plan_code match over an ISIN match for the same scheme (no dupes)', () => {
+    const item = withPlans([{ plan_code: 122639, isins: ['INF879O01027'] }]); // both resolve to 122639
+    expect(resolveSchemeCodes(item, universe)).toEqual([{ schemeCode: 122639, matchedBy: 'plan_code' }]);
+  });
+
+  it('resolves a plan with no ISIN by its code only', () => {
+    expect(resolveSchemeCodes(withPlans([{ plan_code: 100100, isins: [] }]), universe)).toEqual([
+      { schemeCode: 100100, matchedBy: 'plan_code' },
+    ]);
+  });
+
+  it('returns [] when the family touches none of our schemes', () => {
+    expect(resolveSchemeCodes(withPlans([{ plan_code: 4242, isins: ['INEUNKNOWN'] }]), universe)).toEqual([]);
+    expect(resolveSchemeCodes(comp({ plans: [] }), universe)).toEqual([]);
   });
 });
 
@@ -313,7 +340,7 @@ describe('createOpenFolioClient', () => {
     const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY123', fetchImpl });
 
     const result = await client.getComposition(122639, { date: '2026-04-30', top: 10 });
-    expect(result?.scheme_code).toBe(122639);
+    expect(result?.family_id).toBe('OF-ed707265ce8a');
 
     const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.x/v1/schemes/122639/composition?date=2026-04-30&top=10');
@@ -386,9 +413,9 @@ describe('runOpenFolioSync', () => {
     const rows: CompositionRow[] = [];
     const client = clientServing([
       pageOf([
-        comp({ scheme_code: 100 }), // code match
-        comp({ scheme_code: 9, code_source: 'synthetic', isin: 'ineisin200' }), // ISIN match → 200
-        comp({ scheme_code: 7, code_source: 'synthetic', isin: 'INEUNKNOWN' }), // unmatched
+        withPlans([{ plan_code: 100 }]), // code match
+        withPlans([{ plan_code: 9, isins: ['ineisin200'] }]), // ISIN match → 200
+        withPlans([{ plan_code: 7, isins: ['INEUNKNOWN'] }]), // unmatched
         null as unknown as OpenFolioComposition, // defensive null
       ]),
     ]);
@@ -419,7 +446,7 @@ describe('runOpenFolioSync', () => {
       for (const row of batch) seen.set(`${row.scheme_code}|${row.portfolio_date}|${row.source}`, row);
       return { error: null };
     };
-    const pages = () => clientServing([pageOf([comp({ scheme_code: 100 })])]);
+    const pages = () => clientServing([pageOf([withPlans([{ plan_code: 100 }])])]);
     await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRows });
     await runOpenFolioSync({ client: pages(), universe: UNI, syncedAt: SYNCED_AT, upsertRows });
     expect(seen.size).toBe(1); // same conflict key both runs
@@ -429,7 +456,7 @@ describe('runOpenFolioSync', () => {
     const logs: string[] = [];
     const stats = await runOpenFolioSync({
       client: clientServing([
-        pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' }), comp({ scheme_code: 300 })]),
+        pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }]), withPlans([{ plan_code: 300 }])]),
       ]),
       universe: UNI,
       syncedAt: SYNCED_AT,
@@ -456,7 +483,8 @@ describe('runOpenFolioSync', () => {
     // A matched item that passes the date guard but throws while mapping
     // (e.g. a pathological payload) must be counted, not abort the page.
     const bad = {
-      scheme_code: 100,
+      family_id: 'OF-bad',
+      plans: [{ plan_code: 100, plan_name: 'P', isins: [] }],
       disclosure_date: '2026-04-30',
       get asset_mix(): never {
         throw new Error('map boom');
@@ -464,7 +492,7 @@ describe('runOpenFolioSync', () => {
     } as unknown as OpenFolioComposition;
     const written: number[] = [];
     const stats = await runOpenFolioSync({
-      client: clientServing([pageOf([bad, comp({ scheme_code: 200, code_source: 'amfi_navall' })])]),
+      client: clientServing([pageOf([bad, withPlans([{ plan_code: 200 }])])]),
       universe: UNI,
       syncedAt: SYNCED_AT,
       upsertRows: async (batch) => {
@@ -482,7 +510,7 @@ describe('runOpenFolioSync', () => {
     const written: number[] = [];
     const stats = await runOpenFolioSync({
       client: clientServing([
-        pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })]),
+        pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }])]),
       ]),
       universe: UNI,
       syncedAt: SYNCED_AT,
@@ -501,8 +529,8 @@ describe('runOpenFolioSync', () => {
   it('walks multiple pages until a short page ends the sweep', async () => {
     const rows: CompositionRow[] = [];
     const client = clientServing([
-      pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })], 3, 2),
-      pageOf([comp({ scheme_code: 300 })], 3, 2),
+      pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }])], 3, 2),
+      pageOf([withPlans([{ plan_code: 300 }])], 3, 2),
     ]);
     const stats = await runOpenFolioSync({
       client,
@@ -523,8 +551,8 @@ describe('runOpenFolioSync', () => {
 
   it('stops once page * pageSize covers the reported count', async () => {
     const client = clientServing([
-      pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })], 2, 2),
-      pageOf([comp({ scheme_code: 300 })], 2, 2), // should never be requested
+      pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }])], 2, 2),
+      pageOf([withPlans([{ plan_code: 300 }])], 2, 2), // should never be requested
     ]);
     const stats = await runOpenFolioSync({
       client,
@@ -539,8 +567,8 @@ describe('runOpenFolioSync', () => {
 
   it('honours the maxPages runaway guard', async () => {
     const client = clientServing([
-      pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })], 999, 2),
-      pageOf([comp({ scheme_code: 300 })], 999, 2),
+      pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }])], 999, 2),
+      pageOf([withPlans([{ plan_code: 300 }])], 999, 2),
     ]);
     const stats = await runOpenFolioSync({
       client,
@@ -558,8 +586,8 @@ describe('runOpenFolioSync', () => {
     const stats = await runOpenFolioSync({
       client: clientServing([
         pageOf([
-          comp({ scheme_code: 100, disclosure_date: '2055-08-18' }), // upstream artifact → skip
-          comp({ scheme_code: 200, code_source: 'amfi_navall', disclosure_date: '2026-04-30' }), // good
+          withPlans([{ plan_code: 100 }], { disclosure_date: '2055-08-18' }), // upstream artifact → skip
+          withPlans([{ plan_code: 200 }], { disclosure_date: '2026-04-30' }), // good
         ]),
       ]),
       universe: UNI,
@@ -578,7 +606,7 @@ describe('runOpenFolioSync', () => {
     const logs: string[] = [];
     const stats = await runOpenFolioSync({
       client: clientServing([
-        pageOf([comp({ scheme_code: 100 }), comp({ scheme_code: 200, code_source: 'amfi_navall' })], 999, 2),
+        pageOf([withPlans([{ plan_code: 100 }]), withPlans([{ plan_code: 200 }])], 999, 2),
       ]),
       universe: UNI,
       syncedAt: SYNCED_AT,
@@ -594,7 +622,7 @@ describe('runOpenFolioSync', () => {
 
   it('does not flag truncation on a clean full sweep', async () => {
     const stats = await runOpenFolioSync({
-      client: clientServing([pageOf([comp({ scheme_code: 100 })], 1, 100)]),
+      client: clientServing([pageOf([withPlans([{ plan_code: 100 }])], 1, 100)]),
       universe: UNI,
       syncedAt: SYNCED_AT,
       upsertRows: async () => ({ error: null }),
