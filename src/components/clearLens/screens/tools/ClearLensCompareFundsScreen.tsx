@@ -40,6 +40,7 @@ import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { functionsClient } from '@/src/lib/functions';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
+import { holdingsKey } from '@/src/utils/holdingOverlap';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { fundComparisonCategory, shortSchemeName } from '@/src/utils/schemeName';
@@ -329,6 +330,13 @@ function fmtAumCr(aumCr: number | null): string {
 function fmtPct(v: number | null, digits = 1): string {
   if (v == null) return '—';
   return `${(v * 100).toFixed(digits)}%`;
+}
+
+/** Join labels into prose: ["A"] → "A"; ["A","B"] → "A and B"; ["A","B","C"] → "A, B and C". */
+function formatLabelList(labels: string[]): string {
+  if (labels.length <= 1) return labels[0] ?? '';
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,18 +1326,27 @@ function CostCard({
   }));
 
   const validCosts = costs.filter((c) => c.cost5y != null).map((c) => c.cost5y as number);
-  const minCost = validCosts.length > 0 ? Math.min(...validCosts) : null;
-  const maxCost = validCosts.length > 0 ? Math.max(...validCosts) : null;
-  const range = minCost != null && maxCost != null ? maxCost - minCost : 0;
+  // Only claim a spread when we can actually compute one — i.e. at least two
+  // funds have an expense ratio. Never fabricate "≈ same" / "under ₹200" from
+  // missing data (FolioLens trust-numbers rule).
+  const canCompare = validCosts.length >= 2;
+  const minCost = canCompare ? Math.min(...validCosts) : null;
+  const maxCost = canCompare ? Math.max(...validCosts) : null;
+  const range = minCost != null && maxCost != null ? maxCost - minCost : null;
 
-  const headline = range < 200
-    ? 'Costs are close — the spread is under ₹200 over 5 years on ₹1L.'
-    : `Costs differ by ₹${range.toLocaleString('en-IN')} over 5 years on ₹1L.`;
+  const headline = range == null
+    ? "We don't have expense ratios for these funds yet."
+    : range < 200
+      ? 'Costs are close — the spread is under ₹200 over 5 years on ₹1L.'
+      : `Costs differ by ₹${range.toLocaleString('en-IN')} over 5 years on ₹1L.`;
+  const sub = range == null
+    ? 'Cost data refreshes from the fund source — check back shortly.'
+    : 'Expense ratio is what the fund charges per year.';
 
   return (
-    <FindingCard headline={headline} sub="Expense ratio is what the fund charges per year." tokens={tokens}>
-      {/* Mint callout tile */}
-      {minCost != null && maxCost != null ? (
+    <FindingCard headline={headline} sub={sub} tokens={tokens}>
+      {/* Mint callout tile — only when a real spread exists */}
+      {minCost != null && maxCost != null && range != null ? (
         <View
           style={{
             backgroundColor: cl.mint50,
@@ -1357,7 +1374,7 @@ function CostCard({
           <Text
             style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 22, lineHeight: 26, color: cl.emeraldDeep, fontVariant: ['tabular-nums'] }}
           >
-            {range < 200 ? '≈ same' : `₹${range.toLocaleString('en-IN')} gap`}
+            {(range ?? 0) < 200 ? '≈ same' : `₹${(range ?? 0).toLocaleString('en-IN')} gap`}
           </Text>
         </View>
       ) : null}
@@ -1460,6 +1477,98 @@ function WhatsInsideCard({
 }
 
 // ---------------------------------------------------------------------------
+// Sector card
+// ---------------------------------------------------------------------------
+
+function SectorCard({
+  fundData,
+  tokens,
+}: {
+  fundData: CompareFundData[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+
+  // sector → weight% per fund. Build the union of sectors, ranked by the max
+  // weight any fund gives them, so the most material sectors surface first.
+  const allocByFund = fundData.map((f) => f.composition?.sectorAllocation ?? null);
+  const haveSectors = allocByFund.some((a) => a && Object.keys(a).length > 0);
+
+  const sectorMax = new Map<string, number>();
+  for (const alloc of allocByFund) {
+    if (!alloc) continue;
+    for (const [sector, w] of Object.entries(alloc)) {
+      sectorMax.set(sector, Math.max(sectorMax.get(sector) ?? 0, w));
+    }
+  }
+  const rankedSectors = [...sectorMax.entries()].sort((a, b) => b[1] - a[1]).map(([s]) => s);
+  const topSectors = rankedSectors.slice(0, 5);
+
+  if (!haveSectors) {
+    return (
+      <FindingCard
+        headline="We don't have a sector breakdown for these funds yet."
+        sub="Sector data refreshes from the fund's latest disclosure — check back shortly."
+        tokens={tokens}
+      />
+    );
+  }
+
+  const fmtW = (alloc: Record<string, number> | null, sector: string) => {
+    const w = alloc?.[sector];
+    return w != null ? `${w.toFixed(1)}%` : '—';
+  };
+
+  return (
+    <FindingCard
+      headline="Where each fund puts its money, by sector."
+      sub="The biggest sectors across these funds, side by side."
+      tokens={tokens}
+    >
+      {/* Top sectors as labelled bar rows, one group per sector */}
+      <View style={{ gap: 12 }}>
+        {topSectors.map((sector) => {
+          const max = sectorMax.get(sector) ?? 0;
+          return (
+            <View key={sector} style={{ gap: 6 }}>
+              <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, color: cl.navy }}>
+                {sector}
+              </Text>
+              {fundData.map((f, i) => {
+                const w = allocByFund[i]?.[sector] ?? null;
+                const frac = max > 0 && w != null ? Math.max(0.04, w / max) : 0;
+                return (
+                  <View key={f.code} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+                    <View style={{ flex: 1, height: 16, borderRadius: 6, backgroundColor: cl.surfaceSoft, overflow: 'hidden' }}>
+                      {w != null ? (
+                        <View style={{ width: `${frac * 100}%` as unknown as number, height: '100%', borderRadius: 6, backgroundColor: f.badgeColor }} />
+                      ) : null}
+                    </View>
+                    <Text style={{ width: 46, textAlign: 'right', fontSize: 11, fontFamily: ClearLensFonts.bold, color: w != null ? cl.navy : cl.textTertiary, fontVariant: ['tabular-nums'] }}>
+                      {fmtW(allocByFund[i], sector)}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          );
+        })}
+      </View>
+
+      <NumbersReveal
+        funds={fundData}
+        tokens={tokens}
+        rows={rankedSectors.map((sector) => ({
+          label: sector,
+          cells: allocByFund.map((alloc) => fmtW(alloc, sector)),
+        }))}
+      />
+    </FindingCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Overlap card
 // ---------------------------------------------------------------------------
 
@@ -1472,32 +1581,45 @@ function OverlapCard({
 }) {
   const cl = tokens.colors;
 
-  const pairs: { a: CompareFundData; b: CompareFundData; shared: number }[] = [];
-  const tops = fundData.map((f) =>
-    new Set((f.composition?.topHoldings ?? []).slice(0, 5).map((h) => h.name)),
-  );
+  // Match the top-5 holdings of each fund by ISIN-first key (falls back to a
+  // normalised name) so "HDFC Bank Ltd." and "HDFC Bank Limited" align. We keep
+  // the display name from fund A for the shared list.
+  const top5 = fundData.map((f) => (f.composition?.topHoldings ?? []).slice(0, 5));
+  const keyToName = (h: { name: string; isin: string }) =>
+    [holdingsKey({ isin: h.isin, name: h.name }), h.name] as const;
+
+  const pairs: { a: CompareFundData; b: CompareFundData; shared: number; names: string[] }[] = [];
   for (let i = 0; i < fundData.length; i++) {
     for (let j = i + 1; j < fundData.length; j++) {
-      const shared = [...tops[i]].filter((n) => tops[j].has(n)).length;
-      pairs.push({ a: fundData[i], b: fundData[j], shared });
+      const aMap = new Map(top5[i].map(keyToName));
+      const bKeys = new Set(top5[j].map((h) => holdingsKey({ isin: h.isin, name: h.name })));
+      const names: string[] = [];
+      for (const [k, name] of aMap) if (bKeys.has(k)) names.push(name);
+      pairs.push({ a: fundData[i], b: fundData[j], shared: names.length, names });
     }
   }
 
-
-
+  // Do we have holdings data at all? If no fund disclosed top holdings, we
+  // can't make any overlap claim (trust-numbers): say so rather than "don't
+  // repeat", which would falsely imply we checked.
+  const haveHoldings = top5.some((t) => t.length > 0);
   const totalShared = pairs.reduce((s, p) => s + p.shared, 0);
-  const headline = totalShared === 0
-    ? "Top holdings don't repeat across these funds."
-    : 'Some top holdings repeat across these funds.';
+  const headline = !haveHoldings
+    ? "We don't have holdings for these funds yet."
+    : totalShared === 0
+      ? "Top holdings don't repeat across these funds."
+      : 'Some top holdings repeat across these funds.';
 
   const cols = pairs.length <= 3 ? pairs.length : 3;
 
+  // Only describe the comparison method when we actually ran it.
+  const sub = haveHoldings
+    ? "How many of each fund's top 5 names also appear in another fund's top 5."
+    : "Holdings refresh from the fund's latest disclosure — check back shortly.";
+
   return (
-    <FindingCard
-      headline={headline}
-      sub="How many of each fund's top 5 names also appear in another fund's top 5."
-      tokens={tokens}
-    >
+    <FindingCard headline={headline} sub={sub} tokens={tokens}>
+      {haveHoldings ? (
       <View
         style={{
           flexDirection: 'row',
@@ -1540,7 +1662,81 @@ function OverlapCard({
           </View>
         ))}
       </View>
+      ) : null}
+
+      {/* Which names overlap — only when there's at least one shared holding. */}
+      {haveHoldings && totalShared > 0 ? (
+        <OverlapNamesReveal pairs={pairs.filter((p) => p.shared > 0)} tokens={tokens} />
+      ) : null}
     </FindingCard>
+  );
+}
+
+// "See which names" collapsible for the Overlap card — lists the actual shared
+// holdings per fund pair, mirroring the NumbersReveal show/hide pattern.
+function OverlapNamesReveal({
+  pairs,
+  tokens,
+}: {
+  pairs: { a: CompareFundData; b: CompareFundData; shared: number; names: string[] }[];
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const [open, setOpen] = useState(false);
+  const chevronAnim = useRef(new Animated.Value(0)).current;
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    Animated.timing(chevronAnim, { toValue: next ? 1 : 0, duration: 200, useNativeDriver: true }).start();
+  };
+  const chevronRotate = chevronAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+
+  return (
+    <View>
+      <TouchableOpacity
+        onPress={toggle}
+        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 6, minHeight: 40 }}
+        accessibilityRole="button"
+        accessibilityLabel={open ? 'Hide shared holdings' : 'See which names'}
+        accessibilityState={{ expanded: open }}
+      >
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.textTertiary }}>
+          {open ? 'Hide the names' : 'See which names'}
+        </Text>
+        <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
+          <Ionicons name="chevron-down" size={14} color={cl.textTertiary} />
+        </Animated.View>
+      </TouchableOpacity>
+
+      {open ? (
+        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: cl.borderLight, gap: 12 }}>
+          {pairs.map((pair, i) => (
+            <View key={i} style={{ gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <FundBadge letter={pair.a.badgeLetter} color={pair.a.badgeColor} size={16} radius={4} />
+                <FundBadge letter={pair.b.badgeLetter} color={pair.b.badgeColor} size={16} radius={4} />
+                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, color: cl.textTertiary }}>
+                  {`${pair.shared} shared`}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {pair.names.map((name) => (
+                  <View
+                    key={name}
+                    style={{ backgroundColor: cl.surfaceSoft, borderRadius: ClearLensRadii.sm, paddingVertical: 4, paddingHorizontal: 9 }}
+                  >
+                    <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.navy }}>
+                      {name}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -1557,7 +1753,7 @@ function BasicsCard({
 }) {
   const cl = tokens.colors;
 
-  const rows: { label: string; cells: string[] }[] = [
+  const allRows: { label: string; cells: string[] }[] = [
     {
       label: 'AMC',
       cells: fundData.map((f) => f.scheme.amcName ?? '—'),
@@ -1583,6 +1779,12 @@ function BasicsCard({
       cells: fundData.map((f) => launchYear(f.scheme.launchDate)),
     },
   ];
+
+  // Drop any row that's empty ("—") across every fund — a barren grid of
+  // dashes reads as broken. Track how many we hid so we can say so honestly
+  // rather than silently implying these facts don't exist.
+  const rows = allRows.filter((r) => r.cells.some((c) => c !== '—'));
+  const hiddenLabels = allRows.filter((r) => r.cells.every((c) => c === '—')).map((r) => r.label);
 
   return (
     <FindingCard headline="The basics." tokens={tokens}>
@@ -1635,6 +1837,11 @@ function BasicsCard({
           </View>
         ))}
       </View>
+      {hiddenLabels.length > 0 ? (
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 16 }}>
+          {`${formatLabelList(hiddenLabels)} ${hiddenLabels.length === 1 ? "isn't" : "aren't"} available for these funds yet — ${hiddenLabels.length === 1 ? 'it refreshes' : 'they refresh'} from the fund source.`}
+        </Text>
+      ) : null}
     </FindingCard>
   );
 }
@@ -1955,6 +2162,7 @@ export function ClearLensCompareFundsScreen() {
         ) : null}
         <CostCard fundData={fundData} tokens={tokens} />
         <WhatsInsideCard fundData={fundData} tokens={tokens} />
+        <SectorCard fundData={fundData} tokens={tokens} />
         <OverlapCard fundData={fundData} tokens={tokens} />
         <BasicsCard fundData={fundData} tokens={tokens} />
 
