@@ -1582,19 +1582,24 @@ function OverlapCard({
   const cl = tokens.colors;
 
   // Match the top-5 holdings of each fund by ISIN-first key (falls back to a
-  // normalised name) so "HDFC Bank Ltd." and "HDFC Bank Limited" align. We keep
-  // the display name from fund A for the shared list.
+  // normalised name) so "HDFC Bank Ltd." and "HDFC Bank Limited" align.
   const top5 = fundData.map((f) => (f.composition?.topHoldings ?? []).slice(0, 5));
-  const keyToName = (h: { name: string; isin: string }) =>
-    [holdingsKey({ isin: h.isin, name: h.name }), h.name] as const;
+  const keyOf = (h: { name: string; isin: string }) => holdingsKey({ isin: h.isin, name: h.name });
+
+  // A holding is "shared" if its key appears in more than one fund's top 5.
+  const keyCounts = new Map<string, number>();
+  for (const holdings of top5) {
+    for (const k of new Set(holdings.map(keyOf))) {
+      keyCounts.set(k, (keyCounts.get(k) ?? 0) + 1);
+    }
+  }
+  const sharedKeys = new Set([...keyCounts.entries()].filter(([, n]) => n > 1).map(([k]) => k));
 
   const pairs: { a: CompareFundData; b: CompareFundData; shared: number; names: string[] }[] = [];
   for (let i = 0; i < fundData.length; i++) {
     for (let j = i + 1; j < fundData.length; j++) {
-      const aMap = new Map(top5[i].map(keyToName));
-      const bKeys = new Set(top5[j].map((h) => holdingsKey({ isin: h.isin, name: h.name })));
-      const names: string[] = [];
-      for (const [k, name] of aMap) if (bKeys.has(k)) names.push(name);
+      const bKeys = new Set(top5[j].map(keyOf));
+      const names = top5[i].filter((h) => bKeys.has(keyOf(h))).map((h) => h.name);
       pairs.push({ a: fundData[i], b: fundData[j], shared: names.length, names });
     }
   }
@@ -1664,21 +1669,34 @@ function OverlapCard({
       </View>
       ) : null}
 
-      {/* Which names overlap — only when there's at least one shared holding. */}
-      {haveHoldings && totalShared > 0 ? (
-        <OverlapNamesReveal pairs={pairs.filter((p) => p.shared > 0)} tokens={tokens} />
+      {/* Each fund's top 5, with shared names highlighted. */}
+      {haveHoldings ? (
+        <TopHoldingsReveal
+          fundData={fundData}
+          top5={top5}
+          keyOf={keyOf}
+          sharedKeys={sharedKeys}
+          tokens={tokens}
+        />
       ) : null}
     </FindingCard>
   );
 }
 
-// "See which names" collapsible for the Overlap card — lists the actual shared
-// holdings per fund pair, mirroring the NumbersReveal show/hide pattern.
-function OverlapNamesReveal({
-  pairs,
+// "See top 5 holdings" collapsible for the Overlap card — shows each fund's
+// actual top 5, highlighting names that are shared with another fund so the
+// overlap is visible in context. Mirrors the NumbersReveal show/hide pattern.
+function TopHoldingsReveal({
+  fundData,
+  top5,
+  keyOf,
+  sharedKeys,
   tokens,
 }: {
-  pairs: { a: CompareFundData; b: CompareFundData; shared: number; names: string[] }[];
+  fundData: CompareFundData[];
+  top5: { name: string; isin: string; sector: string; pctOfNav: number }[][];
+  keyOf: (h: { name: string; isin: string }) => string;
+  sharedKeys: Set<string>;
   tokens: ClearLensTokens;
 }) {
   const cl = tokens.colors;
@@ -1698,11 +1716,11 @@ function OverlapNamesReveal({
         onPress={toggle}
         style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 6, minHeight: 40 }}
         accessibilityRole="button"
-        accessibilityLabel={open ? 'Hide shared holdings' : 'See which names'}
+        accessibilityLabel={open ? 'Hide top 5 holdings' : 'See top 5 holdings'}
         accessibilityState={{ expanded: open }}
       >
         <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.textTertiary }}>
-          {open ? 'Hide the names' : 'See which names'}
+          {open ? 'Hide top 5 holdings' : 'See top 5 holdings'}
         </Text>
         <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
           <Ionicons name="chevron-down" size={14} color={cl.textTertiary} />
@@ -1710,28 +1728,61 @@ function OverlapNamesReveal({
       </TouchableOpacity>
 
       {open ? (
-        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: cl.borderLight, gap: 12 }}>
-          {pairs.map((pair, i) => (
-            <View key={i} style={{ gap: 6 }}>
+        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: cl.borderLight, gap: 14 }}>
+          {/* Legend for the shared highlight. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: cl.mint50, borderWidth: 1, borderColor: cl.emerald }} />
+            <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+              Shared with another fund
+            </Text>
+          </View>
+
+          {fundData.map((f, i) => (
+            <View key={f.code} style={{ gap: 6 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <FundBadge letter={pair.a.badgeLetter} color={pair.a.badgeColor} size={16} radius={4} />
-                <FundBadge letter={pair.b.badgeLetter} color={pair.b.badgeColor} size={16} radius={4} />
-                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, color: cl.textTertiary }}>
-                  {`${pair.shared} shared`}
+                <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, color: cl.navy, flex: 1 }} numberOfLines={1}>
+                  {fundDisplayName(f.scheme)}
                 </Text>
               </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {pair.names.map((name) => (
-                  <View
-                    key={name}
-                    style={{ backgroundColor: cl.surfaceSoft, borderRadius: ClearLensRadii.sm, paddingVertical: 4, paddingHorizontal: 9 }}
-                  >
-                    <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.navy }}>
-                      {name}
-                    </Text>
-                  </View>
-                ))}
-              </View>
+              {top5[i].length === 0 ? (
+                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, paddingLeft: 22 }}>
+                  Holdings not available yet.
+                </Text>
+              ) : (
+                <View style={{ gap: 4, paddingLeft: 22 }}>
+                  {top5[i].map((h) => {
+                    const isShared = sharedKeys.has(keyOf(h));
+                    return (
+                      <View
+                        key={h.isin || h.name}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                          paddingVertical: 4,
+                          paddingHorizontal: 8,
+                          borderRadius: ClearLensRadii.sm,
+                          backgroundColor: isShared ? cl.mint50 : 'transparent',
+                          borderWidth: isShared ? 1 : 0,
+                          borderColor: isShared ? cl.emerald : 'transparent',
+                        }}
+                      >
+                        <Text
+                          style={{ flex: 1, fontSize: 12, fontFamily: isShared ? ClearLensFonts.bold : ClearLensFonts.semiBold, color: cl.navy }}
+                          numberOfLines={1}
+                        >
+                          {h.name}
+                        </Text>
+                        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}>
+                          {h.pctOfNav != null ? `${h.pctOfNav.toFixed(1)}%` : '—'}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </View>
           ))}
         </View>
