@@ -57,6 +57,14 @@ fold into the existing daily `sync-fund-meta` (or a monthly pass aligned to Open
 3. Registry enrichment (optional) for category/AMC/ISIN.
 4. (FL-P5) TER + manager + exit load + mins + benchmark + riskometer; mfdata backup.
 5. (FL-P5) UI: drop ratings, surface official metadata + computed metrics.
+6. **(FL-P6, final step) Full AMFI-universe backfill — for performance.** Once held-fund sync is proven,
+   backfill **composition + metadata + computed returns + scheme registry for *every active scheme in the
+   AMFI universe*** (not just held funds) from OpenFolio's bulk endpoints (`/v1/composition`,
+   `/v1/metadata`, `/v1/schemes`) into FolioLens Postgres — so tools like **Compare** read everything
+   locally with **no on-demand `fetch-fund-snapshot` hydration latency**. One-time bulk job, then kept
+   current by the monthly sync. **NAV history stays held-scoped + on-demand** (the heavy 20M-row series;
+   Compare needs composition + returns + metadata, not NAV history — all of which this backfills). Holding
+   the extra reference rows is a small, accepted price for tool performance.
 
 ## Testing (per repo standards)
 - Mock at the wrapper boundary (`@/src/lib/data/*`), never supabase/network.
@@ -73,8 +81,10 @@ fold into the existing daily `sync-fund-meta` (or a monthly pass aligned to Open
 - README "What works now" updated; Amendments added if implementation diverges.
 
 ## Risks
-- **NAV volume**: per-held-scheme pulls are fine; a full-universe NAV mirror in FolioLens is unnecessary —
-  keep FolioLens NAV scoped to held + on-demand-compared schemes.
+- **Universe backfill volume (FL-P6)**: mirroring **composition + metadata + returns** for the full active
+  AMFI universe (~10–14k schemes) is modest and *intended* — it's what removes Compare's on-demand
+  latency. **NAV history is the exception** — keep it held-scoped + on-demand (a full 20M-row NAV mirror is
+  unnecessary and heavy; Compare doesn't use NAV history).
 - **OpenFolio down at sync time** → fall back to mfapi/mfdata; app unaffected (reads own Postgres).
 - **TER name-match gaps** on OpenFolio's side → some funds lack TER → backup to mfdata or show "unavailable".
 - **Dropping ratings** is a visible UI change → confirm product is OK replacing star rating with our metrics.
@@ -83,3 +93,7 @@ fold into the existing daily `sync-fund-meta` (or a monthly pass aligned to Open
 - A and B1 routed through OpenFolio for the same reasons as B2 (resilience, ISIN-keyed authoritative data,
   decoupled at runtime). mfapi/mfdata retained as backups, not removed.
 - Ratings dropped — no free authoritative source; our computed risk/return replaces them.
+- **Full AMFI-universe backfill (FL-P6)** chosen over held-only sync: Compare/tools must read locally to
+  avoid `fetch-fund-snapshot` hydration latency on unheld funds. Extra reference rows are an accepted cost.
+  (Supersedes the earlier "don't mirror the full universe" stance — that applied to NAV history, which is
+  still scoped; composition/metadata/returns are now mirrored universe-wide.)
