@@ -1703,7 +1703,14 @@ export function ClearLensCompareFundsScreen() {
       },
     ]),
   });
-  void hydrationQueries;
+
+  // True while any on-demand hydration (snapshot / NAV backfill) is still in
+  // flight. A fund nobody holds has no NAV history in the DB on first read, so
+  // navHistoryQuery resolves empty and the fund looks like it has "no return
+  // history" — until hydration completes, invalidates, and the data appears.
+  // We treat hydration-in-progress as loading so the NoHistoryBanner (and the
+  // empty Returns/Risk cards) don't flash before the real data lands.
+  const isHydrating = hydrationQueries.some((q) => q.isLoading);
 
   const schemesQuery = useQuery({
     queryKey: ['compare:schemes', selectedCodes],
@@ -1865,7 +1872,8 @@ export function ClearLensCompareFundsScreen() {
   }
 
   const isLoading = selectedCodes.length > 0
-    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading);
+    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading
+      || isHydrating);
 
   const hasError = schemesQuery.isError || navHistoryQuery.isError || compositionsQuery.isError;
 
