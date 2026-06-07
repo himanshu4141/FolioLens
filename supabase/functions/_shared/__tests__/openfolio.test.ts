@@ -8,6 +8,9 @@ import {
   createOpenFolioClient,
   runOpenFolioSync,
   type CompositionRow,
+  type NavBulkPage,
+  type NavLatestEntry,
+  type NavSeries,
   type OpenFolioComposition,
   type OpenFolioCompositionPage,
   type SchemeUniverse,
@@ -643,5 +646,134 @@ describe('runOpenFolioSync', () => {
     expect(stats.itemsFetched).toBe(0);
     expect(stats.totalCount).toBe(0);
     expect(stats.pagesFetched).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NAV client methods
+// ---------------------------------------------------------------------------
+
+describe('createOpenFolioClient — NAV methods', () => {
+  function fakeNavLatest(): NavLatestEntry {
+    return { scheme_code: 122639, date: '2026-06-05', nav: 89.1488 };
+  }
+
+  function fakeNavSeries(): NavSeries {
+    return {
+      scheme_code: 122639,
+      from_date: '2026-06-01',
+      to_date: '2026-06-05',
+      points: [
+        { date: '2026-06-01', nav: 89.6775 },
+        { date: '2026-06-02', nav: 89.7887 },
+        { date: '2026-06-05', nav: 89.1488 },
+      ],
+    };
+  }
+
+  function fakeNavBulkPage(): NavBulkPage {
+    return {
+      count: 8560,
+      page: 1,
+      page_size: 2,
+      items: [
+        { scheme_code: 100033, date: '2026-06-05', nav: 894.89 },
+        { scheme_code: 122639, date: '2026-06-05', nav: 89.1488 },
+      ],
+    };
+  }
+
+  it('getNavLatest sends X-API-Key, calls /v1/nav/{code}/latest, and returns the body', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, fakeNavLatest())) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    const result = await client.getNavLatest(122639);
+    expect(result?.scheme_code).toBe(122639);
+    expect(result?.nav).toBe(89.1488);
+    expect(result?.date).toBe('2026-06-05');
+
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav/122639/latest');
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('KEY');
+  });
+
+  it('getNavLatest returns null on 404', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(404, { detail: 'not found' })) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    expect(await client.getNavLatest(999999)).toBeNull();
+  });
+
+  it('getNavLatest throws on a non-OK, non-404 response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(500, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.getNavLatest(1)).rejects.toThrow(/HTTP 500/);
+  });
+
+  it('getNavSeries calls /v1/nav/{code} with since + until params and returns points', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, fakeNavSeries())) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+
+    const result = await client.getNavSeries(122639, { since: '2026-06-01', until: '2026-06-05' });
+    expect(result?.scheme_code).toBe(122639);
+    expect(result?.points).toHaveLength(3);
+    expect(result?.points[0]).toEqual({ date: '2026-06-01', nav: 89.6775 });
+
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav/122639?since=2026-06-01&until=2026-06-05');
+  });
+
+  it('getNavSeries with no args calls /v1/nav/{code} with no query string', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, fakeNavSeries())) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.getNavSeries(122639);
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav/122639');
+  });
+
+  it('getNavSeries returns null on 404', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(404, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    expect(await client.getNavSeries(999)).toBeNull();
+  });
+
+  it('getNavSeries throws on non-OK, non-404 response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(503, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.getNavSeries(1)).rejects.toThrow(/HTTP 503/);
+  });
+
+  it('listNav builds the bulk query with since + page + page_size', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, fakeNavBulkPage())) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+
+    const result = await client.listNav({ since: '2026-06-05', page: 1, pageSize: 2 });
+    expect(result.count).toBe(8560);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toEqual({ scheme_code: 100033, date: '2026-06-05', nav: 894.89 });
+
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav?since=2026-06-05&page=1&page_size=2');
+  });
+
+  it('listNav with date param builds the correct query', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, { count: 0, page: 1, page_size: 100, items: [] })) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.listNav({ date: '2026-06-05' });
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav?date=2026-06-05');
+  });
+
+  it('listNav with no args omits the query string', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(200, { count: 0, page: 1, page_size: 100, items: [] })) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.listNav();
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav');
+  });
+
+  it('listNav throws on non-OK response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(500, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.listNav()).rejects.toThrow(/HTTP 500/);
   });
 });

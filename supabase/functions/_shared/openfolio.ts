@@ -105,6 +105,76 @@ export interface OpenFolioCompositionPage {
 }
 
 // ---------------------------------------------------------------------------
+// NAV API response types (OpenFolio-Data v2.0.0)
+// ---------------------------------------------------------------------------
+
+/** Single data point in a NAV time-series. */
+export interface NavSeriesPoint {
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  nav: number;
+}
+
+/**
+ * Response from GET /v1/nav/{scheme_code} — the full or date-bounded NAV
+ * series for one AMFI plan. `scheme_code` is the integer AMFI plan code.
+ */
+export interface NavSeries {
+  scheme_code: number;
+  from_date?: string | null;
+  to_date?: string | null;
+  points: NavSeriesPoint[];
+}
+
+/**
+ * Response from GET /v1/nav/{scheme_code}/latest — the single most-recent
+ * NAV for one AMFI plan.
+ */
+export interface NavLatestEntry {
+  scheme_code: number;
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  nav: number;
+}
+
+/**
+ * One item in the bulk NAV page — one scheme's most-recent NAV entry.
+ * `date` is ISO YYYY-MM-DD; maps to `nav_history.nav_date`.
+ */
+export interface NavBulkItem {
+  scheme_code: number;
+  /** ISO date YYYY-MM-DD → nav_history.nav_date. */
+  date: string;
+  nav: number;
+}
+
+/** Response from GET /v1/nav?since=|date= — paginated bulk NAV. */
+export interface NavBulkPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: NavBulkItem[];
+}
+
+/** Args for the per-scheme series endpoint. */
+export interface GetNavSeriesArgs {
+  /** Lower bound — ISO date YYYY-MM-DD. */
+  since?: string | null;
+  /** Upper bound — ISO date YYYY-MM-DD. */
+  until?: string | null;
+}
+
+/** Args for the bulk NAV listing endpoint. */
+export interface ListNavArgs {
+  /** All schemes with a NAV on/after this ISO date. */
+  since?: string | null;
+  /** All schemes with a NAV on exactly this ISO date. */
+  date?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Row shape we upsert into fund_portfolio_composition
 // ---------------------------------------------------------------------------
 
@@ -394,6 +464,12 @@ export interface GetCompositionArgs {
 export interface OpenFolioClient {
   getComposition(schemeCode: number, args?: GetCompositionArgs): Promise<OpenFolioComposition | null>;
   listComposition(args?: ListCompositionArgs): Promise<OpenFolioCompositionPage>;
+  /** Full or date-bounded NAV series for one AMFI plan. Null on 404. */
+  getNavSeries(schemeCode: number, args?: GetNavSeriesArgs): Promise<NavSeries | null>;
+  /** Most-recent NAV entry for one AMFI plan. Null on 404. */
+  getNavLatest(schemeCode: number): Promise<NavLatestEntry | null>;
+  /** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
+  listNav(args?: ListNavArgs): Promise<NavBulkPage>;
 }
 
 export interface OpenFolioClientConfig extends OpenFolioCredentials {
@@ -448,6 +524,25 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
       })}`;
       const { body } = await request(path);
       return body as OpenFolioCompositionPage;
+    },
+    async getNavSeries(schemeCode, args = {}) {
+      const path = `/v1/nav/${schemeCode}${buildQuery({ since: args.since, until: args.until })}`;
+      const { body } = await request(path);
+      return body as NavSeries | null;
+    },
+    async getNavLatest(schemeCode) {
+      const { body } = await request(`/v1/nav/${schemeCode}/latest`);
+      return body as NavLatestEntry | null;
+    },
+    async listNav(args = {}) {
+      const path = `/v1/nav${buildQuery({
+        since: args.since,
+        date: args.date,
+        page: args.page,
+        page_size: args.pageSize,
+      })}`;
+      const { body } = await request(path);
+      return body as NavBulkPage;
     },
   };
 }
