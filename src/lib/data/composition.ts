@@ -112,6 +112,64 @@ export interface GetCompositionArgs {
 }
 
 // ---------------------------------------------------------------------------
+// NAV API response types (mirror of _shared/openfolio.ts — OpenFolio v2.0.0)
+// ---------------------------------------------------------------------------
+
+/** Single data point in a NAV time-series. */
+export interface NavSeriesPoint {
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  nav: number;
+}
+
+/**
+ * Response from GET /v1/nav/{scheme_code}. `scheme_code` is the integer AMFI
+ * plan code — direct join to scheme_master.scheme_code.
+ */
+export interface NavSeries {
+  scheme_code: number;
+  from_date?: string | null;
+  to_date?: string | null;
+  points: NavSeriesPoint[];
+}
+
+/** Response from GET /v1/nav/{scheme_code}/latest. */
+export interface NavLatestEntry {
+  scheme_code: number;
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  nav: number;
+}
+
+/** One item in GET /v1/nav bulk page. `date` maps to nav_history.nav_date. */
+export interface NavBulkItem {
+  scheme_code: number;
+  /** ISO date YYYY-MM-DD → nav_history.nav_date. */
+  date: string;
+  nav: number;
+}
+
+/** Response from GET /v1/nav?since=|date= */
+export interface NavBulkPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: NavBulkItem[];
+}
+
+export interface GetNavSeriesArgs {
+  since?: string | null;
+  until?: string | null;
+}
+
+export interface ListNavArgs {
+  since?: string | null;
+  date?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Credentials (single source of truth, app side)
 // ---------------------------------------------------------------------------
 
@@ -178,4 +236,29 @@ export async function listComposition(
   return body as OpenFolioCompositionPage;
 }
 
-export const compositionApi = { getComposition, listComposition };
+/** Full or date-bounded NAV series for one AMFI plan. Null on 404. */
+export async function getNavSeries(
+  schemeCode: number,
+  args: GetNavSeriesArgs = {},
+): Promise<NavSeries | null> {
+  const { body } = await request<NavSeries>(
+    `/v1/nav/${schemeCode}${buildQuery({ since: args.since, until: args.until })}`,
+  );
+  return body;
+}
+
+/** Most-recent NAV entry for one AMFI plan. Null on 404. */
+export async function getNavLatest(schemeCode: number): Promise<NavLatestEntry | null> {
+  const { body } = await request<NavLatestEntry>(`/v1/nav/${schemeCode}/latest`);
+  return body;
+}
+
+/** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
+export async function listNav(args: ListNavArgs = {}): Promise<NavBulkPage> {
+  const { body } = await request<NavBulkPage>(
+    `/v1/nav${buildQuery({ since: args.since, date: args.date, page: args.page, page_size: args.pageSize })}`,
+  );
+  return body as NavBulkPage;
+}
+
+export const compositionApi = { getComposition, listComposition, getNavSeries, getNavLatest, listNav };
