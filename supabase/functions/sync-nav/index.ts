@@ -153,13 +153,21 @@ Deno.serve(async (req) => {
             );
             return { newRows, source: 'openfolio' };
           }
-          // 200 with empty points → up to date; no mfapi needed
+          if (since !== null) {
+            // Incremental sync: no new points since our last known date → already up to date.
+            console.log(
+              '[sync-nav] scheme %d: OpenFolio up to date (since=%s)',
+              schemeCode,
+              since,
+            );
+            return { newRows: 0, source: 'openfolio' };
+          }
+          // since=null (first-ever sync) + empty points → OF has no history for this
+          // scheme. Fall through to mfapi rather than silently leaving nav_history empty.
           console.log(
-            '[sync-nav] scheme %d: OpenFolio up to date (since=%s)',
+            '[sync-nav] scheme %d: OpenFolio no history (since=null), trying mfapi',
             schemeCode,
-            since ?? 'full',
           );
-          return { newRows: 0, source: 'openfolio' };
         }
       } catch (err) {
         console.warn(
