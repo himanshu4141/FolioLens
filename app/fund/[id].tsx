@@ -956,6 +956,11 @@ function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: numb
 // Technical Details Card
 // ---------------------------------------------------------------------------
 
+function fmtReturn(v: number | null): string {
+  if (v == null) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+}
+
 function TechnicalDetailsCard({
   expenseRatio,
   aumCr,
@@ -972,6 +977,7 @@ function TechnicalDetailsCard({
   riskLabel,
   schemeCategory,
   declaredBenchmarkName,
+  benchmarkIndex,
   fundManager,
   portfolioTurnover,
   terDate,
@@ -992,6 +998,7 @@ function TechnicalDetailsCard({
   riskLabel: string | null;
   schemeCategory: string | null;
   declaredBenchmarkName: string | null;
+  benchmarkIndex: string | null;
   fundManager: string | null;
   portfolioTurnover: number | null;
   terDate: string | null;
@@ -1018,11 +1025,9 @@ function TechnicalDetailsCard({
   const ret5y = readReturnPct(periodReturns, '5y');
   const hasReturns = ret1y != null || ret3y != null || ret5y != null;
   const hasOFMeta = fundManager != null || portfolioTurnover != null || terDate != null;
-
-  function fmtReturn(v: number | null): string {
-    if (v == null) return '—';
-    return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
-  }
+  // Fall back to benchmark_index (mfdata) until sync-fund-meta re-populates
+  // declared_benchmark_name via the OpenFolio sweep.
+  const benchmarkDisplay = declaredBenchmarkName ?? benchmarkIndex;
 
   return (
     <View style={[ts.card, ts.clearLensCard]}>
@@ -1086,7 +1091,7 @@ function TechnicalDetailsCard({
         </View>
         <View style={ts.cell}>
           <Text style={ts.label}>Benchmark</Text>
-          <Text style={ts.valueSmall} numberOfLines={2}>{declaredBenchmarkName ?? '—'}</Text>
+          <Text style={ts.valueSmall} numberOfLines={2}>{benchmarkDisplay ?? '—'}</Text>
         </View>
       </View>
 
@@ -2078,6 +2083,7 @@ function ClearLensFundDetailScreen() {
               riskLabel={data.riskLabel}
               schemeCategory={data.schemeCategory}
               declaredBenchmarkName={data.declaredBenchmarkName}
+              benchmarkIndex={data.benchmarkIndex}
               fundManager={data.fundManager}
               portfolioTurnover={data.portfolioTurnover}
               terDate={data.terDate}

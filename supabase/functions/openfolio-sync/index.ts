@@ -32,9 +32,9 @@ import {
   resolveOpenFolioCredentials,
   runOpenFolioSync,
   type CompositionRow,
-  type SchemeRegistryRow,
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
+import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
 
 const PAGE_SIZE = 300; // contract max is 500; 300 keeps page payloads bounded for debt-heavy funds
 const TOP = 50; // top equity holdings / sectors per scheme (mirrors existing top_holdings cap)
@@ -155,30 +155,10 @@ Deno.serve(async (req) => {
   };
 
   // Registry write-back: update scheme_master.scheme_category + amc_name for
-  // matched schemes. Uses individual UPDATE (not upsert) so we only touch rows
-  // that already exist in scheme_master — we never insert phantom scheme_master
-  // rows. Nulls from OpenFolio are skipped (mapCompositionToRegistryRows
-  // excludes rows where both fields are null, so we still write when one is set).
-  const upsertSchemeRegistry = async (rows: SchemeRegistryRow[]) => {
-    for (const row of rows) {
-      const patch: Record<string, string | null> = {};
-      if (row.scheme_category !== null) patch.scheme_category = row.scheme_category;
-      if (row.amc_name !== null) patch.amc_name = row.amc_name;
-      if (Object.keys(patch).length === 0) continue;
-      const { error } = await supabase
-        .from('scheme_master')
-        .update(patch)
-        .eq('scheme_code', row.scheme_code);
-      if (error) {
-        console.error(
-          '[openfolio-sync] registry update failed scheme=%d: %s',
-          row.scheme_code,
-          error.message,
-        );
-      }
-    }
-    return { error: null };
-  };
+  // matched schemes (UPDATE-only, nulls skipped, best-effort). Shared factory
+  // with universe-backfill — any change to the upsert logic only needs to land
+  // once in _shared/registry-upsert.ts.
+  const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[openfolio-sync]');
 
   let stats;
   try {

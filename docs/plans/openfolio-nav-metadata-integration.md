@@ -1,6 +1,6 @@
 # ExecPlan: consume OpenFolio-Data for NAV (A) + fund metadata (B1)
 
-Status: Proposed
+Status: Shipped (M1 #193, M2 #194, M3/M5/M6 #195)
 Date: 2026-06-01
 Related: `docs/plans/openfolio-holdings-integration.md` (B2, shipped), OpenFolio-Data
 `docs/SPEC-PHASE-4-*` (NAV + AUM + returns) and `docs/SPEC-PHASE-5-*` (TER/manager/etc).
@@ -141,3 +141,31 @@ fold into the existing daily `sync-fund-meta` (or a monthly pass aligned to Open
   avoid `fetch-fund-snapshot` hydration latency on unheld funds. Extra reference rows are an accepted cost.
   (Supersedes the earlier "don't mirror the full universe" stance — that applied to NAV history, which is
   still scoped; composition/metadata/returns are now mirrored universe-wide.)
+
+## Amendments
+
+### M3 — Registry enrichment (PR #195)
+
+Implemented without an additional API call: `upsertSchemeRegistry` extracts `sebi_category` and `amc` from the composition page already being fetched in `runOpenFolioSync`, using a new optional dep. The separate `/v1/schemes` registry endpoint (originally planned as the source) was not needed.
+
+`upsertSchemeRegistry` implementation extracted to `_shared/registry-upsert.ts` (shared between `openfolio-sync` and `universe-backfill`) rather than duplicated per function.
+
+### M4 — Absorbed into M2
+
+All B1 fields (TER, fund_manager, inception_date, exit_load, min_investment, min_sip, benchmark, riskometer, portfolio_turnover) were implemented in M2's `sync-fund-meta` sweep, so M4 had no separate deliverable. The plan's "one sweep" design was already followed.
+
+### M5 — UI (PR #195)
+
+`declared_benchmark_name` display falls back to `benchmark_index` (existing mfdata column) for the transition window before `sync-fund-meta` re-populates OF values. The fallback chain is: `declaredBenchmarkName ?? benchmarkIndex ?? '—'`.
+
+`periodReturns` prop kept as `unknown` in both `FundDetailData` and `TechnicalDetailsCard` (Supabase's `Json` type doesn't carry a string index signature, so narrowing at the data layer cascades cast errors). Narrowing is handled inside `readReturnPct` which guards all non-object/non-finite inputs.
+
+`fmtReturn` moved to module level (outside the component) per review feedback.
+
+### M6 — Universe backfill (PR #195)
+
+No separate `pg_cron` schedule added — this is a one-time manual trigger, then monthly `openfolio-sync` (composition) and daily `sync-fund-meta` (held-fund metadata) keep it current.
+
+Known tradeoff documented in function header: the metadata phase stamps `openfolio_meta_synced_at` on every matched row, which causes `sync-fund-meta`'s `isSchemeMetaFresh` check to defer mfdata fallback for newly-held funds up to 7 days after the backfill. Manual `sync-fund-meta` trigger resolves this if immediate mfdata coverage is needed.
+
+`resolveB1` local function intentionally diverges from `resolveB1Field` (`null` vs `undefined` sentinel) — no mfdata fallback path in the backfill; divergence documented in-code.

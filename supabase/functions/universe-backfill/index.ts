@@ -20,6 +20,16 @@
  * NAV history stays held-scoped — Compare doesn't need NAV history, and the
  * full 20M-row mirror is unnecessarily heavy.
  *
+ * Known tradeoff — openfolio_meta_synced_at mark: the metadata phase stamps
+ * every matched scheme_master row with `openfolio_meta_synced_at = syncedAt`.
+ * `sync-fund-meta` uses `isSchemeMetaFresh` (7-day window) to skip schemes
+ * already covered by OF. After the backfill, newly-held funds that have never
+ * had a `sync-fund-meta` run will appear OF-fresh and their mfdata fallback
+ * for `unresolved`/`parse_failed` B1 fields (expense_ratio, exit_load, etc.)
+ * will be deferred up to 7 days. If immediate mfdata coverage is needed after
+ * the backfill, trigger `sync-fund-meta` manually before the 7-day window
+ * lapses (it will skip OF-only and proceed straight to mfdata for those fields).
+ *
  * Trigger: manual POST (one-time), then kept current by monthly openfolio-sync
  * (composition) and daily sync-fund-meta (held-fund metadata).
  *
@@ -36,9 +46,9 @@ import {
   type B1FieldStatus,
   type CompositionRow,
   type FundMetadata,
-  type SchemeRegistryRow,
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
+import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
 
 const PAGE_SIZE = 300;
 const TOP = 50;
@@ -46,6 +56,18 @@ const MAX_PAGES = 2000; // full universe headroom (~10-14k schemes / 300 = ~47 p
 
 const B1_OK_STATUSES = new Set<B1FieldStatus>(['value']);
 
+/**
+ * Intentional divergence from `resolveB1Field` in `_shared/b1-field-resolution.ts`:
+ *
+ * - `resolveB1Field` returns `undefined` for non-'value' statuses to signal
+ *   "leave the DB column alone" — callers use `if (v !== undefined)` to skip
+ *   the write. That supports the mfdata fallback path (try OF, then mfdata).
+ *
+ * - This local `resolveB1` returns `null` for non-'value' statuses. Combined
+ *   with `if (ter != null) patch.expense_ratio = ter`, it achieves the same
+ *   "only write confirmed values" outcome without the `undefined` sentinel —
+ *   cleaner for the no-fallback backfill path where we never call mfdata.
+ */
 function resolveB1<T>(
   status: B1FieldStatus | undefined,
   ofValue: T | null | undefined,
@@ -232,26 +254,7 @@ Deno.serve(async (req) => {
       return { error: error?.message ?? null };
     };
 
-    const upsertSchemeRegistry = async (rows: SchemeRegistryRow[]) => {
-      for (const row of rows) {
-        const patch: Record<string, string | null> = {};
-        if (row.scheme_category !== null) patch.scheme_category = row.scheme_category;
-        if (row.amc_name !== null) patch.amc_name = row.amc_name;
-        if (Object.keys(patch).length === 0) continue;
-        const { error } = await supabase
-          .from('scheme_master')
-          .update(patch)
-          .eq('scheme_code', row.scheme_code);
-        if (error) {
-          console.error(
-            '[universe-backfill] registry update failed scheme=%d: %s',
-            row.scheme_code,
-            error.message,
-          );
-        }
-      }
-      return { error: null };
-    };
+    const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[universe-backfill]');
 
     let compStats;
     try {
