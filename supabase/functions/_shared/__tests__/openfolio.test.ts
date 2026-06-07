@@ -777,3 +777,117 @@ describe('createOpenFolioClient — NAV methods', () => {
     await expect(client.listNav()).rejects.toThrow(/HTTP 500/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// getMetadata / listMetadata
+// ---------------------------------------------------------------------------
+
+describe('getMetadata / listMetadata', () => {
+  function fakeMetadata(overrides: Record<string, unknown> = {}) {
+    return {
+      scheme_code: 119544,
+      name: 'ABSL ELSS Direct Growth',
+      amc: 'Aditya Birla Sun Life Mutual Fund',
+      ter: 0.98,
+      ter_date: '2026-05-31',
+      fund_manager: 'Mr. Dhaval Shah',
+      inception_date: '1996-03-29',
+      exit_load: null,
+      min_investment: 500,
+      min_sip: null,
+      benchmark: null,
+      riskometer: null,
+      portfolio_turnover: 0.25,
+      metrics: {
+        aum_cr: null,
+        aum_date: null,
+        returns: { ret_1y: 0.006, ret_3y: 0.135, ret_5y: 0.091, ret_incep: 0.136 },
+        volatility: 0.148,
+        computed_from_nav_date: '2026-06-05',
+      },
+      b1_field_meta: {
+        ter: { status: 'value', source: 'amfi_ter', source_url: 'https://amfiindia.com/ter' },
+        ter_date: { status: 'value', source: 'amfi_ter', source_url: 'https://amfiindia.com/ter' },
+        benchmark: { status: 'officially_absent', source: 'factsheet', source_url: 'https://example.com' },
+        exit_load: { status: 'officially_absent', source: 'factsheet', source_url: 'https://example.com' },
+        fund_manager: { status: 'value', source: 'factsheet', source_url: 'https://example.com' },
+        inception_date: { status: 'value', source: 'factsheet', source_url: 'https://example.com' },
+        min_investment: { status: 'value', source: 'factsheet', source_url: 'https://example.com' },
+        min_sip: { status: 'officially_absent', source: 'factsheet', source_url: 'https://example.com' },
+        portfolio_turnover: { status: 'value', source: 'factsheet', source_url: 'https://example.com' },
+        riskometer: { status: 'officially_absent', source: 'factsheet', source_url: 'https://example.com' },
+      },
+      b1_synced_at: '2026-06-07T09:10:26Z',
+      ...overrides,
+    };
+  }
+
+  it('getMetadata calls /v1/schemes/{code}/metadata with X-API-Key', async () => {
+    const meta = fakeMetadata();
+    const fetchImpl = jest.fn(async () => fakeResponse(200, meta)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'mykey', fetchImpl });
+    const result = await client.getMetadata(119544);
+    expect(result).toEqual(meta);
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/schemes/119544/metadata');
+    expect((init as RequestInit).headers).toMatchObject({ 'X-API-Key': 'mykey' });
+  });
+
+  it('getMetadata returns null on 404', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(404, null)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    expect(await client.getMetadata(999999)).toBeNull();
+  });
+
+  it('getMetadata throws on non-OK, non-404 response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(500, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.getMetadata(1)).rejects.toThrow(/HTTP 500/);
+  });
+
+  it('getMetadata round-trips nested b1_field_meta including status values', async () => {
+    const meta = fakeMetadata();
+    const fetchImpl = jest.fn(async () => fakeResponse(200, meta)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    const result = await client.getMetadata(119544);
+    expect(result?.b1_field_meta?.ter?.status).toBe('value');
+    expect(result?.b1_field_meta?.benchmark?.status).toBe('officially_absent');
+    expect(result?.metrics?.returns?.ret_1y).toBeCloseTo(0.006);
+    expect(result?.metrics?.volatility).toBeCloseTo(0.148);
+  });
+
+  it('listMetadata builds /v1/metadata with updated_since + page + page_size', async () => {
+    const page: Record<string, unknown> = { count: 14374, page: 2, page_size: 10, items: [] };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, page)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.listMetadata({ updatedSince: '2026-06-01T00:00:00Z', page: 2, pageSize: 10 });
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toContain('/v1/metadata');
+    expect(url).toContain('updated_since=2026-06-01T00%3A00%3A00Z');
+    expect(url).toContain('page=2');
+    expect(url).toContain('page_size=10');
+  });
+
+  it('listMetadata with no args calls /v1/metadata with no query string', async () => {
+    const page: Record<string, unknown> = { count: 0, page: 1, page_size: 50, items: [] };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, page)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.listMetadata();
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/metadata');
+  });
+
+  it('listMetadata throws on non-OK response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(500, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.listMetadata()).rejects.toThrow(/HTTP 500/);
+  });
+
+  it('getMetadata handles schemes with null metrics gracefully', async () => {
+    const meta = fakeMetadata({ metrics: null });
+    const fetchImpl = jest.fn(async () => fakeResponse(200, meta)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    const result = await client.getMetadata(119544);
+    expect(result?.metrics).toBeNull();
+  });
+});

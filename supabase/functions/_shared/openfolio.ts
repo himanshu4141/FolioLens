@@ -175,6 +175,112 @@ export interface ListNavArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Fund Metadata API types (OpenFolio-Data v2.0.0)
+// GET /v1/schemes/{scheme_code}/metadata  → FundMetadata
+// GET /v1/metadata?updated_since=         → MetadataPage
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-field provenance + status from OpenFolio's B1 extraction pipeline.
+ * The field VALUES live as flat properties on FundMetadata; b1_field_meta
+ * holds the diagnostic metadata for each.
+ */
+export type B1FieldStatus =
+  | 'value'            // OpenFolio has a value — use it
+  | 'officially_absent' // Source explicitly has no value — honest null, skip backup
+  | 'not_applicable'   // Field doesn't apply to this fund type — honest null
+  | 'unresolved'       // Not yet processed — fall back to mfdata
+  | 'parse_failed'     // Extraction attempted but failed — fall back to mfdata
+  | 'source_failed';   // Source fetch failed — fall back to mfdata
+
+export interface B1FieldMeta {
+  status: B1FieldStatus;
+  source?: string | null;
+  source_url?: string | null;
+  observed_at?: string | null;
+  reason?: string | null;
+  source_quality?: string | null;
+}
+
+/** Computed returns — all values are decimal CAGRs (0.125 = 12.5%). */
+export interface FundMetadataReturns {
+  ret_1y?: number | null;
+  ret_3y?: number | null;
+  ret_5y?: number | null;
+  /** Since-inception CAGR. */
+  ret_incep?: number | null;
+}
+
+/** Computed analytics from OpenFolio's NAV series. */
+export interface FundMetadataMetrics {
+  /** AUM in crores (already in crores — no conversion needed). */
+  aum_cr?: number | null;
+  aum_date?: string | null;
+  returns?: FundMetadataReturns | null;
+  /** Annualised σ (decimal). */
+  volatility?: number | null;
+  computed_from_nav_date?: string | null;
+}
+
+/** Per-field status map — keys match the B1 flat fields on FundMetadata. */
+export interface FundMetadataB1FieldMeta {
+  ter?: B1FieldMeta;
+  ter_date?: B1FieldMeta;
+  fund_manager?: B1FieldMeta;
+  inception_date?: B1FieldMeta;
+  exit_load?: B1FieldMeta;
+  min_investment?: B1FieldMeta;
+  min_sip?: B1FieldMeta;
+  benchmark?: B1FieldMeta;
+  riskometer?: B1FieldMeta;
+  portfolio_turnover?: B1FieldMeta;
+}
+
+/**
+ * One scheme's full metadata record from OpenFolio.
+ * B1 fields are flat properties; b1_field_meta carries the status for each.
+ */
+export interface FundMetadata {
+  scheme_code: number;
+  name?: string | null;
+  amc?: string | null;
+  // B1 fields (flat):
+  ter?: number | null;
+  ter_date?: string | null;
+  fund_manager?: string | null;
+  inception_date?: string | null;
+  exit_load?: string | null;
+  min_investment?: number | null;
+  min_sip?: number | null;
+  benchmark?: string | null;
+  riskometer?: string | null;
+  portfolio_turnover?: number | null;
+  // Computed metrics:
+  metrics?: FundMetadataMetrics | null;
+  // Per-field extraction metadata:
+  b1_field_meta?: FundMetadataB1FieldMeta | null;
+  b1_source?: string | null;
+  b1_source_url?: string | null;
+  b1_synced_at?: string | null;
+}
+
+/** Paginated response from GET /v1/metadata. */
+export interface MetadataPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: FundMetadata[];
+}
+
+/** Args for GET /v1/metadata (bulk). */
+export interface ListMetadataArgs {
+  /** ISO-8601 datetime — return schemes updated on/after this time. */
+  updatedSince?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Row shape we upsert into fund_portfolio_composition
 // ---------------------------------------------------------------------------
 
@@ -470,6 +576,10 @@ export interface OpenFolioClient {
   getNavLatest(schemeCode: number): Promise<NavLatestEntry | null>;
   /** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
   listNav(args?: ListNavArgs): Promise<NavBulkPage>;
+  /** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
+  getMetadata(schemeCode: number): Promise<FundMetadata | null>;
+  /** Bulk paginated metadata — all schemes, optionally filtered by updated_since. */
+  listMetadata(args?: ListMetadataArgs): Promise<MetadataPage>;
 }
 
 export interface OpenFolioClientConfig extends OpenFolioCredentials {
@@ -543,6 +653,19 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
       })}`;
       const { body } = await request(path);
       return body as NavBulkPage;
+    },
+    async getMetadata(schemeCode) {
+      const { body } = await request(`/v1/schemes/${schemeCode}/metadata`);
+      return body as FundMetadata | null;
+    },
+    async listMetadata(args = {}) {
+      const path = `/v1/metadata${buildQuery({
+        updated_since: args.updatedSince,
+        page: args.page,
+        page_size: args.pageSize,
+      })}`;
+      const { body } = await request(path);
+      return body as MetadataPage;
     },
   };
 }
