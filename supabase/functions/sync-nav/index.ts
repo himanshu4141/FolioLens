@@ -3,8 +3,11 @@
  * into nav_history.
  *
  * Source precedence (highest wins):
- *   OpenFolio /v1/nav/{scheme_code} — AMFI-sourced, authoritative, plan-keyed
- *   mfapi.in  /mf/{scheme_code}     — fallback when OpenFolio returns nothing
+ *   OpenFolio /v1/nav/{scheme_code}?since=<last_known> — AMFI-sourced, plan-keyed.
+ *   Passing `since` makes incremental runs return 1–2 points instead of 3000+,
+ *   eliminating the parallel-fetch timeout that caused mfapi fallback for most
+ *   schemes on full-history requests.
+ *   mfapi.in  /mf/{scheme_code}     — fallback when OpenFolio returns 404 or errors.
  *
  * Schedule: hourly cron (existing pg_cron job, unchanged cadence).
  * Deploy with --no-verify-jwt.
@@ -21,6 +24,13 @@ import {
 const BATCH_SIZE = 500;
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 20_000;
+// Keep OpenFolio request concurrency low — 35 parallel hits cause server-side
+// saturation even for small incremental (since=) fetches.
+const OPENFOLIO_CONCURRENCY = 5;
+
+// Look back 45 days to find per-scheme latest nav_date — covers month-end gaps
+// and ensures we catch any missed windows even with holidays.
+const SINCE_LOOKBACK_DAYS = 45;
 
 Deno.serve(async (req) => {
   const startedAt = Date.now();
@@ -51,7 +61,34 @@ Deno.serve(async (req) => {
     return json({ success: true, message: 'No active funds to sync', navRowsUpserted: 0 });
   }
 
-  // Build the OpenFolio client once — re-used across all parallel scheme fetches.
+  // ── Per-scheme latest nav_date (incremental `since` for OpenFolio) ─────────
+  // Fetching only the recent window keeps the result set small (≤ N × 45 rows).
+  // Schemes outside the window (or with no history) get since=null → full fetch.
+  const lookbackDate = new Date(Date.now() - SINCE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .split('T')[0];
+
+  const { data: recentNavRows } = await supabase
+    .from('nav_history')
+    .select('scheme_code, nav_date')
+    .in('scheme_code', schemeCodes)
+    .gte('nav_date', lookbackDate)
+    .order('nav_date', { ascending: false });
+
+  // Build per-scheme latest map (first occurrence per code = the max, since descending order)
+  const schemeLatest = new Map<number, string>();
+  for (const row of recentNavRows ?? []) {
+    if (!schemeLatest.has(row.scheme_code)) {
+      schemeLatest.set(row.scheme_code, row.nav_date as string);
+    }
+  }
+  console.log(
+    '[sync-nav] since-map: %d schemes have recent history (lookback=%s)',
+    schemeLatest.size,
+    lookbackDate,
+  );
+
+  // ── OpenFolio client ───────────────────────────────────────────────────────
   let openfolioCreds: ReturnType<typeof resolveOpenFolioCredentials> | null = null;
   try {
     openfolioCreds = resolveOpenFolioCredentials(Deno.env);
@@ -63,9 +100,7 @@ Deno.serve(async (req) => {
     ? createOpenFolioClient({ ...openfolioCreds, timeoutMs: FETCH_TIMEOUT_MS })
     : null;
 
-  // -------------------------------------------------------------------------
-  // Per-scheme sync: OpenFolio primary, mfapi fallback
-  // -------------------------------------------------------------------------
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   async function upsertRows(
     rows: { scheme_code: number; nav_date: string; nav: number }[],
@@ -88,26 +123,44 @@ Deno.serve(async (req) => {
   ): Promise<{ newRows: number; source: 'openfolio' | 'mfapi'; error?: string }> {
     // ── OpenFolio (primary) ──────────────────────────────────────────────────
     if (openfolio) {
+      // Pass per-scheme `since` so incremental runs fetch 1–2 points, not 3000+.
+      // since=null for first-ever sync → full history (one-time cost).
+      const since = schemeLatest.get(schemeCode) ?? null;
       try {
-        const series = await openfolio.getNavSeries(schemeCode);
-        const points = series?.points ?? [];
-        if (points.length > 0) {
-          const rows = points.map((p) => ({
-            scheme_code: schemeCode,
-            nav_date: p.date, // already ISO YYYY-MM-DD
-            nav: p.nav,
-          }));
-          const newRows = await upsertRows(rows);
+        const series = await openfolio.getNavSeries(schemeCode, { since });
+
+        if (series === null) {
+          // 404 → scheme genuinely absent from OpenFolio → fall through to mfapi
           console.log(
-            '[sync-nav] scheme %d: OpenFolio %d points → %d new rows',
+            '[sync-nav] scheme %d: OpenFolio 404 (not indexed), trying mfapi',
             schemeCode,
-            points.length,
-            newRows,
           );
-          return { newRows, source: 'openfolio' };
+        } else {
+          const points = series.points ?? [];
+          if (points.length > 0) {
+            const rows = points.map((p) => ({
+              scheme_code: schemeCode,
+              nav_date: p.date,
+              nav: p.nav,
+            }));
+            const newRows = await upsertRows(rows);
+            console.log(
+              '[sync-nav] scheme %d: OpenFolio %d points (since=%s) → %d new rows',
+              schemeCode,
+              points.length,
+              since ?? 'full',
+              newRows,
+            );
+            return { newRows, source: 'openfolio' };
+          }
+          // 200 with empty points → up to date; no mfapi needed
+          console.log(
+            '[sync-nav] scheme %d: OpenFolio up to date (since=%s)',
+            schemeCode,
+            since ?? 'full',
+          );
+          return { newRows: 0, source: 'openfolio' };
         }
-        // 404 (null series) or empty points — fall through to mfapi
-        console.log('[sync-nav] scheme %d: OpenFolio returned nothing, trying mfapi', schemeCode);
       } catch (err) {
         console.warn(
           '[sync-nav] scheme %d: OpenFolio error (%s), trying mfapi',
@@ -139,7 +192,11 @@ Deno.serve(async (req) => {
         isTimeout ? '(timeout)' : '(error)',
         msg,
       );
-      return { newRows: 0, source: 'mfapi', error: `scheme ${schemeCode}: ${isTimeout ? 'fetch timeout' : msg}` };
+      return {
+        newRows: 0,
+        source: 'mfapi',
+        error: `scheme ${schemeCode}: ${isTimeout ? 'fetch timeout' : msg}`,
+      };
     }
 
     if (!res.ok) {
@@ -186,7 +243,13 @@ Deno.serve(async (req) => {
     }
   }
 
-  const results = await Promise.allSettled(schemeCodes.map((code) => syncScheme(code)));
+  // Rate-limit OpenFolio fetches — 35 parallel saturates the upstream server.
+  const results: PromiseSettledResult<Awaited<ReturnType<typeof syncScheme>>>[] = [];
+  for (let i = 0; i < schemeCodes.length; i += OPENFOLIO_CONCURRENCY) {
+    const batch = schemeCodes.slice(i, i + OPENFOLIO_CONCURRENCY);
+    const batchResults = await Promise.allSettled(batch.map((code) => syncScheme(code)));
+    results.push(...batchResults);
+  }
 
   let totalUpserted = 0;
   let openfolioSchemes = 0;
