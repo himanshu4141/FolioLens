@@ -253,6 +253,40 @@ export interface ListMetadataArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Scheme registry API types (mirror of _shared/openfolio.ts — v2.0.0)
+// GET /v1/schemes?amc=&category=&q=
+// ---------------------------------------------------------------------------
+
+/**
+ * One family entry from the scheme registry — same identity shape as
+ * composition but without portfolio payload. Used as a backstop for
+ * scheme_category / amc_name / ISINs.
+ */
+export interface SchemeFamily {
+  family_id: string;
+  plans: OpenFolioPlan[];
+  amc: string;
+  scheme_name: string;
+  sebi_category?: string | null;
+  code_source?: string;
+}
+
+export interface SchemeListPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: SchemeFamily[];
+}
+
+export interface ListSchemesArgs {
+  amc?: string | null;
+  category?: string | null;
+  q?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Credentials (single source of truth, app side)
 // ---------------------------------------------------------------------------
 
@@ -358,6 +392,17 @@ export async function listMetadata(args: ListMetadataArgs = {}): Promise<Metadat
   return body as MetadataPage;
 }
 
+/**
+ * Paginated scheme registry — family-keyed list with sebi_category, amc,
+ * and plan codes/ISINs but no portfolio payload.
+ */
+export async function listSchemes(args: ListSchemesArgs = {}): Promise<SchemeListPage> {
+  const { body } = await request<SchemeListPage>(
+    `/v1/schemes${buildQuery({ amc: args.amc, category: args.category, q: args.q, page: args.page, page_size: args.pageSize })}`,
+  );
+  return body as SchemeListPage;
+}
+
 export const compositionApi = {
   getComposition,
   listComposition,
@@ -366,4 +411,5 @@ export const compositionApi = {
   listNav,
   getMetadata,
   listMetadata,
+  listSchemes,
 };

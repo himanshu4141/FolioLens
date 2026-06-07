@@ -34,6 +34,7 @@ import {
   type CompositionRow,
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
+import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
 
 const PAGE_SIZE = 300; // contract max is 500; 300 keeps page payloads bounded for debt-heavy funds
 const TOP = 50; // top equity holdings / sectors per scheme (mirrors existing top_holdings cap)
@@ -153,12 +154,19 @@ Deno.serve(async (req) => {
     return { error: error?.message ?? null };
   };
 
+  // Registry write-back: update scheme_master.scheme_category + amc_name for
+  // matched schemes (UPDATE-only, nulls skipped, best-effort). Shared factory
+  // with universe-backfill — any change to the upsert logic only needs to land
+  // once in _shared/registry-upsert.ts.
+  const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[openfolio-sync]');
+
   let stats;
   try {
     stats = await runOpenFolioSync({
       client,
       universe,
       upsertRows,
+      upsertSchemeRegistry,
       syncedAt,
       log: (msg) => console.log(msg),
       pageSize: PAGE_SIZE,

@@ -52,6 +52,7 @@ import {
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { readReturnPct } from '@/src/utils/mfdataGuards';
 import {
   BENCHMARK_DISCLOSURE,
   fundDetailBenchmarkOptions,
@@ -955,6 +956,11 @@ function NavHistoryTab({ navHistory }: { navHistory: { date: string; value: numb
 // Technical Details Card
 // ---------------------------------------------------------------------------
 
+function fmtReturn(v: number | null): string {
+  if (v == null) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+}
+
 function TechnicalDetailsCard({
   expenseRatio,
   aumCr,
@@ -968,9 +974,14 @@ function TechnicalDetailsCard({
   minAdditional,
   planType,
   amcName,
-  morningstarRating,
   riskLabel,
   schemeCategory,
+  declaredBenchmarkName,
+  benchmarkIndex,
+  fundManager,
+  portfolioTurnover,
+  terDate,
+  periodReturns,
 }: {
   expenseRatio: number | null;
   aumCr: number | null;
@@ -984,9 +995,14 @@ function TechnicalDetailsCard({
   minAdditional: number | null;
   planType: 'direct' | 'regular' | null;
   amcName: string | null;
-  morningstarRating: number | null;
   riskLabel: string | null;
   schemeCategory: string | null;
+  declaredBenchmarkName: string | null;
+  benchmarkIndex: string | null;
+  fundManager: string | null;
+  portfolioTurnover: number | null;
+  terDate: string | null;
+  periodReturns: unknown;
 }) {
   const { compatible: colors } = useClearLensTokens();
   const ts = useMemo(() => makeTechStyles(colors), [colors]);
@@ -1004,10 +1020,14 @@ function TechnicalDetailsCard({
   // Fund age — accounting for the SEBI direct-plan introduction-date gotcha.
   const ageInfo = useMemo(() => formatFundAge(launchDate), [launchDate]);
 
-  // Star rating display
-  const stars = morningstarRating != null
-    ? `${'★'.repeat(morningstarRating)}${'☆'.repeat(Math.max(0, 5 - morningstarRating))}`
-    : null;
+  const ret1y = readReturnPct(periodReturns, '1y');
+  const ret3y = readReturnPct(periodReturns, '3y');
+  const ret5y = readReturnPct(periodReturns, '5y');
+  const hasReturns = ret1y != null || ret3y != null || ret5y != null;
+  const hasOFMeta = fundManager != null || portfolioTurnover != null || terDate != null;
+  // Fall back to benchmark_index (mfdata) until sync-fund-meta re-populates
+  // declared_benchmark_name via the OpenFolio sweep.
+  const benchmarkDisplay = declaredBenchmarkName ?? benchmarkIndex;
 
   return (
     <View style={[ts.card, ts.clearLensCard]}>
@@ -1057,7 +1077,7 @@ function TechnicalDetailsCard({
         </View>
       </View>
 
-      {/* Third row — plan type + AMC + Morningstar */}
+      {/* Third row — plan type + AMC + declared benchmark */}
       <View style={ts.row}>
         <View style={ts.cell}>
           <Text style={ts.label}>Plan</Text>
@@ -1070,8 +1090,8 @@ function TechnicalDetailsCard({
           <Text style={ts.valueSmall} numberOfLines={2}>{amcName ?? '—'}</Text>
         </View>
         <View style={ts.cell}>
-          <Text style={ts.label}>Morningstar</Text>
-          <Text style={ts.value}>{stars ?? '—'}</Text>
+          <Text style={ts.label}>Benchmark</Text>
+          <Text style={ts.valueSmall} numberOfLines={2}>{benchmarkDisplay ?? '—'}</Text>
         </View>
       </View>
 
@@ -1091,6 +1111,44 @@ function TechnicalDetailsCard({
             <Text style={ts.value}>
               {minAdditional == null ? '—' : `₹${minAdditional.toLocaleString('en-IN')}`}
             </Text>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Fifth row — fund manager + portfolio turnover + TER date (OF-sourced) */}
+      {hasOFMeta ? (
+        <View style={ts.row}>
+          <View style={ts.cell}>
+            <Text style={ts.label}>Manager</Text>
+            <Text style={ts.valueSmall} numberOfLines={2}>{fundManager ?? '—'}</Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>Turnover</Text>
+            <Text style={ts.value}>
+              {portfolioTurnover == null ? '—' : `${portfolioTurnover.toFixed(0)}%`}
+            </Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>TER date</Text>
+            <Text style={ts.value}>{terDate ? formatNavDate(terDate) : '—'}</Text>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Sixth row — period returns (1Y / 3Y / 5Y CAGR) */}
+      {hasReturns ? (
+        <View style={ts.row}>
+          <View style={ts.cell}>
+            <Text style={ts.label}>1Y return</Text>
+            <Text style={ts.value}>{fmtReturn(ret1y)}</Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>3Y return</Text>
+            <Text style={ts.value}>{fmtReturn(ret3y)}</Text>
+          </View>
+          <View style={ts.cell}>
+            <Text style={ts.label}>5Y return</Text>
+            <Text style={ts.value}>{fmtReturn(ret5y)}</Text>
           </View>
         </View>
       ) : null}
@@ -2022,9 +2080,14 @@ function ClearLensFundDetailScreen() {
               minAdditional={data.minAdditional}
               planType={data.planType}
               amcName={data.amcName}
-              morningstarRating={data.morningstarRating}
               riskLabel={data.riskLabel}
               schemeCategory={data.schemeCategory}
+              declaredBenchmarkName={data.declaredBenchmarkName}
+              benchmarkIndex={data.benchmarkIndex}
+              fundManager={data.fundManager}
+              portfolioTurnover={data.portfolioTurnover}
+              terDate={data.terDate}
+              periodReturns={data.periodReturns}
             />
           </>
         )}

@@ -78,6 +78,10 @@ export interface FundDetailData {
   riskLabel: string | null;
   periodReturns: unknown;
   riskRatios: unknown;
+  declaredBenchmarkName: string | null;
+  fundManager: string | null;
+  portfolioTurnover: number | null;
+  terDate: string | null;
 }
 
 interface FundDetailRow {
@@ -247,6 +251,10 @@ export async function fetchFundDetail(
       riskLabel: extended?.risk_label ?? null,
       periodReturns: extended?.period_returns ?? null,
       riskRatios: extended?.risk_ratios ?? null,
+      declaredBenchmarkName: extended?.declared_benchmark_name ?? null,
+      fundManager: extended?.fund_manager ?? null,
+      portfolioTurnover: extended?.portfolio_turnover ?? null,
+      terDate: extended?.ter_date ?? null,
     };
   }
   const currentNav = navHistory[navHistory.length - 1].value;
@@ -298,6 +306,10 @@ export async function fetchFundDetail(
     riskLabel: extended?.risk_label ?? null,
     periodReturns: extended?.period_returns ?? null,
     riskRatios: extended?.risk_ratios ?? null,
+    declaredBenchmarkName: extended?.declared_benchmark_name ?? null,
+    fundManager: extended?.fund_manager ?? null,
+    portfolioTurnover: extended?.portfolio_turnover ?? null,
+    terDate: extended?.ter_date ?? null,
   };
 }
 

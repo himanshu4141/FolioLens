@@ -281,6 +281,42 @@ export interface ListMetadataArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Scheme registry API types (OpenFolio-Data v2.0.0)
+// GET /v1/schemes?amc=&category=&q=  → SchemeListPage
+// Family-keyed (like composition) — reuse resolveSchemeCodes for matching.
+// ---------------------------------------------------------------------------
+
+/**
+ * One family entry from the scheme registry — same identity shape as
+ * composition but without the portfolio payload. Used as a backstop source for
+ * scheme_category / amc_name / ISINs for schemes that lack a composition
+ * disclosure (e.g. new launches, debt-only AMCs with no monthly obligation).
+ */
+export interface SchemeFamily {
+  family_id: string;
+  plans: OpenFolioPlan[];
+  amc: string;
+  scheme_name: string;
+  sebi_category?: string | null;
+  code_source?: string;
+}
+
+export interface SchemeListPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: SchemeFamily[];
+}
+
+export interface ListSchemesArgs {
+  amc?: string | null;
+  category?: string | null;
+  q?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Row shape we upsert into fund_portfolio_composition
 // ---------------------------------------------------------------------------
 
@@ -580,6 +616,13 @@ export interface OpenFolioClient {
   getMetadata(schemeCode: number): Promise<FundMetadata | null>;
   /** Bulk paginated metadata — all schemes, optionally filtered by updated_since. */
   listMetadata(args?: ListMetadataArgs): Promise<MetadataPage>;
+  /**
+   * Paginated scheme registry — family-keyed list with sebi_category, amc,
+   * and plan codes/ISINs but no portfolio payload. Used by the universe
+   * backfill (FL-P6) to enrich scheme_master for schemes outside the
+   * composition universe (new launches, debt-only AMCs, etc.).
+   */
+  listSchemes(args?: ListSchemesArgs): Promise<SchemeListPage>;
 }
 
 export interface OpenFolioClientConfig extends OpenFolioCredentials {
@@ -667,6 +710,17 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
       const { body } = await request(path);
       return body as MetadataPage;
     },
+    async listSchemes(args = {}) {
+      const path = `/v1/schemes${buildQuery({
+        amc: args.amc,
+        category: args.category,
+        q: args.q,
+        page: args.page,
+        page_size: args.pageSize,
+      })}`;
+      const { body } = await request(path);
+      return body as SchemeListPage;
+    },
   };
 }
 
@@ -676,6 +730,20 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
 
 export interface UpsertResult {
   error?: string | null;
+}
+
+/**
+ * Extracted registry fields from an OpenFolio composition/scheme item —
+ * used to enrich `scheme_master` with sebi_category + amc_name.
+ * Only fields with non-null values from OpenFolio are written (callers
+ * skip the row when both are null so existing DB values are preserved).
+ */
+export interface SchemeRegistryRow {
+  scheme_code: number;
+  /** sebi_category → scheme_master.scheme_category */
+  scheme_category: string | null;
+  /** amc → scheme_master.amc_name */
+  amc_name: string | null;
 }
 
 export interface OpenFolioSyncDeps {
@@ -689,6 +757,13 @@ export interface OpenFolioSyncDeps {
    * left coverage partial.
    */
   upsertRows(rows: CompositionRow[]): Promise<UpsertResult>;
+  /**
+   * Optional sink for scheme registry rows extracted from each composition
+   * page. Called once per page (after composition upsert). Allows the edge
+   * function to write sebi_category + amc_name into scheme_master without
+   * a second API pass.
+   */
+  upsertSchemeRegistry?(rows: SchemeRegistryRow[]): Promise<UpsertResult>;
   syncedAt: string;
   log?: (msg: string) => void;
   pageSize?: number;
@@ -713,6 +788,26 @@ export interface OpenFolioSyncStats {
   /** True when the sweep stopped before covering the reported totalCount. */
   truncated: boolean;
   errors: string[];
+}
+
+/**
+ * Extract scheme registry rows (sebi_category + amc_name) from a matched
+ * composition item + its resolved scheme codes. One row per matched code.
+ * Rows where both fields are null are excluded — no point overwriting a
+ * potentially richer existing DB value with two nulls.
+ */
+export function mapCompositionToRegistryRows(
+  item: OpenFolioComposition,
+  matches: SchemeMatch[],
+): SchemeRegistryRow[] {
+  const sebi = item.sebi_category?.trim() || null;
+  const amc = item.amc?.trim() || null;
+  if (sebi === null && amc === null) return [];
+  return matches.map(({ schemeCode }) => ({
+    scheme_code: schemeCode,
+    scheme_category: sebi,
+    amc_name: amc,
+  }));
 }
 
 /**
@@ -794,6 +889,7 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
     );
 
     const pageRows: CompositionRow[] = [];
+    const pageRegistryRows: SchemeRegistryRow[] = [];
     for (const item of items) {
       if (!item) {
         stats.unmatched += 1;
@@ -830,9 +926,29 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
           stats.errors.push(`${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+
+      // Registry write-back: extract sebi_category + amc_name from this item
+      // for all matched codes (date-guard passed = the item is usable).
+      if (deps.upsertSchemeRegistry) {
+        for (const regRow of mapCompositionToRegistryRows(item, matches)) {
+          pageRegistryRows.push(regRow);
+        }
+      }
     }
 
     await flushRows(pageRows);
+
+    // Write registry rows (best-effort: a failure here doesn't abort the sync).
+    if (deps.upsertSchemeRegistry && pageRegistryRows.length > 0) {
+      try {
+        const regResult = await deps.upsertSchemeRegistry(pageRegistryRows);
+        if (regResult?.error) {
+          log(`[openfolio-sync] registry write-back error: ${regResult.error}`);
+        }
+      } catch (err) {
+        log(`[openfolio-sync] registry write-back threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     // Stop when the last page is short or we've covered the reported count.
     if (items.length < pageSize) break;
