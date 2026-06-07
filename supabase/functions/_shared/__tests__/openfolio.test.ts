@@ -1011,6 +1011,22 @@ describe('runOpenFolioSync — upsertSchemeRegistry', () => {
     expect(compositionRows).toHaveLength(1);
   });
 
+  it('continues the sync when upsertSchemeRegistry returns an error (best-effort)', async () => {
+    const compositionRows: CompositionRow[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([
+        pageOf([comp({ plans: [{ plan_code: 100, plan_name: 'P', isins: [] }], sebi_category: 'Equity', amc: 'X' })]),
+      ]),
+      universe: UNI2,
+      syncedAt: SYNCED_AT,
+      upsertRows: async (batch) => { compositionRows.push(...batch); return { error: null }; },
+      upsertSchemeRegistry: async () => ({ error: 'db timeout' }),
+    });
+    // Composition write still succeeds; registry error is logged but doesn't abort
+    expect(stats.upserted).toBe(1);
+    expect(compositionRows).toHaveLength(1);
+  });
+
   it('skips registry write for items that fail the disclosure date guard', async () => {
     const registryRows: SchemeRegistryRow[] = [];
     await runOpenFolioSync({
