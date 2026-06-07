@@ -170,6 +170,89 @@ export interface ListNavArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Fund Metadata API types (mirrors _shared/openfolio.ts)
+// ---------------------------------------------------------------------------
+
+export type B1FieldStatus =
+  | 'value'
+  | 'officially_absent'
+  | 'not_applicable'
+  | 'unresolved'
+  | 'parse_failed'
+  | 'source_failed';
+
+export interface B1FieldMeta {
+  status: B1FieldStatus;
+  source?: string | null;
+  source_url?: string | null;
+  observed_at?: string | null;
+  reason?: string | null;
+  source_quality?: string | null;
+}
+
+export interface FundMetadataReturns {
+  ret_1y?: number | null;
+  ret_3y?: number | null;
+  ret_5y?: number | null;
+  ret_incep?: number | null;
+}
+
+export interface FundMetadataMetrics {
+  aum_cr?: number | null;
+  aum_date?: string | null;
+  returns?: FundMetadataReturns | null;
+  volatility?: number | null;
+  computed_from_nav_date?: string | null;
+}
+
+export interface FundMetadataB1FieldMeta {
+  ter?: B1FieldMeta;
+  ter_date?: B1FieldMeta;
+  fund_manager?: B1FieldMeta;
+  inception_date?: B1FieldMeta;
+  exit_load?: B1FieldMeta;
+  min_investment?: B1FieldMeta;
+  min_sip?: B1FieldMeta;
+  benchmark?: B1FieldMeta;
+  riskometer?: B1FieldMeta;
+  portfolio_turnover?: B1FieldMeta;
+}
+
+export interface FundMetadata {
+  scheme_code: number;
+  name?: string | null;
+  amc?: string | null;
+  ter?: number | null;
+  ter_date?: string | null;
+  fund_manager?: string | null;
+  inception_date?: string | null;
+  exit_load?: string | null;
+  min_investment?: number | null;
+  min_sip?: number | null;
+  benchmark?: string | null;
+  riskometer?: string | null;
+  portfolio_turnover?: number | null;
+  metrics?: FundMetadataMetrics | null;
+  b1_field_meta?: FundMetadataB1FieldMeta | null;
+  b1_source?: string | null;
+  b1_source_url?: string | null;
+  b1_synced_at?: string | null;
+}
+
+export interface MetadataPage {
+  count: number;
+  page: number;
+  page_size: number;
+  items: FundMetadata[];
+}
+
+export interface ListMetadataArgs {
+  updatedSince?: string | null;
+  page?: number;
+  pageSize?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Credentials (single source of truth, app side)
 // ---------------------------------------------------------------------------
 
@@ -261,4 +344,26 @@ export async function listNav(args: ListNavArgs = {}): Promise<NavBulkPage> {
   return body as NavBulkPage;
 }
 
-export const compositionApi = { getComposition, listComposition, getNavSeries, getNavLatest, listNav };
+/** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
+export async function getMetadata(schemeCode: number): Promise<FundMetadata | null> {
+  const { body } = await request<FundMetadata>(`/v1/schemes/${schemeCode}/metadata`);
+  return body;
+}
+
+/** Bulk paginated metadata — all schemes, optionally filtered by updated_since. */
+export async function listMetadata(args: ListMetadataArgs = {}): Promise<MetadataPage> {
+  const { body } = await request<MetadataPage>(
+    `/v1/metadata${buildQuery({ updated_since: args.updatedSince, page: args.page, page_size: args.pageSize })}`,
+  );
+  return body as MetadataPage;
+}
+
+export const compositionApi = {
+  getComposition,
+  listComposition,
+  getNavSeries,
+  getNavLatest,
+  listNav,
+  getMetadata,
+  listMetadata,
+};

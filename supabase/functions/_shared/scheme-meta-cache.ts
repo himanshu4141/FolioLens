@@ -24,6 +24,7 @@
 export interface SchemeMetaCacheRow {
   fund_meta_synced_at: string | null;
   mfdata_family_id: number | null;
+  openfolio_meta_synced_at?: string | null;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -33,11 +34,18 @@ export function isSchemeMetaFresh(
   staleDays: number,
   now: number = Date.now(),
 ): boolean {
-  if (!row || !row.fund_meta_synced_at) return false;
-  // Partial-success guard: if the previous sync got mfapi-only (mfdata
-  // unavailable), `mfdata_family_id` stays null. The fund is then
-  // un-classifiable in `fetch-fund-snapshot`'s holdings path. Always
-  // retry rather than serve a stale partial.
+  if (!row) return false;
+  // OpenFolio path: if recently synced via OpenFolio, the scheme is fresh.
+  // No mfdata_family_id guard needed — OpenFolio metrics are self-contained.
+  if (row.openfolio_meta_synced_at) {
+    const ageDays = (now - new Date(row.openfolio_meta_synced_at).getTime()) / MS_PER_DAY;
+    if (ageDays < staleDays) return true;
+  }
+  // Legacy mfdata path: need both a recent timestamp AND non-null family_id.
+  // The null-family_id guard handles the partial-success bug (audit #6):
+  // if mfdata was down, mfdata_family_id stays null and the fund is
+  // un-classifiable in fetch-fund-snapshot's holdings path.
+  if (!row.fund_meta_synced_at) return false;
   if (row.mfdata_family_id == null) return false;
   const ageDays = (now - new Date(row.fund_meta_synced_at).getTime()) / MS_PER_DAY;
   return ageDays < staleDays;
