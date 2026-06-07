@@ -32,6 +32,7 @@ import {
   type FundMetadata,
 } from '../_shared/openfolio.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
+import { resolveB1Field } from '../_shared/b1-field-resolution.ts';
 
 const META_STALE_DAYS = 7;
 const MFDATA_USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -124,15 +125,6 @@ function needsMfdataBackup(status: B1FieldStatus | undefined): boolean {
   return NEEDS_MFDATA_BACKUP.has(status);
 }
 
-/**
- * Returns true when OpenFolio has a definitive answer (value present, or
- * officially absent/not_applicable). In these cases we do NOT overwrite with
- * mfdata — we respect OpenFolio's authoritative answer.
- */
-function isDefinitive(status: B1FieldStatus | undefined): boolean {
-  return status === 'value' || status === 'officially_absent' || status === 'not_applicable';
-}
-
 // ── Main handler ───────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -176,7 +168,7 @@ Deno.serve(async (req) => {
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
     .from('scheme_master')
-    .select('scheme_code, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at')
+    .select('scheme_code, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios')
     .in('scheme_code', allSchemeCodes);
 
   const now = Date.now();
@@ -186,6 +178,15 @@ Deno.serve(async (req) => {
       .map((r) => r.scheme_code as number),
   );
   const schemeCodes = allSchemeCodes.filter((c) => !freshCodes.has(c));
+
+  // Pre-load existing risk_ratios so we can merge OF volatility without
+  // wiping mfdata beta (used by mfdataGuards.ts → useFundDetail.ts).
+  const existingRiskRatios = new Map<number, Record<string, unknown>>();
+  for (const r of masterRows ?? []) {
+    if (r.risk_ratios != null) {
+      existingRiskRatios.set(r.scheme_code as number, r.risk_ratios as Record<string, unknown>);
+    }
+  }
 
   console.log(
     '[sync-fund-meta] %d active — %d fresh (skipped), %d stale/new (processing)',
@@ -265,32 +266,31 @@ Deno.serve(async (req) => {
       }
 
       // ── 5. Build update payload ───────────────────────────────────────────
-      // Skip entirely if we have nothing useful to write.
-      const hasOfMetrics = ofMeta?.metrics != null;
+      // Use ofMeta (not hasOfMetrics) — a sparse-but-present OF record still
+      // stamps openfolio_meta_synced_at and must not be counted as failed.
       const hasMfdata = mfdata != null;
-      if (!hasOfMetrics && !hasMfdata && !isin) {
+      if (!ofMeta && !hasMfdata && !isin) {
         console.warn('[sync-fund-meta] scheme %d: no data from any source — skipping', schemeCode);
         failed++;
         continue;
       }
 
       const syncedAt = new Date().toISOString();
-      const payload: Record<string, unknown> = {
-        fund_meta_synced_at: syncedAt,
-      };
+      const payload: Record<string, unknown> = { fund_meta_synced_at: syncedAt };
 
       if (isin) payload.isin = isin;
 
-      // ── Metrics from OpenFolio (when available) ───────────────────────────
+      // ── Metrics from OpenFolio (when available), mfdata fallback ─────────
       if (ofMeta) {
+        // openfolio_meta_synced_at is intentionally NOT read by fetch-fund-snapshot:
+        // OF-synced schemes still fall through to mfdata for mfdata_family_id,
+        // keeping the holdings classification path intact.
         payload.openfolio_meta_synced_at = syncedAt;
 
         const metrics = ofMeta.metrics;
         if (metrics) {
-          // aum_cr is already in crores — no conversion needed.
           if (metrics.aum_cr != null) payload.aum_cr = metrics.aum_cr;
 
-          // Build period_returns JSONB from decimal CAGRs.
           const ret = metrics.returns;
           if (ret && Object.values(ret).some((v) => v != null)) {
             const periodReturns: Record<string, number> = {};
@@ -302,7 +302,11 @@ Deno.serve(async (req) => {
           }
 
           if (metrics.volatility != null) {
+            // Merge into existing risk_ratios — preserves mfdata beta used by
+            // mfdataGuards.ts → useFundDetail.ts → ClearLensCompareFundsScreen.
+            const existing = existingRiskRatios.get(schemeCode) ?? {};
             payload.risk_ratios = {
+              ...existing,
               volatility: metrics.volatility,
               ...(metrics.computed_from_nav_date
                 ? { computed_from_nav_date: metrics.computed_from_nav_date }
@@ -310,99 +314,96 @@ Deno.serve(async (req) => {
             };
           }
         }
-
-        // ── B1 fields: OpenFolio primary, mfdata backup per status ────────
-        // For each field: 'value' → use OF; 'officially_absent'/'not_applicable'
-        // → honest null; 'unresolved'/'parse_failed'/'source_failed'/absent → mfdata.
-
-        // expense_ratio (ter):
-        if (isDefinitive(fm.ter?.status)) {
-          payload.expense_ratio = ofMeta.ter ?? null;
-        } else if (mfdata?.expense_ratio != null) {
-          payload.expense_ratio = Number(mfdata.expense_ratio);
+      } else if (mfdata) {
+        if (mfdata.aum != null) {
+          payload.aum_cr = Math.round((mfdata.aum / 10_000_000) * 100) / 100;
         }
+        if (mfdata.returns) payload.period_returns = mfdata.returns;
+        if (mfdata.ratios) payload.risk_ratios = mfdata.ratios;
+      }
 
-        // ter_date:
-        if (isDefinitive(fm.ter_date?.status)) {
-          payload.ter_date = ofMeta.ter_date ?? null;
-        }
-        // No mfdata backup for ter_date (mfdata doesn't have it).
+      // ── B1 fields: OpenFolio primary, mfdata backup per status ───────────
+      // resolveB1Field handles all status variants. When ofMeta is null, fm
+      // fields are all undefined → mfdata backup applies automatically.
+      // Returns undefined to mean "don't write" (preserve existing DB value).
 
-        // fund_manager:
-        if (isDefinitive(fm.fund_manager?.status)) {
-          payload.fund_manager = ofMeta.fund_manager ?? null;
-        }
-        // No mfdata backup for fund_manager (mfdata doesn't have it).
-
-        // launch_date (inception_date):
-        if (isDefinitive(fm.inception_date?.status)) {
-          const d = ofMeta.inception_date;
-          payload.launch_date = d && d.trim().length > 0 ? d.trim() : null;
-        } else if (typeof mfdata?.launch_date === 'string' && mfdata.launch_date.trim().length > 0) {
-          payload.launch_date = mfdata.launch_date.trim();
-        }
-
-        // exit_load:
-        if (isDefinitive(fm.exit_load?.status)) {
-          payload.exit_load = ofMeta.exit_load ?? null;
-        } else if (mfdata?.exit_load != null) {
-          payload.exit_load = mfdata.exit_load;
-        }
-
-        // min_lumpsum (min_investment):
-        if (isDefinitive(fm.min_investment?.status)) {
-          payload.min_lumpsum = ofMeta.min_investment != null ? Math.round(ofMeta.min_investment) : null;
-        } else if (mfdata?.min_lumpsum != null) {
-          payload.min_lumpsum = Math.round(Number(mfdata.min_lumpsum));
-        }
-
-        // min_sip_amount (min_sip):
-        if (isDefinitive(fm.min_sip?.status)) {
-          payload.min_sip_amount = ofMeta.min_sip != null ? Math.round(ofMeta.min_sip) : null;
-        } else if (mfdata?.min_sip != null) {
-          payload.min_sip_amount = Math.round(Number(mfdata.min_sip));
-        }
-
-        // declared_benchmark_name (benchmark):
-        if (isDefinitive(fm.benchmark?.status)) {
-          payload.declared_benchmark_name = ofMeta.benchmark ?? null;
-        } else if (mfdata?.benchmark) {
-          payload.declared_benchmark_name = mfdata.benchmark;
-        }
-
-        // risk_label (riskometer):
-        if (isDefinitive(fm.riskometer?.status)) {
-          payload.risk_label = ofMeta.riskometer ?? null;
-        } else if (mfdata?.risk_label) {
-          payload.risk_label = mfdata.risk_label;
-        }
-
-        // portfolio_turnover:
-        if (isDefinitive(fm.portfolio_turnover?.status)) {
-          payload.portfolio_turnover = ofMeta.portfolio_turnover ?? null;
-        }
-        // No mfdata backup for portfolio_turnover (mfdata doesn't have it).
-      } else {
-        // OpenFolio unavailable — fall back to mfdata for all B1 fields.
-        if (mfdata) {
-          const expense_ratio = mfdata.expense_ratio != null ? Number(mfdata.expense_ratio) : null;
-          if (expense_ratio != null) payload.expense_ratio = expense_ratio;
-          if (mfdata.min_sip != null) payload.min_sip_amount = Math.round(Number(mfdata.min_sip));
-          if (mfdata.min_lumpsum != null) payload.min_lumpsum = Math.round(Number(mfdata.min_lumpsum));
-          if (mfdata.min_additional != null) payload.min_additional = Math.round(Number(mfdata.min_additional));
-          if (typeof mfdata.launch_date === 'string' && mfdata.launch_date.trim().length > 0) {
-            payload.launch_date = mfdata.launch_date.trim();
-          }
-          if (mfdata.exit_load != null) payload.exit_load = mfdata.exit_load;
-          if (mfdata.benchmark) payload.declared_benchmark_name = mfdata.benchmark;
-          if (mfdata.risk_label) payload.risk_label = mfdata.risk_label;
-          if (mfdata.aum != null) {
-            const aumCr = Math.round((mfdata.aum / 10_000_000) * 100) / 100;
-            payload.aum_cr = aumCr;
-          }
-          if (mfdata.returns) payload.period_returns = mfdata.returns;
-          if (mfdata.ratios) payload.risk_ratios = mfdata.ratios;
-        }
+      // expense_ratio (ter):
+      {
+        const v = resolveB1Field<number>(
+          fm.ter?.status, ofMeta?.ter ?? null,
+          mfdata?.expense_ratio != null ? Number(mfdata.expense_ratio) : null,
+        );
+        if (v !== undefined) payload.expense_ratio = v;
+      }
+      // ter_date (no mfdata backup):
+      {
+        const v = resolveB1Field<string>(fm.ter_date?.status, ofMeta?.ter_date ?? null, null);
+        if (v !== undefined) payload.ter_date = v;
+      }
+      // fund_manager (no mfdata backup):
+      {
+        const v = resolveB1Field<string>(fm.fund_manager?.status, ofMeta?.fund_manager ?? null, null);
+        if (v !== undefined) payload.fund_manager = v;
+      }
+      // launch_date (inception_date):
+      {
+        const ofInception = ofMeta?.inception_date?.trim() || null;
+        const mfLaunch =
+          typeof mfdata?.launch_date === 'string' && mfdata.launch_date.trim().length > 0
+            ? mfdata.launch_date.trim()
+            : null;
+        const v = resolveB1Field<string>(fm.inception_date?.status, ofInception, mfLaunch);
+        if (v !== undefined) payload.launch_date = v;
+      }
+      // exit_load:
+      {
+        const v = resolveB1Field<string>(
+          fm.exit_load?.status, ofMeta?.exit_load ?? null, mfdata?.exit_load ?? null,
+        );
+        if (v !== undefined) payload.exit_load = v;
+      }
+      // min_lumpsum (min_investment):
+      {
+        const v = resolveB1Field<number>(
+          fm.min_investment?.status,
+          ofMeta?.min_investment != null ? Math.round(ofMeta.min_investment) : null,
+          mfdata?.min_lumpsum != null ? Math.round(Number(mfdata.min_lumpsum)) : null,
+        );
+        if (v !== undefined) payload.min_lumpsum = v;
+      }
+      // min_sip_amount (min_sip):
+      {
+        const v = resolveB1Field<number>(
+          fm.min_sip?.status,
+          ofMeta?.min_sip != null ? Math.round(ofMeta.min_sip) : null,
+          mfdata?.min_sip != null ? Math.round(Number(mfdata.min_sip)) : null,
+        );
+        if (v !== undefined) payload.min_sip_amount = v;
+      }
+      // declared_benchmark_name (benchmark):
+      {
+        const v = resolveB1Field<string>(
+          fm.benchmark?.status, ofMeta?.benchmark ?? null, mfdata?.benchmark ?? null,
+        );
+        if (v !== undefined) payload.declared_benchmark_name = v;
+      }
+      // risk_label (riskometer):
+      {
+        const v = resolveB1Field<string>(
+          fm.riskometer?.status, ofMeta?.riskometer ?? null, mfdata?.risk_label ?? null,
+        );
+        if (v !== undefined) payload.risk_label = v;
+      }
+      // portfolio_turnover (no mfdata backup):
+      {
+        const v = resolveB1Field<number>(
+          fm.portfolio_turnover?.status, ofMeta?.portfolio_turnover ?? null, null,
+        );
+        if (v !== undefined) payload.portfolio_turnover = v;
+      }
+      // min_additional (mfdata-only, no OF equivalent):
+      if (mfdata?.min_additional != null) {
+        payload.min_additional = Math.round(Number(mfdata.min_additional));
       }
 
       // ── mfdata-exclusive fields (always from mfdata, OpenFolio has none) ─
@@ -428,7 +429,7 @@ Deno.serve(async (req) => {
         console.error('[sync-fund-meta] scheme %d: update error: %s', schemeCode, updateError.message);
         failed++;
       } else {
-        const source = ofError ? 'mfdata' : 'openfolio';
+        const source = ofMeta ? 'openfolio' : 'mfdata';
         console.log(
           '[sync-fund-meta] scheme %d: updated (source=%s er=%s aum=%s ret_1y=%s)',
           schemeCode,
