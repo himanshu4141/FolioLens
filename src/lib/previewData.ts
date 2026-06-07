@@ -812,5 +812,9 @@ export function buildPreviewFundDetail(fundId: string): FundDetailData | null {
     riskLabel: null,
     periodReturns: null,
     riskRatios: null,
+    declaredBenchmarkName: null,
+    fundManager: null,
+    portfolioTurnover: null,
+    terDate: null,
   };
 }

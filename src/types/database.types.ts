@@ -230,6 +230,7 @@ export type Database = {
           exit_load: string | null
           expense_ratio: number | null
           family_name: string | null
+          fund_manager: string | null
           fund_meta_synced_at: string | null
           isin: string | null
           launch_date: string | null
@@ -239,15 +240,18 @@ export type Database = {
           min_lumpsum: number | null
           min_sip_amount: number | null
           morningstar_rating: number | null
+          openfolio_meta_synced_at: string | null
           option_type: string | null
           period_returns: Json | null
           plan_type: string | null
+          portfolio_turnover: number | null
           related_variants: Json | null
           risk_label: string | null
           risk_ratios: Json | null
           scheme_category: string | null
           scheme_code: number
           scheme_name: string
+          ter_date: string | null
           updated_at: string
         }
         Insert: {
@@ -261,6 +265,7 @@ export type Database = {
           exit_load?: string | null
           expense_ratio?: number | null
           family_name?: string | null
+          fund_manager?: string | null
           fund_meta_synced_at?: string | null
           isin?: string | null
           launch_date?: string | null
@@ -270,15 +275,18 @@ export type Database = {
           min_lumpsum?: number | null
           min_sip_amount?: number | null
           morningstar_rating?: number | null
+          openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
           plan_type?: string | null
+          portfolio_turnover?: number | null
           related_variants?: Json | null
           risk_label?: string | null
           risk_ratios?: Json | null
           scheme_category?: string | null
           scheme_code: number
           scheme_name: string
+          ter_date?: string | null
           updated_at?: string
         }
         Update: {
@@ -292,6 +300,7 @@ export type Database = {
           exit_load?: string | null
           expense_ratio?: number | null
           family_name?: string | null
+          fund_manager?: string | null
           fund_meta_synced_at?: string | null
           isin?: string | null
           launch_date?: string | null
@@ -301,15 +310,18 @@ export type Database = {
           min_lumpsum?: number | null
           min_sip_amount?: number | null
           morningstar_rating?: number | null
+          openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
           plan_type?: string | null
+          portfolio_turnover?: number | null
           related_variants?: Json | null
           risk_label?: string | null
           risk_ratios?: Json | null
           scheme_category?: string | null
           scheme_code?: number
           scheme_name?: string
+          ter_date?: string | null
           updated_at?: string
         }
         Relationships: []

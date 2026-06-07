@@ -130,6 +130,26 @@ export function readMfdataRSquared(
   return typeof r2 === 'number' && Number.isFinite(r2) ? r2 : null;
 }
 
+/**
+ * Read a CAGR return for a given horizon from period_returns, returning a
+ * percentage value (e.g. 12.5 means 12.5%) regardless of the blob's source.
+ * Handles two storage formats:
+ *   - OF: ret_1y / ret_3y / ret_5y stored as decimal CAGRs (0.125 → 12.5%)
+ *   - mfdata: return_1y / return_3y / return_5y stored as percentage points (12.5)
+ */
+export function readReturnPct(
+  periodReturns: unknown,
+  key: '1y' | '3y' | '5y',
+): number | null {
+  if (!periodReturns || typeof periodReturns !== 'object') return null;
+  const blob = periodReturns as Record<string, unknown>;
+  const ofVal = blob[`ret_${key}`];
+  if (typeof ofVal === 'number' && Number.isFinite(ofVal)) return ofVal * 100;
+  const mfdataVal = blob[`return_${key}`];
+  if (typeof mfdataVal === 'number' && Number.isFinite(mfdataVal)) return mfdataVal;
+  return null;
+}
+
 /** Pluck a return field (e.g. return_1y) from period_returns blob. */
 export function readMfdataPeriodReturn(
   periodReturns: unknown,

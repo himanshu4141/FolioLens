@@ -7,6 +7,7 @@ import {
   readMfdataPeriodReturn,
   readMfdataRank,
   readMfdataRSquared,
+  readReturnPct,
   SEBI_DIRECT_PLAN_INTRODUCTION_DATE,
 } from '../mfdataGuards';
 
@@ -170,5 +171,54 @@ describe('readMfdataAsOfDate', () => {
     expect(readMfdataAsOfDate(null)).toBeNull();
     expect(readMfdataAsOfDate({ as_of_date: 123 })).toBeNull();
     expect(readMfdataAsOfDate({ as_of_date: '' })).toBeNull();
+  });
+});
+
+describe('readReturnPct', () => {
+  it('reads OF decimal ret_1y and converts to percentage', () => {
+    expect(readReturnPct({ ret_1y: 0.125 }, '1y')).toBeCloseTo(12.5);
+  });
+
+  it('reads OF decimal ret_3y and converts to percentage', () => {
+    expect(readReturnPct({ ret_3y: 0.15 }, '3y')).toBeCloseTo(15.0);
+  });
+
+  it('reads OF decimal ret_5y and converts to percentage', () => {
+    expect(readReturnPct({ ret_5y: -0.05 }, '5y')).toBeCloseTo(-5.0);
+  });
+
+  it('reads mfdata percentage return_1y as-is', () => {
+    expect(readReturnPct({ return_1y: 18.7 }, '1y')).toBeCloseTo(18.7);
+  });
+
+  it('reads mfdata return_3y and return_5y', () => {
+    expect(readReturnPct({ return_3y: 12.0 }, '3y')).toBeCloseTo(12.0);
+    expect(readReturnPct({ return_5y: 9.5 }, '5y')).toBeCloseTo(9.5);
+  });
+
+  it('prefers OF format when both keys present', () => {
+    expect(readReturnPct({ ret_1y: 0.10, return_1y: 15.0 }, '1y')).toBeCloseTo(10.0);
+  });
+
+  it('returns null when key absent', () => {
+    expect(readReturnPct({}, '1y')).toBeNull();
+    expect(readReturnPct({ ret_3y: 0.12 }, '1y')).toBeNull();
+  });
+
+  it('returns null for non-finite values', () => {
+    expect(readReturnPct({ ret_1y: NaN }, '1y')).toBeNull();
+    expect(readReturnPct({ ret_1y: Infinity }, '1y')).toBeNull();
+    expect(readReturnPct({ return_1y: NaN }, '1y')).toBeNull();
+  });
+
+  it('returns null for null/non-object inputs', () => {
+    expect(readReturnPct(null, '1y')).toBeNull();
+    expect(readReturnPct(undefined, '1y')).toBeNull();
+    expect(readReturnPct('string', '1y')).toBeNull();
+    expect(readReturnPct(42, '1y')).toBeNull();
+  });
+
+  it('handles zero return correctly', () => {
+    expect(readReturnPct({ ret_1y: 0 }, '1y')).toBeCloseTo(0);
   });
 });
