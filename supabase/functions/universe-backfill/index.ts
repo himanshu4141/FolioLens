@@ -30,6 +30,12 @@
  * the backfill, trigger `sync-fund-meta` manually before the 7-day window
  * lapses (it will skip OF-only and proceed straight to mfdata for those fields).
  *
+ * Invocation: Returns 202 immediately and runs both phases as a background
+ * task via EdgeRuntime.waitUntil() — the Cloudflare HTTP gateway has a 60s
+ * response timeout, but the Supabase edge runtime keeps the isolate alive
+ * for up to 150s+ after the response is sent. Progress is visible in the
+ * edge-function logs.
+ *
  * Trigger: manual POST (one-time), then kept current by monthly openfolio-sync
  * (composition) and daily sync-fund-meta (held-fund metadata).
  *
@@ -235,95 +241,109 @@ Deno.serve(async (req) => {
   }
 
   const supabase = createServiceClient();
-  const universe = await loadFullUniverse(supabase);
-  console.log(
-    '[universe-backfill] universe loaded — %d scheme codes, %d ISIN keys',
-    universe.knownCodes.size,
-    universe.isinToCode.size,
-  );
 
-  const syncedAt = new Date().toISOString();
-  const result: Record<string, unknown> = { success: true, phase };
+  // Run the long work in a background task. The Cloudflare HTTP gateway has a
+  // ~60s response timeout; EdgeRuntime.waitUntil() keeps the Deno isolate alive
+  // after the 202 response is sent so composition + metadata can finish
+  // (typically 2-5 min for the full AMFI universe).
+  // deno-lint-ignore no-explicit-any
+  const runtime = (globalThis as any).EdgeRuntime;
 
-  // ── Composition phase ────────────────────────────────────────────────────
-  if (phase === 'composition' || phase === 'both') {
-    const upsertRows = async (rows: CompositionRow[]) => {
-      const { error } = await supabase
-        .from('fund_portfolio_composition')
-        .upsert(rows, { onConflict: 'scheme_code,portfolio_date,source' });
-      return { error: error?.message ?? null };
-    };
-
-    const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[universe-backfill]');
-
-    let compStats;
+  const workPromise = (async () => {
     try {
-      compStats = await runOpenFolioSync({
-        client,
-        universe,
-        upsertRows,
-        upsertSchemeRegistry,
-        syncedAt,
-        log: (msg) => console.log(msg),
-        pageSize: PAGE_SIZE,
-        top: TOP,
-        maxPages: MAX_PAGES,
-        updatedSince: null, // full backfill — no date filter
-      });
-    } catch (err) {
-      console.error('[universe-backfill] composition fatal: %s', String(err));
-      return json({ success: false, error: String(err) }, { status: 500 });
-    }
+      const universe = await loadFullUniverse(supabase);
+      console.log(
+        '[universe-backfill] universe loaded — %d scheme codes, %d ISIN keys',
+        universe.knownCodes.size,
+        universe.isinToCode.size,
+      );
 
-    console.log(
-      '[universe-backfill] composition done — upserted=%d matched_code=%d matched_isin=%d unmatched=%d failed=%d',
-      compStats.upserted,
-      compStats.matchedByCode,
-      compStats.matchedByIsin,
-      compStats.unmatched,
-      compStats.failed,
-    );
-    result.composition = compStats;
-  }
+      const syncedAt = new Date().toISOString();
 
-  // ── Metadata phase ───────────────────────────────────────────────────────
-  if (phase === 'metadata' || phase === 'both') {
-    let metaResult;
-    try {
-      metaResult = await runMetadataBackfill(
-        supabase,
-        client,
-        universe.knownCodes,
-        syncedAt,
-        (msg) => console.log(msg),
+      // ── Composition phase ────────────────────────────────────────────────────
+      if (phase === 'composition' || phase === 'both') {
+        const upsertRows = async (rows: CompositionRow[]) => {
+          const { error } = await supabase
+            .from('fund_portfolio_composition')
+            .upsert(rows, { onConflict: 'scheme_code,portfolio_date,source' });
+          return { error: error?.message ?? null };
+        };
+
+        const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[universe-backfill]');
+
+        let compStats;
+        try {
+          compStats = await runOpenFolioSync({
+            client,
+            universe,
+            upsertRows,
+            upsertSchemeRegistry,
+            syncedAt,
+            log: (msg) => console.log(msg),
+            pageSize: PAGE_SIZE,
+            top: TOP,
+            maxPages: MAX_PAGES,
+            updatedSince: null, // full backfill — no date filter
+          });
+        } catch (err) {
+          console.error('[universe-backfill] composition fatal: %s', String(err));
+          return;
+        }
+
+        console.log(
+          '[universe-backfill] composition done — upserted=%d matched_code=%d matched_isin=%d unmatched=%d failed=%d',
+          compStats.upserted,
+          compStats.matchedByCode,
+          compStats.matchedByIsin,
+          compStats.unmatched,
+          compStats.failed,
+        );
+      }
+
+      // ── Metadata phase ───────────────────────────────────────────────────────
+      if (phase === 'metadata' || phase === 'both') {
+        let metaResult;
+        try {
+          metaResult = await runMetadataBackfill(
+            supabase,
+            client,
+            universe.knownCodes,
+            syncedAt,
+            (msg) => console.log(msg),
+          );
+        } catch (err) {
+          console.error('[universe-backfill] metadata fatal: %s', String(err));
+          return;
+        }
+
+        console.log(
+          '[universe-backfill] metadata done — written=%d skipped=%d failed=%d',
+          metaResult.written,
+          metaResult.skipped,
+          metaResult.failed,
+        );
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      console.log('[universe-backfill] completed phase=%s elapsed_ms=%d', phase, elapsedMs);
+
+      await trackServerEventAwait(
+        'sync_completed',
+        {
+          job: 'universe-backfill',
+          phase,
+          elapsed_ms: elapsedMs,
+        },
+        'system:universe-backfill',
       );
     } catch (err) {
-      console.error('[universe-backfill] metadata fatal: %s', String(err));
-      return json({ success: false, error: String(err) }, { status: 500 });
+      console.error('[universe-backfill] background task error: %s', String(err));
     }
+  })();
 
-    console.log(
-      '[universe-backfill] metadata done — written=%d skipped=%d failed=%d',
-      metaResult.written,
-      metaResult.skipped,
-      metaResult.failed,
-    );
-    result.metadata = metaResult;
+  if (runtime?.waitUntil) {
+    runtime.waitUntil(workPromise);
   }
 
-  const elapsedMs = Date.now() - startedAt;
-  result.elapsedMs = elapsedMs;
-  console.log('[universe-backfill] completed phase=%s elapsed_ms=%d', phase, elapsedMs);
-
-  await trackServerEventAwait(
-    'sync_completed',
-    {
-      job: 'universe-backfill',
-      phase,
-      elapsed_ms: elapsedMs,
-    },
-    'system:universe-backfill',
-  );
-
-  return json(result);
+  return json({ success: true, status: 'started', phase });
 });
