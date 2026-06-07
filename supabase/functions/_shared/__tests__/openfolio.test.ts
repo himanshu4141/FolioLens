@@ -3,6 +3,7 @@ import {
   compositionSourceRank,
   isPlausibleDisclosureDate,
   mapCompositionToRow,
+  mapCompositionToRegistryRows,
   resolveSchemeCodes,
   resolveOpenFolioCredentials,
   createOpenFolioClient,
@@ -13,6 +14,10 @@ import {
   type NavSeries,
   type OpenFolioComposition,
   type OpenFolioCompositionPage,
+  type SchemeFamily,
+  type SchemeListPage,
+  type SchemeMatch,
+  type SchemeRegistryRow,
   type SchemeUniverse,
 } from '../openfolio';
 
@@ -889,5 +894,184 @@ describe('getMetadata / listMetadata', () => {
     const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
     const result = await client.getMetadata(119544);
     expect(result?.metrics).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3: mapCompositionToRegistryRows
+// ---------------------------------------------------------------------------
+
+describe('mapCompositionToRegistryRows', () => {
+  const matches: SchemeMatch[] = [
+    { schemeCode: 100, matchedBy: 'plan_code' },
+    { schemeCode: 200, matchedBy: 'isin' },
+  ];
+
+  it('returns one row per match with sebi_category + amc when both are present', () => {
+    const item = comp({ sebi_category: 'Flexi Cap Fund', amc: 'PPFAS Mutual Fund' });
+    const rows = mapCompositionToRegistryRows(item, matches);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({ scheme_code: 100, scheme_category: 'Flexi Cap Fund', amc_name: 'PPFAS Mutual Fund' });
+    expect(rows[1]).toEqual({ scheme_code: 200, scheme_category: 'Flexi Cap Fund', amc_name: 'PPFAS Mutual Fund' });
+  });
+
+  it('returns rows when only amc is non-null (partial data)', () => {
+    const item = comp({ sebi_category: null, amc: 'HDFC Mutual Fund' });
+    const rows = mapCompositionToRegistryRows(item, matches);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ scheme_category: null, amc_name: 'HDFC Mutual Fund' });
+  });
+
+  it('returns rows when only sebi_category is non-null', () => {
+    const item = comp({ sebi_category: 'Debt: Corporate Bond Fund', amc: '' });
+    const rows = mapCompositionToRegistryRows(item, matches);
+    // amc is empty string → trimmed to '' → null; sebi_category is non-null → still write
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ scheme_category: 'Debt: Corporate Bond Fund', amc_name: null });
+  });
+
+  it('returns [] when both sebi_category and amc are null/empty — preserves existing DB values', () => {
+    const item = comp({ sebi_category: null, amc: '' });
+    expect(mapCompositionToRegistryRows(item, matches)).toEqual([]);
+  });
+
+  it('returns [] when matches array is empty', () => {
+    expect(mapCompositionToRegistryRows(comp(), [])).toEqual([]);
+  });
+
+  it('trims whitespace from sebi_category and amc', () => {
+    const item = comp({ sebi_category: '  Equity  ', amc: '  Axis  ' });
+    const rows = mapCompositionToRegistryRows(item, [{ schemeCode: 100, matchedBy: 'plan_code' }]);
+    expect(rows[0]).toEqual({ scheme_code: 100, scheme_category: 'Equity', amc_name: 'Axis' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3: runOpenFolioSync with upsertSchemeRegistry
+// ---------------------------------------------------------------------------
+
+describe('runOpenFolioSync — upsertSchemeRegistry', () => {
+  const UNI2: SchemeUniverse = {
+    knownCodes: new Set([100, 200]),
+    isinToCode: new Map(),
+  };
+
+  it('calls upsertSchemeRegistry with non-null rows extracted from matched items', async () => {
+    const registryRows: SchemeRegistryRow[] = [];
+    await runOpenFolioSync({
+      client: clientServing([
+        pageOf([
+          comp({ plans: [{ plan_code: 100, plan_name: 'P', isins: [] }], sebi_category: 'Flexi Cap', amc: 'PPFAS' }),
+          comp({ plans: [{ plan_code: 200, plan_name: 'P', isins: [] }], sebi_category: null, amc: '' }),
+          comp({ plans: [{ plan_code: 999, plan_name: 'P', isins: [] }], sebi_category: 'Equity', amc: 'X' }), // unmatched
+        ]),
+      ]),
+      universe: UNI2,
+      syncedAt: SYNCED_AT,
+      upsertRows: async () => ({ error: null }),
+      upsertSchemeRegistry: async (rows) => {
+        registryRows.push(...rows);
+        return { error: null };
+      },
+    });
+    // Scheme 100 → has category + amc → produces row
+    // Scheme 200 → both null/empty → excluded by mapCompositionToRegistryRows
+    // Scheme 999 → unmatched → not written
+    expect(registryRows).toHaveLength(1);
+    expect(registryRows[0]).toEqual({ scheme_code: 100, scheme_category: 'Flexi Cap', amc_name: 'PPFAS' });
+  });
+
+  it('does not call upsertSchemeRegistry when the dep is not provided', async () => {
+    const registryRows: SchemeRegistryRow[] = [];
+    await runOpenFolioSync({
+      client: clientServing([
+        pageOf([comp({ plans: [{ plan_code: 100, plan_name: 'P', isins: [] }] })]),
+      ]),
+      universe: UNI2,
+      syncedAt: SYNCED_AT,
+      upsertRows: async () => ({ error: null }),
+      // No upsertSchemeRegistry — must not throw or error.
+    });
+    expect(registryRows).toHaveLength(0);
+  });
+
+  it('continues the sync even when upsertSchemeRegistry throws', async () => {
+    const compositionRows: CompositionRow[] = [];
+    const stats = await runOpenFolioSync({
+      client: clientServing([
+        pageOf([comp({ plans: [{ plan_code: 100, plan_name: 'P', isins: [] }], sebi_category: 'Equity', amc: 'X' })]),
+      ]),
+      universe: UNI2,
+      syncedAt: SYNCED_AT,
+      upsertRows: async (batch) => { compositionRows.push(...batch); return { error: null }; },
+      upsertSchemeRegistry: async () => { throw new Error('registry write timeout'); },
+    });
+    // Composition write should still succeed
+    expect(stats.upserted).toBe(1);
+    expect(compositionRows).toHaveLength(1);
+  });
+
+  it('skips registry write for items that fail the disclosure date guard', async () => {
+    const registryRows: SchemeRegistryRow[] = [];
+    await runOpenFolioSync({
+      client: clientServing([
+        pageOf([
+          comp({ plans: [{ plan_code: 100, plan_name: 'P', isins: [] }], disclosure_date: '2055-08-18', sebi_category: 'Equity', amc: 'X' }),
+          comp({ plans: [{ plan_code: 200, plan_name: 'P', isins: [] }], disclosure_date: '2026-04-30', sebi_category: 'Debt', amc: 'Y' }),
+        ]),
+      ]),
+      universe: UNI2,
+      syncedAt: SYNCED_AT,
+      upsertRows: async () => ({ error: null }),
+      upsertSchemeRegistry: async (rows) => { registryRows.push(...rows); return { error: null }; },
+    });
+    // Scheme 100 has a bad date → skipped before registry write
+    expect(registryRows.every((r) => r.scheme_code === 200)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3: listSchemes client method
+// ---------------------------------------------------------------------------
+
+describe('createOpenFolioClient — listSchemes', () => {
+  function fakeSchemeFamily(): SchemeFamily {
+    return {
+      family_id: 'OF-abc123',
+      plans: [{ plan_code: 122639, plan_name: 'Direct Growth', isins: ['INF879O01027'] }],
+      amc: 'PPFAS Mutual Fund',
+      scheme_name: 'Parag Parikh Flexi Cap Fund',
+      sebi_category: 'Flexi Cap Fund',
+      code_source: 'hardcoded',
+    };
+  }
+
+  it('listSchemes calls /v1/schemes with amc/category/q/page/page_size', async () => {
+    const page: SchemeListPage = { count: 1, page: 1, page_size: 50, items: [fakeSchemeFamily()] };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, page)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+    const result = await client.listSchemes({ amc: 'PPFAS', category: 'Flexi Cap Fund', page: 1, pageSize: 50 });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].family_id).toBe('OF-abc123');
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toContain('/v1/schemes');
+    expect(url).toContain('amc=PPFAS');
+    expect(url).toContain('category=Flexi+Cap+Fund');
+    expect((init as RequestInit).headers).toMatchObject({ 'X-API-Key': 'KEY' });
+  });
+
+  it('listSchemes with no args calls /v1/schemes with no query string', async () => {
+    const page: SchemeListPage = { count: 0, page: 1, page_size: 100, items: [] };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, page)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await client.listSchemes();
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/schemes');
+  });
+
+  it('listSchemes throws on non-OK response', async () => {
+    const fetchImpl = jest.fn(async () => fakeResponse(503, {})) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl });
+    await expect(client.listSchemes()).rejects.toThrow(/HTTP 503/);
   });
 });

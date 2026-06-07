@@ -32,6 +32,7 @@ import {
   resolveOpenFolioCredentials,
   runOpenFolioSync,
   type CompositionRow,
+  type SchemeRegistryRow,
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
 
@@ -153,12 +154,39 @@ Deno.serve(async (req) => {
     return { error: error?.message ?? null };
   };
 
+  // Registry write-back: update scheme_master.scheme_category + amc_name for
+  // matched schemes. Uses individual UPDATE (not upsert) so we only touch rows
+  // that already exist in scheme_master — we never insert phantom scheme_master
+  // rows. Nulls from OpenFolio are skipped (mapCompositionToRegistryRows
+  // excludes rows where both fields are null, so we still write when one is set).
+  const upsertSchemeRegistry = async (rows: SchemeRegistryRow[]) => {
+    for (const row of rows) {
+      const patch: Record<string, string | null> = {};
+      if (row.scheme_category !== null) patch.scheme_category = row.scheme_category;
+      if (row.amc_name !== null) patch.amc_name = row.amc_name;
+      if (Object.keys(patch).length === 0) continue;
+      const { error } = await supabase
+        .from('scheme_master')
+        .update(patch)
+        .eq('scheme_code', row.scheme_code);
+      if (error) {
+        console.error(
+          '[openfolio-sync] registry update failed scheme=%d: %s',
+          row.scheme_code,
+          error.message,
+        );
+      }
+    }
+    return { error: null };
+  };
+
   let stats;
   try {
     stats = await runOpenFolioSync({
       client,
       universe,
       upsertRows,
+      upsertSchemeRegistry,
       syncedAt,
       log: (msg) => console.log(msg),
       pageSize: PAGE_SIZE,
