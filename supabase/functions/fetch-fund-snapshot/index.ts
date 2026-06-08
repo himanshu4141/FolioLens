@@ -42,6 +42,8 @@ import {
   isEquityPctPlausible,
   deriveSchemeCategoryFromName,
   isGenericSchemeCategory,
+  resolveSebiCategory,
+  broadCategoryFromSebi,
 } from '../_shared/portfolio-utils.ts';
 import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
@@ -341,11 +343,21 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
     payload.amc_slug = mfdata.amc_slug ?? null;
     payload.period_returns = mfdata.returns ?? null;
     payload.risk_ratios = mfdata.ratios ?? null;
-    if (mfdata.category && !existing?.scheme_category) {
-      // Only set scheme_category when scheme_master doesn't already have one,
-      // so we don't overwrite a richer cron-set value.
-      payload.scheme_category = mfdata.category;
-    }
+  }
+
+  // Two-field category model (2026-05-29). Resolve the authoritative granular
+  // SEBI sub-bucket (mfdata.category when specific, else from scheme_name) and
+  // normalise scheme_category to the broad asset class. This supersedes the old
+  // "set scheme_category only if empty" guard — sebi_category is now the
+  // granular source of truth and scheme_category is strictly broad.
+  const sebiCategory = resolveSebiCategory(
+    mfdata?.category ?? existing?.scheme_category ?? null,
+    (existing?.scheme_name as string | null) ?? null,
+  );
+  if (sebiCategory) {
+    payload.sebi_category = sebiCategory;
+    const broad = broadCategoryFromSebi(sebiCategory);
+    if (broad) payload.scheme_category = broad;
   }
 
   const { error } = await supabase.from('scheme_master').update(payload).eq('scheme_code', schemeCode);
@@ -565,7 +577,13 @@ async function seedCategoryRules(
     raw_debt_holdings: null,
     source: 'category_rules',
     synced_at: new Date().toISOString(),
-  }, { onConflict: 'scheme_code,portfolio_date,source', ignoreDuplicates: true });
+    // Update (not ignore) on conflict: category_rules is a deterministic
+    // function of (scheme_category, scheme_name), so a re-run is always
+    // equal-or-better, never staler. ignoreDuplicates:true used to silently
+    // skip the write, which trapped funds on the stale 38/33/29 flexi-cap
+    // proxy even after PR #188 taught getCategoryRules to derive the real
+    // sub-bucket from scheme_name (e.g. DSP Mid Cap → 8/75/17).
+  }, { onConflict: 'scheme_code,portfolio_date,source', ignoreDuplicates: false });
 
   if (error) {
     console.error('[fetch-fund-snapshot] scheme=%d category-rules seed error: %s', schemeCode, error.message);

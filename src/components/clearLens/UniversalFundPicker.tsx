@@ -37,7 +37,7 @@ import {
   type SchemeSearchResult,
 } from '@/src/utils/fundSearch';
 
-const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 180;
 const PAGE_SIZE = 25;
 
 export interface UniversalFundPickerProps {
@@ -126,12 +126,26 @@ export function UniversalFundPicker({
         key={scheme.schemeCode}
         style={[
           styles.row,
+          isSelected && styles.rowSelected,
           disabled && styles.rowDisabled,
         ]}
         disabled={disabled}
         onPress={() => onToggle(scheme)}
         activeOpacity={0.76}
+        accessibilityRole={mode === 'multi' ? 'checkbox' : 'radio'}
+        accessibilityState={{ checked: isSelected, disabled: !!disabled }}
       >
+        {/* Toggle sits on the LEFT, colocated with the name the user reads, so
+            on wide desktop rows you don't have to track all the way right. */}
+        {mode === 'multi' ? (
+          <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
+            {isSelected && <Ionicons name="checkmark" size={14} color={tokens.colors.textOnDark} />}
+          </View>
+        ) : (
+          <View style={[styles.radio, isSelected && styles.radioActive]}>
+            {isSelected && <View style={styles.radioInner} />}
+          </View>
+        )}
         <View style={styles.rowLeft}>
           <Text
             style={[styles.rowName, disabled && styles.rowNameDisabled]}
@@ -145,15 +159,6 @@ export function UniversalFundPicker({
             </Text>
           )}
         </View>
-        {mode === 'multi' ? (
-          <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
-            {isSelected && <Ionicons name="checkmark" size={14} color={tokens.colors.textOnDark} />}
-          </View>
-        ) : (
-          <View style={[styles.radio, isSelected && styles.radioActive]}>
-            {isSelected && <View style={styles.radioInner} />}
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -180,7 +185,7 @@ export function UniversalFundPicker({
             />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search by fund name…"
+              placeholder="Search fund, AMC or category…"
               placeholderTextColor={tokens.colors.textTertiary}
               value={rawQuery}
               onChangeText={setRawQuery}
@@ -332,6 +337,7 @@ function makeStyles(tokens: ClearLensTokens) {
       borderBottomWidth: 1,
       borderBottomColor: cl.borderLight,
     },
+    rowSelected: { backgroundColor: cl.surfaceSoft },
     rowDisabled: { opacity: 0.5 },
     rowLeft: { flex: 1, gap: 2 },
     rowName: { ...ClearLensTypography.body, color: cl.navy },

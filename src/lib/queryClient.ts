@@ -68,7 +68,14 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // `??`, but bumping here gets every user the correct per-fund stamp
 // on the very next launch instead of waiting for the persisted cache
 // to expire (~24h).
-export const __BUSTER__ = 'v5';
+//
+// v6 (2026-05-29): the `scheme_master` SELECT (useSchemeMaster +
+// schemeMasterRepo) gained the `sebi_category` column for the
+// two-field category model. Persisted v5 entries lack the field, so
+// the Compare screen's like-for-like sub-category check would read
+// `undefined` and silently fall back to the name parser until the
+// cache expired. Bump discards the old shape on next launch.
+export const __BUSTER__ = 'v6';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

@@ -692,7 +692,13 @@ Deno.serve(async (req) => {
       .from('fund_portfolio_composition')
       .upsert(categoryRows, {
         onConflict: 'scheme_code,portfolio_date,source',
-        ignoreDuplicates: true, // never overwrite existing category_rules with stale approximation
+        // Update (not ignore) on conflict. category_rules is a deterministic
+        // function of (scheme_category, scheme_name) — a re-run is always
+        // equal-or-better, never staler. ignoreDuplicates:true used to skip
+        // the write, trapping funds on the stale 38/33/29 flexi-cap proxy
+        // even after PR #188 taught getCategoryRules to derive the real
+        // sub-bucket from scheme_name (e.g. DSP Mid Cap → 8/75/17).
+        ignoreDuplicates: false,
       });
 
     if (catError) {

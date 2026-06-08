@@ -144,67 +144,72 @@ async function runMetadataBackfill(
         `(count=${result?.count ?? '?'})`,
     );
 
+    // Build (schemeCode, patch) pairs for matched items, then flush in parallel
+    // batches of 50 so PgBouncer isn't overwhelmed. Sequential per-item was
+    // ~6s/page (300 × 20ms); batched brings it to ~200ms/page, fitting the
+    // full universe inside the Supabase isolate keep-alive window.
+    const pageWork: Array<{ schemeCode: number; patch: Record<string, unknown> }> = [];
     for (const item of items) {
       if (!item?.scheme_code || !knownCodes.has(item.scheme_code)) {
         skipped += 1;
         continue;
       }
-      try {
-        const b1 = item.b1_field_meta;
-        const patch: Record<string, unknown> = {
-          openfolio_meta_synced_at: syncedAt,
-        };
+      const b1 = item.b1_field_meta;
+      const patch: Record<string, unknown> = { openfolio_meta_synced_at: syncedAt };
 
-        // Metrics — always write if present (no status gate; these are computed)
-        if (item.metrics?.aum_cr != null) patch.aum_cr = item.metrics.aum_cr;
-        if (item.metrics?.returns) {
-          const ret = item.metrics.returns;
-          const pr: Record<string, number> = {};
-          if (ret.ret_1y != null) pr.ret_1y = ret.ret_1y;
-          if (ret.ret_3y != null) pr.ret_3y = ret.ret_3y;
-          if (ret.ret_5y != null) pr.ret_5y = ret.ret_5y;
-          if (Object.keys(pr).length > 0) patch.period_returns = pr;
-        }
+      // Metrics — always write if present (no status gate; these are computed)
+      if (item.metrics?.aum_cr != null) patch.aum_cr = item.metrics.aum_cr;
+      if (item.metrics?.returns) {
+        const ret = item.metrics.returns;
+        const pr: Record<string, number> = {};
+        if (ret.ret_1y != null) pr.ret_1y = ret.ret_1y;
+        if (ret.ret_3y != null) pr.ret_3y = ret.ret_3y;
+        if (ret.ret_5y != null) pr.ret_5y = ret.ret_5y;
+        if (Object.keys(pr).length > 0) patch.period_returns = pr;
+      }
 
-        // B1 fields — write only when status = 'value'
-        const ter = resolveB1(b1?.ter?.status, item.ter);
-        if (ter != null) patch.expense_ratio = ter;
-        const terDate = resolveB1(b1?.ter_date?.status, item.ter_date);
-        if (terDate != null) patch.ter_date = terDate;
-        const mgr = resolveB1(b1?.fund_manager?.status, item.fund_manager);
-        if (mgr != null) patch.fund_manager = mgr;
-        const bench = resolveB1(b1?.benchmark?.status, item.benchmark);
-        if (bench != null) patch.declared_benchmark_name = bench;
-        const risko = resolveB1(b1?.riskometer?.status, item.riskometer);
-        if (risko != null) patch.risk_label = risko;
-        const pt = resolveB1(b1?.portfolio_turnover?.status, item.portfolio_turnover);
-        if (pt != null) patch.portfolio_turnover = pt;
-        const xl = resolveB1(b1?.exit_load?.status, item.exit_load);
-        if (xl != null) patch.exit_load = xl;
-        const minSip = resolveB1(b1?.min_sip?.status, item.min_sip);
-        if (minSip != null) patch.min_sip_amount = minSip;
-        const minInv = resolveB1(b1?.min_investment?.status, item.min_investment);
-        if (minInv != null) patch.min_lumpsum = minInv;
-        const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
-        if (incep != null) patch.launch_date = incep;
+      // B1 fields — write only when status = 'value'
+      const ter = resolveB1(b1?.ter?.status, item.ter);
+      if (ter != null) patch.expense_ratio = ter;
+      const terDate = resolveB1(b1?.ter_date?.status, item.ter_date);
+      if (terDate != null) patch.ter_date = terDate;
+      const mgr = resolveB1(b1?.fund_manager?.status, item.fund_manager);
+      if (mgr != null) patch.fund_manager = mgr;
+      const bench = resolveB1(b1?.benchmark?.status, item.benchmark);
+      if (bench != null) patch.declared_benchmark_name = bench;
+      const risko = resolveB1(b1?.riskometer?.status, item.riskometer);
+      if (risko != null) patch.risk_label = risko;
+      const pt = resolveB1(b1?.portfolio_turnover?.status, item.portfolio_turnover);
+      if (pt != null) patch.portfolio_turnover = pt;
+      const xl = resolveB1(b1?.exit_load?.status, item.exit_load);
+      if (xl != null) patch.exit_load = xl;
+      const minSip = resolveB1(b1?.min_sip?.status, item.min_sip);
+      if (minSip != null) patch.min_sip_amount = minSip;
+      const minInv = resolveB1(b1?.min_investment?.status, item.min_investment);
+      if (minInv != null) patch.min_lumpsum = minInv;
+      const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
+      if (incep != null) patch.launch_date = incep;
 
-        const { error } = await supabase
-          .from('scheme_master')
-          .update(patch)
-          .eq('scheme_code', item.scheme_code);
+      pageWork.push({ schemeCode: item.scheme_code, patch });
+    }
+
+    const BATCH = 50;
+    for (let i = 0; i < pageWork.length; i += BATCH) {
+      const batch = pageWork.slice(i, i + BATCH);
+      const results = await Promise.all(
+        batch.map(({ schemeCode, patch }) =>
+          supabase.from('scheme_master').update(patch).eq('scheme_code', schemeCode)
+            .then(({ error }) => ({ schemeCode, error }))
+            .catch((err: unknown) => ({ schemeCode, error: { message: String(err) } })),
+        ),
+      );
+      for (const { schemeCode, error } of results) {
         if (error) {
           failed += 1;
-          log(
-            `[universe-backfill] metadata update failed scheme=${item.scheme_code}: ${error.message}`,
-          );
+          log(`[universe-backfill] metadata update failed scheme=${schemeCode}: ${error.message}`);
         } else {
           written += 1;
         }
-      } catch (err) {
-        failed += 1;
-        log(
-          `[universe-backfill] metadata item error scheme=${item?.scheme_code}: ${String(err)}`,
-        );
       }
     }
 

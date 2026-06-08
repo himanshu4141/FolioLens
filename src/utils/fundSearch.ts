@@ -15,9 +15,39 @@ export interface SchemeSearchResult {
   schemeCode: number;
   schemeName: string;
   schemeCategory: string | null;
+  sebiCategory: string | null;
   amcName: string | null;
   planType: 'direct' | 'regular' | null;
   isin: string | null;
+}
+
+/**
+ * Split a free-text query into search tokens: lowercased, stripped of
+ * punctuation (so "&", "-", "." don't break the PostgREST or-filter syntax),
+ * and dropping fragments under 2 chars. "Large & Mid Cap Direct" →
+ * ["large", "mid", "cap", "direct"]. Exported for tests.
+ */
+export function tokenizeQuery(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-z0-9]/g, ''))
+    .filter((t) => t.length >= 2);
+}
+
+const SEARCH_COLUMNS =
+  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin';
+
+function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
+  return {
+    schemeCode: row.scheme_code as number,
+    schemeName: row.scheme_name as string,
+    schemeCategory: (row.scheme_category as string | null) ?? null,
+    sebiCategory: (row.sebi_category as string | null) ?? null,
+    amcName: (row.amc_name as string | null) ?? null,
+    planType: (row.plan_type as 'direct' | 'regular' | null) ?? null,
+    isin: (row.isin as string | null) ?? null,
+  };
 }
 
 export interface SchemeSearchOptions {
@@ -36,10 +66,15 @@ export interface SchemeSearchOptions {
 /**
  * Fetch a page of scheme_master rows matching the search criteria.
  *
- * Query precedence:
- *   - query (ilike '%...%' on scheme_name)
- *   - amcName (eq)
- *   - category (eq)
+ * Matching model:
+ *   - query is tokenised on whitespace; EVERY token must match (AND) — and a
+ *     token matches if it appears in scheme_name OR sebi_category OR amc_name
+ *     (each an `ilike '%token%'`). This makes word-order-independent, partial
+ *     queries work: "large & mid cap direct" finds "… Large & Mid Cap Fund -
+ *     Direct Plan - Growth" even though those words aren't contiguous, and a
+ *     bare "midcap hdfc" matches on name + AMC. Relies on the gin_trgm index
+ *     on scheme_name so the ilike stays fast at ~37k rows.
+ *   - amcName (eq) and category (eq, on scheme_category) further narrow.
  * All combined with AND. Empty query returns the alphabetic-by-name first
  * page when no filters are set.
  *
@@ -52,13 +87,19 @@ export async function searchSchemes(
 
   let q = schemeMasterRepo
     .from()
-    .select('scheme_code, scheme_name, scheme_category, amc_name, plan_type, isin')
+    .select(SEARCH_COLUMNS)
     .order('scheme_name', { ascending: true })
     .range(offset, offset + limit - 1);
 
-  const trimmed = query.trim();
-  if (trimmed.length >= 2) {
-    q = q.ilike('scheme_name', `%${trimmed}%`);
+  // Each token becomes an OR group across the searchable columns; chaining
+  // .or() calls ANDs the groups together — so all tokens must match, each in
+  // any one column.
+  for (const token of tokenizeQuery(query)) {
+    const safe = token.replace(/[(),*]/g, ''); // defensive: keep PostgREST filter grammar intact
+    if (!safe) continue;
+    q = q.or(
+      `scheme_name.ilike.%${safe}%,sebi_category.ilike.%${safe}%,amc_name.ilike.%${safe}%`,
+    );
   }
   if (amcName) {
     q = q.eq('amc_name', amcName);
@@ -69,14 +110,7 @@ export async function searchSchemes(
 
   const { data, error } = await q;
   if (error) throw new Error(`searchSchemes failed: ${error.message}`);
-  return (data ?? []).map((row) => ({
-    schemeCode: row.scheme_code as number,
-    schemeName: row.scheme_name as string,
-    schemeCategory: (row.scheme_category as string | null) ?? null,
-    amcName: (row.amc_name as string | null) ?? null,
-    planType: (row.plan_type as 'direct' | 'regular' | null) ?? null,
-    isin: (row.isin as string | null) ?? null,
-  }));
+  return (data ?? []).map(mapSearchRow);
 }
 
 /**
@@ -96,17 +130,10 @@ export async function fetchUserHeldSchemes(userId: string): Promise<SchemeSearch
 
   const { data, error } = await schemeMasterRepo
     .from()
-    .select('scheme_code, scheme_name, scheme_category, amc_name, plan_type, isin')
+    .select(SEARCH_COLUMNS)
     .in('scheme_code', codes)
     .order('scheme_name', { ascending: true });
   if (error) throw new Error(`fetchUserHeldSchemes (master) failed: ${error.message}`);
-  return (data ?? []).map((row) => ({
-    schemeCode: row.scheme_code as number,
-    schemeName: row.scheme_name as string,
-    schemeCategory: (row.scheme_category as string | null) ?? null,
-    amcName: (row.amc_name as string | null) ?? null,
-    planType: (row.plan_type as 'direct' | 'regular' | null) ?? null,
-    isin: (row.isin as string | null) ?? null,
-  }));
+  return (data ?? []).map(mapSearchRow);
 }
 
