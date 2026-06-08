@@ -72,7 +72,7 @@ Safe to merge anytime. Zero behavioral regression: the AMFI cap list is static r
 **Gate:** [#190](https://github.com/himanshu4141/FolioLens/pull/190) merged (M1–M6 all in); OpenFolio-Data at full coverage in prod with `cap_mix` populated for a representative sample; dev backfill confirms `official` equity rows carry real Large/Mid/Small.
 
 **Changes:**
-- `supabase/migrations/20260608000000_drop_stock_market_cap.sql` — `DROP TABLE IF EXISTS public.stock_market_cap CASCADE`.
+- `supabase/migrations/20260608000001_drop_stock_market_cap.sql` — `DROP TABLE IF EXISTS public.stock_market_cap CASCADE`.
 - `sync-fund-portfolios/index.ts` — removed `loadIsinToCapMap`, `classifyHoldings` call, `shouldSkipHoldingsSyncForEmptyClassifier` guard. The mfdata path still fetches holdings (asset mix, sectors, debt, top holdings); cap comes from `getCategoryRules` SEBI defaults. Source tag always `'category_fallback'`. Removed classifier-related analytics fields.
 - `fetch-fund-snapshot/index.ts` — removed `getIsinToCapMap` module cache (the `cachedIsinToCap` / `cachedIsinToCapAt` / `CAP_MAP_TTL_MS` / `getIsinToCapMap` block), `classifyHoldings` call. Source tag always `'category_fallback'`.
 - `_shared/amfi-xlsx-parser.ts` + its test — deleted.
@@ -85,7 +85,7 @@ Safe to merge anytime. Zero behavioral regression: the AMFI cap list is static r
 ### Phase 3 — drop dead `scheme_master` columns ✅ (2026-06-08)
 
 **Changes:**
-- `supabase/migrations/20260608000001_drop_morningstar_related_variants.sql` — recreates the `fund` view without those columns, then `ALTER TABLE scheme_master DROP COLUMN IF EXISTS morningstar_rating, related_variants`.
+- `supabase/migrations/20260608000002_drop_morningstar_related_variants.sql` — drops and recreates the `fund` view without those columns (restoring grants), then `ALTER TABLE scheme_master DROP COLUMN IF EXISTS morningstar_rating, related_variants`.
 - `sync-fund-meta/index.ts` — removed `morningstar_rating` and `related_variants` from the mfdata payload and the upsert.
 - `fetch-fund-snapshot/index.ts` — removed from `syncMeta`.
 - `src/hooks/useSchemeMaster.ts` — removed from `SCHEME_MASTER_COLUMNS` select string and `SchemeMasterDbRow` interface.

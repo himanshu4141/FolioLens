@@ -1,6 +1,6 @@
 -- Phase 2 of the stock_market_cap deprecation plan.
 --
--- The table was frozen in Phase 1 (20260601000000_stop_stock_market_cap_cron.sql).
+-- The table was frozen in Phase 1 (20260608000000_stop_stock_market_cap_cron.sql).
 -- OpenFolio-Data now supplies cap_mix via source='official' rows for ~99.1% of
 -- the fund universe. The mfdata backup path keeps real asset-mix / sectors / debt
 -- / holdings; cap percentages fall back to SEBI category defaults for the ~0.9%
