@@ -48,7 +48,7 @@ module.exports = ({ config }) => {
       'FolioLens is a mutual fund portfolio analysis tool for Indian investors. Import your CAS to see allocation, fund overlap, sector concentration, and performance against benchmarks. Not investment advice.',
     privacy: 'public',
     runtimeVersion: {
-      policy: 'appVersion',
+      policy: 'fingerprint',
     },
     updates: {
       url: 'https://u.expo.dev/fa824fc9-9add-418b-8959-eeeeb693b7b5'
