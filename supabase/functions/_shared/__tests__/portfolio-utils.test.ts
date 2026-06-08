@@ -4,7 +4,6 @@ import {
   deriveDebtPct,
   isEquityPctPlausible,
   isEquityHoldingsCorrupted,
-  classifyHoldings,
   deriveSchemeCategoryFromName,
   isGenericSchemeCategory,
   resolveSebiCategory,
@@ -12,7 +11,6 @@ import {
   type CategoryComposition,
   type DebtHolding,
   type EquityHolding,
-  type MarketCapCategory,
 } from '../portfolio-utils';
 
 // ---------------------------------------------------------------------------
@@ -296,111 +294,6 @@ describe('isEquityHoldingsCorrupted', () => {
       { stock_name: '23.45', isin: 'BENCH', weight_pct: 0 }, // single corrupt row
     ];
     expect(isEquityHoldingsCorrupted(holdings)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// classifyHoldings
-// ---------------------------------------------------------------------------
-
-describe('classifyHoldings', () => {
-  const map = new Map<string, MarketCapCategory>([
-    ['INE040A01034', 'Large Cap'], // HDFC Bank
-    ['INE009A01021', 'Large Cap'], // Infosys
-    ['INE585B01010', 'Mid Cap'],   // Maruti Suzuki (illustrative)
-    ['INE848E01016', 'Small Cap'], // NHPC (illustrative)
-  ]);
-
-  it('returns all-zero bucketing for empty holdings', () => {
-    const result = classifyHoldings([], map);
-    expect(result.largeCapPct).toBe(0);
-    expect(result.midCapPct).toBe(0);
-    expect(result.smallCapPct).toBe(0);
-    expect(result.notClassifiedPct).toBe(0);
-    expect(result.annotated).toEqual([]);
-  });
-
-  it('puts every classified holding in its bucket', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 8 },
-      { stock_name: 'Infosys', isin: 'INE009A01021', weight_pct: 5 },
-      { stock_name: 'Maruti Suzuki', isin: 'INE585B01010', weight_pct: 3 },
-      { stock_name: 'NHPC', isin: 'INE848E01016', weight_pct: 2 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(13);
-    expect(result.midCapPct).toBe(3);
-    expect(result.smallCapPct).toBe(2);
-    expect(result.notClassifiedPct).toBe(0);
-  });
-
-  it('flows missing-ISIN holdings into notClassifiedPct', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 8 },
-      { stock_name: 'Alphabet', isin: null, weight_pct: 4 },
-      { stock_name: 'Amazon', isin: '', weight_pct: 3 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(8);
-    expect(result.notClassifiedPct).toBe(7);
-  });
-
-  it('flows unknown ISINs into notClassifiedPct', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'Unknown Co', isin: 'INE999X99999', weight_pct: 6 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(0);
-    expect(result.notClassifiedPct).toBe(6);
-  });
-
-  it('matches ISINs case-insensitively and trims whitespace', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: '  ine040a01034  ', weight_pct: 8 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(8);
-    expect(result.notClassifiedPct).toBe(0);
-  });
-
-  it('does not normalise to 100 — pcts reflect equity share of NAV', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 8 },
-      { stock_name: 'Infosys', isin: 'INE009A01021', weight_pct: 5 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    // 13% of NAV in equity holdings — the rest is debt/cash, not in this function's scope.
-    expect(result.largeCapPct + result.midCapPct + result.smallCapPct + result.notClassifiedPct).toBe(13);
-  });
-
-  it('annotates each holding with its market cap category', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 8 },
-      { stock_name: 'Alphabet', isin: null, weight_pct: 4 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.annotated[0].marketCap).toBe('Large Cap');
-    expect(result.annotated[1].marketCap).toBe('Other');
-  });
-
-  it('skips holdings with zero or missing weight', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 0 },
-      { stock_name: 'Infosys', isin: 'INE009A01021' }, // no weight_pct
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(0);
-    expect(result.notClassifiedPct).toBe(0);
-    expect(result.annotated.every((h) => h.marketCap === 'Other')).toBe(true);
-  });
-
-  it('rounds bucket totals to 2 decimal places', () => {
-    const holdings: EquityHolding[] = [
-      { stock_name: 'HDFC Bank', isin: 'INE040A01034', weight_pct: 8.333333 },
-      { stock_name: 'Infosys', isin: 'INE009A01021', weight_pct: 5.222222 },
-    ];
-    const result = classifyHoldings(holdings, map);
-    expect(result.largeCapPct).toBe(13.56);
   });
 });
 

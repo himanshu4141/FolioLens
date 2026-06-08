@@ -31,11 +31,8 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { CORS, json } from '../_shared/cors.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
 import {
-  type CapClassification,
   type CategoryComposition,
   type EquityHolding,
-  type MarketCapCategory,
-  classifyHoldings,
   deriveDebtPct,
   isDebtDataCorrupted,
   isEquityHoldingsCorrupted,
@@ -45,7 +42,6 @@ import {
   resolveSebiCategory,
   broadCategoryFromSebi,
 } from '../_shared/portfolio-utils.ts';
-import { isCachedMapStillValid } from '../_shared/amfi-xlsx-parser.ts';
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import {
   createOpenFolioClient,
@@ -465,7 +461,6 @@ async function syncComposition(
   familyId: number | null,
   schemeCategory: string | null,
   schemeName: string | null,
-  isinToCap: Map<string, MarketCapCategory>,
 ): Promise<CompositionResult> {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
@@ -509,10 +504,12 @@ async function syncComposition(
     return { ...res, classifierOutcome: 'category_rules', classifierCoveragePct: null, equityHoldingsCount: 0 };
   }
 
-  const portfolio = buildPortfolio(holdings, schemeCategory ?? '', schemeName, isinToCap);
+  const portfolio = buildPortfolio(holdings, schemeCategory ?? '', schemeName);
   const portfolioDate = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
 
-  const sourceTag = portfolio.classifierOutcome === 'amfi' ? 'amfi' : 'category_fallback';
+  // mfdata path always tags as category_fallback: real holdings data but
+  // cap from SEBI defaults — the UI disclaimer already covers this.
+  const sourceTag = 'category_fallback';
 
   const { error } = await supabase.from('fund_portfolio_composition').upsert({
     scheme_code: schemeCode,
@@ -537,17 +534,16 @@ async function syncComposition(
     return {
       status: 'failed',
       classifierOutcome: null,
-      classifierCoveragePct: portfolio.classifierCoveragePct,
+      classifierCoveragePct: null,
       equityHoldingsCount: holdings.equity_holdings.length,
     };
   }
 
-  console.log('[fetch-fund-snapshot] scheme=%d composition fetched (%s, coverage=%s%%)',
-    schemeCode, sourceTag, portfolio.classifierCoveragePct);
+  console.log('[fetch-fund-snapshot] scheme=%d composition fetched (%s)', schemeCode, sourceTag);
   return {
     status: 'fetched',
-    classifierOutcome: portfolio.classifierOutcome,
-    classifierCoveragePct: portfolio.classifierCoveragePct,
+    classifierOutcome: 'category_fallback',
+    classifierCoveragePct: null,
     equityHoldingsCount: holdings.equity_holdings.length,
   };
 }
@@ -597,12 +593,6 @@ interface BuiltPortfolio {
   equityPct: number; debtPct: number; cashPct: number; otherPct: number;
   largeCapPct: number; midCapPct: number; smallCapPct: number;
   notClassifiedPct: number;
-  /** 'amfi' if ≥1 ISIN classified; 'category_fallback' if had holdings but none matched. */
-  classifierOutcome: 'amfi' | 'category_fallback';
-  /** How many of the 50 disclosed top-holdings rows were classified into L/M/S. */
-  classifierHits: number;
-  /** Sum of largeCapPct + midCapPct + smallCapPct — coverage as a % of NAV. */
-  classifierCoveragePct: number;
   sectorAllocation: Record<string, number> | null;
   topHoldings: { name: string; isin: string; sector: string; marketCap: string; pctOfNav: number }[] | null;
   rawDebtHoldings: MfdataDebtHolding[] | null;
@@ -612,7 +602,6 @@ function buildPortfolio(
   holdings: MfdataHoldings,
   schemeCategory: string,
   schemeName: string | null,
-  isinToCap: Map<string, MarketCapCategory>,
 ): BuiltPortfolio {
   const catRules = getCategoryRules(schemeCategory, schemeName);
 
@@ -665,30 +654,15 @@ function buildPortfolio(
     sectorAllocation[sector] = Math.round(weight * 100) / 100;
   }
 
-  // Real per-fund cap split from the AMFI classifier — same shape as in
-  // sync-fund-portfolios. Falls back to category defaults only when no
-  // ISIN resolved; the caller flips `source` to 'category_fallback' so the
-  // UI can show a disclaimer rather than presenting category-averages
-  // as measured.
-  const classification: CapClassification = classifyHoldings(
-    equityHoldings as EquityHolding[],
-    isinToCap,
-  );
-  const classifierTotal =
-    classification.largeCapPct + classification.midCapPct + classification.smallCapPct;
-  const hasClassifierCoverage = equityHoldings.length > 0 && classifierTotal > 0;
+  // Cap split uses SEBI category defaults — the stock_market_cap ISIN→cap
+  // classifier was retired in Phase 2. The mfdata backup path keeps real
+  // asset mix / sectors / debt / top_holdings; cap falls through to category
+  // rules, which is what source='category_fallback' already signals to the UI.
+  const largeCapPct = catRules.large;
+  const midCapPct = catRules.mid;
+  const smallCapPct = catRules.small;
+  const notClassifiedPct = Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
 
-  const largeCapPct = hasClassifierCoverage ? classification.largeCapPct : catRules.large;
-  const midCapPct = hasClassifierCoverage ? classification.midCapPct : catRules.mid;
-  const smallCapPct = hasClassifierCoverage ? classification.smallCapPct : catRules.small;
-  const notClassifiedPct = hasClassifierCoverage
-    ? classification.notClassifiedPct
-    : Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
-
-  const annotatedByKey = new Map<string, MarketCapCategory | 'Other'>();
-  for (const a of classification.annotated) {
-    annotatedByKey.set(`${(a.isin ?? '').toUpperCase()}|${a.stock_name ?? ''}`, a.marketCap);
-  }
   const topHoldings = equityHoldings
     .filter((h) => h.stock_name && typeof h.weight_pct === 'number')
     .sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0))
@@ -697,11 +671,9 @@ function buildPortfolio(
       name: h.stock_name!,
       isin: h.isin ?? '',
       sector: h.sector ?? 'Other',
-      marketCap: annotatedByKey.get(`${(h.isin ?? '').toUpperCase()}|${h.stock_name ?? ''}`) ?? 'Other',
+      marketCap: 'Other',
       pctOfNav: h.weight_pct!,
     }));
-
-  const classifierHits = classification.annotated.filter((a) => a.marketCap !== 'Other').length;
 
   return {
     equityPct: Math.round(equityPct * 100) / 100,
@@ -712,68 +684,10 @@ function buildPortfolio(
     midCapPct,
     smallCapPct,
     notClassifiedPct,
-    classifierOutcome: hasClassifierCoverage ? 'amfi' : 'category_fallback',
-    classifierHits,
-    classifierCoveragePct: Math.round(classifierTotal * 100) / 100,
     sectorAllocation: Object.keys(sectorAllocation).length > 0 ? sectorAllocation : null,
     topHoldings: topHoldings.length > 0 ? topHoldings : null,
     rawDebtHoldings,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Classifier cache
-// ---------------------------------------------------------------------------
-
-// Module-scope cache for the stock_market_cap table (~5400 rows). Edge
-// function isolates are reused across warm invocations, so loading the
-// table once per cold-start is the cheapest correct option. TTL is 6
-// hours since the seeder cron is monthly.
-//
-// `isCachedMapStillValid` (in _shared/amfi-xlsx-parser.ts) refuses to
-// reuse an empty cached map — that path covers the bootstrap race where
-// this function got warm-started before `sync-stock-market-cap` had ever
-// populated the table. Without that, an early invocation would cache the
-// empty SELECT result and serve it for the next 6 hours, silently making
-// the classifier fall back to SEBI category defaults on every fund.
-const CAP_MAP_TTL_MS = 6 * 60 * 60 * 1000;
-let cachedIsinToCap: Map<string, MarketCapCategory> | null = null;
-let cachedIsinToCapAt = 0;
-
-async function getIsinToCapMap(): Promise<Map<string, MarketCapCategory>> {
-  const now = Date.now();
-  if (isCachedMapStillValid(cachedIsinToCap, cachedIsinToCapAt, now, CAP_MAP_TTL_MS)) {
-    return cachedIsinToCap!;
-  }
-  const map = new Map<string, MarketCapCategory>();
-  const PAGE = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await supabase
-      .from('stock_market_cap')
-      .select('isin, market_cap_category')
-      .range(from, from + PAGE - 1);
-    if (error) {
-      console.warn('[fetch-fund-snapshot] stock_market_cap load failed: %s', error.message);
-      break;
-    }
-    if (!data || data.length === 0) break;
-    for (const row of data as { isin: string; market_cap_category: MarketCapCategory }[]) {
-      map.set(row.isin.toUpperCase(), row.market_cap_category);
-    }
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  // Only persist the cache when the load actually returned rows. An
-  // empty result is treated as "not yet loaded" so the next call retries
-  // — see `isCachedMapStillValid` for the full rationale.
-  if (map.size > 0) {
-    cachedIsinToCap = map;
-    cachedIsinToCapAt = now;
-  } else {
-    console.warn('[fetch-fund-snapshot] stock_market_cap returned 0 rows; not caching, will retry next call');
-  }
-  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -799,8 +713,6 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
   console.log('[fetch-fund-snapshot] scheme=%d invocation started', schemeCode);
 
-  const isinToCap = await getIsinToCapMap();
-
   // Stage 1 — metadata.
   const metaResult = await syncMeta(schemeCode);
 
@@ -822,7 +734,6 @@ Deno.serve(async (req) => {
       null,
       null,
       (fallbackName?.scheme_name as string | null) ?? null,
-      isinToCap,
     );
   } else {
     compositionResult = await syncComposition(
@@ -830,7 +741,6 @@ Deno.serve(async (req) => {
       metaResult.family_id ?? null,
       metaResult.scheme_category ?? null,
       metaResult.scheme_name ?? null,
-      isinToCap,
     );
   }
 
@@ -848,7 +758,6 @@ Deno.serve(async (req) => {
       classifier_outcome: compositionResult.classifierOutcome,
       classifier_coverage_pct: compositionResult.classifierCoveragePct,
       equity_holdings_count: compositionResult.equityHoldingsCount,
-      cap_map_size: isinToCap.size,
       elapsed_ms: elapsedMs,
     },
     'system:fetch-fund-snapshot',

@@ -1,0 +1,12 @@
+-- Phase 2 of the stock_market_cap deprecation plan.
+--
+-- The table was frozen in Phase 1 (20260601000000_stop_stock_market_cap_cron.sql).
+-- OpenFolio-Data now supplies cap_mix via source='official' rows for ~99.1% of
+-- the fund universe. The mfdata backup path keeps real asset-mix / sectors / debt
+-- / holdings; cap percentages fall back to SEBI category defaults for the ~0.9%
+-- tail — same disclaimer the UI already shows for category_fallback rows.
+--
+-- The classifyHoldings helper + the module-scope cap-map cache in
+-- fetch-fund-snapshot are removed in the same Phase 2 commit that applies this
+-- migration. See docs/plans/deprecate-post-openfolio.md.
+DROP TABLE IF EXISTS public.stock_market_cap CASCADE;
