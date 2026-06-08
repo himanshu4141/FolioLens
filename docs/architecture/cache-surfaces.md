@@ -33,7 +33,7 @@ When adding a new cache, walk this list and note in the inline comment which cla
 
 - **Where:** [`src/lib/queryClient.ts`](../../src/lib/queryClient.ts), [`src/lib/queryStaleTimes.ts`](../../src/lib/queryStaleTimes.ts).
 - **Persister:** `@tanstack/query-async-storage-persister` via `@react-native-async-storage/async-storage`. Web uses `window.localStorage`.
-- **Version mechanism:** `__BUSTER__` constant in `queryClient.ts` (currently v4). Every persisted entry is keyed by buster; bumping the buster discards every persisted entry on next start.
+- **Version mechanism:** `__BUSTER__` constant in `queryClient.ts` (currently **v7**). Every persisted entry is keyed by buster; bumping the buster discards every persisted entry on next start. History: v5 added `currentNavDate` to `FundCardData`; v6 added `sebi_category` to `scheme_master`; v7 dropped `morningstar_rating` from the `useSchemeMaster` select (Phase 3 of deprecate-post-openfolio).
 - **What to bump on:** any change to the cached payload shape — adding/removing a `select(...)` column, renaming a derived field, changing a query-key tuple element, switching a hook from object to scalar input. **No automated check today** (audit finding #12 — Phase 2).
 - **PERSIST_ALLOWLIST:** scoped to high-value reads (NAV, index history, scheme master, portfolio composition). Preview-mode keys are excluded by design.
 - **Sign-out cleanup:** `queryClient.clear()` + `persister.removeClient()` in `app/_layout.tsx` SIGNED_OUT handler.
@@ -41,12 +41,12 @@ When adding a new cache, walk this list and note in the inline comment which cla
 
 ### 2. Edge function module-scope caches
 
-- **Where:** Long-lived `let cached* = …` at module scope inside `supabase/functions/<fn>/index.ts`. Currently one in [`fetch-fund-snapshot/index.ts`](../../supabase/functions/fetch-fund-snapshot/index.ts) for the AMFI ISIN→cap map.
-- **Lifetime:** Until the Supabase Edge Function isolate restarts. TTL is enforced manually per cache (currently 6h for the ISIN map).
-- **Helper:** [`isCachedMapStillValid`](../../supabase/functions/_shared/amfi-xlsx-parser.ts) handles bootstrap-race (Class A): refuses to use an empty cached map even within the TTL. Use this for any new map cache.
-- **What to bump on:** the source table's shape changing — but more importantly, **any new module-scope cache must use the empty-map guard** or it will repro PR #161.
+- **Where:** Long-lived `let cached* = …` at module scope inside `supabase/functions/<fn>/index.ts`.
+- **Current state:** **No active module-scope caches.** The AMFI ISIN→cap map cache that lived in `fetch-fund-snapshot/index.ts` (`cachedIsinToCap` / `cachedIsinToCapAt` / `CAP_MAP_TTL_MS`) was removed in Phase 2 of the deprecate-post-openfolio plan (2026-06-08) along with the `stock_market_cap` table it loaded from. `isCachedMapStillValid` and the `_shared/amfi-xlsx-parser.ts` module that hosted it are also deleted.
+- **Lifetime:** Until the Supabase Edge Function isolate restarts. TTL was enforced manually per cache; no active caches means no TTL to maintain.
+- **If you add a new one:** Any new module-scope cache that loads from a DB table must guard against an empty-table bootstrap race (Class A). Use a helper analogous to the deleted `isCachedMapStillValid`: refuse to cache an empty map even within the TTL.
 - **Sign-out cleanup:** N/A (not user-scoped).
-- **Bug class watchlist:** A (covered by helper), G (parallel isolates writing the same row), I (idempotency precheck races — see [`sync-fund-portfolios/index.ts`](../../supabase/functions/sync-fund-portfolios/index.ts) `existing` precheck).
+- **Bug class watchlist:** A (use an empty-map guard for any new cache), G (parallel isolates writing the same row — idempotency precheck in `sync-fund-portfolios/index.ts` `existing` check).
 
 ### 3. Zustand `appStore` — persisted preferences + in-memory transient state
 
@@ -93,9 +93,9 @@ When adding a new cache, walk this list and note in the inline comment which cla
 ### 8. Portfolio composition table (server-side, treated as cache by the client)
 
 - **Where:** [`fund_portfolio_composition`](../../supabase/migrations/20260420000000_portfolio_insights_schema.sql) populated by [`openfolio-sync`](../../supabase/functions/openfolio-sync/index.ts) monthly cron (15th) + [`sync-fund-portfolios`](../../supabase/functions/sync-fund-portfolios/index.ts) hourly cron + [`fetch-fund-snapshot`](../../supabase/functions/fetch-fund-snapshot/index.ts) on demand.
-- **Source tagging + precedence:** `source` column distinguishes `'official'` (OpenFolio-Data parsed AMC disclosures — primary) / `'amfi'` (mfdata holdings classified — backup) / `'category_fallback'` (had holdings but classifier returned 0 coverage) / `'category_rules'` (no holdings disclosed). The best-row selector ranks them in that order via [`src/utils/compositionSource.ts`](../../src/utils/compositionSource.ts) (`pickBestCompositionRows`) — **not** the old alphabetical `source` sort, which breaks because `'official'` sorts last. Multiple sources for one scheme coexist under `UNIQUE(scheme_code, portfolio_date, source)`. Client UI surfaces a disclaimer for the two category-derived sources.
+- **Source tagging + precedence:** `source` column distinguishes `'official'` (OpenFolio-Data parsed AMC disclosures — primary) / `'category_fallback'` (mfdata: real holdings, cap from SEBI category defaults) / `'category_rules'` (SEBI rules only, no holdings). The `'amfi'` source tag no longer exists — mfdata rows that formerly had an ISIN→cap-classified split now write as `'category_fallback'` (Phase 2, 2026-06-08). The best-row selector ranks them in that order via [`src/utils/compositionSource.ts`](../../src/utils/compositionSource.ts) (`pickBestCompositionRows`) — **not** the old alphabetical `source` sort, which breaks because `'official'` sorts last. Multiple sources for one scheme coexist under `UNIQUE(scheme_code, portfolio_date, source)`. Client UI surfaces a disclaimer for the category-derived sources.
 - **Shape note:** adding the `'official'` source value + the read-selector swap is cache-shape-stable — same `select()` columns, same `['portfolio-composition', [code]]` key tuple, same array shape; only row *selection* changed, so no `__BUSTER__` bump (see the cache-shape CI guard).
-- **Bug class watchlist:** A (the empty-map race — sync-fund-portfolios variant covered in audit #7, Phase 2), C/F (mfdata partial-success TTL trap — audit #6, Phase 3), K (mfdata holdings stored verbatim — audit #8, Phase 4), H (the fallback proxy `GENERIC_CATEGORY_MAP['equity']` was treated as a "generic equity bucket" when it's really a flexi-cap-shaped guess — audit #23 / PR #188 / [postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md)).
+- **Bug class watchlist:** A (empty-map race — resolved for sync-fund-portfolios in audit #7, Phase 2), C/F (mfdata partial-success TTL trap — audit #6, Phase 3), K (mfdata holdings stored verbatim — audit #8, Phase 4), H (the fallback proxy `GENERIC_CATEGORY_MAP['equity']` was treated as a "generic equity bucket" when it's really a flexi-cap-shaped guess — audit #23 / PR #188 / [postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md)).
 
 ## Audit findings tracker
 
@@ -107,7 +107,7 @@ When adding a new cache, walk this list and note in the inline comment which cla
 | 4 | Onboarding draft survives sign-out (PII) | D | MED | #4 | ✅ PR #164 |
 | 5 | Preview→real-user transition race | D | MED | #1, #3 | ⏳ Phase 4 |
 | 6 | mfdata partial-success locks 7-day TTL | F | MED | #8 | ⏳ Phase 3 |
-| 7 | `sync-fund-portfolios` lacks empty-map guard | A | MED | #2 | ⏳ Phase 2 |
+| 7 | `sync-fund-portfolios` lacks empty-map guard | A | MED | #2 | ✅ Phase 2 — the classifier + empty-map guard were removed entirely; no guard needed without the `stock_market_cap` table |
 | 8 | mfdata holdings stored verbatim, no upstream check | K | MED | #8 | ⏳ Phase 4 |
 | 9 | `useFundComposition` vs `usePortfolioInsights` key shape | E | MED | #1 | ⏳ Phase 4 |
 | 10 | `useFundDetail` `staleTime: 0` vs Portfolio 1h | H | MED | #1 | ⏳ Phase 4 |
