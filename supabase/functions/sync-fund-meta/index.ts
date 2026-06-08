@@ -14,7 +14,7 @@
  *     'source_failed'      → fall back to mfdata
  *   mfdata.in — backup for fields where OpenFolio status != 'value' /
  *               'officially_absent' / 'not_applicable'; also provides
- *               mfdata_family_id, morningstar_rating, related_variants.
+ *               mfdata_family_id.
  *   mfapi.in  — fallback for ISIN only.
  *
  * Staleness: schemes synced within META_STALE_DAYS days are skipped.
@@ -59,7 +59,6 @@ interface MFDataSchemePayload {
   family_id?: number | null;
   isin?: string | null;
   expense_ratio?: number | null;
-  morningstar?: number | null;
   risk_label?: string | null;
   aum?: number | null;
   min_sip?: number | null;
@@ -74,7 +73,6 @@ interface MFDataSchemePayload {
   amc_slug?: string | null;
   category?: string | null;
   benchmark?: string | null;
-  related_variants?: unknown[] | null;
   returns?: Record<string, unknown> | null;
   ratios?: Record<string, unknown> | null;
 }
@@ -259,7 +257,7 @@ Deno.serve(async (req) => {
         needsMfdataBackup(fm.riskometer?.status) ||
         needsMfdataBackup(fm.portfolio_turnover?.status);
 
-      // ── 3. mfdata (backup + always for family_id / morningstar / variants) ─
+      // ── 3. mfdata (backup + always for mfdata_family_id) ─────────────────────
       let mfdata: MFDataSchemePayload | null = null;
       if (needsMfdata) {
         try {
@@ -423,8 +421,6 @@ Deno.serve(async (req) => {
       // ── mfdata-exclusive fields (always from mfdata, OpenFolio has none) ─
       if (mfdata) {
         payload.mfdata_family_id = mfdata.family_id ?? null;
-        payload.morningstar_rating = mfdata.morningstar != null ? Math.round(Number(mfdata.morningstar)) : null;
-        payload.related_variants = mfdata.related_variants ?? null;
         if (mfdata.plan_type != null) payload.plan_type = mfdata.plan_type;
         if (mfdata.option_type != null) payload.option_type = mfdata.option_type;
         if (mfdata.family_name != null) payload.family_name = mfdata.family_name;

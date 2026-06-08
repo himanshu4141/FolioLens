@@ -74,7 +74,6 @@ export interface FundDetailData {
   planType: 'direct' | 'regular' | null;
   amcName: string | null;
   familyName: string | null;
-  morningstarRating: number | null;
   riskLabel: string | null;
   periodReturns: unknown;
   riskRatios: unknown;
@@ -247,7 +246,6 @@ export async function fetchFundDetail(
       planType: (extended?.plan_type as 'direct' | 'regular' | null) ?? null,
       amcName: extended?.amc_name ?? null,
       familyName: extended?.family_name ?? null,
-      morningstarRating: extended?.morningstar_rating ?? null,
       riskLabel: extended?.risk_label ?? null,
       periodReturns: extended?.period_returns ?? null,
       riskRatios: extended?.risk_ratios ?? null,
@@ -302,7 +300,6 @@ export async function fetchFundDetail(
     planType: (extended?.plan_type as 'direct' | 'regular' | null) ?? null,
     amcName: extended?.amc_name ?? null,
     familyName: extended?.family_name ?? null,
-    morningstarRating: extended?.morningstar_rating ?? null,
     riskLabel: extended?.risk_label ?? null,
     periodReturns: extended?.period_returns ?? null,
     riskRatios: extended?.risk_ratios ?? null,

@@ -169,7 +169,6 @@ interface MFDataSchemePayload {
   family_id?: number | null;
   isin?: string | null;
   expense_ratio?: number | null;
-  morningstar?: number | null;
   risk_label?: string | null;
   aum?: number | null;
   min_sip?: number | null;
@@ -184,7 +183,6 @@ interface MFDataSchemePayload {
   amc_slug?: string | null;
   category?: string | null;
   benchmark?: string | null;
-  related_variants?: unknown[] | null;
   returns?: Record<string, unknown> | null;
   ratios?: Record<string, unknown> | null;
 }
@@ -306,7 +304,6 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
   const min_sip_amount = mfdata?.min_sip != null ? Math.round(Number(mfdata.min_sip)) : null;
   const min_lumpsum = mfdata?.min_lumpsum != null ? Math.round(Number(mfdata.min_lumpsum)) : null;
   const min_additional = mfdata?.min_additional != null ? Math.round(Number(mfdata.min_additional)) : null;
-  const morningstar_rating = mfdata?.morningstar != null ? Math.round(Number(mfdata.morningstar)) : null;
   const launch_date = typeof mfdata?.launch_date === 'string' && mfdata.launch_date.trim().length > 0
     ? mfdata.launch_date.trim()
     : null;
@@ -328,8 +325,6 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
     payload.mfdata_family_id = mfdata.family_id ?? null;
     payload.declared_benchmark_name = mfdata.benchmark ?? null;
     payload.risk_label = mfdata.risk_label ?? null;
-    payload.morningstar_rating = morningstar_rating;
-    payload.related_variants = mfdata.related_variants ?? null;
     payload.mfdata_meta_synced_at = now;
     payload.exit_load = mfdata.exit_load ?? null;
     payload.plan_type = mfdata.plan_type ?? null;

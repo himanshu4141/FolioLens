@@ -808,7 +808,6 @@ export function buildPreviewFundDetail(fundId: string): FundDetailData | null {
     planType: scheme.schemeName.includes('Regular') ? 'regular' : 'direct',
     amcName: deriveAmcName(scheme.schemeName),
     familyName: null,
-    morningstarRating: null,
     riskLabel: null,
     periodReturns: null,
     riskRatios: null,
