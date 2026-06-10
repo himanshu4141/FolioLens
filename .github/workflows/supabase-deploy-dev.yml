@@ -12,6 +12,7 @@ on:
       - '.github/workflows/supabase-deploy-dev.yml'
       - 'supabase/functions/**'
       - 'supabase/migrations/**'
+  workflow_dispatch: {}
 
 jobs:
   deploy-dev:
