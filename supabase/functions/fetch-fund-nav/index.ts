@@ -41,6 +41,19 @@ function ddmmyyyyToIso(d: string): string | null {
   return `${m[3]}-${m[2]}-${m[1]}`;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function stampBackfilledAt(supabase: ReturnType<typeof createServiceClient>, schemeCode: number): Promise<void> {
+  const { error } = await supabase
+    .from('scheme_master')
+    .update({ nav_backfilled_at: new Date().toISOString() })
+    .eq('scheme_code', schemeCode);
+  if (error) {
+    // Non-fatal: log and continue. A missed stamp means the row may be pruned
+    // earlier than intended on the next retention run — acceptable.
+    console.warn('[fetch-fund-nav] scheme=%d nav_backfilled_at stamp failed: %s', schemeCode, error.message);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
   if (req.method !== 'POST') {
@@ -79,6 +92,9 @@ Deno.serve(async (req) => {
     if (ageDays <= FRESH_NAV_DAYS) {
       console.log('[fetch-fund-nav] scheme=%d cache hit (last=%s, age=%.1fd) — skipping fetch',
         schemeCode, latestDate, ageDays);
+      // Stamp nav_backfilled_at even on cache-hit: the series is current, so
+      // the retention clock should reset regardless of whether we fetched rows.
+      await stampBackfilledAt(supabase, schemeCode);
       return json({
         scheme_code: schemeCode,
         rows_upserted: 0,
@@ -145,6 +161,10 @@ Deno.serve(async (req) => {
   const lastNavDate = dbRows.length > 0
     ? dbRows.reduce((max, r) => (r.nav_date > max ? r.nav_date : max), dbRows[0].nav_date)
     : latestDate;
+
+  // Stamp nav_backfilled_at now that we have confirmed (or freshly written)
+  // NAV data.  Best-effort: a failure here must not roll back the upserted rows.
+  await stampBackfilledAt(supabase, schemeCode);
 
   const elapsedMs = Date.now() - startedAt;
   console.log('[fetch-fund-nav] scheme=%d done — upserted=%d last=%s elapsed_ms=%d',

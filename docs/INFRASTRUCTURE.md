@@ -79,6 +79,8 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `create-inbound-session` | First onboarding | Creates a per-user CASParser inbound mailbox | **Deprecated**, retired in M2.6 |
 | `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Pulls NAV history from mfapi.in for every active scheme | Active |
 | `sync-index` | pg_cron (hourly) | Pulls benchmark index closes from yahoo finance | Active |
+| `fetch-fund-nav` | On-demand (client POST, no auth required) | Backfills full NAV history for any scheme not held by the user — used by Compare Funds and Past SIP Check. Cache-aware (skips upstream if latest row ≤ 3 days old). Stamps `scheme_master.nav_backfilled_at` on every successful hydration (cache-hit or fresh fetch) so the retention cron knows when the series was last confirmed current. | Active |
+| `nav-retention` | pg_cron weekly (Sundays 03:00 UTC / 08:30 IST) | Deletes `nav_history` rows for schemes that are not held by any active `user_fund` **and** whose `scheme_master.nav_backfilled_at` is NULL or older than 90 days. Batched deletes (≤ 100 k rows per run). See "Runbook: NAV retention" below. | Active |
 | `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
 | `sync-fund-portfolios` | pg_cron (hourly) | **Backup** holdings source: mfdata.in portfolio composition → `source='amfi'` (now outranked by `official`) | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes scheme metadata (AUM, expense ratio, risk) | Active |
@@ -86,7 +88,7 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `demo-signup` | In-app "Try with sample data" sheet (pre-auth) | Captures email + marketing consent + UTM/referrer attribution into `public.demo_signup`. Idempotent on email — re-submissions bump `signup_count` instead of erroring. Service-role insert path; RLS on the table denies direct client writes. | Active |
 
 
-All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself.
+All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself. `nav-retention` is deployed `--no-verify-jwt` for the same reason as other cron functions. `fetch-fund-nav` is deployed `--no-verify-jwt` so the client can call it without a session JWT when picking non-held funds.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -123,6 +125,108 @@ All current pg_net call sites — the cron schedules (`sync-nav-hourly`, `sync-i
 The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`, `MAIL_FORWARD_TO` (founder inbox), and `MAIL_FORWARD_FROM` (verified sender) env vars — same ones that already power human-alias forwarding and CAS import notifications. **No new Vercel env vars are required.**
 
 `public.demo_signup` is intentionally separate from the marketing-site early-access form (currently a Tally embed; future Supabase `waitlist_signup` table per `foliolens-site/supabase-waitlist-endpoint-guide.md` is unbuilt). The two funnels share the `source` / `status` convention so they can be merged later if needed. No new env vars are required — `demo-signup` uses the standard `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` already present on every project.
+
+
+### Runbook: NAV retention
+
+
+**What it is.** `nav_history` grows unboundedly as users pick non-held funds in Compare Funds / Past SIP Check — each pick triggers `fetch-fund-nav` which backfills ~3 000–6 000 rows. A scheme that is never picked again is never cleaned up. The weekly `nav-retention` cron prunes those orphaned series automatically.
+
+**Retention logic.** A scheme's NAV series is prunable when:
+1. It does not appear in any active `user_fund` (no user is currently holding or tracking it), **and**
+2. `scheme_master.nav_backfilled_at IS NULL` (never demand-fetched) **OR** `nav_backfilled_at < now() - 90 days` (last confirmed more than 90 days ago).
+
+`nav_backfilled_at` is stamped by `fetch-fund-nav` on every cache-hit and every successful upsert, so the 90-day clock resets each time a user picks the fund.
+
+**Trade-off.** A pruned fund re-hydrates when a user next picks it — `fetch-fund-nav` fetches the full history from mfapi.in in a single round-trip. Users see a 1–2 s loading spinner instead of an instant render. This is acceptable given that the trigger is "pick a fund you haven't looked at in 3+ months."
+
+**Steady-state operation.** The weekly cron runs on Sundays at 03:00 UTC (08:30 IST), identified as `nav-retention-weekly` in `cron.job`. Each run deletes at most 100 k rows and emits a `nav_retention_completed` PostHog event with `rows_deleted`, `pruneable_schemes`, and `capped` fields. Monitor via PostHog or Supabase Edge Function logs.
+
+
+#### One-time manual cleanup of existing orphan rows
+
+> **⚠️ Do NOT execute this yourself — it requires explicit approval before running against any environment.**
+
+As of 2026-06-10, `nav_history` holds approximately **8.6 M rows** for schemes that have never been held by any user. These were written by the now-retired `backfill-fund-universe` script. The weekly cron caps at 100 k rows/run, so the natural drain would take ~86 weeks. If you need to reclaim space faster, execute the following batched cleanup **after** deploying this migration to the target project.
+
+**Step 0 (optional): create a one-week archive table for rollback safety**
+
+```sql
+-- Run in the target project's SQL editor
+-- Gives you a 1-week window to restore if needed; drop it afterwards.
+CREATE TABLE IF NOT EXISTS nav_history_orphan_archive AS
+SELECT nh.*
+FROM nav_history nh
+WHERE NOT EXISTS (
+  SELECT 1 FROM user_fund uf
+  WHERE uf.scheme_code = nh.scheme_code
+    AND uf.is_active = true
+)
+AND (
+  (SELECT nav_backfilled_at FROM scheme_master sm WHERE sm.scheme_code = nh.scheme_code)
+  IS NULL
+  OR
+  (SELECT nav_backfilled_at FROM scheme_master sm WHERE sm.scheme_code = nh.scheme_code)
+  < now() - interval '90 days'
+);
+-- Check the archive row count before proceeding:
+SELECT count(*) FROM nav_history_orphan_archive;
+```
+
+**Step 1: batched DELETE loop (run in the SQL editor)**
+
+Run this loop repeatedly — each iteration deletes 200 k rows; adjust the batch size down if you see lock contention. Stop when it reports 0 rows deleted.
+
+```sql
+-- One iteration — re-run until rows_this_batch = 0
+WITH pruneable AS (
+  SELECT nh.id
+  FROM nav_history nh
+  JOIN scheme_master sm ON sm.scheme_code = nh.scheme_code
+  WHERE NOT EXISTS (
+    SELECT 1 FROM user_fund uf
+    WHERE uf.scheme_code = nh.scheme_code AND uf.is_active = true
+  )
+  AND (sm.nav_backfilled_at IS NULL OR sm.nav_backfilled_at < now() - interval '90 days')
+  LIMIT 200000
+),
+deleted AS (
+  DELETE FROM nav_history
+  WHERE id IN (SELECT id FROM pruneable)
+  RETURNING id
+)
+SELECT count(*) AS rows_this_batch FROM deleted;
+```
+
+**Step 2: VACUUM FULL (optional, during a low-traffic window)**
+
+DELETE in Postgres marks rows as dead but does not return pages to the OS. After the bulk cleanup, run:
+
+```sql
+-- Returns freed space to the OS; acquires an ACCESS EXCLUSIVE lock.
+-- Run during off-peak hours (e.g., Sunday night IST).
+VACUUM FULL nav_history;
+-- Then rebuild indexes in the freed space:
+REINDEX TABLE nav_history;
+```
+
+Supabase managed Postgres allows `VACUUM FULL` from the SQL Editor (runs as the `postgres` role). Expect it to take several minutes on a large table.
+
+**Step 3: drop the archive table after confirming correctness**
+
+```sql
+-- Only after you are satisfied the cleanup is correct and the app is healthy.
+DROP TABLE IF EXISTS nav_history_orphan_archive;
+```
+
+**Rollback.** If the deletion turns out to be incorrect, restore from the archive:
+
+```sql
+INSERT INTO nav_history SELECT * FROM nav_history_orphan_archive
+ON CONFLICT (scheme_code, nav_date) DO NOTHING;
+```
+
+All pruned NAV data is fully regenerable from the OpenFolio API (`/v1/nav/{scheme_code}`) or mfapi.in (`/mf/{scheme_code}`) — this is exactly what `fetch-fund-nav` does on the next user pick.
 
 
 ## Vercel projects
