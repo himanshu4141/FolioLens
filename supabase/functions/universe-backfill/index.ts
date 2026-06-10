@@ -265,7 +265,7 @@ async function runMetadataBackfillChunk(
       pageWork.push({ schemeCode: item.scheme_code, patch });
     }
 
-    const BATCH = 50;
+    const BATCH = 10;
     for (let i = 0; i < pageWork.length; i += BATCH) {
       const batch = pageWork.slice(i, i + BATCH);
       const results = await Promise.all(
@@ -351,21 +351,26 @@ Deno.serve(async (req) => {
 
   const supabase = createServiceClient();
 
-  // Load universe once — reused across both composition and metadata phases
-  let universe: SchemeUniverse;
-  try {
-    universe = await loadFullUniverse(supabase);
-    console.log(
-      '[universe-backfill] universe loaded — %d scheme codes, %d ISIN keys',
-      universe.knownCodes.size,
-      universe.isinToCode.size,
-    );
-  } catch (err) {
-    console.error('[universe-backfill] universe load: %s', String(err));
-    return json({ success: false, error: String(err) }, { status: 500 });
-  }
-
   const syncedAt = new Date().toISOString();
+
+  // Lazy-load universe only when needed (for composition or metadata)
+  let universe: SchemeUniverse | null = null;
+  const getUniverse = async () => {
+    if (!universe) {
+      try {
+        universe = await loadFullUniverse(supabase);
+        console.log(
+          '[universe-backfill] universe loaded — %d scheme codes, %d ISIN keys',
+          universe.knownCodes.size,
+          universe.isinToCode.size,
+        );
+      } catch (err) {
+        console.error('[universe-backfill] universe load: %s', String(err));
+        throw err;
+      }
+    }
+    return universe;
+  };
 
   // ── Composition phase (chunked with cursor resumption) ────────────────────
   if (phase === 'composition' || phase === 'both') {
@@ -392,7 +397,7 @@ Deno.serve(async (req) => {
       const chunk = await runCompositionBackfillChunk(
         supabase,
         client,
-        universe,
+        await getUniverse(),
         syncedAt,
         state.cursor,
         (msg) => console.log(msg),
@@ -473,10 +478,11 @@ Deno.serve(async (req) => {
     }
 
     try {
+      const uni = await getUniverse();
       const chunk = await runMetadataBackfillChunk(
         supabase,
         client,
-        universe.knownCodes,
+        uni.knownCodes,
         syncedAt,
         state.cursor,
         (msg) => console.log(msg),
