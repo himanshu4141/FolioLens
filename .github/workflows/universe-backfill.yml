@@ -1,0 +1,281 @@
+name: Universe Backfill
+
+# Bulk-syncs OpenFolio composition + metadata for the full active AMFI universe
+# (every scheme in scheme_master, not just held funds) so Compare reads
+# composition, metrics, and B1 fields with no fetch-fund-snapshot latency.
+#
+# Chunked and resumable: each function invocation processes at most ~5 pages
+# (~1500 items), storing cursor state in app_config for resumption. Returns
+# 200 with {phase, cursor, done, stats} or 4xx/5xx on page-fetch failure.
+# This workflow loops every 10 minutes until done, re-invoking the edge
+# function with the new cursor.
+#
+# When to use:
+#   - Initial backfill: phase=both (composition + metadata together).
+#   - Spot-fix composition only (e.g. after a new disclosure): phase=composition.
+#   - Spot-fix metadata only: phase=metadata.
+#   - After the backfill completes, keep up-to-date via:
+#     * monthly openfolio-sync (composition) — already scheduled
+#     * daily sync-fund-meta (held-fund metadata) — already scheduled
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which project to backfill'
+        required: true
+        type: choice
+        default: dev
+        options: [dev, prod, both]
+      phase:
+        description: 'Which phase to run'
+        required: true
+        type: choice
+        default: both
+        options: [composition, metadata, both]
+
+permissions:
+  contents: read
+
+jobs:
+  backfill-dev:
+    name: Universe Backfill (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440  # 24 hours max
+    if: |
+      github.event.inputs.environment == 'dev' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run universe backfill (dev)
+        id: backfill
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_DEV }}
+          FUNCTIONS_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}/functions/v1
+          PHASE: ${{ github.event.inputs.phase || 'both' }}
+        run: |
+          node << 'EOF'
+          const http = require('http');
+          const https = require('https');
+          const fs = require('fs');
+
+          const url = new URL('${{ env.FUNCTIONS_URL }}/universe-backfill');
+          const protocol = url.protocol === 'https:' ? https : http;
+
+          let phase = '${{ env.PHASE }}';
+          let iteration = 0;
+          const maxIterations = 144; // 24h * 60min / 10min = 144
+
+          async function invoke() {
+            iteration++;
+            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase}`);
+
+            return new Promise((resolve, reject) => {
+              const body = JSON.stringify({ phase });
+              const options = {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(body),
+                  'Authorization': `Bearer ${{ env.SUPABASE_SERVICE_ROLE_KEY }}`,
+                },
+              };
+
+              const req = protocol.request(url, options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                  let result;
+                  try {
+                    result = JSON.parse(data);
+                  } catch (e) {
+                    console.error(`[${new Date().toISOString()}] Parse error:`, e.message);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+                  }
+
+                  if (res.statusCode >= 400) {
+                    console.error(`[${new Date().toISOString()}] HTTP ${res.statusCode}:`, result);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
+                  }
+
+                  console.log(`[${new Date().toISOString()}] Response:`, JSON.stringify(result, null, 2));
+                  resolve(result);
+                });
+              });
+
+              req.on('error', reject);
+              req.write(body);
+              req.end();
+            });
+          }
+
+          (async function loop() {
+            try {
+              const result = await invoke();
+
+              if (!result.success) {
+                console.error(`[${new Date().toISOString()}] Backfill failed:`, result.error);
+                process.exit(1);
+              }
+
+              if (result.done) {
+                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete! Stats:`, result.stats);
+                console.log(`Phases completed: ${result.phase}`);
+                process.exit(0);
+              }
+
+              if (iteration >= maxIterations) {
+                console.error(`[${new Date().toISOString()}] ✗ Max iterations (${maxIterations}) exceeded`);
+                process.exit(1);
+              }
+
+              console.log(`[${new Date().toISOString()}] Continuing: cursor=${result.cursor} (iteration ${iteration}/${maxIterations})`);
+
+              // Wait 10 minutes before re-invoking
+              await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+              loop().catch(err => {
+                console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                process.exit(1);
+              });
+            } catch (err) {
+              if (iteration < maxIterations) {
+                console.warn(`[${new Date().toISOString()}] Iteration ${iteration} failed (will retry):`, err.message);
+                await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+                loop().catch(err => {
+                  console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                  process.exit(1);
+                });
+              } else {
+                console.error(`[${new Date().toISOString()}] ✗ Failed after ${iteration} iterations:`, err.message);
+                process.exit(1);
+              }
+            }
+          })();
+          EOF
+
+  backfill-prod:
+    name: Universe Backfill (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440  # 24 hours max
+    if: |
+      github.event.inputs.environment == 'prod' ||
+      github.event.inputs.environment == 'both'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run universe backfill (prod)
+        id: backfill
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_PROD }}
+          FUNCTIONS_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}/functions/v1
+          PHASE: ${{ github.event.inputs.phase || 'both' }}
+        run: |
+          node << 'EOF'
+          const http = require('http');
+          const https = require('https');
+          const fs = require('fs');
+
+          const url = new URL('${{ env.FUNCTIONS_URL }}/universe-backfill');
+          const protocol = url.protocol === 'https:' ? https : http;
+
+          let phase = '${{ env.PHASE }}';
+          let iteration = 0;
+          const maxIterations = 144; // 24h * 60min / 10min = 144
+
+          async function invoke() {
+            iteration++;
+            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase}`);
+
+            return new Promise((resolve, reject) => {
+              const body = JSON.stringify({ phase });
+              const options = {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(body),
+                  'Authorization': `Bearer ${{ env.SUPABASE_SERVICE_ROLE_KEY }}`,
+                },
+              };
+
+              const req = protocol.request(url, options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                  let result;
+                  try {
+                    result = JSON.parse(data);
+                  } catch (e) {
+                    console.error(`[${new Date().toISOString()}] Parse error:`, e.message);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+                  }
+
+                  if (res.statusCode >= 400) {
+                    console.error(`[${new Date().toISOString()}] HTTP ${res.statusCode}:`, result);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
+                  }
+
+                  console.log(`[${new Date().toISOString()}] Response:`, JSON.stringify(result, null, 2));
+                  resolve(result);
+                });
+              });
+
+              req.on('error', reject);
+              req.write(body);
+              req.end();
+            });
+          }
+
+          (async function loop() {
+            try {
+              const result = await invoke();
+
+              if (!result.success) {
+                console.error(`[${new Date().toISOString()}] Backfill failed:`, result.error);
+                process.exit(1);
+              }
+
+              if (result.done) {
+                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete! Stats:`, result.stats);
+                console.log(`Phases completed: ${result.phase}`);
+                process.exit(0);
+              }
+
+              if (iteration >= maxIterations) {
+                console.error(`[${new Date().toISOString()}] ✗ Max iterations (${maxIterations}) exceeded`);
+                process.exit(1);
+              }
+
+              console.log(`[${new Date().toISOString()}] Continuing: cursor=${result.cursor} (iteration ${iteration}/${maxIterations})`);
+
+              // Wait 10 minutes before re-invoking
+              await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+              loop().catch(err => {
+                console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                process.exit(1);
+              });
+            } catch (err) {
+              if (iteration < maxIterations) {
+                console.warn(`[${new Date().toISOString()}] Iteration ${iteration} failed (will retry):`, err.message);
+                await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+                loop().catch(err => {
+                  console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                  process.exit(1);
+                });
+              } else {
+                console.error(`[${new Date().toISOString()}] ✗ Failed after ${iteration} iterations:`, err.message);
+                process.exit(1);
+              }
+            }
+          })();
+          EOF
