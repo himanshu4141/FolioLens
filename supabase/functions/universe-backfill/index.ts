@@ -60,7 +60,7 @@ import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
 const PAGE_SIZE = 300;
 const TOP = 50;
 const MAX_PAGES = 2000; // full universe headroom (~10-14k schemes / 300 = ~47 pages)
-const PAGES_PER_INVOCATION = 5; // process at most 5 pages (≈1500 items) per invocation
+const PAGES_PER_INVOCATION = 2; // process at most 2 pages (≈600 items) per invocation to fit Supabase edge function memory limits
 
 const B1_OK_STATUSES = new Set<B1FieldStatus>(['value']);
 
