@@ -110,6 +110,25 @@ export interface SyncResult {
 }
 
 /**
+ * Pure predicate: returns true when a SyncResult indicates that SQLite
+ * data actually changed — new rows were inserted or the tx table was
+ * rebuilt from drift. The layout uses this to decide whether to call
+ * `queryClient.invalidateQueries()` so screens recompute against the
+ * fresh rows.
+ *
+ * Extracted here so the cold-start bootstrap path and the AppState
+ * foreground-sync path share identical logic with no duplication.
+ */
+export function didSyncChangeData(result: SyncResult): boolean {
+  return (
+    result.txInserted > 0 ||
+    result.navInserted > 0 ||
+    result.idxInserted > 0 ||
+    result.txRebuiltFromDrift === true
+  );
+}
+
+/**
  * Pure rebuild-decision helper. Exported for unit tests so the
  * tolerance thresholds can't drift silently.
  *
