@@ -239,13 +239,11 @@ export type Database = {
           min_additional: number | null
           min_lumpsum: number | null
           min_sip_amount: number | null
-          morningstar_rating: number | null
           openfolio_meta_synced_at: string | null
           option_type: string | null
           period_returns: Json | null
           plan_type: string | null
           portfolio_turnover: number | null
-          related_variants: Json | null
           risk_label: string | null
           risk_ratios: Json | null
           scheme_category: string | null
@@ -275,13 +273,11 @@ export type Database = {
           min_additional?: number | null
           min_lumpsum?: number | null
           min_sip_amount?: number | null
-          morningstar_rating?: number | null
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
           plan_type?: string | null
           portfolio_turnover?: number | null
-          related_variants?: Json | null
           risk_label?: string | null
           risk_ratios?: Json | null
           scheme_category?: string | null
@@ -311,13 +307,11 @@ export type Database = {
           min_additional?: number | null
           min_lumpsum?: number | null
           min_sip_amount?: number | null
-          morningstar_rating?: number | null
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
           plan_type?: string | null
           portfolio_turnover?: number | null
-          related_variants?: Json | null
           risk_label?: string | null
           risk_ratios?: Json | null
           scheme_category?: string | null
@@ -523,8 +517,6 @@ export type Database = {
           mfdata_family_id: number | null
           mfdata_meta_synced_at: string | null
           min_sip_amount: number | null
-          morningstar_rating: number | null
-          related_variants: Json | null
           risk_label: string | null
           scheme_category: string | null
           scheme_code: number | null

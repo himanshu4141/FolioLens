@@ -1,6 +1,8 @@
 # Data Sync Pipeline — pg_cron + Edge Functions + External APIs
 
-Five edge functions on independent schedules keep prices, scheme metadata, fund composition, benchmark indices, and the AMFI stock market-cap classification list fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are deployed with `--no-verify-jwt`, and all are idempotent (re-running is safe). On-demand triggers for `sync-stock-market-cap` go through a `workflow_dispatch` wrapper in `.github/workflows/sync-stock-market-cap.yml` so manual runs leave an Actions audit trail + a PostHog `stock_market_cap_dispatch_completed` event.
+Edge functions on independent schedules keep prices, scheme metadata, fund composition, and benchmark indices fresh. All are triggered by `pg_cron` via `pg_net.http_post`, all are deployed with `--no-verify-jwt`, and all are idempotent (re-running is safe).
+
+The `sync-stock-market-cap` edge function + monthly cron were **removed in 2026-06-01 (Phase 1)** and the `stock_market_cap` table was **dropped in 2026-06-08 (Phase 2)**. OpenFolio-Data now supplies the per-fund cap split directly via `source='official'` rows. The full deprecation plan is in [`docs/plans/deprecate-post-openfolio.md`](../plans/deprecate-post-openfolio.md).
 
 ## Where things live
 
@@ -11,7 +13,6 @@ graph LR
     cron_index["sync-index<br/>5 * * * 1-5"]
     cron_portfolios["sync-fund-portfolios<br/>10 * * * *"]
     cron_meta["sync-fund-meta<br/>0 2 * * *"]
-    cron_caps["sync-stock-market-cap<br/>30 0 1 * *"]
   end
 
   subgraph EdgeFunctions["Supabase Edge Functions"]
@@ -19,16 +20,15 @@ graph LR
     idx["sync-index"]
     port["sync-fund-portfolios"]
     meta["sync-fund-meta"]
-    caps["sync-stock-market-cap"]
   end
 
   subgraph External["External APIs"]
-    mfapi[("api.mfapi.in<br/>(NAV per scheme)")]
+    mfapi[("api.mfapi.in<br/>(NAV per scheme — primary)")]
     nse[("niftyindices.com<br/>(NSE TRI)")]
     eodhd[("eodhd.com<br/>(historical fallback)")]
     yahoo[("Yahoo Finance<br/>(price-return symbols)")]
-    mfdata[("mfdata.in<br/>(fund metadata + AMFI holdings)")]
-    amfi[("amfiindia.com<br/>(NAVAll.txt — ISIN map +<br/>stock-categorization xlsx)")]
+    mfdata[("mfdata.in<br/>(metadata + holdings backup)")]
+    amfi[("amfiindia.com<br/>(NAVAll.txt — ISIN map)")]
   end
 
   subgraph Tables["Postgres tables"]
@@ -36,7 +36,6 @@ graph LR
     t_index[("index_history")]
     t_port[("fund_portfolio_composition")]
     t_meta[("scheme_master")]
-    t_caps[("stock_market_cap")]
     t_funds[("fund / user_fund<br/>(read sources)")]
     t_bench[("benchmark_mapping<br/>(read source)")]
   end
@@ -45,7 +44,6 @@ graph LR
   cron_index -- "pg_net.http_post" --> idx
   cron_portfolios -- "pg_net.http_post" --> port
   cron_meta -- "pg_net.http_post" --> meta
-  cron_caps -- "pg_net.http_post" --> caps
 
   nav -- "for each fund.scheme_code" --> mfapi
   nav -- "upsert" --> t_nav
@@ -57,17 +55,13 @@ graph LR
   idx -- "upsert" --> t_index
 
   port -- "category rules<br/>(no external call)" --> t_port
-  port -- "AMFI holdings if stale" --> mfdata
-  port -- "read for ISIN → cap" --> t_caps
+  port -- "holdings backup if stale" --> mfdata
   port --> t_funds
 
-  meta -- "primary metadata" --> mfdata
+  meta -- "metadata backup" --> mfdata
   meta -- "ISIN fallback" --> mfapi
   meta --> t_funds
   meta -- "upsert" --> t_meta
-
-  caps -- "scrape latest xlsx" --> amfi
-  caps -- "upsert" --> t_caps
 ```
 
 ## Schedules + dependency timing
@@ -95,8 +89,6 @@ gantt
 `sync-nav` runs on a bimodal schedule — hourly during the EOD publish window (6 PM → 6 AM IST, i.e. 12:30 → 00:30 UTC) when AMCs actually push NAVs to mfapi, and every 2 hours during the daytime (8 AM → 5 PM IST, i.e. 02:30 → 10:30 UTC at even hours) to catch late corrections without burning compute on idle hours. Runs every day (not weekday-only) so a Friday-EOD NAV that lands Saturday morning IST gets picked up instead of waiting until Monday. Different AMCs land their NAVs at very different times — HDFC / ICICI / DSP typically hit mfapi within an hour of EOD, while PPFAS and international FoFs can take 4–6 hours longer; the dense EOD window catches both extremes.
 
 `sync-index` still runs hourly weekday-only at `:05`. It no longer co-runs with `sync-nav` (which is at `:30`), but the home-screen NAV stamp + benchmark badge tolerate independent freshness — each is shown with its own "as of …" timestamp.
-
-`sync-stock-market-cap` runs on its own monthly track at 00:30 UTC on the 1st (not shown — its cadence is monthly, not daily). AMFI publishes the categorization list twice a year, so ~10 of 12 runs are no-ops; the monthly cadence keeps us resilient to AMFI shifting its publication window.
 
 ## sync-nav
 
@@ -175,7 +167,9 @@ sequenceDiagram
   Fn-->>Cron: complete
 ```
 
-Two-layer write order matters: category rules go in *first* so the Insights UI never renders empty, even if every AMFI fetch fails this hour.
+Two-layer write order matters: category rules go in *first* so the Insights UI never renders empty, even if every mfdata fetch fails this hour.
+
+> **Note on `getCategoryRules()` caller contract:** if `scheme_category` is the bare single word `"Equity"` (DSP funds, half the ICICI Prudential lineup, etc.) the lookup falls to `GENERIC_CATEGORY_MAP['equity']`, a flexi-cap proxy (38/33/29). PR #188 added `deriveSchemeCategoryFromName()` to rescue the sub-bucket from the scheme name. **Any call to `getCategoryRules()` MUST pass `scheme_name` as the second argument** — without it the proxy bug silently returns a wrong cap split for any fund whose category is generic. See the [post-flexicap-proxy postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md).
 
 ## sync-fund-meta
 
@@ -204,46 +198,6 @@ sequenceDiagram
 ```
 
 `META_STALE_DAYS = 7` keeps mfdata.in calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
-
-## sync-stock-market-cap
-
-```mermaid
-sequenceDiagram
-  participant Cron as pg_cron
-  participant Fn as sync-stock-market-cap
-  participant DB as Postgres
-  participant Amfi as amfiindia.com
-
-  Cron->>Fn: POST (monthly at 00:30 UTC on the 1st)
-  Fn->>Amfi: GET /research-information/.../categorization-of-stocks
-  Amfi-->>Fn: HTML listing page
-  Fn->>Fn: scrape latest .xlsx href + parse classification_period (e.g. H2-2025)
-  Fn->>DB: SELECT 1 FROM stock_market_cap WHERE classification_period = :period LIMIT 1
-  alt period already loaded
-    DB-->>Fn: row exists
-    Fn-->>Cron: { was_noop: true, large/mid/small_count, classification_period }
-  else new period
-    Fn->>Amfi: GET <latest>.xlsx (5 MB cap, 30s timeout)
-    Amfi-->>Fn: workbook bytes
-    Fn->>Fn: parse with SheetJS — header-aware match (isin / company / category / rank / avg)
-    Fn->>Fn: sanity check — 500 ≤ row count ≤ 1500, large_count in [90, 110]
-    Fn->>DB: UPSERT stock_market_cap ON CONFLICT (isin) DO UPDATE in chunks of 500
-    DB-->>Fn: rows_upserted = ~750
-    Fn-->>Cron: { was_noop: false, classification_period, large/mid/small_count, rows_upserted }
-  end
-```
-
-The `stock_market_cap` table is the source of truth for the ISIN → market-cap lookup that `sync-fund-portfolios` and `fetch-fund-snapshot` join against. Without it, both portfolio builders fall back to SEBI category defaults (the `category_rules` source) — that fallback is correct behaviour (no real-holdings classification possible), but every Flexi Cap fund would carry the same 38/33/29 split, which is the bug Phase 9 M6 fixed.
-
-The category-defaults table itself has a second-order pitfall — if `scheme_category` is the bare single word `"Equity"` (the way mfdata / AMFI files most DSP funds, half the ICICI Prudential lineup, etc.), the lookup lands on `GENERIC_CATEGORY_MAP['equity']`, a flexi-cap *proxy* hardcoded to 38/33/29. That made DSP Large / Mid / Small / Large & Mid Cap funds *all* display the same Compare-tab values regardless of holdings coverage. PR #188 added a `deriveSchemeCategoryFromName()` helper in [`_shared/portfolio-utils.ts`](../../supabase/functions/_shared/portfolio-utils.ts) that resolves the SEBI sub-bucket from the scheme name (longest-pattern-first: `"Large & Mid Cap"` before `"Large Cap"`) before falling through to the proxy. **Any new code that calls `getCategoryRules()` MUST pass `scheme_name` as the second argument** — without it the proxy bug returns silently for any fund whose category is generic. See the [post-flexicap-proxy postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md).
-
-The seeder is **idempotent** (precheck short-circuits before download when the period is already current) and **strictly additive** — it only ever upserts; rows are never deleted. A failed parse logs a typed `failure_reason` and the table keeps serving the previous period's data until a human fixes the parser.
-
-Observability: every run emits `sync_completed` or `sync_failed` to PostHog with `large_count`, `mid_count`, `small_count`, and `was_noop`. Alert thresholds for the dashboard owner:
-
-- `sync_failed` where `job = 'sync-stock-market-cap'` in last 7 days → page on-call (the seeder runs monthly).
-- `large_count NOT BETWEEN 90 AND 110` → parser is reading the wrong column or sheet (Large bucket is consistently exactly 100 in AMFI lists).
-- See `docs/plans/phase-9-pre-launch-readiness/M6-honest-portfolio-composition.md` Observability section for the full list including downstream classifier-coverage alerts on `sync-fund-portfolios` and `fund_snapshot_fetched`.
 
 ## Why pg_cron + edge functions instead of GitHub Actions
 

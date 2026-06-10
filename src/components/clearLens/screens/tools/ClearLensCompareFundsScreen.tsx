@@ -91,7 +91,6 @@ interface SchemeMasterRow {
   minSipAmount: number | null;
   minLumpsum: number | null;
   minAdditional: number | null;
-  morningstarRating: number | null;
   riskLabel: string | null;
   periodReturns: unknown;
   riskRatios: unknown;
@@ -173,7 +172,6 @@ async function fetchSchemes(
     minSipAmount: row.min_sip_amount,
     minLumpsum: row.min_lumpsum,
     minAdditional: row.min_additional,
-    morningstarRating: row.morningstar_rating,
     riskLabel: row.risk_label,
     periodReturns: row.period_returns,
     riskRatios: row.risk_ratios,

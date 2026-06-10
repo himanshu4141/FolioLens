@@ -75,7 +75,9 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // the Compare screen's like-for-like sub-category check would read
 // `undefined` and silently fall back to the name parser until the
 // cache expired. Bump discards the old shape on next launch.
-export const __BUSTER__ = 'v6';
+// v7: scheme_master payload shape change — morningstar_rating dropped from
+// useSchemeMaster select (Phase 3 of deprecate-post-openfolio plan).
+export const __BUSTER__ = 'v7';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

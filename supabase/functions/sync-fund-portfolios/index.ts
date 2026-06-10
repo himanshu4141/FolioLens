@@ -25,9 +25,6 @@ import { trackServerEventAwait } from '../_shared/analytics.ts';
 import {
   type CategoryComposition,
   type EquityHolding,
-  type MarketCapCategory,
-  type CapClassification,
-  classifyHoldings,
   isDebtDataCorrupted,
   deriveDebtPct,
   isEquityHoldingsCorrupted,
@@ -36,7 +33,6 @@ import {
   deriveSchemeCategoryFromName,
   isGenericSchemeCategory,
 } from '../_shared/portfolio-utils.ts';
-import { shouldSkipHoldingsSyncForEmptyClassifier } from '../_shared/amfi-xlsx-parser.ts';
 import { probeUpstream, type UpstreamProbeResult } from '../_shared/upstream-probe.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -237,18 +233,6 @@ interface EnrichedPortfolio {
   midCapPct: number;
   smallCapPct: number;
   notClassifiedPct: number;
-  /**
-   * 'amfi' when at least one equity holding resolved to a Large/Mid/Small cap
-   * via the classifier. 'category_fallback' when we had clean equity
-   * holdings but none matched the AMFI list (e.g. an all-foreign-equity
-   * fund or an out-of-date AMFI map). The caller chooses what source value
-   * to persist; this field reports what the classifier produced.
-   */
-  classifierOutcome: 'amfi' | 'category_fallback';
-  /** Number of equity_holdings rows we actually classified into L/M/S. */
-  classifierHits: number;
-  /** Number of equity_holdings rows that flowed into Not Classified. */
-  classifierMisses: number;
   sectorAllocation: Record<string, number> | null;
   topHoldings: Array<{
     name: string;
@@ -264,7 +248,6 @@ function buildPortfolioFromHoldings(
   holdings: MfdataHoldings,
   schemeCategory: string,
   schemeName: string | null,
-  isinToCap: Map<string, MarketCapCategory>,
 ): EnrichedPortfolio {
   const catRules = getCategoryRules(schemeCategory, schemeName);
 
@@ -330,33 +313,15 @@ function buildPortfolioFromHoldings(
     sectorAllocation[sector] = Math.round(weight * 100) / 100;
   }
 
-  // Real per-fund cap split from the AMFI classifier. Falls back to the
-  // SEBI category-default values only if every holding was un-classifiable
-  // (e.g. all foreign equity or an out-of-date AMFI map); in that case we
-  // still mark the row 'category_fallback' so the UI can surface a
-  // disclaimer rather than presenting fake numbers as measured.
-  const classification: CapClassification = classifyHoldings(
-    equityHoldings as EquityHolding[],
-    isinToCap,
-  );
-  const classifierTotal =
-    classification.largeCapPct + classification.midCapPct + classification.smallCapPct;
-  const hasClassifierCoverage = equityHoldings.length > 0 && classifierTotal > 0;
+  // Cap split uses SEBI category defaults — the stock_market_cap ISIN→cap
+  // classifier was retired in Phase 2 (OpenFolio-Data now supplies cap_mix
+  // via source='official' rows). The mfdata backup path keeps real asset
+  // mix / sectors / debt / top_holdings; cap falls through to category rules.
+  const largeCapPct = catRules.large;
+  const midCapPct = catRules.mid;
+  const smallCapPct = catRules.small;
+  const notClassifiedPct = Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
 
-  const largeCapPct = hasClassifierCoverage ? classification.largeCapPct : catRules.large;
-  const midCapPct = hasClassifierCoverage ? classification.midCapPct : catRules.mid;
-  const smallCapPct = hasClassifierCoverage ? classification.smallCapPct : catRules.small;
-  const notClassifiedPct = hasClassifierCoverage
-    ? classification.notClassifiedPct
-    : Math.max(0, 100 - catRules.large - catRules.mid - catRules.small);
-
-  // Stamp each holding's marketCap from the classifier output (or 'Other'
-  // when nothing matched). The top_holdings list is the sorted top-50 by
-  // weight, so we look up annotations by ISIN+name to preserve sort order.
-  const annotatedByKey = new Map<string, MarketCapCategory | 'Other'>();
-  for (const a of classification.annotated) {
-    annotatedByKey.set(`${(a.isin ?? '').toUpperCase()}|${a.stock_name ?? ''}`, a.marketCap);
-  }
   const topHoldings = equityHoldings
     .filter((holding) => holding.stock_name && typeof holding.weight_pct === 'number')
     .sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0))
@@ -365,12 +330,9 @@ function buildPortfolioFromHoldings(
       name: holding.stock_name!,
       isin: holding.isin ?? '',
       sector: holding.sector ?? 'Other',
-      marketCap: annotatedByKey.get(`${(holding.isin ?? '').toUpperCase()}|${holding.stock_name ?? ''}`) ?? 'Other',
+      marketCap: 'Other',
       pctOfNav: holding.weight_pct!,
     }));
-
-  const classifierHits = classification.annotated.filter((a) => a.marketCap !== 'Other').length;
-  const classifierMisses = classification.annotated.length - classifierHits;
 
   return {
     equityPct: Math.round(equityPct * 100) / 100,
@@ -381,9 +343,6 @@ function buildPortfolioFromHoldings(
     midCapPct,
     smallCapPct,
     notClassifiedPct,
-    classifierOutcome: hasClassifierCoverage ? 'amfi' : 'category_fallback',
-    classifierHits,
-    classifierMisses,
     sectorAllocation: Object.keys(sectorAllocation).length > 0 ? sectorAllocation : null,
     topHoldings: topHoldings.length > 0 ? topHoldings : null,
     rawDebtHoldings,
@@ -395,38 +354,6 @@ interface SchemeRow {
   scheme_code: number;
   scheme_category: string;
   scheme_name: string | null;
-}
-
-/**
- * Pulls the full ISIN → market-cap map from `stock_market_cap`. ~750 rows
- * is well under one PostgREST page, but we read in chunks for safety.
- * Returns an empty map (and logs) when the table is missing or empty —
- * the cron should not fail outright if the classifier seeder hasn't run
- * yet; downstream code degrades to `category_fallback` per-fund.
- */
-async function loadIsinToCapMap(
-  client: ReturnType<typeof createServiceClient>,
-): Promise<Map<string, MarketCapCategory>> {
-  const map = new Map<string, MarketCapCategory>();
-  const PAGE = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await client
-      .from('stock_market_cap')
-      .select('isin, market_cap_category')
-      .range(from, from + PAGE - 1);
-    if (error) {
-      console.warn('[sync-fund-portfolios] stock_market_cap load failed: %s', error.message);
-      return map;
-    }
-    if (!data || data.length === 0) break;
-    for (const row of data as { isin: string; market_cap_category: MarketCapCategory }[]) {
-      map.set(row.isin.toUpperCase(), row.market_cap_category);
-    }
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,31 +396,6 @@ Deno.serve(async (req) => {
   const schemes = [...schemeMap.values()];
   console.log('[sync-fund-portfolios] %d distinct schemes to process', schemes.length);
 
-  // Load the AMFI ISIN → market cap map once for the whole run. The
-  // ~750-row table fits in well under 100 KB and the classifier hits it
-  // for every fund we sync — pulling it once is much cheaper than
-  // re-querying per scheme.
-  const isinToCap = await loadIsinToCapMap(supabase);
-  console.log('[sync-fund-portfolios] loaded %d ISIN classifications', isinToCap.size);
-
-  // Bootstrap guard: if `stock_market_cap` is empty (the seeder cron
-  // hasn't run yet), don't proceed with the holdings-driven sync.
-  // The classifier would return zero coverage on every fund and we'd
-  // write `category_fallback` rows for the entire universe — which
-  // then persist forever (the unique key is
-  // `(scheme_code, portfolio_date, source)`, so the eventual `amfi`
-  // rows from the next cron coexist with them rather than replacing).
-  // Skip the holdings path; fall through to `category_rules` so the
-  // Insights screen still has a baseline. The next cron run retries.
-  // See `docs/architecture/cache-surfaces.md` audit finding #7.
-  const skipHoldingsForEmptyClassifier = shouldSkipHoldingsSyncForEmptyClassifier(isinToCap.size);
-  if (skipHoldingsForEmptyClassifier) {
-    console.warn(
-      '[sync-fund-portfolios] stock_market_cap is empty; skipping holdings sync, ' +
-      'falling through to category_rules. Run sync-stock-market-cap first.',
-    );
-  }
-
   // Check which schemes already have fresh holdings-derived data this month.
   // Both 'amfi' (classifier hit) and 'category_fallback' (classifier missed
   // despite having holdings) count as "real-holdings attempt completed" —
@@ -519,11 +421,9 @@ Deno.serve(async (req) => {
   // generates one hourly `sync_failed` event per cron tick because every
   // per-scheme attempt errors and we emit "all errors, zero synced" → looks
   // identical to a real bug. The category_rules fallback still runs below,
-  // so Insights stays populated. Skipped if we're already short-circuiting
-  // via the classifier-table-empty guard above — no point probing if we
-  // weren't going to call mfdata anyway.
+  // so Insights stays populated.
   let upstreamSkipped: UpstreamProbeResult | null = null;
-  if (!skipHoldingsForEmptyClassifier && staleSchemes.length > 0) {
+  if (staleSchemes.length > 0) {
     const probe = await probeUpstream(`${MFDATA_BASE}/schemes/${staleSchemes[0].scheme_code}`);
     if (probe.status === 'down') {
       console.warn(
@@ -538,19 +438,10 @@ Deno.serve(async (req) => {
   }
 
   let amfiSynced = 0;
-  let classifierHitCount = 0;
-  let classifierFallbackCount = 0;
   let equityCorruptionGuardTrips = 0;
-  let classifierCoverageSum = 0;
-  let classifierCoverageSamples = 0;
   const amfiErrors: string[] = [];
 
-  // When either preflight has tripped (classifier table empty OR
-  // upstream hard-down), run the loop with an empty work list — we skip
-  // mfdata calls entirely. `categorySynced` below still seeds
-  // category_rules for funds without any holdings-derived row.
-  const schemesToProcess =
-    skipHoldingsForEmptyClassifier || upstreamSkipped ? [] : staleSchemes;
+  const schemesToProcess = upstreamSkipped ? [] : staleSchemes;
 
   const amfiResults = await Promise.allSettled(
     schemesToProcess.map(async (scheme, idx) => {
@@ -583,25 +474,15 @@ Deno.serve(async (req) => {
           holdings,
           scheme.scheme_category,
           scheme.scheme_name,
-          isinToCap,
         );
-        if (portfolio.classifierOutcome === 'amfi') classifierHitCount += 1;
-        else classifierFallbackCount += 1;
-        if (portfolio.classifierMisses > 0 && portfolio.classifierHits === 0) {
-          // No hits at all in spite of having holdings — separately countable
-          // for diagnostics but already covered by classifierFallbackCount.
-        }
-        if (portfolio.topHoldings && portfolio.topHoldings.length > 0) {
-          const cov = portfolio.largeCapPct + portfolio.midCapPct + portfolio.smallCapPct;
-          classifierCoverageSum += cov;
-          classifierCoverageSamples += 1;
-        }
         // The guard only trips when raw input was non-empty AND we discarded it.
         if ((holdings.equity_holdings?.length ?? 0) > 0 && (portfolio.topHoldings?.length ?? 0) === 0) {
           equityCorruptionGuardTrips += 1;
         }
 
-        const sourceTag = portfolio.classifierOutcome === 'amfi' ? 'amfi' : 'category_fallback';
+        // mfdata path now always tags as category_fallback (real holdings data
+        // but cap from SEBI defaults — same disclaimer as before for this tail).
+        const sourceTag = 'category_fallback';
 
         const { error } = await supabase
           .from('fund_portfolio_composition')
@@ -713,19 +594,6 @@ Deno.serve(async (req) => {
   console.log('[sync-fund-portfolios] done — amfiSynced=%d categorySynced=%d errors=%d, elapsed_ms=%d',
     amfiSynced, categorySynced, amfiErrors.length, elapsedMs);
 
-  const classifierCoveragePctAvg = classifierCoverageSamples > 0
-    ? Math.round((classifierCoverageSum / classifierCoverageSamples) * 100) / 100
-    : 0;
-
-  // Event-name decision:
-  //   - upstream hard-down (preflight)         → sync_skipped_upstream_down
-  //   - tried, every attempt errored, 0 synced → sync_failed (real bug)
-  //   - otherwise                              → sync_completed
-  //
-  // The bootstrap-empty-classifier path is intentionally NOT a separate
-  // event — it surfaces as `sync_completed` with `classifier_table_empty_skip=true`
-  // so an alert can fire if it persists past the first hour after
-  // `sync-stock-market-cap` is supposed to land.
   let eventName: 'sync_skipped_upstream_down' | 'sync_failed' | 'sync_completed';
   if (upstreamSkipped) {
     eventName = 'sync_skipped_upstream_down';
@@ -744,13 +612,7 @@ Deno.serve(async (req) => {
       category_synced: categorySynced,
       fresh_skipped: freshAmfiCodes.size,
       errors_count: amfiErrors.length,
-      classifier_hit_count: classifierHitCount,
-      classifier_fallback_count: classifierFallbackCount,
-      classifier_no_holdings_count: categorySynced,
-      classifier_coverage_pct_avg: classifierCoveragePctAvg,
       equity_corruption_guard_trips: equityCorruptionGuardTrips,
-      classifier_table_size: isinToCap.size,
-      classifier_table_empty_skip: skipHoldingsForEmptyClassifier,
       elapsed_ms: elapsedMs,
       upstream_status: upstreamSkipped ? 'down' : 'up',
       upstream_reason: upstreamSkipped?.reason ?? null,

@@ -1,0 +1,18 @@
+-- Deprecate the FolioLens-side market-cap classification pipeline (Phase 1).
+--
+-- OpenFolio-Data now publishes a real per-fund cap split (`cap_mix`) across all
+-- 50 AMCs (~99.1% coverage), so the `source='official'` rows already carry
+-- Large/Mid/Small. The `stock_market_cap` table + this cron only ever fed the
+-- backup mfdata (`amfi`) classifier. See docs/plans/deprecate-post-openfolio.md.
+--
+-- Phase 1 (this migration): stop the population mechanism. The AMFI
+-- categorization list is static reference data refreshed twice a year, so the
+-- existing `stock_market_cap` snapshot stays accurate for months while OpenFolio
+-- is proven out — there is no behavioural regression from freezing it.
+--
+-- Phase 2 (20260608000001_drop_stock_market_cap.sql): DROP the table and remove
+-- the classifier from `sync-fund-portfolios` / `fetch-fund-snapshot`.
+--
+-- Idempotent: looking up the jobid first means a missing job is a no-op (the
+-- named-argument cron.unschedule raises when the job is absent).
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'sync-stock-market-cap-monthly';

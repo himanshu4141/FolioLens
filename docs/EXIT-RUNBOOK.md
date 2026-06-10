@@ -20,7 +20,7 @@ listed below.
 | **Auth** | High | All `supabase.auth.*` calls go through `authClient` (`src/lib/auth/index.ts`). OAuth redirect URLs live in the Supabase dashboard. JWT shape comes from supabase-auth and is baked into RLS via `auth.uid()`. |
 | **Edge Functions** | Medium | 11 functions in `supabase/functions/` (Deno runtime). All client invocations go through `functionsClient` (`src/lib/functions/index.ts`). |
 | **Storage** | Low | One private bucket (`user-feedback-attachments`) + one public bucket (`static-snapshots`). All client access goes through `storageClient` (`src/lib/storage/index.ts`). |
-| **pg_cron + pg_net** | Medium | 5 scheduled jobs. Target URLs read from `public.app_config` table, so they're already parameterised. |
+| **pg_cron + pg_net** | Medium | 4 scheduled jobs. Target URLs read from `public.app_config` table, so they're already parameterised. (`sync-stock-market-cap` was removed in 2026-06-01; `stock_market_cap` table dropped 2026-06-08.) |
 | **Realtime / Vault / RPC** | None | Not used. Keep it that way. |
 
 ## Order of operations (least → most coupled)
@@ -45,7 +45,7 @@ stuff first so each subsequent step has fewer dependencies to chase.
 Replace pg_cron with GitHub Actions cron (we already use it for
 `sync-amfi-portfolios.yml`) or Vercel/Cloudflare cron.
 
-For each of the 5 scheduled jobs in
+For each of the 4 scheduled jobs in
 `supabase/migrations/20260513000001_app_config_table.sql`:
 
 - Take the URL the job hits via `app_config_get('supabase_functions_base_url')`.
@@ -60,6 +60,8 @@ Schedules to preserve:
 - `openfolio-composition-monthly` — `30 1 15 * *`
 - `sync-fund-meta-daily` — `0 2 * * *`
 - `regenerate-index-snapshots-daily` — `0 14 * * 1-5`
+
+(`sync-stock-market-cap-monthly` was removed when the AMFI ISIN→cap classifier was retired in favour of OpenFolio's `cap_mix`.)
 
 ### 3. Database (~3 days)
 
