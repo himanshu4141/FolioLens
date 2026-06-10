@@ -1,7 +1,7 @@
 # ExecPlan: Deprecate post-OpenFolio dead weight
 
-Status: **Complete** — all four phases implemented and merged.
-Date: 2026-06-01 (Phase 1) → 2026-06-08 (Phases 2–4)
+Status: **Complete** — five phases implemented and merged.
+Date: 2026-06-01 (Phase 1) → 2026-06-08 (Phases 2–4) → 2026-06-10 (Phase 5)
 Branch: `chore/deprecate-stock-market-cap` (PR #191)
 Depends on: [#190](https://github.com/himanshu4141/FolioLens/pull/190) (OpenFolio-Data as primary holdings source, M1–M6 merged).
 Related: `docs/plans/openfolio-holdings-integration.md`, `docs/research/2026-05-29-holdings-source-openfolio-data.md`.
@@ -119,7 +119,52 @@ Update every doc that referenced the retired pipeline, the dead columns, or the 
 - **Phase 2** is the point of no return — `DROP TABLE` is irreversible in prod. Justified by the gate: confirmed OpenFolio coverage before merge. If coverage regresses, the recovery path is to re-seed `stock_market_cap` from git history + re-add the classifier — but `official` rows are unaffected, so the regression only impacts the ~0.9% tail.
 - **Phase 3** (`morningstar_rating`, `related_variants`) — no recovery path is needed; no app surface reads these values.
 
+### Phase 5 — retire pre-OpenFolio universe backfill ✅ (2026-06-10)
+
+The `backfill-fund-universe.yml` GitHub Actions workflow and its companion script
+`scripts/backfill-fund-universe.mjs` were originally built to pre-hydrate the full
+~37k AMFI universe so Compare Funds and Past SIP Check had sub-50ms reads.  The
+workflow has been timing out nightly since 2026-06-02 and its design is incompatible
+with the post-#191 architecture:
+
+- It wrote `source:'amfi'` composition rows — a source tag retired by #191.
+  mfdata rows now write as `source:'category_fallback'`.
+- Its stage 3 (full NAV history via mfapi.in) drives 8.8 M rows (98.8 % unheld),
+  the 1.6 GB NAV history load that causes the timeouts.
+- Universe pre-hydration is superseded by the OpenFolio chunked backfill
+  (`supabase/functions/universe-backfill/`) + existing on-pick `fetch-fund-snapshot`
+  hydration.
+
+**Tradeoff accepted:** The old script gave a proactive full-universe NAV history
+pre-seed (every scheme, not just held funds).  The replacement path (`universe-backfill`
+edge function) covers composition + metadata for the full universe via OpenFolio, but
+delegates NAV history to the on-demand path (`sync-nav` for held funds + per-scheme
+`fetch-fund-nav` at pick time).  Compare Funds and Past SIP Check don't need NAV
+history for the picker UX — only the Fund Detail NAV chart does, and that is already
+served by the on-pick path.
+
+**Changes:**
+- Delete `.github/workflows/backfill-fund-universe.yml`.
+- Delete `scripts/backfill-fund-universe.mjs`.
+- `supabase/migrations/20260610000000_drop_scheme_master_backfill_columns.sql` — drops
+  `idx_scheme_master_backfill_rotation` index and the four workflow-state columns
+  (`last_backfill_attempted_at`, `backfill_outcome`, `backfill_failure_count`,
+  `is_inactive`) from `scheme_master`.  No app read paths ever touched these columns
+  (not in `database.types.ts`, not in `src/`, not in any Edge Function).
+- Docs: updated `data-sync-pipeline.md`, README workflows table, this plan.
+
+**Confirmed:** `src/types/database.types.ts`, `src/`, and all Edge Functions have zero
+references to the dropped columns.  Migration is a pure DROP with no view rebuild
+required (the `fund` view never projected these columns).
+
+**NOT done in this PR:** nav_history rows written by the old script are left intact.
+Row-level cleanup (delete unheld rows older than N days) is a separate follow-up PR
+so it can be gated on a clear retention policy decision.
+
+---
+
 ## Risks accepted
 
 - **~0.9% of schemes** (mfdata tail not covered by OpenFolio) now show category-average cap with the existing disclaimer. Honest and acceptable.
 - **Single source of truth for cap** — mitigated: FolioLens caches into its own Postgres, so an OpenFolio outage doesn't affect request-time composition reads.
+- **NAV history for non-held schemes** — the old script proactively pre-seeded NAV history for the full universe; this is no longer done.  Non-held schemes populate NAV history on-demand at pick time via `fetch-fund-nav`.  First-open latency for a never-held scheme in Past SIP Check / Compare is acceptable (single fetch, ~200ms) given the tail traffic these tools see.
