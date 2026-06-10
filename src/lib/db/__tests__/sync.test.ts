@@ -36,7 +36,9 @@ jest.mock('@/src/lib/analytics', () => ({
 }));
 
 // eslint-disable-next-line import/first
-import { bootstrap, shouldRebuildTxOnDrift } from '../sync';
+import { bootstrap, didSyncChangeData, shouldRebuildTxOnDrift } from '../sync';
+// eslint-disable-next-line import/first
+import type { SyncResult } from '../sync';
 // eslint-disable-next-line import/first
 import { transactionRepo } from '@/src/lib/data/transaction';
 // eslint-disable-next-line import/first
@@ -325,5 +327,110 @@ describe('sync.reconcileTransactionCount — orchestration', () => {
       (call: unknown[]) => call[0] === 'tx_cache_reconciled',
     );
     expect(reconciledCalls).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// didSyncChangeData — pure predicate
+// ─────────────────────────────────────────────────────────────────────
+
+describe('didSyncChangeData', () => {
+  const base: SyncResult = { txInserted: 0, navInserted: 0, idxInserted: 0, errors: [] };
+
+  it('returns false when all counts are zero and txRebuiltFromDrift is absent', () => {
+    expect(didSyncChangeData(base)).toBe(false);
+  });
+
+  it('returns false when txRebuiltFromDrift is explicitly false', () => {
+    expect(didSyncChangeData({ ...base, txRebuiltFromDrift: false })).toBe(false);
+  });
+
+  it('returns false when txRebuiltFromDrift is undefined', () => {
+    expect(didSyncChangeData({ ...base, txRebuiltFromDrift: undefined })).toBe(false);
+  });
+
+  it('returns true when txInserted > 0', () => {
+    expect(didSyncChangeData({ ...base, txInserted: 1 })).toBe(true);
+  });
+
+  it('returns true when navInserted > 0', () => {
+    expect(didSyncChangeData({ ...base, navInserted: 5 })).toBe(true);
+  });
+
+  it('returns true when idxInserted > 0', () => {
+    expect(didSyncChangeData({ ...base, idxInserted: 2 })).toBe(true);
+  });
+
+  it('returns true when txRebuiltFromDrift is true (even with zero insert counts)', () => {
+    expect(didSyncChangeData({ ...base, txRebuiltFromDrift: true })).toBe(true);
+  });
+
+  it('returns true when multiple fields are positive', () => {
+    expect(didSyncChangeData({ ...base, txInserted: 3, navInserted: 10, idxInserted: 1 })).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// didSyncChangeData — bootstrap integration
+// Verifies the contract that runBootstrap relies on: the predicate
+// returns true when bootstrap actually wrote new rows (so the layout
+// should call queryClient.invalidateQueries) and false when SQLite was
+// already up to date (so no unnecessary recompute fires).
+// ─────────────────────────────────────────────────────────────────────
+
+describe('didSyncChangeData — bootstrap integration', () => {
+  beforeEach(() => {
+    __resetAllForTests();
+    __setDbForTests(null);
+    jest.clearAllMocks();
+  });
+
+  it('result indicates invalidation needed when bootstrap inserts new rows', async () => {
+    const txRow = MOCK_TX_ROW({
+      fund_id: 'f1',
+      date: '2026-01-15',
+      created_at: '2026-01-15T00:00:00Z',
+      amount: 1000,
+      units: 10,
+    });
+    const queue = makeChainQueue([
+      { data: [txRow], error: null },       // delta: one new row
+      { data: null, error: null, count: 1 }, // count check: server=1 local=1, no drift
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    const result = await bootstrap('user-1', [], []);
+
+    expect(result.txInserted).toBe(1);
+    expect(didSyncChangeData(result)).toBe(true);
+  });
+
+  it('result indicates no invalidation needed when bootstrap finds nothing new', async () => {
+    // Pre-populate SQLite so the watermark is non-null and the delta
+    // returns nothing new.
+    const existing = MOCK_TX_ROW({
+      fund_id: 'f1',
+      date: '2026-01-15',
+      created_at: '2026-01-15T00:00:00Z',
+      amount: 1000,
+      units: 10,
+    });
+    await txRepo.bulkInsert([existing]);
+
+    const queue = makeChainQueue([
+      { data: [], error: null },             // delta: nothing new
+      { data: null, error: null, count: 1 }, // count check: server=1 local=1, no drift
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    const result = await bootstrap('user-1', [], []);
+
+    expect(result.txInserted).toBe(0);
+    expect(result.navInserted).toBe(0);
+    expect(result.idxInserted).toBe(0);
+    expect(result.txRebuiltFromDrift).toBeFalsy();
+    expect(didSyncChangeData(result)).toBe(false);
   });
 });

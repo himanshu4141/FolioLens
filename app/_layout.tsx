@@ -42,6 +42,7 @@ import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers
 import {
   bootstrapForUser,
   clearAll as clearLocalDb,
+  didSyncChangeData,
   syncDeltaForUser,
 } from '@/src/lib/db/sync';
 
@@ -219,7 +220,10 @@ function useAnalyticsLifecycle() {
           analytics.track('db_sync_bootstrap_started', {
             local_tx_count_before: preCount,
           });
-          await bootstrapForUser(userId);
+          const result = await bootstrapForUser(userId);
+          if (didSyncChangeData(result)) {
+            void queryClient.invalidateQueries();
+          }
         } catch (err) {
           console.warn('[db/sync] bootstrap failed', err);
         }
@@ -313,16 +317,7 @@ function useAnalyticsLifecycle() {
               if (!uid) return;
               syncDeltaForUser(uid)
                 .then((result) => {
-                  const changed =
-                    result.txInserted > 0 ||
-                    result.navInserted > 0 ||
-                    result.idxInserted > 0 ||
-                    // Tx count reconciliation rebuilt the local table
-                    // from server (drift detected). The downstream RQ
-                    // entries that derive from transactions need to
-                    // be flushed too.
-                    result.txRebuiltFromDrift === true;
-                  if (changed) {
+                  if (didSyncChangeData(result)) {
                     void queryClient.invalidateQueries();
                   }
                 })
