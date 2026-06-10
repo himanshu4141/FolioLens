@@ -114,7 +114,9 @@ Each Supabase project needs the row populated **once**, via the Dashboard SQL Ed
 
 Re-running is safe; the `ON CONFLICT` upsert overwrites the existing value. If the row is missing the call sites' `NULL || '/sync-nav'` evaluates to NULL and `net.http_post` errors loudly — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
 
-All current pg_net call sites — the cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`, `openfolio-composition-monthly`), the M5 `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
+All current pg_net call sites — the cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-hourly`, `sync-fund-meta-daily`, `openfolio-composition-monthly`), the `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
+
+> **Note (2026-06-10):** Migration `20260528000000_sync_nav_bimodal_schedule.sql` introduced a regression by using `current_setting('app.supabase_functions_base_url')` instead of `public.app_config_get()`, causing every `sync-nav-hourly` run to fail with `unrecognized configuration parameter`. Fixed by `20260610000000_fix_sync_nav_cron_app_config.sql`.
 
 `notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
 
