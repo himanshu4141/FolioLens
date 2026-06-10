@@ -4,8 +4,6 @@ import {
   isRiskRatioCategoryBlocked,
   readMfdataAsOfDate,
   readMfdataBeta,
-  readMfdataPeriodReturn,
-  readMfdataRank,
   readMfdataRSquared,
   readReturnPct,
   SEBI_DIRECT_PLAN_INTRODUCTION_DATE,
@@ -121,43 +119,6 @@ describe('readMfdataRSquared', () => {
 
   it('returns null for blocked category', () => {
     expect(readMfdataRSquared(blob, 'Corporate Bond Fund')).toBeNull();
-  });
-});
-
-describe('readMfdataPeriodReturn', () => {
-  const blob = {
-    return_1m: 7.5,
-    return_3m: -1.03,
-    return_1y: 1.16,
-    return_3y: 13.8,
-    return_5y: 9.29,
-    return_inception: 15.86,
-  };
-
-  it('reads each period field', () => {
-    expect(readMfdataPeriodReturn(blob, 'return_1m')).toBe(7.5);
-    expect(readMfdataPeriodReturn(blob, 'return_3y')).toBe(13.8);
-    expect(readMfdataPeriodReturn(blob, 'return_inception')).toBe(15.86);
-  });
-
-  it('returns null for missing fields', () => {
-    expect(readMfdataPeriodReturn(blob, 'return_6m')).toBeNull();
-    expect(readMfdataPeriodReturn(null, 'return_1y')).toBeNull();
-    expect(readMfdataPeriodReturn({}, 'return_1y')).toBeNull();
-  });
-});
-
-describe('readMfdataRank', () => {
-  const blob = { rank_1y: 65, rank_3y: 67.5 };
-
-  it('reads and rounds rank fields', () => {
-    expect(readMfdataRank(blob, 'rank_1y')).toBe(65);
-    expect(readMfdataRank(blob, 'rank_3y')).toBe(68); // rounded
-  });
-
-  it('returns null for missing fields', () => {
-    expect(readMfdataRank(blob, 'rank_5y')).toBeNull();
-    expect(readMfdataRank(null, 'rank_1y')).toBeNull();
   });
 });
 

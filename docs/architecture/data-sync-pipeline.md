@@ -199,6 +199,21 @@ sequenceDiagram
 
 `META_STALE_DAYS = 7` keeps mfdata.in calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
 
+### period_returns blob — normalise at write, merge semantics
+
+`scheme_master.period_returns` is written by two sources:
+
+| Source | Keys written | Format |
+|--------|-------------|--------|
+| OpenFolio (sync-fund-meta OF path) | `ret_1y`, `ret_3y`, `ret_5y`, `ret_incep` | decimal CAGR (0.125) |
+| mfdata backup (sync-fund-meta + fetch-fund-snapshot) | `ret_1m`, `ret_3m`, `ret_6m`, `ret_1y`, `ret_3y`, `ret_5y`, `ret_incep`, `rank_*`, `as_of_date` | decimal CAGR after normalisation (converted from mfdata's percent at write time) |
+
+Both writers use helpers from `supabase/functions/_shared/period-returns.ts`:
+- **`mergeMfdataReturns(mfdataBlob, existingBlob)`** — converts mfdata percent returns to decimal, then spreads the existing blob on top (existing values win). This preserves OF's precise values when mfdata runs after OF.
+- **`mergeOfReturns(ofValues, existingBlob)`** — spreads existing blob first, then OF values on top (OF wins). This preserves mfdata's extra horizons (1m/3m/6m/ranks) when OF runs after mfdata.
+
+**29 legacy mfdata-shape rows** (percent format, `return_1y` keys) exist on dev as of 2026-06-10. `readReturnPct` in `src/utils/mfdataGuards.ts` handles both shapes at read time and will continue to do so until all rows are refreshed by a cron run. This is `[cache-shape-stable]` — the client code returns identical percentage values regardless of which shape is stored.
+
 ## Why pg_cron + edge functions instead of GitHub Actions
 
 - **Latency.** `pg_net.http_post` from inside Postgres to a Supabase Edge Function on the same project is ~10ms; a GH Actions cron + REST call would be 30-60s round trip.
