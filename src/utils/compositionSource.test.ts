@@ -83,4 +83,26 @@ describe('pickBestCompositionRows', () => {
   it('returns an empty array for empty input', () => {
     expect(pickBestCompositionRows([])).toEqual([]);
   });
+
+  it('sentinel date 1900-01-01 on category_rules never beats a higher-ranked source', () => {
+    // category_rules rows use '1900-01-01' as portfolio_date (sentinel) to
+    // prevent per-day accretion. Confirm the sentinel can't displace real data.
+    const result = pickBestCompositionRows([
+      row(1, 'category_rules', '1900-01-01'),
+      row(1, 'amfi', '2026-04-30'),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].source).toBe('amfi');
+    expect(result[0].portfolio_date).toBe('2026-04-30');
+  });
+
+  it('sentinel date does not affect tie-break between two different schemes', () => {
+    const result = pickBestCompositionRows([
+      row(1, 'category_rules', '1900-01-01'),
+      row(2, 'official', '2026-04-30'),
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result.find((r) => r.scheme_code === 1)?.source).toBe('category_rules');
+    expect(result.find((r) => r.scheme_code === 2)?.source).toBe('official');
+  });
 });

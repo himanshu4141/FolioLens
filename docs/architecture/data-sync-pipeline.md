@@ -79,11 +79,9 @@ gantt
   section sync-index (weekday)
   sync-index (every hour at :05)         :a2, 00:05, 5m
 
-  section Hourly (always)
-  sync-fund-portfolios (00:10 mark)      :a3, 00:10, 5m
-
   section Daily
   sync-fund-meta (02:00 UTC)             :a4, 02:00, 5m
+  sync-fund-portfolios (02:10 UTC)       :a3, 02:10, 5m
 ```
 
 `sync-nav` runs on a bimodal schedule — hourly during the EOD publish window (6 PM → 6 AM IST, i.e. 12:30 → 00:30 UTC) when AMCs actually push NAVs to mfapi, and every 2 hours during the daytime (8 AM → 5 PM IST, i.e. 02:30 → 10:30 UTC at even hours) to catch late corrections without burning compute on idle hours. Runs every day (not weekday-only) so a Friday-EOD NAV that lands Saturday morning IST gets picked up instead of waiting until Monday. Different AMCs land their NAVs at very different times — HDFC / ICICI / DSP typically hit mfapi within an hour of EOD, while PPFAS and international FoFs can take 4–6 hours longer; the dense EOD window catches both extremes.
@@ -167,7 +165,9 @@ sequenceDiagram
   Fn-->>Cron: complete
 ```
 
-Two-layer write order matters: category rules go in *first* so the Insights UI never renders empty, even if every mfdata fetch fails this hour.
+Two-layer write order matters: category rules go in *first* so the Insights UI never renders empty, even if every mfdata fetch fails this run.
+
+> **Cron demotion (2026-06-10):** `sync-portfolio-composition-hourly` was renamed to `sync-portfolio-composition-daily` (schedule `10 2 * * *`). mfdata.in holdings and OpenFolio-Data official rows update at most monthly — hourly polling burned pg_net quota with zero benefit. category_rules rows now use the sentinel `portfolio_date = '1900-01-01'` so every daily upsert targets the same unique key, preventing the one-row-per-day accretion bug.
 
 > **Note on `getCategoryRules()` caller contract:** if `scheme_category` is the bare single word `"Equity"` (DSP funds, half the ICICI Prudential lineup, etc.) the lookup falls to `GENERIC_CATEGORY_MAP['equity']`, a flexi-cap proxy (38/33/29). PR #188 added `deriveSchemeCategoryFromName()` to rescue the sub-bucket from the scheme name. **Any call to `getCategoryRules()` MUST pass `scheme_name` as the second argument** — without it the proxy bug silently returns a wrong cap split for any fund whose category is generic. See the [post-flexicap-proxy postmortem](../postmortems/2026-05-flexicap-proxy-strikes-twice.md).
 

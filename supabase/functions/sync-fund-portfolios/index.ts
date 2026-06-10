@@ -530,7 +530,16 @@ Deno.serve(async (req) => {
   // ---------------------------------------------------------------------------
   // Layer 1: seed category_rules for any scheme still missing composition data
   // ---------------------------------------------------------------------------
-  const today = now.toISOString().split('T')[0];
+
+  // Sentinel date: category_rules rows use '1900-01-01' as portfolio_date so
+  // that every run upserts the same (scheme_code, '1900-01-01', 'category_rules')
+  // key, guaranteeing exactly one row per scheme. Using the run date (today)
+  // caused one new row per day because the UNIQUE key
+  // (scheme_code, portfolio_date, source) distinguished every calendar date.
+  // The sentinel is safe because pickBestCompositionRows ranks category_rules
+  // last (rank 0), so this date can never displace a higher-ranked row in the
+  // read path regardless of how old it looks.
+  const CATEGORY_RULES_SENTINEL_DATE = '1900-01-01';
   let categorySynced = 0;
 
   // Re-check which schemes now have holdings-derived data (real or fallback).
@@ -552,7 +561,7 @@ Deno.serve(async (req) => {
       const notClassified = Math.max(0, 100 - comp.large - comp.mid - comp.small);
       return {
         scheme_code: scheme.scheme_code,
-        portfolio_date: today,
+        portfolio_date: CATEGORY_RULES_SENTINEL_DATE,
         equity_pct: comp.equity,
         debt_pct: comp.debt,
         cash_pct: comp.cash,

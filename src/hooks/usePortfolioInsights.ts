@@ -157,9 +157,13 @@ export function computeInsights(
       });
     }
 
-    // Track oldest data date
-    const compDate = new Date(comp.portfolioDate);
-    if (compDate < worstDate) worstDate = compDate;
+    // Track oldest real-data date. category_rules rows use the sentinel date
+    // '1900-01-01' and carry no disclosure meaning — excluding them keeps
+    // dataAsOf anchored to actual holdings disclosure dates.
+    if (comp.source !== 'category_rules') {
+      const compDate = new Date(comp.portfolioDate);
+      if (compDate < worstDate) worstDate = compDate;
+    }
 
     // Asset mix (weighted sum)
     assetMix.equity += weight * comp.equityPct;
