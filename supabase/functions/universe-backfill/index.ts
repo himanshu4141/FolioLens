@@ -30,15 +30,16 @@
  * the backfill, trigger `sync-fund-meta` manually before the 7-day window
  * lapses (it will skip OF-only and proceed straight to mfdata for those fields).
  *
- * Chunked invocation: Each request processes at most ~5 pages (~1500 items per
- * invocation). Cursor state is stored in app_config for resumption. Returns 200
- * with progress JSON {phase, cursor, done, stats} on success or a 4xx/5xx error
- * status (never silently breaks) on page-fetch failure so the re-invoker knows
- * to retry or escalate.
+ * Chunked invocation: Each request processes at most ~2 pages (~600 items per
+ * invocation). Cursor state is stored in app_config for resumption. Done markers
+ * (universe_backfill_{phase}_done_at) track completion to avoid re-running.
+ * Returns 200 with progress JSON {phase, cursor, done, stats} on success or a
+ * 4xx/5xx error status (never silently breaks) on page-fetch failure so the
+ * re-invoker knows to retry or escalate.
  *
- * Trigger: GitHub Actions workflow (every 10 minutes until done), then kept
- * current by monthly openfolio-sync (composition) and daily sync-fund-meta
- * (held-fund metadata).
+ * Trigger: GitHub Actions workflow (every 15 minutes, ~8 invocations per run),
+ * then kept current by monthly openfolio-sync (composition) and daily
+ * sync-fund-meta (held-fund metadata).
  *
  * Deploy with --no-verify-jwt.
  */
@@ -324,20 +325,61 @@ async function writeCursor(
     .eq('key', key);
 }
 
+async function readDoneMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+  phase: string,
+): Promise<string | null> {
+  const key = `universe_backfill_${phase}_done_at`;
+  const { data, error } = await supabase
+    .from('app_config')
+    .select('value')
+    .eq('key', key)
+    .single();
+  if (error || !data) return null;
+  try {
+    const parsed = JSON.parse(data.value);
+    return typeof parsed === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeDoneMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+  phase: string,
+  timestamp: string,
+): Promise<void> {
+  const key = `universe_backfill_${phase}_done_at`;
+  await supabase
+    .from('app_config')
+    .upsert({ key, value: JSON.stringify(timestamp), description: `Completion marker for ${phase} phase of universe-backfill` })
+    .eq('key', key);
+}
+
+async function clearDoneMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+  phase: string,
+): Promise<void> {
+  const key = `universe_backfill_${phase}_done_at`;
+  await supabase.from('app_config').delete().eq('key', key);
+}
+
 Deno.serve(async (req) => {
   const startedAt = Date.now();
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
   let phase: 'composition' | 'metadata' | 'both' = 'both';
+  let force = false;
   try {
     const body = await req.json().catch(() => ({}));
     if (body?.phase === 'composition') phase = 'composition';
     else if (body?.phase === 'metadata') phase = 'metadata';
+    if (body?.force === true) force = true;
   } catch {
-    // default 'both'
+    // default 'both', force=false
   }
 
-  console.log('[universe-backfill] invoked method=%s phase=%s', req.method, phase);
+  console.log('[universe-backfill] invoked method=%s phase=%s force=%s', req.method, phase, force);
 
   let client: ReturnType<typeof createOpenFolioClient>;
   try {
@@ -369,6 +411,28 @@ Deno.serve(async (req) => {
 
   // ── Composition phase (chunked with cursor resumption) ────────────────────
   if (phase === 'composition' || phase === 'both') {
+    // Check for done marker and short-circuit
+    const compositionDoneAt = await readDoneMarker(supabase, 'composition');
+    if (compositionDoneAt && !force) {
+      console.log('[universe-backfill] composition already done at %s, skipping', compositionDoneAt);
+      if (phase === 'composition') {
+        const elapsedMs = Date.now() - startedAt;
+        return json({
+          success: true,
+          phase: 'composition',
+          cursor: null,
+          done: true,
+          stats: { upserted: 0, matchedByCode: 0, matchedByIsin: 0, unmatched: 0, failed: 0, totalCount: 0 },
+          elapsed_ms: elapsedMs,
+        });
+      }
+    } else if (compositionDoneAt && force) {
+      console.log('[universe-backfill] force=true, clearing composition done marker');
+      await clearDoneMarker(supabase, 'composition');
+      const key = `universe_backfill_composition_cursor`;
+      await supabase.from('app_config').delete().eq('key', key);
+    }
+
     let stateRaw = await readCursor(supabase, 'composition');
     let state: CompositionBackfillState;
     if (!stateRaw || stateRaw.phase !== 'composition') {
@@ -398,6 +462,7 @@ Deno.serve(async (req) => {
         (msg) => console.log(msg),
       );
 
+      const failedBefore = state.failed;
       state.cursor = chunk.endPage;
       state.totalCount = chunk.totalCount;
       state.upserted += chunk.upserted;
@@ -406,12 +471,17 @@ Deno.serve(async (req) => {
       state.unmatched += chunk.unmatched;
       state.failed += chunk.failed;
 
+      if (chunk.failed > 50) {
+        console.error('[universe-backfill] composition failed count grew by %d (total=%d)', chunk.failed, state.failed);
+      }
+
       const done = state.totalCount === 0 || state.cursor * PAGE_SIZE > state.totalCount;
       if (!done) {
         await writeCursor(supabase, state);
       } else {
         const key = `universe_backfill_composition_cursor`;
         await supabase.from('app_config').delete().eq('key', key);
+        await writeDoneMarker(supabase, 'composition', syncedAt);
       }
 
       console.log(
@@ -454,7 +524,37 @@ Deno.serve(async (req) => {
   }
 
   // ── Metadata phase (chunked with cursor resumption) ────────────────────────
+  let compositionResult: {
+    phase: 'composition';
+    cursor: number | null;
+    done: boolean;
+    stats: Record<string, unknown>;
+    elapsed_ms: number;
+  } | null = null;
+
   if (phase === 'metadata' || phase === 'both') {
+    // Check for done marker and short-circuit
+    const metadataDoneAt = await readDoneMarker(supabase, 'metadata');
+    if (metadataDoneAt && !force) {
+      console.log('[universe-backfill] metadata already done at %s, skipping', metadataDoneAt);
+      if (phase === 'metadata') {
+        const elapsedMs = Date.now() - startedAt;
+        return json({
+          success: true,
+          phase: 'metadata',
+          cursor: null,
+          done: true,
+          stats: { written: 0, skipped: 0, failed: 0, totalCount: 0 },
+          elapsed_ms: elapsedMs,
+        });
+      }
+    } else if (metadataDoneAt && force) {
+      console.log('[universe-backfill] force=true, clearing metadata done marker');
+      await clearDoneMarker(supabase, 'metadata');
+      const key = `universe_backfill_metadata_cursor`;
+      await supabase.from('app_config').delete().eq('key', key);
+    }
+
     let stateRaw = await readCursor(supabase, 'metadata');
     let state: MetadataBackfillState;
     if (!stateRaw || stateRaw.phase !== 'metadata') {
@@ -482,11 +582,16 @@ Deno.serve(async (req) => {
         (msg) => console.log(msg),
       );
 
+      const failedBefore = state.failed;
       state.cursor = chunk.endPage;
       state.totalCount = chunk.totalCount;
       state.written += chunk.written;
       state.skipped += chunk.skipped;
       state.failed += chunk.failed;
+
+      if (chunk.failed > 50) {
+        console.error('[universe-backfill] metadata failed count grew by %d (total=%d)', chunk.failed, state.failed);
+      }
 
       const done = state.totalCount === 0 || state.cursor * PAGE_SIZE >= state.totalCount;
       if (!done) {
@@ -494,6 +599,7 @@ Deno.serve(async (req) => {
       } else {
         const key = `universe_backfill_metadata_cursor`;
         await supabase.from('app_config').delete().eq('key', key);
+        await writeDoneMarker(supabase, 'metadata', syncedAt);
       }
 
       console.log(
@@ -506,24 +612,74 @@ Deno.serve(async (req) => {
       );
 
       const elapsedMs = Date.now() - startedAt;
-      return json({
-        success: true,
-        phase: 'metadata',
-        cursor: state.cursor,
-        done,
-        stats: {
-          written: state.written,
-          skipped: state.skipped,
-          failed: state.failed,
-          totalCount: state.totalCount,
-        },
-        elapsed_ms: elapsedMs,
-      });
+
+      // For phase='both', collect metadata result for combined response
+      if (phase === 'both') {
+        compositionResult = {
+          phase: 'composition',
+          cursor: null, // will be overwritten in the combined response below
+          done: true,
+          stats: { failed: 0, totalCount: 0 },
+          elapsed_ms: elapsedMs,
+        };
+
+        // Get actual composition state for the combined response
+        const compState = await readCursor(supabase, 'composition');
+        const compDoneAt = await readDoneMarker(supabase, 'composition');
+        const compDone = compDoneAt !== null || (compState && compState.totalCount > 0 && compState.cursor * PAGE_SIZE > compState.totalCount);
+
+        const bothDone = done && compDone;
+
+        return json({
+          success: true,
+          phase: 'both',
+          composition: {
+            cursor: compState ? (compState as CompositionBackfillState).cursor : null,
+            done: compDone,
+            stats: compState
+              ? {
+                  upserted: (compState as CompositionBackfillState).upserted,
+                  matchedByCode: (compState as CompositionBackfillState).matchedByCode,
+                  matchedByIsin: (compState as CompositionBackfillState).matchedByIsin,
+                  unmatched: (compState as CompositionBackfillState).unmatched,
+                  failed: (compState as CompositionBackfillState).failed,
+                  totalCount: (compState as CompositionBackfillState).totalCount,
+                }
+              : { upserted: 0, matchedByCode: 0, matchedByIsin: 0, unmatched: 0, failed: 0, totalCount: 0 },
+          },
+          metadata: {
+            cursor: state.cursor,
+            done,
+            stats: {
+              written: state.written,
+              skipped: state.skipped,
+              failed: state.failed,
+              totalCount: state.totalCount,
+            },
+          },
+          done: bothDone,
+          elapsed_ms: elapsedMs,
+        });
+      } else {
+        return json({
+          success: true,
+          phase: 'metadata',
+          cursor: state.cursor,
+          done,
+          stats: {
+            written: state.written,
+            skipped: state.skipped,
+            failed: state.failed,
+            totalCount: state.totalCount,
+          },
+          elapsed_ms: elapsedMs,
+        });
+      }
     } catch (err) {
       const msg = String(err);
       console.error('[universe-backfill] metadata page-fetch fatal: %s', msg);
       return json(
-        { success: false, error: msg, phase: 'metadata', cursor: state.cursor },
+        { success: false, error: msg, phase: 'metadata', cursor: null },
         { status: 500 },
       );
     }

@@ -4,21 +4,27 @@ name: Universe Backfill
 # (every scheme in scheme_master, not just held funds) so Compare reads
 # composition, metrics, and B1 fields with no fetch-fund-snapshot latency.
 #
-# Chunked and resumable: each function invocation processes at most ~5 pages
-# (~1500 items), storing cursor state in app_config for resumption. Returns
-# 200 with {phase, cursor, done, stats} or 4xx/5xx on page-fetch failure.
-# This workflow loops every 10 minutes until done, re-invoking the edge
-# function with the new cursor.
+# Chunked and resumable: each function invocation processes at most ~2 pages
+# (~600 items), storing cursor state + done markers in app_config for resumption.
+# Returns 200 with {phase, composition, metadata, done, stats} or 4xx/5xx on
+# page-fetch failure. Scheduled every 15 minutes and runs ~8 sequential
+# invocations per run to fit within the 15-minute window.
+#
+# Done markers prevent re-runs; force=true body param clears them for deliberate
+# re-runs (OP-1 backfill remediation).
 #
 # When to use:
 #   - Initial backfill: phase=both (composition + metadata together).
 #   - Spot-fix composition only (e.g. after a new disclosure): phase=composition.
 #   - Spot-fix metadata only: phase=metadata.
+#   - Re-run after completion: {"force": true, "phase": "both"} in body.
 #   - After the backfill completes, keep up-to-date via:
 #     * monthly openfolio-sync (composition) — already scheduled
 #     * daily sync-fund-meta (held-fund metadata) — already scheduled
 
 on:
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
   workflow_dispatch:
     inputs:
       environment:
@@ -33,16 +39,26 @@ on:
         type: choice
         default: both
         options: [composition, metadata, both]
+      force:
+        description: 'Force re-run (clears done markers)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: universe-backfill-${{ github.event.inputs.environment || 'all' }}
+  cancel-in-progress: false
 
 jobs:
   backfill-dev:
     name: Universe Backfill (dev)
     runs-on: ubuntu-latest
-    timeout-minutes: 1440  # 24 hours max
+    timeout-minutes: 15  # 15 minutes per run (scheduled every 15 min)
     if: |
+      github.event_name == 'schedule' ||
       github.event.inputs.environment == 'dev' ||
       github.event.inputs.environment == 'both'
     steps:
@@ -59,25 +75,27 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_DEV }}
           FUNCTIONS_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}/functions/v1
           PHASE: ${{ github.event.inputs.phase || 'both' }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           node << 'EOF'
           const http = require('http');
           const https = require('https');
-          const fs = require('fs');
 
           const url = new URL('${{ env.FUNCTIONS_URL }}/universe-backfill');
           const protocol = url.protocol === 'https:' ? https : http;
 
           let phase = '${{ env.PHASE }}';
+          let force = '${{ env.FORCE }}' === 'true';
           let iteration = 0;
-          const maxIterations = 144; // 24h * 60min / 10min = 144
+          const maxIterations = 8;
+          let lastFailed = 0;
 
           async function invoke() {
             iteration++;
-            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase}`);
+            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase} force=${force}`);
 
             return new Promise((resolve, reject) => {
-              const body = JSON.stringify({ phase });
+              const body = JSON.stringify({ phase, force });
               const options = {
                 method: 'POST',
                 headers: {
@@ -99,12 +117,25 @@ jobs:
                     return reject(new Error(`HTTP ${res.statusCode}: ${data}`));
                   }
 
+                  if (res.statusCode >= 500) {
+                    console.error(`[${new Date().toISOString()}] ✗ HTTP ${res.statusCode}:`, result);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
+                  }
+
                   if (res.statusCode >= 400) {
                     console.error(`[${new Date().toISOString()}] HTTP ${res.statusCode}:`, result);
                     return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
                   }
 
                   console.log(`[${new Date().toISOString()}] Response:`, JSON.stringify(result, null, 2));
+
+                  const current = result.stats?.failed || result.metadata?.stats?.failed || result.composition?.stats?.failed || 0;
+                  if (current > lastFailed + 50) {
+                    console.error(`[${new Date().toISOString()}] ✗ Failed count grew by ${current - lastFailed}`);
+                    return reject(new Error(`Failed count grew by ${current - lastFailed}`));
+                  }
+                  lastFailed = current;
+
                   resolve(result);
                 });
               });
@@ -120,41 +151,38 @@ jobs:
               const result = await invoke();
 
               if (!result.success) {
-                console.error(`[${new Date().toISOString()}] Backfill failed:`, result.error);
+                console.error(`[${new Date().toISOString()}] ✗ Backfill failed:`, result.error);
                 process.exit(1);
               }
 
-              if (result.done) {
-                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete! Stats:`, result.stats);
-                console.log(`Phases completed: ${result.phase}`);
+              const done = result.done;
+              if (done) {
+                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete!`);
+                if (result.phase === 'both') {
+                  console.log(`Composition: ${result.composition?.stats ? JSON.stringify(result.composition.stats) : 'N/A'}`);
+                  console.log(`Metadata: ${result.metadata?.stats ? JSON.stringify(result.metadata.stats) : 'N/A'}`);
+                } else {
+                  console.log(`${result.phase} stats:`, result.stats);
+                }
                 process.exit(0);
               }
 
               if (iteration >= maxIterations) {
-                console.error(`[${new Date().toISOString()}] ✗ Max iterations (${maxIterations}) exceeded`);
-                process.exit(1);
+                console.log(`[${new Date().toISOString()}] ℹ Reached max iterations (${maxIterations}) for this run`);
+                process.exit(0);
               }
 
-              console.log(`[${new Date().toISOString()}] Continuing: cursor=${result.cursor} (iteration ${iteration}/${maxIterations})`);
+              const cursor = result.cursor || result.composition?.cursor || result.metadata?.cursor || '?';
+              console.log(`[${new Date().toISOString()}] ℹ Continuing: cursor=${cursor} (iteration ${iteration}/${maxIterations})`);
 
-              // Wait 10 minutes before re-invoking
-              await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+              await new Promise(resolve => setTimeout(resolve, 100));
               loop().catch(err => {
-                console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                console.error(`[${new Date().toISOString()}] ✗ Unhandled error:`, err.message);
                 process.exit(1);
               });
             } catch (err) {
-              if (iteration < maxIterations) {
-                console.warn(`[${new Date().toISOString()}] Iteration ${iteration} failed (will retry):`, err.message);
-                await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
-                loop().catch(err => {
-                  console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
-                  process.exit(1);
-                });
-              } else {
-                console.error(`[${new Date().toISOString()}] ✗ Failed after ${iteration} iterations:`, err.message);
-                process.exit(1);
-              }
+              console.error(`[${new Date().toISOString()}] ✗ Iteration ${iteration} failed:`, err.message);
+              process.exit(1);
             }
           })();
           EOF
@@ -162,7 +190,7 @@ jobs:
   backfill-prod:
     name: Universe Backfill (prod)
     runs-on: ubuntu-latest
-    timeout-minutes: 1440  # 24 hours max
+    timeout-minutes: 15  # 15 minutes per run (scheduled every 15 min)
     if: |
       github.event.inputs.environment == 'prod' ||
       github.event.inputs.environment == 'both'
@@ -180,25 +208,27 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_PROD }}
           FUNCTIONS_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_PROD }}/functions/v1
           PHASE: ${{ github.event.inputs.phase || 'both' }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           node << 'EOF'
           const http = require('http');
           const https = require('https');
-          const fs = require('fs');
 
           const url = new URL('${{ env.FUNCTIONS_URL }}/universe-backfill');
           const protocol = url.protocol === 'https:' ? https : http;
 
           let phase = '${{ env.PHASE }}';
+          let force = '${{ env.FORCE }}' === 'true';
           let iteration = 0;
-          const maxIterations = 144; // 24h * 60min / 10min = 144
+          const maxIterations = 8;
+          let lastFailed = 0;
 
           async function invoke() {
             iteration++;
-            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase}`);
+            console.log(`\n[${new Date().toISOString()}] Iteration ${iteration}: phase=${phase} force=${force}`);
 
             return new Promise((resolve, reject) => {
-              const body = JSON.stringify({ phase });
+              const body = JSON.stringify({ phase, force });
               const options = {
                 method: 'POST',
                 headers: {
@@ -220,12 +250,25 @@ jobs:
                     return reject(new Error(`HTTP ${res.statusCode}: ${data}`));
                   }
 
+                  if (res.statusCode >= 500) {
+                    console.error(`[${new Date().toISOString()}] ✗ HTTP ${res.statusCode}:`, result);
+                    return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
+                  }
+
                   if (res.statusCode >= 400) {
                     console.error(`[${new Date().toISOString()}] HTTP ${res.statusCode}:`, result);
                     return reject(new Error(`HTTP ${res.statusCode}: ${result.error || 'unknown error'}`));
                   }
 
                   console.log(`[${new Date().toISOString()}] Response:`, JSON.stringify(result, null, 2));
+
+                  const current = result.stats?.failed || result.metadata?.stats?.failed || result.composition?.stats?.failed || 0;
+                  if (current > lastFailed + 50) {
+                    console.error(`[${new Date().toISOString()}] ✗ Failed count grew by ${current - lastFailed}`);
+                    return reject(new Error(`Failed count grew by ${current - lastFailed}`));
+                  }
+                  lastFailed = current;
+
                   resolve(result);
                 });
               });
@@ -241,41 +284,38 @@ jobs:
               const result = await invoke();
 
               if (!result.success) {
-                console.error(`[${new Date().toISOString()}] Backfill failed:`, result.error);
+                console.error(`[${new Date().toISOString()}] ✗ Backfill failed:`, result.error);
                 process.exit(1);
               }
 
-              if (result.done) {
-                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete! Stats:`, result.stats);
-                console.log(`Phases completed: ${result.phase}`);
+              const done = result.done;
+              if (done) {
+                console.log(`\n[${new Date().toISOString()}] ✓ Backfill complete!`);
+                if (result.phase === 'both') {
+                  console.log(`Composition: ${result.composition?.stats ? JSON.stringify(result.composition.stats) : 'N/A'}`);
+                  console.log(`Metadata: ${result.metadata?.stats ? JSON.stringify(result.metadata.stats) : 'N/A'}`);
+                } else {
+                  console.log(`${result.phase} stats:`, result.stats);
+                }
                 process.exit(0);
               }
 
               if (iteration >= maxIterations) {
-                console.error(`[${new Date().toISOString()}] ✗ Max iterations (${maxIterations}) exceeded`);
-                process.exit(1);
+                console.log(`[${new Date().toISOString()}] ℹ Reached max iterations (${maxIterations}) for this run`);
+                process.exit(0);
               }
 
-              console.log(`[${new Date().toISOString()}] Continuing: cursor=${result.cursor} (iteration ${iteration}/${maxIterations})`);
+              const cursor = result.cursor || result.composition?.cursor || result.metadata?.cursor || '?';
+              console.log(`[${new Date().toISOString()}] ℹ Continuing: cursor=${cursor} (iteration ${iteration}/${maxIterations})`);
 
-              // Wait 10 minutes before re-invoking
-              await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
+              await new Promise(resolve => setTimeout(resolve, 100));
               loop().catch(err => {
-                console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
+                console.error(`[${new Date().toISOString()}] ✗ Unhandled error:`, err.message);
                 process.exit(1);
               });
             } catch (err) {
-              if (iteration < maxIterations) {
-                console.warn(`[${new Date().toISOString()}] Iteration ${iteration} failed (will retry):`, err.message);
-                await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
-                loop().catch(err => {
-                  console.error(`[${new Date().toISOString()}] Unhandled error:`, err.message);
-                  process.exit(1);
-                });
-              } else {
-                console.error(`[${new Date().toISOString()}] ✗ Failed after ${iteration} iterations:`, err.message);
-                process.exit(1);
-              }
+              console.error(`[${new Date().toISOString()}] ✗ Iteration ${iteration} failed:`, err.message);
+              process.exit(1);
             }
           })();
           EOF
