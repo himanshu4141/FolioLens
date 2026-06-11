@@ -17,6 +17,7 @@
  * against the deployed API on 2026-05-31).
  */
 
+// BEGIN OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
 // ---------------------------------------------------------------------------
 // API response types (mirror OpenFolio-Data's CompositionResponse)
 // ---------------------------------------------------------------------------
@@ -104,6 +105,19 @@ export interface OpenFolioCompositionPage {
   items: OpenFolioComposition[];
 }
 
+export interface ListCompositionArgs {
+  page?: number;
+  pageSize?: number;
+  updatedSince?: string | null;
+  amc?: string | null;
+  top?: number;
+}
+
+export interface GetCompositionArgs {
+  date?: string | null;
+  top?: number;
+}
+
 // ---------------------------------------------------------------------------
 // NAV API response types (OpenFolio-Data v2.0.0)
 // ---------------------------------------------------------------------------
@@ -186,12 +200,12 @@ export interface ListNavArgs {
  * holds the diagnostic metadata for each.
  */
 export type B1FieldStatus =
-  | 'value'            // OpenFolio has a value — use it
+  | 'value' // OpenFolio has a value — use it
   | 'officially_absent' // Source explicitly has no value — honest null, skip backup
-  | 'not_applicable'   // Field doesn't apply to this fund type — honest null
-  | 'unresolved'       // Not yet processed — fall back to mfdata
-  | 'parse_failed'     // Extraction attempted but failed — fall back to mfdata
-  | 'source_failed';   // Source fetch failed — fall back to mfdata
+  | 'not_applicable' // Field doesn't apply to this fund type — honest null
+  | 'unresolved' // Not yet processed — fall back to mfdata
+  | 'parse_failed' // Extraction attempted but failed — fall back to mfdata
+  | 'source_failed'; // Source fetch failed — fall back to mfdata
 
 export interface B1FieldMeta {
   status: B1FieldStatus;
@@ -315,6 +329,109 @@ export interface ListSchemesArgs {
   page?: number;
   pageSize?: number;
 }
+// ---------------------------------------------------------------------------
+// OpenFolio credentials + request paths
+// ---------------------------------------------------------------------------
+
+export const OPENFOLIO_API_BASE_ENV = 'OPENFOLIO_API_BASE';
+export const OPENFOLIO_API_BASE_URL_ENV = 'OPENFOLIO_API_BASE_URL';
+export const OPENFOLIO_API_KEY_ENV = 'OPENFOLIO_API_KEY';
+
+export interface OpenFolioEnv {
+  get(key: string): string | undefined;
+}
+
+export interface OpenFolioCredentials {
+  baseUrl: string;
+  apiKey: string;
+}
+
+/**
+ * Read the OpenFolio base URL + key from an env source. Accepts either
+ * `OPENFOLIO_API_BASE` (the function-secret name) or `OPENFOLIO_API_BASE_URL`
+ * (the local `.env.local` name). Throws if either is missing so a
+ * misconfigured deploy fails loudly instead of silently fetching nothing.
+ */
+export function resolveOpenFolioCredentials(env: OpenFolioEnv): OpenFolioCredentials {
+  const baseUrl = (env.get(OPENFOLIO_API_BASE_ENV) ?? env.get(OPENFOLIO_API_BASE_URL_ENV) ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  const apiKey = (env.get(OPENFOLIO_API_KEY_ENV) ?? '').trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error(
+      'OpenFolio not configured: set OPENFOLIO_API_BASE (or OPENFOLIO_API_BASE_URL) and OPENFOLIO_API_KEY',
+    );
+  }
+  return { baseUrl, apiKey };
+}
+
+export function buildOpenFolioQuery(
+  params: Record<string, string | number | null | undefined>,
+): string {
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== '') usp.set(k, String(v));
+  }
+  const q = usp.toString();
+  return q ? `?${q}` : '';
+}
+
+export function openFolioCompositionPath(
+  schemeCode: number,
+  args: GetCompositionArgs = {},
+): string {
+  return `/v1/schemes/${schemeCode}/composition${buildOpenFolioQuery({ date: args.date, top: args.top })}`;
+}
+
+export function openFolioCompositionListPath(args: ListCompositionArgs = {}): string {
+  return `/v1/composition${buildOpenFolioQuery({
+    page: args.page,
+    page_size: args.pageSize,
+    updated_since: args.updatedSince,
+    amc: args.amc,
+    top: args.top,
+  })}`;
+}
+
+export function openFolioNavSeriesPath(schemeCode: number, args: GetNavSeriesArgs = {}): string {
+  return `/v1/nav/${schemeCode}${buildOpenFolioQuery({ since: args.since, until: args.until })}`;
+}
+
+export function openFolioNavLatestPath(schemeCode: number): string {
+  return `/v1/nav/${schemeCode}/latest`;
+}
+
+export function openFolioNavListPath(args: ListNavArgs = {}): string {
+  return `/v1/nav${buildOpenFolioQuery({
+    since: args.since,
+    date: args.date,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+
+export function openFolioMetadataPath(schemeCode: number): string {
+  return `/v1/schemes/${schemeCode}/metadata`;
+}
+
+export function openFolioMetadataListPath(args: ListMetadataArgs = {}): string {
+  return `/v1/metadata${buildOpenFolioQuery({
+    updated_since: args.updatedSince,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+
+export function openFolioSchemesPath(args: ListSchemesArgs = {}): string {
+  return `/v1/schemes${buildOpenFolioQuery({
+    amc: args.amc,
+    category: args.category,
+    q: args.q,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+// END OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
 
 // ---------------------------------------------------------------------------
 // Row shape we upsert into fund_portfolio_composition
@@ -550,10 +667,7 @@ export function resolveSchemeCodes(
  * (a ~1-year-future date from an April-2026 build — the earlier year+1 slack
  * wrongly let that through).
  */
-export function isPlausibleDisclosureDate(
-  date: string | null | undefined,
-  today: string,
-): boolean {
+export function isPlausibleDisclosureDate(date: string | null | undefined, today: string): boolean {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
   return date >= '2000-01-01' && date <= today;
 }
@@ -562,49 +676,11 @@ export function isPlausibleDisclosureDate(
 // HTTP client (thin wrapper — the one place that holds base URL + API key)
 // ---------------------------------------------------------------------------
 
-export interface OpenFolioEnv {
-  get(key: string): string | undefined;
-}
-
-export interface OpenFolioCredentials {
-  baseUrl: string;
-  apiKey: string;
-}
-
-/**
- * Read the OpenFolio base URL + key from an env source. Accepts either
- * `OPENFOLIO_API_BASE` (the function-secret name) or `OPENFOLIO_API_BASE_URL`
- * (the local `.env.local` name). Throws if either is missing so a
- * misconfigured deploy fails loudly instead of silently fetching nothing.
- */
-export function resolveOpenFolioCredentials(env: OpenFolioEnv): OpenFolioCredentials {
-  const baseUrl = (env.get('OPENFOLIO_API_BASE') ?? env.get('OPENFOLIO_API_BASE_URL') ?? '')
-    .trim()
-    .replace(/\/+$/, '');
-  const apiKey = (env.get('OPENFOLIO_API_KEY') ?? '').trim();
-  if (!baseUrl || !apiKey) {
-    throw new Error(
-      'OpenFolio not configured: set OPENFOLIO_API_BASE (or OPENFOLIO_API_BASE_URL) and OPENFOLIO_API_KEY',
-    );
-  }
-  return { baseUrl, apiKey };
-}
-
-export interface ListCompositionArgs {
-  page?: number;
-  pageSize?: number;
-  updatedSince?: string | null;
-  amc?: string | null;
-  top?: number;
-}
-
-export interface GetCompositionArgs {
-  date?: string | null;
-  top?: number;
-}
-
 export interface OpenFolioClient {
-  getComposition(schemeCode: number, args?: GetCompositionArgs): Promise<OpenFolioComposition | null>;
+  getComposition(
+    schemeCode: number,
+    args?: GetCompositionArgs,
+  ): Promise<OpenFolioComposition | null>;
   listComposition(args?: ListCompositionArgs): Promise<OpenFolioCompositionPage>;
   /** Full or date-bounded NAV series for one AMFI plan. Null on 404. */
   getNavSeries(schemeCode: number, args?: GetNavSeriesArgs): Promise<NavSeries | null>;
@@ -628,15 +704,6 @@ export interface OpenFolioClient {
 export interface OpenFolioClientConfig extends OpenFolioCredentials {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-}
-
-function buildQuery(params: Record<string, string | number | null | undefined>): string {
-  const usp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null && v !== '') usp.set(k, String(v));
-  }
-  const q = usp.toString();
-  return q ? `?${q}` : '';
 }
 
 /** Construct an OpenFolio HTTP client. `fetchImpl` is injectable for tests. */
@@ -663,61 +730,40 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
 
   return {
     async getComposition(schemeCode, args = {}) {
-      const path = `/v1/schemes/${schemeCode}/composition${buildQuery({ date: args.date, top: args.top })}`;
+      const path = openFolioCompositionPath(schemeCode, args);
       const { body } = await request(path);
       return body as OpenFolioComposition | null;
     },
     async listComposition(args = {}) {
-      const path = `/v1/composition${buildQuery({
-        page: args.page,
-        page_size: args.pageSize,
-        updated_since: args.updatedSince,
-        amc: args.amc,
-        top: args.top,
-      })}`;
+      const path = openFolioCompositionListPath(args);
       const { body } = await request(path);
       return body as OpenFolioCompositionPage;
     },
     async getNavSeries(schemeCode, args = {}) {
-      const path = `/v1/nav/${schemeCode}${buildQuery({ since: args.since, until: args.until })}`;
+      const path = openFolioNavSeriesPath(schemeCode, args);
       const { body } = await request(path);
       return body as NavSeries | null;
     },
     async getNavLatest(schemeCode) {
-      const { body } = await request(`/v1/nav/${schemeCode}/latest`);
+      const { body } = await request(openFolioNavLatestPath(schemeCode));
       return body as NavLatestEntry | null;
     },
     async listNav(args = {}) {
-      const path = `/v1/nav${buildQuery({
-        since: args.since,
-        date: args.date,
-        page: args.page,
-        page_size: args.pageSize,
-      })}`;
+      const path = openFolioNavListPath(args);
       const { body } = await request(path);
       return body as NavBulkPage;
     },
     async getMetadata(schemeCode) {
-      const { body } = await request(`/v1/schemes/${schemeCode}/metadata`);
+      const { body } = await request(openFolioMetadataPath(schemeCode));
       return body as FundMetadata | null;
     },
     async listMetadata(args = {}) {
-      const path = `/v1/metadata${buildQuery({
-        updated_since: args.updatedSince,
-        page: args.page,
-        page_size: args.pageSize,
-      })}`;
+      const path = openFolioMetadataListPath(args);
       const { body } = await request(path);
       return body as MetadataPage;
     },
     async listSchemes(args = {}) {
-      const path = `/v1/schemes${buildQuery({
-        amc: args.amc,
-        category: args.category,
-        q: args.q,
-        page: args.page,
-        page_size: args.pageSize,
-      })}`;
+      const path = openFolioSchemesPath(args);
       const { body } = await request(path);
       return body as SchemeListPage;
     },
@@ -866,7 +912,9 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
         }
       } catch (err) {
         stats.failed += 1;
-        stats.errors.push(`${row.scheme_code}: ${err instanceof Error ? err.message : String(err)}`);
+        stats.errors.push(
+          `${row.scheme_code}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -923,7 +971,9 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
           pageRows.push(mapCompositionToRow(item, match.schemeCode, deps.syncedAt));
         } catch (err) {
           stats.failed += 1;
-          stats.errors.push(`${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`);
+          stats.errors.push(
+            `${match.schemeCode}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
 
@@ -946,7 +996,9 @@ export async function runOpenFolioSync(deps: OpenFolioSyncDeps): Promise<OpenFol
           log(`[openfolio-sync] registry write-back error: ${regResult.error}`);
         }
       } catch (err) {
-        log(`[openfolio-sync] registry write-back threw: ${err instanceof Error ? err.message : String(err)}`);
+        log(
+          `[openfolio-sync] registry write-back threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
