@@ -131,6 +131,21 @@ export function readMfdataRSquared(
 }
 
 /**
+ * Read the reported standard deviation (annualised volatility) from a
+ * risk_ratios blob. MFData stores this as a percentage (e.g. 18.5 for 18.5%).
+ * Returns null when absent, non-finite, or negative.
+ *
+ * No category gating — NAV volatility is a valid measure for any fund type.
+ */
+export function readMfdataStdDev(riskRatios: unknown): number | null {
+  if (!riskRatios || typeof riskRatios !== 'object') return null;
+  const risk = (riskRatios as { risk?: unknown }).risk;
+  if (!risk || typeof risk !== 'object') return null;
+  const sd = (risk as { std_deviation?: unknown }).std_deviation;
+  return typeof sd === 'number' && Number.isFinite(sd) && sd >= 0 ? sd : null;
+}
+
+/**
  * Read a CAGR return for a given horizon from period_returns, returning a
  * percentage value (e.g. 12.5 means 12.5%) regardless of the blob's source.
  * Handles two storage formats:
