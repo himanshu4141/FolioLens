@@ -142,6 +142,10 @@ The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`,
 
 **Steady-state operation.** The weekly cron runs on Sundays at 03:00 UTC (08:30 IST), identified as `nav-retention-weekly` in `cron.job`. Each run deletes at most 100 k rows and emits a `nav_retention_completed` PostHog event with `rows_deleted`, `pruneable_schemes`, and `capped` fields. Monitor via PostHog or Supabase Edge Function logs.
 
+The candidate selection is correct for any future orphan volume: the function pages through `nav_history` directly (not scheme_master) to find schemes with actual rows, avoiding the PostgREST 1,000-row cap that would have silently truncated results on a large pruneable set. Multiple weekly runs drain any backlog that accumulates in steady state.
+
+**Dry-run mode.** Call the function with `POST body: { "dryRun": true }` to return the candidate list without deleting. The response includes `candidateSchemes` (array of scheme codes), `pruneableSchemes` (count), and `pruneableRows` (count). Useful for capacity planning or auditing before the live run.
+
 
 #### One-time manual cleanup of existing orphan rows
 

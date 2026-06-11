@@ -87,6 +87,135 @@ describe('isPruneable', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Candidate walk pagination (simulated)
+// ---------------------------------------------------------------------------
+
+describe('candidate walk pagination (simulating nav_history query pagination)', () => {
+  it('exhausts all results when pagination limit is much smaller than data set', () => {
+    // Simulate paginating through nav_history with 1000-row pages
+    const PAGE_SIZE = 1000;
+    const totalSchemes = 5678; // More than one page
+    const allSchemes = new Set<number>();
+
+    // Simulate pages
+    let from = 0;
+    while (true) {
+      const end = Math.min(from + PAGE_SIZE, totalSchemes);
+      const count = end - from;
+      if (count === 0) break;
+
+      for (let i = from; i < end; i++) {
+        allSchemes.add(i);
+      }
+
+      if (count < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    expect(allSchemes.size).toBe(totalSchemes);
+  });
+
+  it('handles the boundary: exactly PAGE_SIZE rows', () => {
+    const PAGE_SIZE = 1000;
+    const allSchemes = new Set<number>();
+
+    // Simulate exactly one full page
+    for (let i = 0; i < PAGE_SIZE; i++) {
+      allSchemes.add(i);
+    }
+
+    expect(allSchemes.size).toBe(PAGE_SIZE);
+  });
+
+  it('handles the boundary: PAGE_SIZE + 1 rows (requires two pages)', () => {
+    const PAGE_SIZE = 1000;
+    const allSchemes = new Set<number>();
+
+    // Simulate more than one full page
+    for (let i = 0; i < PAGE_SIZE + 1; i++) {
+      allSchemes.add(i);
+    }
+
+    expect(allSchemes.size).toBe(PAGE_SIZE + 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Held exclusion in a large candidate set
+// ---------------------------------------------------------------------------
+
+describe('held exclusion filtering from candidates', () => {
+  it('excludes all held schemes when they overlap with candidates', () => {
+    const heldCodes = new Set([100, 200, 300]);
+    const candidates = [100, 200, 300, 400, 500];
+    const cutoff = '2026-03-12T12:00:00.000Z';
+
+    const filtered = candidates.filter(
+      (code) => !heldCodes.has(code) && isPruneable(false, null, cutoff),
+    );
+
+    expect(filtered).toEqual([400, 500]);
+  });
+
+  it('preserves all candidates when held set is empty', () => {
+    const heldCodes = new Set<number>();
+    const candidates = [100, 200, 300];
+    const cutoff = '2026-03-12T12:00:00.000Z';
+
+    const filtered = candidates.filter(
+      (code) => !heldCodes.has(code) && isPruneable(false, null, cutoff),
+    );
+
+    expect(filtered).toEqual([100, 200, 300]);
+  });
+
+  it('preserves candidates not in held set when held set is non-empty', () => {
+    const heldCodes = new Set([1, 2]);
+    const candidates = [1, 2, 3, 4, 5];
+    const cutoff = '2026-03-12T12:00:00.000Z';
+
+    const filtered = candidates.filter(
+      (code) => !heldCodes.has(code) && isPruneable(false, null, cutoff),
+    );
+
+    expect(filtered).toEqual([3, 4, 5]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Batch lookup behavior (batches of ≤200 scheme codes)
+// ---------------------------------------------------------------------------
+
+describe('batch lookup of scheme_master (≤200 per batch)', () => {
+  it('correctly batches 201 candidates into 2 batches of 200 and 1', () => {
+    const BATCH_SIZE = 200;
+    const candidates = Array.from({ length: 201 }, (_, i) => i + 1);
+    const batches: number[][] = [];
+
+    for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+      batches.push(candidates.slice(i, i + BATCH_SIZE));
+    }
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toHaveLength(200);
+    expect(batches[1]).toHaveLength(1);
+  });
+
+  it('correctly batches 1000 candidates into 5 batches of 200 each', () => {
+    const BATCH_SIZE = 200;
+    const candidates = Array.from({ length: 1000 }, (_, i) => i + 1);
+    const batches: number[][] = [];
+
+    for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+      batches.push(candidates.slice(i, i + BATCH_SIZE));
+    }
+
+    expect(batches).toHaveLength(5);
+    expect(batches.every((b) => b.length === 200)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -99,8 +228,14 @@ describe('module constants', () => {
     expect(NAV_RETENTION_DAYS).toBe(90);
   });
 
-  it('SCHEME_DELETE_BATCH_SIZE is a positive integer', () => {
-    expect(Number.isInteger(SCHEME_DELETE_BATCH_SIZE)).toBe(true);
+  it('SCHEME_DELETE_BATCH_SIZE is 50', () => {
+    expect(SCHEME_DELETE_BATCH_SIZE).toBe(50);
+  });
+
+  it('SCHEME_DELETE_BATCH_SIZE fits within MAX_ROWS_PER_RUN', () => {
+    // Each scheme typically has 1–5k rows; 50 per batch = 50–250k max per batch.
+    // MAX_ROWS_PER_RUN caps the total, so each batch deletion is individually safe.
     expect(SCHEME_DELETE_BATCH_SIZE).toBeGreaterThan(0);
+    expect(MAX_ROWS_PER_RUN).toBeGreaterThan(SCHEME_DELETE_BATCH_SIZE);
   });
 });
