@@ -85,10 +85,11 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `sync-fund-portfolios` | pg_cron (daily, 02:10 UTC) | **Backup** holdings source: mfdata.in portfolio composition → `source='amfi'` (now outranked by `official`). category_rules sentinel rows updated daily. | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes scheme metadata (AUM, expense ratio, risk) | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
+| `freshness-check` | pg_cron (daily at 08:00 UTC, `freshness-check-daily`) | Daily audit of silent failures: checks held NAV age, cron job failures, backfill cursor staleness, OpenFolio health, and composition age. Sends consolidated alert via Resend router on failure. See "Runbook: Freshness check" below. | Active |
 | `demo-signup` | In-app "Try with sample data" sheet (pre-auth) | Captures email + marketing consent + UTM/referrer attribution into `public.demo_signup`. Idempotent on email — re-submissions bump `signup_count` instead of erroring. Service-role insert path; RLS on the table denies direct client writes. | Active |
 
 
-All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself. `nav-retention` is deployed `--no-verify-jwt` for the same reason as other cron functions. `fetch-fund-nav` is deployed `--no-verify-jwt` so the client can call it without a session JWT when picking non-held funds.
+All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send: `sync-nav`, `sync-index`, `nav-retention`, `openfolio-sync`, `sync-fund-portfolios`, `sync-fund-meta`, and `freshness-check`. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself. `fetch-fund-nav` is deployed `--no-verify-jwt` so the client can call it without a session JWT when picking non-held funds.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -227,6 +228,92 @@ ON CONFLICT (scheme_code, nav_date) DO NOTHING;
 ```
 
 All pruned NAV data is fully regenerable from the OpenFolio API (`/v1/nav/{scheme_code}`) or mfapi.in (`/mf/{scheme_code}`) — this is exactly what `fetch-fund-nav` does on the next user pick.
+
+
+## Runbook: Freshness check (daily silent-failure audit)
+
+
+**What it is.** A daily cron job (`freshness-check-daily`) that runs at 08:00 UTC and audits the pipeline for silent failures that went unnoticed in past incidents. Prior to this, sync-nav-hourly failed 18× per day for 5 days unnoticed; universe-backfill runs were cancelled with 69 row-failures recorded in a cursor nobody read; a monthly composition job no-opped. The freshness check would have caught all three.
+
+**Five checks (each injectable for unit testing):**
+
+1. **Held NAV age** — `MAX(nav_date)` across all schemes in `user_fund` must be ≥ today − 3 calendar days (tolerates weekends + 1 holiday). Failure: no recent NAV for held schemes.
+2. **Cron failures (last 24h)** — Count of non-succeeded runs in `cron.job_run_details` must be 0. Checked via `public.recent_cron_failures(hours int)`, a security-definer SQL function that reads the cron schema without direct access grants.
+3. **Backfill cursor staleness** — For each `universe_backfill_*_cursor` in `app_config`: warn if the cursor state JSON has `failed > 0` (chunk with errors), or if the cursor value hasn't changed in 48+ hours while still present (stalled walk).
+4. **OpenFolio health** — GET `${OPENFOLIO_API_BASE}/health` must return `status='ok'`, `db_schemes > 1,500`, and `latest_disclosure_date ≤ today + 1 day` (a future-dated HSBC snapshot leaked once). Failure: API outage or data corruption.
+5. **Composition staleness** — `MAX(portfolio_date)` of `source='official'` in `fund_portfolio_composition` must be within 75 days. Failure: no recent composition updates.
+
+**On failure:** Sends one consolidated alert email via Resend (same signing + router pathway as `notify-feedback`). Logs a structured `[freshness-check]` summary line to Supabase logs with check names, ok/failed counts, and timestamp.
+
+**Viewing results:**
+
+- **Real-time logs:** Supabase Dashboard → Edge Functions → `freshness-check` logs (search for `[freshness-check]`).
+- **Latest JSON response:** Call the function manually:
+  ```bash
+  curl -X POST "https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/freshness-check" \
+    -H "Content-Type: application/json" \
+    -d '{}' \
+    -H "Authorization: Bearer <anon-key>"
+  ```
+- **Cron run history:** Supabase Dashboard → Database → Cron Jobs → `freshness-check-daily` (shows next scheduled run and recent execution times).
+
+**Testing a failure (simulating OpenFolio outage):**
+
+Override the OpenFolio base URL in the request body:
+
+```bash
+curl -X POST "https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/freshness-check" \
+  -H "Content-Type: application/json" \
+  -d '{"openfolio_base": "https://invalid.example"}' \
+  -H "Authorization: Bearer <anon-key>"
+```
+
+If alerts are wired (FOLIOLENS_INBOUND_ROUTER_SECRET set), this will trigger an email from the Vercel router endpoint. If not set, the function logs the alert payload but skips sending.
+
+**Alerting setup:**
+
+The edge function follows the same pattern as `notify-feedback`: signs the alert payload with `FOLIOLENS_INBOUND_ROUTER_SECRET` and forwards to the Vercel router endpoint at `ROUTER_FRESHNESS_ALERT_URL` (defaults to `https://app.foliolens.in/api/freshness-alert`). The router verifies the signature and calls Resend to send the email to the founder. Env vars must be set in the Supabase Dashboard:
+
+- `FOLIOLENS_INBOUND_ROUTER_SECRET` — HMAC key shared with the Vercel router (same key as for `notify-feedback`).
+- `ROUTER_FRESHNESS_ALERT_URL` — Router endpoint URL (no default; if unset, alerts are logged but not sent).
+- `OPENFOLIO_API_BASE` — OpenFolio API base (defaults to `https://api.openfolio.com`).
+- `NOTIFY_ENVIRONMENT` — `'dev'` or `'prod'` (included in alert payload so router knows which email address to send to).
+
+**Adding a new check:**
+
+1. Implement a pure check function in `supabase/functions/_shared/freshness-check.ts` with signature:
+   ```typescript
+   export function checkMyCheck(data: MyData, now: Date): CheckResult {
+     return { name: 'Check name', ok: boolean, detail: 'explanation' };
+   }
+   ```
+2. Write unit tests in `supabase/functions/_shared/__tests__/freshness-check.test.ts` (inject clock and data).
+3. Fetch the data in the edge function's `Deno.serve` handler and call the check in the array.
+4. Update this runbook to document the new check threshold and what failure means.
+
+**Rollback:**
+
+The function is read-only (only SELECT queries + GET to OpenFolio). Disable by unscheduling the cron job:
+
+```sql
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'freshness-check-daily';
+```
+
+Recreate the cron job with the same schedule:
+
+```sql
+SELECT cron.schedule(
+  'freshness-check-daily',
+  '0 8 * * *',
+  $$
+  SELECT net.http_post(
+    url := public.app_config_get('supabase_functions_base_url') || '/freshness-check',
+    headers := '{"Content-Type": "application/json"}'::jsonb,
+    body := '{}'::jsonb
+  );
+  $$
+);
+```
 
 
 ## Vercel projects
