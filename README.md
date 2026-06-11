@@ -150,7 +150,6 @@ The native scheme depends on which APK is installed:
 | Push to `main` on `supabase/**` | `supabase-deploy-dev.yml` | deploy Edge Functions + push migrations to DEV |
 | Manual dispatch | `supabase-deploy-prod.yml` | deploy Edge Functions + push migrations to PROD |
 | Tag `v*` push | `production-release.yml` | EAS update to `foliolens-production` + Vercel prod deploy |
-| Monthly cron + manual | `sync-amfi-portfolios.yml` | refresh AMFI portfolio composition disclosures (DEV + PROD in parallel) |
 
 For the full secret matrix and per-environment service map, see [docs/INFRASTRUCTURE.md](./docs/INFRASTRUCTURE.md).
 
