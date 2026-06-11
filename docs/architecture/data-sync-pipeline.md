@@ -11,7 +11,7 @@ graph LR
   subgraph PgCron["pg_cron jobs<br/>(Postgres scheduler)"]
     cron_nav["sync-nav<br/>30 0,2,4,6,8,10,12-23 * * *"]
     cron_index["sync-index<br/>5 * * * 1-5"]
-    cron_portfolios["sync-fund-portfolios<br/>10 * * * *"]
+    cron_portfolios["sync-fund-portfolios<br/>10 2 * * *"]
     cron_meta["sync-fund-meta<br/>0 2 * * *"]
   end
 
