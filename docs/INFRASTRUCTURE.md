@@ -127,6 +127,30 @@ The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`,
 `public.demo_signup` is intentionally separate from the marketing-site early-access form (currently a Tally embed; future Supabase `waitlist_signup` table per `foliolens-site/supabase-waitlist-endpoint-guide.md` is unbuilt). The two funnels share the `source` / `status` convention so they can be merged later if needed. No new env vars are required — `demo-signup` uses the standard `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` already present on every project.
 
 
+### Migrations: version integrity and collision prevention
+
+**How migrations work.** All database schema changes live in `supabase/migrations/` as SQL files named `YYYYMMDDXXXXXX_descriptive_name.sql` (where XXXXXX is a sequence number like 000000, 000001, etc.). On each `main` merge, `supabase-deploy-dev.yml` replays all migrations against DEV; on production deployment, they're replayed against PROD. Supabase stores the migration history in `supabase_migrations.schema_migrations` (a table managed by the Supabase CLI).
+
+**Version collision incident (June 2026).** Two migrations accidentally shared the version `20260610000000`:
+- Intended: `20260610000000_drop_scheme_master_backfill_columns.sql` (drops four unused columns from `scheme_master`)
+- Reality on `origin/main`: `20260610000001_fix_sync_nav_cron_app_config.sql` was also filed as version `20260610000000` in the migration ledger
+
+Because the ledger recorded both entries with the same version, the first file's DDL never executed, leaving the columns in production despite the migration being marked "applied." This is a **silent data corruption risk**: the schema diverges from the source of truth without raising an alarm during deploy.
+
+**The guard.** Starting with commit [HASH], a new CI check (`scripts/check-migration-versions.mjs`, wired into `supabase-validate.yml`) runs on every PR that touches migrations:
+
+1. **Duplicate version check**: fails if any two `.sql` files in `supabase/migrations/` share the same version prefix (e.g., `20260610000000_foo.sql` + `20260610000000_bar.sql`).
+2. **Backfill check** (`--check-branch` flag): fails if a PR introduces a new migration with version ≤ the max version on `origin/main`. This prevents accidentally adding old migrations that should live on a feature branch.
+
+Both checks run locally via `node scripts/check-migration-versions.mjs` before pushing. The CI version also compares against `origin/main`.
+
+**Remediation.** Migration `20260612000000_drop_backfill_columns_for_real.sql` actually executes the DROP (with idempotent `IF EXISTS` guards). The ledger entry for the original `20260610000000` was manually corrected to match the file on disk. The columns are now gone from both DEV and PROD, and the schema is consistent with the repo.
+
+**New rules for authors.**
+- Always use `supabase/migrations/YYYYMMDD` prefix; increment the XXXXXX suffix within the same day if multiple migrations are added.
+- Before pushing, run `node scripts/check-migration-versions.mjs --check-branch` locally.
+- Do not backfill old versions. If you need to add a migration from a prior date, create it on a feature branch and merge after it's landed on main.
+
 ### Runbook: NAV retention
 
 
