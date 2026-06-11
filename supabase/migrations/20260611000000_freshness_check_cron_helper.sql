@@ -51,6 +51,3 @@ SELECT cron.schedule(
   );
   $$
 );
-
-COMMENT ON CRON JOB (jobid := (SELECT jobid FROM cron.job WHERE jobname = 'freshness-check-daily'))
-  IS 'Daily health check: NAV freshness, cron job failures, backfill cursor staleness, OpenFolio availability, composition age. Alerts on Slack + email if any check fails.';
