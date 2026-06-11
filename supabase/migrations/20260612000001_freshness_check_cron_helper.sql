@@ -13,7 +13,7 @@ RETURNS TABLE (
   jobname text,
   status text,
   start_time timestamptz,
-  message text
+  return_message text
 )
 LANGUAGE sql
 STABLE
@@ -24,7 +24,7 @@ AS $$
     j.jobname,
     jrd.status,
     jrd.start_time,
-    jrd.message
+    jrd.return_message
   FROM cron.job j
   INNER JOIN cron.job_run_details jrd ON j.jobid = jrd.jobid
   WHERE jrd.start_time > now() - (hours || ' hours')::interval
