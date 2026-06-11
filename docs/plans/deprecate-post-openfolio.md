@@ -161,6 +161,41 @@ required (the `fund` view never projected these columns).
 Row-level cleanup (delete unheld rows older than N days) is a separate follow-up PR
 so it can be gated on a clear retention policy decision.
 
+### Phase 6 — retire last legacy writers ✅ (2026-06-11)
+
+The `sync-amfi-portfolios.yml` GitHub Actions workflow and its companion script
+`scripts/sync-amfi-portfolios.mjs` were the last remaining pre-OpenFolio scheduled writer.
+Despite the prod freeze policy, the workflow was still scheduled to run monthly (cron: '0 6 11 * *')
+and its prod job block gave it write access to production. The workflow is now defunct:
+
+- The `stock_market_cap` table (which it relied upon) was dropped in Phase 2.
+- No schema supports the `source='amfi'` tag it would have written.
+- Dev had zero `source='amfi'` rows as of 2026-06-11 06:00 UTC (the last scheduled run).
+
+**Related:** `backfill-stock-market-cap.yml` + `scripts/backfill-stock-market-cap.mjs`
+targeted the dropped `stock_market_cap` table and failed on every run.
+Both also deleted along with the scheduled AMFI writer.
+
+**Deployed functions cleaned up:** `diag-nav` (stale, last updated 2026-03-25)
+and `sync-stock-market-cap` (noop since Phase 1) deleted from dev via
+`supabase functions delete <slug>`.
+
+**Changes:**
+- Delete `.github/workflows/sync-amfi-portfolios.yml`.
+- Delete `scripts/sync-amfi-portfolios.mjs`.
+- Delete `.github/workflows/backfill-stock-market-cap.yml`.
+- Delete `scripts/backfill-stock-market-cap.mjs`.
+- Delete deployed Edge Functions `diag-nav` and `sync-stock-market-cap` from dev.
+- Docs: updated `README.md` workflows table, `data-sync-pipeline.md`.
+
+**Tradeoff accepted:** Prod still carries legacy `source='amfi'` rows from before the freeze.
+`COMPOSITION_SOURCE_RANK` retains its 'amfi' entry to avoid a prod compatibility break.
+Post-prod-cleanup removal of the rank entry and legacy rows is a separate future task.
+
+**Rationale:** The writer violated the production freeze policy, was non-functional
+(produced zero rows in dev), and both it and the backfill job targeted deprecated infrastructure.
+Deletion reduces noise and clarifies the true active writer set.
+
 ---
 
 ## Risks accepted
