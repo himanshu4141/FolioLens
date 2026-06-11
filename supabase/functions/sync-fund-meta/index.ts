@@ -34,6 +34,7 @@ import {
 import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import { resolveB1Field } from '../_shared/b1-field-resolution.ts';
 import { resolveSebiCategory, broadCategoryFromSebi } from '../_shared/portfolio-utils.ts';
+import { mergeMfdataReturns, mergeOfReturns } from '../_shared/period-returns.ts';
 
 const META_STALE_DAYS = 7;
 const MFDATA_USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -70,7 +71,6 @@ interface MFDataSchemePayload {
   option_type?: string | null;
   family_name?: string | null;
   amc_name?: string | null;
-  amc_slug?: string | null;
   category?: string | null;
   benchmark?: string | null;
   returns?: Record<string, unknown> | null;
@@ -168,7 +168,7 @@ Deno.serve(async (req) => {
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
     .from('scheme_master')
-    .select('scheme_code, scheme_name, scheme_category, sebi_category, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios')
+    .select('scheme_code, scheme_name, scheme_category, sebi_category, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios, period_returns')
     .in('scheme_code', allSchemeCodes);
 
   // scheme_name / existing category are needed to resolve sebi_category for
@@ -197,6 +197,17 @@ Deno.serve(async (req) => {
   for (const r of masterRows ?? []) {
     if (r.risk_ratios != null) {
       existingRiskRatios.set(r.scheme_code as number, r.risk_ratios as Record<string, unknown>);
+    }
+  }
+
+  // Pre-load existing period_returns so both OF and mfdata paths can merge
+  // new horizons rather than replacing the whole blob. Ensures mfdata's
+  // 1m/3m/6m/ranks survive an OF write and OF's precise values survive a
+  // mfdata write.
+  const existingPeriodReturns = new Map<number, Record<string, unknown>>();
+  for (const r of masterRows ?? []) {
+    if (r.period_returns != null) {
+      existingPeriodReturns.set(r.scheme_code as number, r.period_returns as Record<string, unknown>);
     }
   }
 
@@ -305,12 +316,19 @@ Deno.serve(async (req) => {
 
           const ret = metrics.returns;
           if (ret && Object.values(ret).some((v) => v != null)) {
-            const periodReturns: Record<string, number> = {};
-            if (ret.ret_1y != null) periodReturns.ret_1y = ret.ret_1y;
-            if (ret.ret_3y != null) periodReturns.ret_3y = ret.ret_3y;
-            if (ret.ret_5y != null) periodReturns.ret_5y = ret.ret_5y;
-            if (ret.ret_incep != null) periodReturns.ret_incep = ret.ret_incep;
-            if (Object.keys(periodReturns).length > 0) payload.period_returns = periodReturns;
+            const ofValues: Record<string, number | null> = {};
+            if (ret.ret_1y != null) ofValues.ret_1y = ret.ret_1y;
+            if (ret.ret_3y != null) ofValues.ret_3y = ret.ret_3y;
+            if (ret.ret_5y != null) ofValues.ret_5y = ret.ret_5y;
+            if (ret.ret_incep != null) ofValues.ret_incep = ret.ret_incep;
+            if (Object.keys(ofValues).length > 0) {
+              // Merge: OF wins for ret_1y/3y/5y/incep; mfdata's extra horizons
+              // (1m/3m/6m/ranks/as_of_date) in the existing blob are preserved.
+              payload.period_returns = mergeOfReturns(
+                ofValues,
+                existingPeriodReturns.get(schemeCode) ?? null,
+              );
+            }
           }
 
           if (metrics.volatility != null) {
@@ -330,7 +348,13 @@ Deno.serve(async (req) => {
         if (mfdata.aum != null) {
           payload.aum_cr = Math.round((mfdata.aum / 10_000_000) * 100) / 100;
         }
-        if (mfdata.returns) payload.period_returns = mfdata.returns;
+        // Normalise mfdata percent returns to canonical decimal keys and merge
+        // into existing blob — preserves any OF values already written.
+        const mergedReturns = mergeMfdataReturns(
+          mfdata.returns ?? null,
+          existingPeriodReturns.get(schemeCode) ?? null,
+        );
+        if (mergedReturns !== null) payload.period_returns = mergedReturns;
         if (mfdata.ratios) payload.risk_ratios = mfdata.ratios;
       }
 
@@ -425,7 +449,7 @@ Deno.serve(async (req) => {
         if (mfdata.option_type != null) payload.option_type = mfdata.option_type;
         if (mfdata.family_name != null) payload.family_name = mfdata.family_name;
         if (mfdata.amc_name != null) payload.amc_name = mfdata.amc_name;
-        if (mfdata.amc_slug != null) payload.amc_slug = mfdata.amc_slug;
+        // amc_slug deliberately not written — no reader in src/ or app/ (grep confirms)
         payload.mfdata_meta_synced_at = syncedAt;
       }
 

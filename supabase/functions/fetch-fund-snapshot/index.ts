@@ -49,6 +49,7 @@ import {
   mapCompositionToRow,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
+import { mergeMfdataReturns } from '../_shared/period-returns.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -180,7 +181,6 @@ interface MFDataSchemePayload {
   option_type?: string | null;
   family_name?: string | null;
   amc_name?: string | null;
-  amc_slug?: string | null;
   category?: string | null;
   benchmark?: string | null;
   returns?: Record<string, unknown> | null;
@@ -269,7 +269,7 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
   // "Equity" can be resolved into a SEBI sub-bucket downstream.
   const { data: existing } = await supabase
     .from('scheme_master')
-    .select('fund_meta_synced_at, mfdata_family_id, scheme_category, scheme_name')
+    .select('fund_meta_synced_at, mfdata_family_id, scheme_category, scheme_name, period_returns')
     .eq('scheme_code', schemeCode)
     .maybeSingle();
 
@@ -331,8 +331,14 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
     payload.option_type = mfdata.option_type ?? null;
     payload.family_name = mfdata.family_name ?? null;
     payload.amc_name = mfdata.amc_name ?? null;
-    payload.amc_slug = mfdata.amc_slug ?? null;
-    payload.period_returns = mfdata.returns ?? null;
+    // amc_slug deliberately not written — no reader in src/ or app/ (grep confirms)
+    // Normalise mfdata percent returns to canonical decimal keys and merge into
+    // existing blob — preserves any OF values already written.
+    const mergedReturns = mergeMfdataReturns(
+      mfdata.returns ?? null,
+      (existing?.period_returns as Record<string, unknown> | null) ?? null,
+    );
+    if (mergedReturns !== null) payload.period_returns = mergedReturns;
     payload.risk_ratios = mfdata.ratios ?? null;
   }
 

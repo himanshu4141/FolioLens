@@ -150,26 +150,6 @@ export function readReturnPct(
   return null;
 }
 
-/** Pluck a return field (e.g. return_1y) from period_returns blob. */
-export function readMfdataPeriodReturn(
-  periodReturns: unknown,
-  field: 'return_1m' | 'return_3m' | 'return_6m' | 'return_1y' | 'return_3y' | 'return_5y' | 'return_inception',
-): number | null {
-  if (!periodReturns || typeof periodReturns !== 'object') return null;
-  const v = (periodReturns as Record<string, unknown>)[field];
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-/** Pluck a category-rank field (e.g. rank_3y) for "rank N of M" surfacing. */
-export function readMfdataRank(
-  periodReturns: unknown,
-  field: 'rank_1m' | 'rank_3m' | 'rank_6m' | 'rank_1y' | 'rank_3y' | 'rank_5y',
-): number | null {
-  if (!periodReturns || typeof periodReturns !== 'object') return null;
-  const v = (periodReturns as Record<string, unknown>)[field];
-  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
-}
-
 /** Pluck the as_of_date from a returns or ratios blob. */
 export function readMfdataAsOfDate(blob: unknown): string | null {
   if (!blob || typeof blob !== 'object') return null;

@@ -45,7 +45,7 @@ graph LR
   cron_portfolios -- "pg_net.http_post" --> port
   cron_meta -- "pg_net.http_post" --> meta
 
-  nav -- "for each fund.scheme_code" --> mfapi
+  nav -- "OF primary / mfapi fallback<br/>per held scheme_code" --> mfapi
   nav -- "upsert" --> t_nav
 
   idx -- "TRI symbols<br/>e.g. ^NSEITRI" --> nse
@@ -95,21 +95,62 @@ sequenceDiagram
   participant Cron as pg_cron
   participant Fn as sync-nav (edge function)
   participant DB as Postgres
-  participant API as api.mfapi.in
+  participant OF as OpenFolio API
+  participant MFAPI as api.mfapi.in
 
   Cron->>Fn: POST (no JWT)
   Fn->>DB: SELECT scheme_code FROM fund WHERE is_active = true
   DB-->>Fn: schemes[]
-  loop each scheme (parallel, 10s timeout each)
-    Fn->>API: GET /mf/{scheme_code}
-    API-->>Fn: { data: [{ date: "DD-MM-YYYY", nav: "..." }, ...] }
-    Fn->>Fn: normalize date to ISO YYYY-MM-DD
-    Fn->>DB: upsert nav_history(scheme_code, nav_date, nav)<br/>conflict on (scheme_code, nav_date)
+  Fn->>DB: SELECT scheme_code, nav_date FROM nav_history (lookback 45d)
+  DB-->>Fn: per-scheme latest dates (since-map)
+  loop each scheme (concurrency=5, 20s timeout each)
+    Fn->>OF: GET /v1/nav/{code}?since=<latest_local_date_or_null>
+    alt OF 200 + points
+      OF-->>Fn: { points: [{date, nav}, ...] }
+      Fn->>DB: upsert nav_history
+    else OF 404 / error / empty-first-sync
+      Fn->>MFAPI: GET /mf/{scheme_code}
+      MFAPI-->>Fn: { data: [{ date: "DD-MM-YYYY", nav: "..." }, ...] }
+      Fn->>Fn: normalize date to ISO YYYY-MM-DD
+      Fn->>DB: upsert nav_history(scheme_code, nav_date, nav)<br/>conflict on (scheme_code, nav_date)
+    end
   end
-  Fn-->>Cron: { navRowsUpserted: N }
+  Fn-->>Cron: { navRowsUpserted: N, openfolioSchemes, mfapiSchemes }
 ```
 
-Per-scheme failures don't block siblings. Re-runs are safe because of the conflict key.
+Per-scheme failures don't block siblings. Re-runs are safe because of the conflict key. `since=` makes warm re-hydrations return 1–2 points instead of 3 000+.
+
+## fetch-fund-nav
+
+On-demand NAV backfill triggered by the client when a user picks a non-held fund. Mirrors the `sync-nav` source ladder.
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Fn as fetch-fund-nav (edge function)
+  participant DB as Postgres
+  participant OF as OpenFolio API
+  participant MFAPI as api.mfapi.in
+
+  Client->>Fn: POST { scheme_code }
+  Fn->>DB: SELECT latest nav_date for scheme
+  DB-->>Fn: latestDate (or null)
+  alt latestDate ≤ 3 days old
+    Fn-->>Client: { status: "cache_hit" }
+  else needs refresh
+    Fn->>OF: GET /v1/nav/{code}?since=<latestDate_or_null>
+    alt OF 200 + points
+      OF-->>Fn: { points: [...] }
+      Fn->>DB: upsert nav_history
+      Fn-->>Client: { status: "fetched", source: openfolio }
+    else OF 404 / error / empty-first-sync
+      Fn->>MFAPI: GET /mf/{scheme_code} (full history)
+      MFAPI-->>Fn: { data: [...] }
+      Fn->>DB: upsert nav_history
+      Fn-->>Client: { status: "fetched", source: mfapi }
+    end
+  end
+```
 
 ## sync-index
 
@@ -198,6 +239,21 @@ sequenceDiagram
 ```
 
 `META_STALE_DAYS = 7` keeps mfdata.in calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
+
+### period_returns blob — normalise at write, merge semantics
+
+`scheme_master.period_returns` is written by two sources:
+
+| Source | Keys written | Format |
+|--------|-------------|--------|
+| OpenFolio (sync-fund-meta OF path) | `ret_1y`, `ret_3y`, `ret_5y`, `ret_incep` | decimal CAGR (0.125) |
+| mfdata backup (sync-fund-meta + fetch-fund-snapshot) | `ret_1m`, `ret_3m`, `ret_6m`, `ret_1y`, `ret_3y`, `ret_5y`, `ret_incep`, `rank_*`, `as_of_date` | decimal CAGR after normalisation (converted from mfdata's percent at write time) |
+
+Both writers use helpers from `supabase/functions/_shared/period-returns.ts`:
+- **`mergeMfdataReturns(mfdataBlob, existingBlob)`** — converts mfdata percent returns to decimal, then spreads the existing blob on top (existing values win). This preserves OF's precise values when mfdata runs after OF.
+- **`mergeOfReturns(ofValues, existingBlob)`** — spreads existing blob first, then OF values on top (OF wins). This preserves mfdata's extra horizons (1m/3m/6m/ranks) when OF runs after mfdata.
+
+**29 legacy mfdata-shape rows** (percent format, `return_1y` keys) exist on dev as of 2026-06-10. `readReturnPct` in `src/utils/mfdataGuards.ts` handles both shapes at read time and will continue to do so until all rows are refreshed by a cron run. This is `[cache-shape-stable]` — the client code returns identical percentage values regardless of which shape is stored.
 
 ## Why pg_cron + edge functions instead of GitHub Actions
 
