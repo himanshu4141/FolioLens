@@ -34,6 +34,15 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
   console.log('[nav-retention] invoked method=%s', req.method);
 
+  let dryRun = false;
+  try {
+    const body = await req.json().catch(() => ({}));
+    dryRun = body?.dryRun === true;
+  } catch {
+    // default dryRun = false
+  }
+  console.log('[nav-retention] dryRun=%s', dryRun);
+
   const supabase = createServiceClient();
 
   // ── Step 1: load all scheme codes held by at least one active user_fund ──
@@ -52,26 +61,70 @@ Deno.serve(async (req) => {
   const heldCodes = new Set((heldFunds ?? []).map((f) => f.scheme_code as number));
   console.log('[nav-retention] held_scheme_codes=%d', heldCodes.size);
 
-  // ── Step 2: find schemes whose NAV series is a candidate for pruning ─────
-  // Candidate = nav_backfilled_at IS NULL  (never demand-fetched), OR
-  //             nav_backfilled_at is older than the retention window.
-  // The held-fund filter is applied in TS so we avoid a subquery JOIN that
-  // could differ from the `fund` view's is_active logic.
+  // ── Step 2: paginate through nav_history to find all schemes with rows ────
+  // Invert the walk: candidates = schemes with nav_history rows that are NOT
+  // held AND are either never demand-fetched or stale (older than 90 days).
+  // This avoids the PostgREST 1,000-row cap that was silently truncating
+  // candidates when scheme_master had >1,000 pruneable rows.
   const cutoff = retentionCutoffDate(new Date(), NAV_RETENTION_DAYS);
+  const candidateCodes = new Set<number>();
+  const PAGE_SIZE = 1000;
+  let from = 0;
 
-  const { data: candidates, error: candidatesErr } = await supabase
-    .from('scheme_master')
-    .select('scheme_code')
-    .or(`nav_backfilled_at.is.null,nav_backfilled_at.lt.${cutoff}`);
+  while (true) {
+    const { data: schemeRows, error: navErr } = await supabase
+      .from('nav_history')
+      .select('scheme_code', { count: 'exact' })
+      .order('scheme_code')
+      .range(from, from + PAGE_SIZE - 1);
 
-  if (candidatesErr) {
-    console.error('[nav-retention] failed to query scheme_master: %s', candidatesErr.message);
-    return json({ success: false, error: candidatesErr.message }, { status: 500 });
+    if (navErr) {
+      console.error('[nav-retention] failed to query nav_history: %s', navErr.message);
+      return json({ success: false, error: navErr.message }, { status: 500 });
+    }
+
+    if (!schemeRows || schemeRows.length === 0) break;
+
+    for (const row of schemeRows as { scheme_code: number }[]) {
+      candidateCodes.add(row.scheme_code);
+    }
+
+    if (schemeRows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
   }
 
-  const pruneableCodes = (candidates ?? [])
-    .map((c) => c.scheme_code as number)
-    .filter((code) => !heldCodes.has(code));
+  console.log('[nav-retention] nav_history contains %d distinct schemes', candidateCodes.size);
+
+  // ── Step 3: look up nav_backfilled_at for candidate schemes ───────────────
+  // Now find which of these schemes are eligible for pruning (not held,
+  // and either never backfilled or stale). Batch the lookups to avoid
+  // hitting PostgREST limits.
+  const candidateArray = Array.from(candidateCodes);
+  const pruneable: { scheme_code: number; nav_backfilled_at: string | null }[] = [];
+  const BATCH_SIZE = 200;
+
+  for (let i = 0; i < candidateArray.length; i += BATCH_SIZE) {
+    const batch = candidateArray.slice(i, i + BATCH_SIZE);
+    const { data: schemes, error: schemeErr } = await supabase
+      .from('scheme_master')
+      .select('scheme_code, nav_backfilled_at')
+      .in('scheme_code', batch);
+
+    if (schemeErr) {
+      console.error('[nav-retention] failed to query scheme_master: %s', schemeErr.message);
+      return json({ success: false, error: schemeErr.message }, { status: 500 });
+    }
+
+    for (const scheme of schemes as { scheme_code: number; nav_backfilled_at: string | null }[]) {
+      pruneable.push(scheme);
+    }
+  }
+
+  // Filter to only schemes that are not held and are eligible
+  const pruneableCodes = pruneable
+    .filter((s) => !heldCodes.has(s.scheme_code))
+    .filter((s) => s.nav_backfilled_at === null || s.nav_backfilled_at < cutoff)
+    .map((s) => s.scheme_code);
 
   console.log(
     '[nav-retention] pruneable_schemes=%d cutoff=%s',
@@ -95,12 +148,18 @@ Deno.serve(async (req) => {
       },
       'system:nav-retention',
     );
-    return json({ success: true, pruneableSchemes: 0, pruneableRows: 0, rowsDeleted: 0, capped: false, errors: [] });
+    return json({
+      success: true,
+      pruneableSchemes: 0,
+      pruneableRows: 0,
+      rowsDeleted: 0,
+      capped: false,
+      errors: [],
+      dryRun,
+    });
   }
 
-  // ── Step 3: dry-run row count (logged; not used to gate deletion) ─────────
-  // Using scheme_codes [-1] as a safe no-op sentinel is not needed here since
-  // we already checked pruneableCodes.length > 0.
+  // ── Step 4: dry-run row count (logged) ───────────────────────────────────
   const { count: pruneableRows, error: countErr } = await supabase
     .from('nav_history')
     .select('*', { count: 'exact', head: true })
@@ -110,9 +169,29 @@ Deno.serve(async (req) => {
     console.warn('[nav-retention] row count query failed (non-fatal): %s', countErr.message);
   }
 
-  console.log('[nav-retention] pruneable_nav_history_rows=%d', pruneableRows ?? -1);
+  console.log('[nav-retention] pruneable_nav_history_rows=%d dryRun=%s', pruneableRows ?? -1, dryRun);
 
-  // ── Step 4: batched deletes ───────────────────────────────────────────────
+  // ── Step 5: if dryRun, return the candidate list without deleting ────────
+  if (dryRun) {
+    const elapsedMs = Date.now() - startedAt;
+    console.log(
+      '[nav-retention] dryRun — returning candidate list (no deletes performed) elapsed_ms=%d',
+      elapsedMs,
+    );
+    return json({
+      success: true,
+      pruneableSchemes: pruneableCodes.length,
+      pruneableRows: pruneableRows ?? null,
+      rowsDeleted: 0,
+      capped: false,
+      errors: [],
+      dryRun: true,
+      candidateSchemes: pruneableCodes,
+      elapsed_ms: elapsedMs,
+    });
+  }
+
+  // ── Step 6: batched deletes ───────────────────────────────────────────────
   let totalDeleted = 0;
   let schemasProcessed = 0;
   const errors: string[] = [];
@@ -190,5 +269,6 @@ Deno.serve(async (req) => {
     rowsDeleted: totalDeleted,
     capped,
     errors,
+    dryRun: false,
   });
 });
