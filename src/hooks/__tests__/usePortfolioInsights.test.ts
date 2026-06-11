@@ -265,6 +265,53 @@ describe('computeInsights', () => {
     });
   });
 
+  describe('category_rules sentinel date does not corrupt dataAsOf', () => {
+    // category_rules rows use portfolio_date='1900-01-01' (sentinel) to prevent
+    // per-day accretion. computeInsights must exclude them from worstDate so the
+    // "data as of" label stays anchored to real disclosure dates.
+    it('dataAsOf reflects amfi date, not 1900-01-01 sentinel from category_rules fund', () => {
+      const fundA = makeFundCard({ id: 'a', schemeCode: 100001, schemeName: 'Equity Fund', currentValue: 91_000 });
+      const fundB = makeFundCard({ id: 'b', schemeCode: 100002, schemeName: 'Debt Fund', currentValue: 9_000 });
+
+      const compA = makeComposition({ schemeCode: 100001, portfolioDate: '2026-04-30', source: 'amfi' });
+      // Fund B has only category_rules with sentinel date — weight = 9%
+      const compB = makeComposition({
+        schemeCode: 100002,
+        portfolioDate: '1900-01-01',
+        source: 'category_rules',
+        equityPct: 0, debtPct: 90, cashPct: 10, otherPct: 0,
+        largeCapPct: null, midCapPct: null, smallCapPct: null, notClassifiedPct: null,
+        sectorAllocation: null, topHoldings: null,
+      });
+
+      const result = computeInsights([fundA, fundB], [compA, compB]);
+      // dataSource: fund B weight=9% < 10% threshold → 'amfi' (dataAsOf IS shown)
+      expect(result.dataSource).toBe('amfi');
+      // dataAsOf must come from the amfi row, not the sentinel date
+      expect(result.dataAsOf).toBe('2026-04-30');
+    });
+
+    it('dataAsOf is not the sentinel 1900-01-01 when all funds have only category_rules', () => {
+      const fund = makeFundCard({ currentValue: 100_000 });
+      const comp = makeComposition({
+        portfolioDate: '1900-01-01',
+        source: 'category_rules',
+        sectorAllocation: null,
+        topHoldings: null,
+      });
+
+      const result = computeInsights([fund], [comp]);
+
+      // dataSource = 'category_rules' (100% estimated), so dataAsOf is not
+      // rendered by the UI. Confirm worstDate did NOT pick up the sentinel.
+      expect(result.dataSource).toBe('category_rules');
+      expect(result.dataAsOf).not.toBe('1900-01-01');
+      // worstDate falls back to new Date() (today) — just confirm it's
+      // in a recognisable year range, not a century ago.
+      expect(result.dataAsOf).toMatch(/^20[2-9]\d-/);
+    });
+  });
+
   describe('fund with zero currentValue', () => {
     const fund = makeFundCard({ currentValue: 0 });
     const comp = makeComposition();
