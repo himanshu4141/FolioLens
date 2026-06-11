@@ -18,6 +18,7 @@
  * Contract: docs/openapi.yaml in the OpenFolio-Data repo.
  */
 
+// BEGIN OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
 // ---------------------------------------------------------------------------
 // API response types (mirror OpenFolio-Data's CompositionResponse)
 // ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ export interface OpenFolioTopHolding {
   isin?: string | null;
   weight_pct: number;
   sector?: string | null;
+  /** large | mid | small | unclassified */
   cap_bucket?: string | null;
 }
 
@@ -67,6 +69,12 @@ export interface OpenFolioProvenance {
   fetched_at?: string | null;
 }
 
+/**
+ * One AMFI plan within a scheme family (Regular/Direct × Growth/IDCW…). Every
+ * plan shares the family's portfolio but has its own AMFI code + ISIN(s)
+ * (growth + IDCW payout/reinvest). A plan with no ISIN is still listed with
+ * `isins: []` (honest — never a borrowed ISIN). OpenFolio-Data v2.0.0.
+ */
 export interface OpenFolioPlan {
   plan_code: number;
   plan_name?: string | null;
@@ -112,7 +120,7 @@ export interface GetCompositionArgs {
 }
 
 // ---------------------------------------------------------------------------
-// NAV API response types (mirror of _shared/openfolio.ts — OpenFolio v2.0.0)
+// NAV API response types (OpenFolio-Data v2.0.0)
 // ---------------------------------------------------------------------------
 
 /** Single data point in a NAV time-series. */
@@ -123,8 +131,8 @@ export interface NavSeriesPoint {
 }
 
 /**
- * Response from GET /v1/nav/{scheme_code}. `scheme_code` is the integer AMFI
- * plan code — direct join to scheme_master.scheme_code.
+ * Response from GET /v1/nav/{scheme_code} — the full or date-bounded NAV
+ * series for one AMFI plan. `scheme_code` is the integer AMFI plan code.
  */
 export interface NavSeries {
   scheme_code: number;
@@ -133,7 +141,10 @@ export interface NavSeries {
   points: NavSeriesPoint[];
 }
 
-/** Response from GET /v1/nav/{scheme_code}/latest. */
+/**
+ * Response from GET /v1/nav/{scheme_code}/latest — the single most-recent
+ * NAV for one AMFI plan.
+ */
 export interface NavLatestEntry {
   scheme_code: number;
   /** ISO date YYYY-MM-DD. */
@@ -141,7 +152,10 @@ export interface NavLatestEntry {
   nav: number;
 }
 
-/** One item in GET /v1/nav bulk page. `date` maps to nav_history.nav_date. */
+/**
+ * One item in the bulk NAV page — one scheme's most-recent NAV entry.
+ * `date` is ISO YYYY-MM-DD; maps to `nav_history.nav_date`.
+ */
 export interface NavBulkItem {
   scheme_code: number;
   /** ISO date YYYY-MM-DD → nav_history.nav_date. */
@@ -149,7 +163,7 @@ export interface NavBulkItem {
   nav: number;
 }
 
-/** Response from GET /v1/nav?since=|date= */
+/** Response from GET /v1/nav?since=|date= — paginated bulk NAV. */
 export interface NavBulkPage {
   count: number;
   page: number;
@@ -157,29 +171,42 @@ export interface NavBulkPage {
   items: NavBulkItem[];
 }
 
+/** Args for the per-scheme series endpoint. */
 export interface GetNavSeriesArgs {
+  /** Lower bound — ISO date YYYY-MM-DD. */
   since?: string | null;
+  /** Upper bound — ISO date YYYY-MM-DD. */
   until?: string | null;
 }
 
+/** Args for the bulk NAV listing endpoint. */
 export interface ListNavArgs {
+  /** All schemes with a NAV on/after this ISO date. */
   since?: string | null;
+  /** All schemes with a NAV on exactly this ISO date. */
   date?: string | null;
   page?: number;
   pageSize?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Fund Metadata API types (mirrors _shared/openfolio.ts)
+// Fund Metadata API types (OpenFolio-Data v2.0.0)
+// GET /v1/schemes/{scheme_code}/metadata  → FundMetadata
+// GET /v1/metadata?updated_since=         → MetadataPage
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-field provenance + status from OpenFolio's B1 extraction pipeline.
+ * The field VALUES live as flat properties on FundMetadata; b1_field_meta
+ * holds the diagnostic metadata for each.
+ */
 export type B1FieldStatus =
-  | 'value'
-  | 'officially_absent'
-  | 'not_applicable'
-  | 'unresolved'
-  | 'parse_failed'
-  | 'source_failed';
+  | 'value' // OpenFolio has a value — use it
+  | 'officially_absent' // Source explicitly has no value — honest null, skip backup
+  | 'not_applicable' // Field doesn't apply to this fund type — honest null
+  | 'unresolved' // Not yet processed — fall back to mfdata
+  | 'parse_failed' // Extraction attempted but failed — fall back to mfdata
+  | 'source_failed'; // Source fetch failed — fall back to mfdata
 
 export interface B1FieldMeta {
   status: B1FieldStatus;
@@ -190,21 +217,27 @@ export interface B1FieldMeta {
   source_quality?: string | null;
 }
 
+/** Computed returns — all values are decimal CAGRs (0.125 = 12.5%). */
 export interface FundMetadataReturns {
   ret_1y?: number | null;
   ret_3y?: number | null;
   ret_5y?: number | null;
+  /** Since-inception CAGR. */
   ret_incep?: number | null;
 }
 
+/** Computed analytics from OpenFolio's NAV series. */
 export interface FundMetadataMetrics {
+  /** AUM in crores (already in crores — no conversion needed). */
   aum_cr?: number | null;
   aum_date?: string | null;
   returns?: FundMetadataReturns | null;
+  /** Annualised σ (decimal). */
   volatility?: number | null;
   computed_from_nav_date?: string | null;
 }
 
+/** Per-field status map — keys match the B1 flat fields on FundMetadata. */
 export interface FundMetadataB1FieldMeta {
   ter?: B1FieldMeta;
   ter_date?: B1FieldMeta;
@@ -218,10 +251,15 @@ export interface FundMetadataB1FieldMeta {
   portfolio_turnover?: B1FieldMeta;
 }
 
+/**
+ * One scheme's full metadata record from OpenFolio.
+ * B1 fields are flat properties; b1_field_meta carries the status for each.
+ */
 export interface FundMetadata {
   scheme_code: number;
   name?: string | null;
   amc?: string | null;
+  // B1 fields (flat):
   ter?: number | null;
   ter_date?: string | null;
   fund_manager?: string | null;
@@ -232,13 +270,16 @@ export interface FundMetadata {
   benchmark?: string | null;
   riskometer?: string | null;
   portfolio_turnover?: number | null;
+  // Computed metrics:
   metrics?: FundMetadataMetrics | null;
+  // Per-field extraction metadata:
   b1_field_meta?: FundMetadataB1FieldMeta | null;
   b1_source?: string | null;
   b1_source_url?: string | null;
   b1_synced_at?: string | null;
 }
 
+/** Paginated response from GET /v1/metadata. */
 export interface MetadataPage {
   count: number;
   page: number;
@@ -246,21 +287,25 @@ export interface MetadataPage {
   items: FundMetadata[];
 }
 
+/** Args for GET /v1/metadata (bulk). */
 export interface ListMetadataArgs {
+  /** ISO-8601 datetime — return schemes updated on/after this time. */
   updatedSince?: string | null;
   page?: number;
   pageSize?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Scheme registry API types (mirror of _shared/openfolio.ts — v2.0.0)
-// GET /v1/schemes?amc=&category=&q=
+// Scheme registry API types (OpenFolio-Data v2.0.0)
+// GET /v1/schemes?amc=&category=&q=  → SchemeListPage
+// Family-keyed (like composition) — reuse resolveSchemeCodes for matching.
 // ---------------------------------------------------------------------------
 
 /**
  * One family entry from the scheme registry — same identity shape as
- * composition but without portfolio payload. Used as a backstop for
- * scheme_category / amc_name / ISINs.
+ * composition but without the portfolio payload. Used as a backstop source for
+ * scheme_category / amc_name / ISINs for schemes that lack a composition
+ * disclosure (e.g. new launches, debt-only AMCs with no monthly obligation).
  */
 export interface SchemeFamily {
   family_id: string;
@@ -285,20 +330,34 @@ export interface ListSchemesArgs {
   page?: number;
   pageSize?: number;
 }
-
 // ---------------------------------------------------------------------------
-// Credentials (single source of truth, app side)
+// OpenFolio credentials + request paths
 // ---------------------------------------------------------------------------
 
-function resolveCredentials(): { baseUrl: string; apiKey: string } {
-  const baseUrl = (
-    process.env.OPENFOLIO_API_BASE ??
-    process.env.OPENFOLIO_API_BASE_URL ??
-    ''
-  )
+export const OPENFOLIO_API_BASE_ENV = 'OPENFOLIO_API_BASE';
+export const OPENFOLIO_API_BASE_URL_ENV = 'OPENFOLIO_API_BASE_URL';
+export const OPENFOLIO_API_KEY_ENV = 'OPENFOLIO_API_KEY';
+
+export interface OpenFolioEnv {
+  get(key: string): string | undefined;
+}
+
+export interface OpenFolioCredentials {
+  baseUrl: string;
+  apiKey: string;
+}
+
+/**
+ * Read the OpenFolio base URL + key from an env source. Accepts either
+ * `OPENFOLIO_API_BASE` (the function-secret name) or `OPENFOLIO_API_BASE_URL`
+ * (the local `.env.local` name). Throws if either is missing so a
+ * misconfigured deploy fails loudly instead of silently fetching nothing.
+ */
+export function resolveOpenFolioCredentials(env: OpenFolioEnv): OpenFolioCredentials {
+  const baseUrl = (env.get(OPENFOLIO_API_BASE_ENV) ?? env.get(OPENFOLIO_API_BASE_URL_ENV) ?? '')
     .trim()
     .replace(/\/+$/, '');
-  const apiKey = (process.env.OPENFOLIO_API_KEY ?? '').trim();
+  const apiKey = (env.get(OPENFOLIO_API_KEY_ENV) ?? '').trim();
   if (!baseUrl || !apiKey) {
     throw new Error(
       'OpenFolio not configured: set OPENFOLIO_API_BASE (or OPENFOLIO_API_BASE_URL) and OPENFOLIO_API_KEY',
@@ -307,13 +366,76 @@ function resolveCredentials(): { baseUrl: string; apiKey: string } {
   return { baseUrl, apiKey };
 }
 
-function buildQuery(params: Record<string, string | number | null | undefined>): string {
+export function buildOpenFolioQuery(
+  params: Record<string, string | number | null | undefined>,
+): string {
   const usp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v != null && v !== '') usp.set(k, String(v));
   }
   const q = usp.toString();
   return q ? `?${q}` : '';
+}
+
+export function openFolioCompositionPath(
+  schemeCode: number,
+  args: GetCompositionArgs = {},
+): string {
+  return `/v1/schemes/${schemeCode}/composition${buildOpenFolioQuery({ date: args.date, top: args.top })}`;
+}
+
+export function openFolioCompositionListPath(args: ListCompositionArgs = {}): string {
+  return `/v1/composition${buildOpenFolioQuery({
+    page: args.page,
+    page_size: args.pageSize,
+    updated_since: args.updatedSince,
+    amc: args.amc,
+    top: args.top,
+  })}`;
+}
+
+export function openFolioNavSeriesPath(schemeCode: number, args: GetNavSeriesArgs = {}): string {
+  return `/v1/nav/${schemeCode}${buildOpenFolioQuery({ since: args.since, until: args.until })}`;
+}
+
+export function openFolioNavLatestPath(schemeCode: number): string {
+  return `/v1/nav/${schemeCode}/latest`;
+}
+
+export function openFolioNavListPath(args: ListNavArgs = {}): string {
+  return `/v1/nav${buildOpenFolioQuery({
+    since: args.since,
+    date: args.date,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+
+export function openFolioMetadataPath(schemeCode: number): string {
+  return `/v1/schemes/${schemeCode}/metadata`;
+}
+
+export function openFolioMetadataListPath(args: ListMetadataArgs = {}): string {
+  return `/v1/metadata${buildOpenFolioQuery({
+    updated_since: args.updatedSince,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+
+export function openFolioSchemesPath(args: ListSchemesArgs = {}): string {
+  return `/v1/schemes${buildOpenFolioQuery({
+    amc: args.amc,
+    category: args.category,
+    q: args.q,
+    page: args.page,
+    page_size: args.pageSize,
+  })}`;
+}
+// END OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
+
+function resolveCredentials(): OpenFolioCredentials {
+  return resolveOpenFolioCredentials({ get: (key) => process.env[key] });
 }
 
 async function request<T>(path: string): Promise<{ status: number; body: T | null }> {
@@ -331,9 +453,7 @@ export async function getComposition(
   schemeCode: number,
   args: GetCompositionArgs = {},
 ): Promise<OpenFolioComposition | null> {
-  const { body } = await request<OpenFolioComposition>(
-    `/v1/schemes/${schemeCode}/composition${buildQuery({ date: args.date, top: args.top })}`,
-  );
+  const { body } = await request<OpenFolioComposition>(openFolioCompositionPath(schemeCode, args));
   return body;
 }
 
@@ -341,15 +461,7 @@ export async function getComposition(
 export async function listComposition(
   args: ListCompositionArgs = {},
 ): Promise<OpenFolioCompositionPage> {
-  const { body } = await request<OpenFolioCompositionPage>(
-    `/v1/composition${buildQuery({
-      page: args.page,
-      page_size: args.pageSize,
-      updated_since: args.updatedSince,
-      amc: args.amc,
-      top: args.top,
-    })}`,
-  );
+  const { body } = await request<OpenFolioCompositionPage>(openFolioCompositionListPath(args));
   return body as OpenFolioCompositionPage;
 }
 
@@ -358,37 +470,31 @@ export async function getNavSeries(
   schemeCode: number,
   args: GetNavSeriesArgs = {},
 ): Promise<NavSeries | null> {
-  const { body } = await request<NavSeries>(
-    `/v1/nav/${schemeCode}${buildQuery({ since: args.since, until: args.until })}`,
-  );
+  const { body } = await request<NavSeries>(openFolioNavSeriesPath(schemeCode, args));
   return body;
 }
 
 /** Most-recent NAV entry for one AMFI plan. Null on 404. */
 export async function getNavLatest(schemeCode: number): Promise<NavLatestEntry | null> {
-  const { body } = await request<NavLatestEntry>(`/v1/nav/${schemeCode}/latest`);
+  const { body } = await request<NavLatestEntry>(openFolioNavLatestPath(schemeCode));
   return body;
 }
 
 /** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
 export async function listNav(args: ListNavArgs = {}): Promise<NavBulkPage> {
-  const { body } = await request<NavBulkPage>(
-    `/v1/nav${buildQuery({ since: args.since, date: args.date, page: args.page, page_size: args.pageSize })}`,
-  );
+  const { body } = await request<NavBulkPage>(openFolioNavListPath(args));
   return body as NavBulkPage;
 }
 
 /** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
 export async function getMetadata(schemeCode: number): Promise<FundMetadata | null> {
-  const { body } = await request<FundMetadata>(`/v1/schemes/${schemeCode}/metadata`);
+  const { body } = await request<FundMetadata>(openFolioMetadataPath(schemeCode));
   return body;
 }
 
 /** Bulk paginated metadata — all schemes, optionally filtered by updated_since. */
 export async function listMetadata(args: ListMetadataArgs = {}): Promise<MetadataPage> {
-  const { body } = await request<MetadataPage>(
-    `/v1/metadata${buildQuery({ updated_since: args.updatedSince, page: args.page, page_size: args.pageSize })}`,
-  );
+  const { body } = await request<MetadataPage>(openFolioMetadataListPath(args));
   return body as MetadataPage;
 }
 
@@ -397,9 +503,7 @@ export async function listMetadata(args: ListMetadataArgs = {}): Promise<Metadat
  * and plan codes/ISINs but no portfolio payload.
  */
 export async function listSchemes(args: ListSchemesArgs = {}): Promise<SchemeListPage> {
-  const { body } = await request<SchemeListPage>(
-    `/v1/schemes${buildQuery({ amc: args.amc, category: args.category, q: args.q, page: args.page, page_size: args.pageSize })}`,
-  );
+  const { body } = await request<SchemeListPage>(openFolioSchemesPath(args));
   return body as SchemeListPage;
 }
 
