@@ -5,6 +5,7 @@ import {
   readMfdataAsOfDate,
   readMfdataBeta,
   readMfdataRSquared,
+  readMfdataStdDev,
   readReturnPct,
   SEBI_DIRECT_PLAN_INTRODUCTION_DATE,
 } from '../mfdataGuards';
@@ -181,5 +182,42 @@ describe('readReturnPct', () => {
 
   it('handles zero return correctly', () => {
     expect(readReturnPct({ ret_1y: 0 }, '1y')).toBeCloseTo(0);
+  });
+});
+
+describe('readMfdataStdDev', () => {
+  const blob = { risk: { std_deviation: 18.5, beta: 0.95, r_squared: 96.7 } };
+
+  it('returns std_deviation as a percentage (MFData convention)', () => {
+    expect(readMfdataStdDev(blob)).toBeCloseTo(18.5);
+  });
+
+  it('returns null when risk blob is absent', () => {
+    expect(readMfdataStdDev({})).toBeNull();
+    expect(readMfdataStdDev({ risk: {} })).toBeNull();
+  });
+
+  it('returns null for null / non-object inputs', () => {
+    expect(readMfdataStdDev(null)).toBeNull();
+    expect(readMfdataStdDev(undefined)).toBeNull();
+    expect(readMfdataStdDev('string')).toBeNull();
+  });
+
+  it('returns null for non-finite values', () => {
+    expect(readMfdataStdDev({ risk: { std_deviation: NaN } })).toBeNull();
+    expect(readMfdataStdDev({ risk: { std_deviation: Infinity } })).toBeNull();
+  });
+
+  it('returns null for negative std_deviation', () => {
+    expect(readMfdataStdDev({ risk: { std_deviation: -5 } })).toBeNull();
+  });
+
+  it('returns zero std_deviation for constant-NAV funds (theoretical)', () => {
+    expect(readMfdataStdDev({ risk: { std_deviation: 0 } })).toBe(0);
+  });
+
+  it('has no category gating — returns value for debt/liquid categories too', () => {
+    // Unlike beta/r_squared, std_deviation is valid for any fund type
+    expect(readMfdataStdDev({ risk: { std_deviation: 1.2 } })).toBeCloseTo(1.2);
   });
 });

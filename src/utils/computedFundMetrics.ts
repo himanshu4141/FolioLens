@@ -17,6 +17,7 @@
  * gating (see `mfdataGuards.ts`).
  */
 import type { NavPoint } from './navUtils';
+import { readMfdataAsOfDate, readMfdataStdDev, readReturnPct } from './mfdataGuards';
 
 /**
  * Default annual risk-free rate for Sharpe / Sortino (current Indian 1Y T-bill
@@ -239,5 +240,112 @@ export function computeTrailingReturns(
     navCount: sorted.length,
     earliestDate: sorted.length ? sorted[0].date : null,
     latestDate: sorted.length ? sorted[sorted.length - 1].date : null,
+  };
+}
+
+/**
+ * Worst peak-to-trough drawdown over the trailing 5 years. Returns null when
+ * the series has fewer than 10 valid data points in the window, or when the
+ * maximum drop is less than 0.1% (effectively zero).
+ *
+ * Returns a negative decimal (e.g. -0.26 for a 26% drawdown).
+ */
+export function computeMaxDrawdown(series: NavPoint[], today?: Date): number | null {
+  const now = today ?? new Date();
+  const cutoff = new Date(now);
+  cutoff.setFullYear(cutoff.getFullYear() - 5);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+  const sorted = [...series]
+    .filter((p) => p.date >= cutoffStr && Number.isFinite(p.value) && p.value > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted.length < 10) return null;
+  let peak = sorted[0].value;
+  let maxDD = 0;
+  for (const p of sorted) {
+    if (p.value > peak) peak = p.value;
+    const dd = (p.value - peak) / peak;
+    if (dd < maxDD) maxDD = dd;
+  }
+  return maxDD < -0.001 ? maxDD : null;
+}
+
+/** Source of a fund's displayed metrics in the Compare screen. */
+export type MetricsSource = 'computed' | 'as-reported';
+
+/**
+ * Full metrics bundle used by the Compare Funds screen.
+ * When `source === 'as-reported'` the values come from the database-persisted
+ * period_returns / risk_ratios blobs; Sharpe, Sortino, and maxDrawdown are
+ * null because they require full NAV history to compute. `returnsAsOf` and
+ * `riskAsOf` carry the as_of_date from those blobs so the UI can label the
+ * provenance.
+ */
+export interface CompareMetrics {
+  trailing: TrailingPeriodReturns;
+  sharpe: number | null;
+  sortino: number | null;
+  stdDev: number | null;
+  monthlyObservations: number;
+  maxDrawdown: number | null;
+  source: MetricsSource;
+  /** Only set when source === 'as-reported'; from period_returns.as_of_date. */
+  returnsAsOf: string | null;
+  /** Only set when source === 'as-reported'; from risk_ratios.as_of_date. */
+  riskAsOf: string | null;
+}
+
+/**
+ * Select the best available metrics for a fund in the Compare screen.
+ *
+ * Priority: computed from local NAV series (if any trailing return is non-null)
+ * > as-reported from period_returns / risk_ratios blobs.
+ *
+ * Returns null when neither source has any return data.
+ *
+ * Design note — never mix sources within a single fund's metrics: if the local
+ * series can compute y1 but not y3/y5, we still use the computed source and
+ * show "—" for y3/y5 rather than filling in the gaps from period_returns.
+ * This prevents "computed locally" and "as reported" from silently coexisting
+ * in the same row.
+ */
+export function selectCompareMetrics(
+  series: NavPoint[],
+  periodReturns: unknown,
+  riskRatios: unknown,
+  today?: Date,
+): CompareMetrics | null {
+  const trailing = computeTrailingReturns(series, today);
+  const hasComputed = trailing.y1 != null || trailing.y3 != null || trailing.y5 != null;
+
+  if (hasComputed) {
+    const risk = computeRiskMetrics(series, { windowYears: 3, today });
+    const maxDrawdown = computeMaxDrawdown(series, today);
+    return { trailing, ...risk, maxDrawdown, source: 'computed', returnsAsOf: null, riskAsOf: null };
+  }
+
+  // Fall back to the persisted as-reported blobs.
+  const pct1y = readReturnPct(periodReturns, '1y');
+  const pct3y = readReturnPct(periodReturns, '3y');
+  const pct5y = readReturnPct(periodReturns, '5y');
+  if (pct1y == null && pct3y == null && pct5y == null) return null;
+
+  const stdDevPct = readMfdataStdDev(riskRatios);
+  return {
+    trailing: {
+      y1: pct1y != null ? pct1y / 100 : null,
+      y3: pct3y != null ? pct3y / 100 : null,
+      y5: pct5y != null ? pct5y / 100 : null,
+      navCount: 0,
+      earliestDate: null,
+      latestDate: null,
+    },
+    stdDev: stdDevPct != null ? stdDevPct / 100 : null,
+    sharpe: null,
+    sortino: null,
+    monthlyObservations: 0,
+    maxDrawdown: null,
+    source: 'as-reported',
+    returnsAsOf: readMfdataAsOfDate(periodReturns),
+    riskAsOf: readMfdataAsOfDate(riskRatios),
   };
 }

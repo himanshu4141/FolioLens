@@ -341,6 +341,23 @@ export function useFundDetail(fundId: string) {
 }
 
 /**
+ * Options for `fetchFundNavHistory`.
+ */
+export interface FetchNavHistoryOptions {
+  /**
+   * When set, the Supabase fallback only fetches NAVs on or after this date
+   * (ISO 'YYYY-MM-DD'). Results are NOT written back to SQLite — a partial
+   * slice written back would poison useFundNavHistory into thinking full
+   * history is already cached, silently breaking Fund Detail charts.
+   *
+   * Use this only for callers that need a bounded window (e.g. Compare Funds
+   * which only needs 5y for metric computation). Fund Detail's full-history
+   * chart path must always call without this option.
+   */
+  sinceDate?: string;
+}
+
+/**
  * Full NAV history for a scheme — read-through SQLite. The on-device
  * cache holds full history after bootstrap; this hook reads the local
  * rows directly. On a cache miss (cold start before bootstrap, or a
@@ -352,7 +369,11 @@ export function useFundDetail(fundId: string) {
  * the 1,000–3,300-row history populates the chart components in the
  * background.
  */
-export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[]> {
+export async function fetchFundNavHistory(
+  schemeCode: number,
+  opts?: FetchNavHistoryOptions,
+): Promise<NavPoint[]> {
+  const sinceDate = opts?.sinceDate;
   perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
   let source: 'sqlite' | 'supabase' = 'sqlite';
@@ -367,15 +388,20 @@ export async function fetchFundNavHistory(schemeCode: number): Promise<NavPoint[
   if (rows.length === 0) {
     source = 'supabase';
     rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
-      (from, to) =>
-        navHistoryRepo
+      (from, to) => {
+        const q = navHistoryRepo
           .from()
           .select('nav_date, nav')
           .eq('scheme_code', schemeCode)
-          .order('nav_date', { ascending: true })
-          .range(from, to),
+          .order('nav_date', { ascending: true });
+        return (sinceDate ? q.gte('nav_date', sinceDate) : q).range(from, to);
+      },
     );
-    if (rows.length > 0 && SQLITE_AVAILABLE) {
+    // Only write back to SQLite for full-history fetches. A windowed slice
+    // (sinceDate set) must not be written back — it would look like full
+    // history to useFundNavHistory's watermark check and prevent the proper
+    // paginated backfill from ever running.
+    if (rows.length > 0 && SQLITE_AVAILABLE && !sinceDate) {
       try {
         await navRepo.bulkInsert(
           rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),

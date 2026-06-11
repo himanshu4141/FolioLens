@@ -45,16 +45,15 @@ import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { fundComparisonCategory, shortSchemeName } from '@/src/utils/schemeName';
 import {
-  computeRiskMetrics,
-  computeTrailingReturns,
-  type TrailingPeriodReturns,
+  selectCompareMetrics,
+  type CompareMetrics,
 } from '@/src/utils/computedFundMetrics';
 import {
   isCompositionImplausible,
   readMfdataBeta,
 } from '@/src/utils/mfdataGuards';
 import type { NavPoint } from '@/src/utils/navUtils';
-import { fetchFundNavHistory } from '@/src/hooks/useFundDetail';
+import { fetchFundNavHistory, type FetchNavHistoryOptions } from '@/src/hooks/useFundDetail';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
@@ -112,22 +111,13 @@ interface CompositionRow {
   rawDebtHoldings: { name?: string; weight_pct?: number; credit_rating?: string }[] | null;
 }
 
-type Metrics = {
-  trailing: TrailingPeriodReturns;
-  sharpe: number | null;
-  sortino: number | null;
-  stdDev: number | null;
-  monthlyObservations: number;
-  maxDrawdown: number | null;
-};
-
 interface CompareFundData {
   code: number;
   badgeLetter: string;
   badgeColor: string;
   badgeSoft: string;
   scheme: SchemeMasterRow;
-  metrics: Metrics | null;
+  metrics: CompareMetrics | null;
   composition: CompositionRow | null;
 }
 
@@ -210,18 +200,37 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
   }));
 }
 
-async function fetchNavHistoryForCodes(
+/** ISO date string for today minus 5 years — the NAV window Compare needs. */
+function compareSinceDate(): string {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 5);
+  return d.toISOString().split('T')[0];
+}
+
+/**
+ * Fetch the 5-year NAV window for each scheme in the Compare screen.
+ *
+ * Uses a separate React Query key ('fund-nav-history-compare') so the windowed
+ * slice never lands in the same cache entry as Fund Detail's full-history fetch
+ * (keyed 'fund-nav-history'). The fetcher passes sinceDate so the Supabase
+ * fallback only pulls ~5y of rows instead of the full 3–6k-row history, and
+ * explicitly skips the SQLite write-back to prevent the poisoning trap
+ * documented in useFundDetail.ts lines 186-194.
+ */
+async function fetchNavHistoryForCompare(
   qc: QueryClient,
   schemeCodes: number[],
 ): Promise<Map<number, NavPoint[]>> {
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
   perfStart('query:compare:navHistory');
+  const since = compareSinceDate();
+  const opts: FetchNavHistoryOptions = { sinceDate: since };
   const entries = await Promise.all(
     schemeCodes.map(async (code) => {
       const rows = await qc.fetchQuery({
-        queryKey: ['fund-nav-history', code],
-        queryFn: () => fetchFundNavHistory(code),
+        queryKey: ['fund-nav-history-compare', code],
+        queryFn: () => fetchFundNavHistory(code, opts),
         staleTime: STALE_TIMES.NAV_HISTORY,
       });
       return [code, rows] as const;
@@ -240,26 +249,7 @@ async function fetchNavHistoryForCodes(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function computeMaxDrawdown(series: NavPoint[]): number | null {
-  const today = new Date();
-  const cutoff = new Date(today);
-  cutoff.setFullYear(cutoff.getFullYear() - 5);
-  const cutoffStr = cutoff.toISOString().split('T')[0];
-  const sorted = [...series]
-    .filter((p) => p.date >= cutoffStr && Number.isFinite(p.value) && p.value > 0)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  if (sorted.length < 10) return null;
-  let peak = sorted[0].value;
-  let maxDD = 0;
-  for (const p of sorted) {
-    if (p.value > peak) peak = p.value;
-    const dd = (p.value - peak) / peak;
-    if (dd < maxDD) maxDD = dd;
-  }
-  return maxDD < -0.001 ? maxDD : null;
-}
-
-function hasHistory(metrics: Metrics | null): boolean {
+function hasHistory(metrics: CompareMetrics | null): boolean {
   if (!metrics) return false;
   const { y1, y3, y5 } = metrics.trailing;
   return y1 != null || y3 != null || y5 != null;
@@ -1186,6 +1176,26 @@ function FundStripView({
 // Returns card (dark hero)
 // ---------------------------------------------------------------------------
 
+/** Append '†' marker to a formatted value when source is 'as-reported'. */
+function markCell(value: string, isAsReported: boolean): string {
+  return isAsReported && value !== '—' ? `${value}†` : value;
+}
+
+/** One-line provenance footnote for as-reported funds. */
+function buildReturnsProvenanceNote(funds: CompareFundData[]): string | null {
+  const asReported = funds.filter((f) => f.metrics?.source === 'as-reported');
+  if (asReported.length === 0) return null;
+  const names = formatLabelList(asReported.map((f) => fundDisplayName(f.scheme)));
+  const asOf = asReported
+    .map((f) => f.metrics?.returnsAsOf)
+    .filter((d): d is string => !!d)
+    .sort()
+    .pop();
+  return asOf
+    ? `† ${names}: returns as reported by fund house (as of ${asOf}), not computed from NAV history.`
+    : `† ${names}: returns as reported by fund house, not computed from NAV history.`;
+}
+
 function ReturnsCard({
   fundData,
   fundsWithHistory,
@@ -1195,6 +1205,7 @@ function ReturnsCard({
   fundsWithHistory: CompareFundData[];
   tokens: ClearLensTokens;
 }) {
+  const cl = tokens.colors;
   const allSameCategory = fundData.length > 0 && fundData.every(
     (f) => fundCategory(f.scheme) === fundCategory(fundData[0].scheme),
   );
@@ -1203,6 +1214,8 @@ function ReturnsCard({
   const sub = allSameCategory
     ? 'Same category — a direct comparison.'
     : 'These sit in different fund categories, so they hold different things by design.';
+
+  const provenanceNote = buildReturnsProvenanceNote(fundsWithHistory);
 
   return (
     <FindingCard headline={headline} sub={sub} tone="dark" tokens={tokens}>
@@ -1220,18 +1233,37 @@ function ReturnsCard({
         rows={[
           {
             label: '1Y return',
-            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y1 ?? null)),
+            cells: fundsWithHistory.map((f) =>
+              markCell(fmtPct(f.metrics?.trailing.y1 ?? null), f.metrics?.source === 'as-reported'),
+            ),
           },
           {
             label: '3Y return',
-            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y3 ?? null)),
+            cells: fundsWithHistory.map((f) =>
+              markCell(fmtPct(f.metrics?.trailing.y3 ?? null), f.metrics?.source === 'as-reported'),
+            ),
           },
           {
             label: '5Y return',
-            cells: fundsWithHistory.map((f) => fmtPct(f.metrics?.trailing.y5 ?? null)),
+            cells: fundsWithHistory.map((f) =>
+              markCell(fmtPct(f.metrics?.trailing.y5 ?? null), f.metrics?.source === 'as-reported'),
+            ),
           },
         ]}
       />
+      {provenanceNote ? (
+        <Text
+          style={{
+            fontSize: 10,
+            fontFamily: ClearLensFonts.medium,
+            color: cl.textOnDarkMuted,
+            lineHeight: 15,
+            marginTop: 6,
+          }}
+        >
+          {provenanceNote}
+        </Text>
+      ) : null}
     </FindingCard>
   );
 }
@@ -1240,6 +1272,20 @@ function ReturnsCard({
 // Risk card
 // ---------------------------------------------------------------------------
 
+function buildRiskProvenanceNote(funds: CompareFundData[]): string | null {
+  const asReported = funds.filter((f) => f.metrics?.source === 'as-reported');
+  if (asReported.length === 0) return null;
+  const names = formatLabelList(asReported.map((f) => fundDisplayName(f.scheme)));
+  const asOf = asReported
+    .map((f) => f.metrics?.riskAsOf)
+    .filter((d): d is string => !!d)
+    .sort()
+    .pop();
+  return asOf
+    ? `† ${names}: volatility as reported by fund house (as of ${asOf}). Drawdown, Sharpe, and Sortino require full NAV history.`
+    : `† ${names}: volatility as reported by fund house. Drawdown, Sharpe, and Sortino require full NAV history.`;
+}
+
 function RiskCard({
   fundsWithHistory,
   tokens,
@@ -1247,6 +1293,7 @@ function RiskCard({
   fundsWithHistory: CompareFundData[];
   tokens: ClearLensTokens;
 }) {
+  const cl = tokens.colors;
   const ddVals = fundsWithHistory
     .map((f) => f.metrics?.maxDrawdown ?? null)
     .filter((v): v is number => v != null)
@@ -1266,6 +1313,8 @@ function RiskCard({
     ? `Worst peak-to-trough drop ranged from ${ddLo.toFixed(0)}% to ${ddHi.toFixed(0)}% over 5 years.`
     : 'Worst peak-to-trough drop over the last 5 years.';
 
+  const provenanceNote = buildRiskProvenanceNote(fundsWithHistory);
+
   return (
     <FindingCard headline={headline} sub={sub} tokens={tokens}>
       <BarsViz
@@ -1280,9 +1329,10 @@ function RiskCard({
         rows={[
           {
             label: 'Volatility',
-            cells: fundsWithHistory.map((f) =>
-              f.metrics?.stdDev != null ? `${(f.metrics.stdDev * 100).toFixed(1)}%` : '—',
-            ),
+            cells: fundsWithHistory.map((f) => {
+              const val = f.metrics?.stdDev != null ? `${(f.metrics.stdDev * 100).toFixed(1)}%` : '—';
+              return markCell(val, f.metrics?.source === 'as-reported');
+            }),
           },
           {
             label: 'Sharpe ratio',
@@ -1299,6 +1349,19 @@ function RiskCard({
           },
         ]}
       />
+      {provenanceNote ? (
+        <Text
+          style={{
+            fontSize: 10,
+            fontFamily: ClearLensFonts.medium,
+            color: cl.textTertiary,
+            lineHeight: 15,
+            marginTop: 6,
+          }}
+        >
+          {provenanceNote}
+        </Text>
+      ) : null}
     </FindingCard>
   );
 }
@@ -1952,6 +2015,7 @@ export function ClearLensCompareFundsScreen() {
           );
           if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
+          queryClient.invalidateQueries({ queryKey: ['fund-nav-history-compare', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
           return data;
         },
@@ -1961,11 +2025,10 @@ export function ClearLensCompareFundsScreen() {
   });
 
   // True while any on-demand hydration (snapshot / NAV backfill) is still in
-  // flight. A fund nobody holds has no NAV history in the DB on first read, so
-  // navHistoryQuery resolves empty and the fund looks like it has "no return
-  // history" — until hydration completes, invalidates, and the data appears.
-  // We treat hydration-in-progress as loading so the NoHistoryBanner (and the
-  // empty Returns/Risk cards) don't flash before the real data lands.
+  // flight. With the as-reported fallback, funds can show period_returns data
+  // from scheme_master even while NAV is fetching, so we no longer need to
+  // block the entire UI on hydration. isHydrating is preserved for the top-level
+  // loading gate (schemes + compositions must still resolve before we paint).
   const isHydrating = hydrationQueries.some((q) => q.isLoading);
 
   const schemesQuery = useQuery({
@@ -1983,7 +2046,7 @@ export function ClearLensCompareFundsScreen() {
   const navHistoryQuery = useQuery({
     queryKey: ['compare:navhistory', selectedCodes],
     enabled: selectedCodes.length > 0,
-    queryFn: () => fetchNavHistoryForCodes(queryClient, selectedCodes),
+    queryFn: () => fetchNavHistoryForCompare(queryClient, selectedCodes),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -2003,19 +2066,26 @@ export function ClearLensCompareFundsScreen() {
     return map;
   }, [compositionsQuery.data]);
 
+  // Build metrics for each fund. When the 5y NAV series is loaded and has
+  // enough data we use locally-computed metrics (trailing CAGRs, Sharpe,
+  // Sortino, max-drawdown). While the series is still fetching or genuinely
+  // absent we fall back to the persisted period_returns / risk_ratios blobs
+  // from scheme_master so the Returns and Risk cards can render immediately
+  // instead of waiting for the NAV fetch (which can take several seconds for
+  // a cold, non-held fund).
   const metricsByCode = useMemo(() => {
-    const map = new Map<number, Metrics>();
-    const navMap = navHistoryQuery.data;
-    if (!navMap) return map;
+    const map = new Map<number, CompareMetrics>();
+    const schemeByCode = new Map<number, SchemeMasterRow>(schemes.map((s) => [s.schemeCode, s]));
+    const navMap = navHistoryQuery.data; // undefined while loading, Map once resolved
     for (const code of selectedCodes) {
-      const series = navMap.get(code) ?? [];
-      const trailing = computeTrailingReturns(series);
-      const risk = computeRiskMetrics(series, { windowYears: 3 });
-      const maxDrawdown = computeMaxDrawdown(series);
-      map.set(code, { trailing, ...risk, maxDrawdown });
+      const scheme = schemeByCode.get(code);
+      if (!scheme) continue;
+      const series = navMap?.get(code) ?? [];
+      const m = selectCompareMetrics(series, scheme.periodReturns, scheme.riskRatios);
+      if (m) map.set(code, m);
     }
     return map;
-  }, [navHistoryQuery.data, selectedCodes]);
+  }, [navHistoryQuery.data, selectedCodes, schemes]);
 
   // Assembled per-fund data with badge identity.
   const fundData = useMemo<CompareFundData[]>(() => {
@@ -2127,9 +2197,12 @@ export function ClearLensCompareFundsScreen() {
     );
   }
 
+  // navHistoryQuery.isLoading is intentionally excluded: once schemes resolve
+  // we can paint the cards immediately with as-reported fallback data while the
+  // 5y NAV fetch runs in the background. Cards update silently to computed
+  // metrics when the NAV query completes.
   const isLoading = selectedCodes.length > 0
-    && (schemesQuery.isLoading || navHistoryQuery.isLoading || compositionsQuery.isLoading
-      || isHydrating);
+    && (schemesQuery.isLoading || compositionsQuery.isLoading || isHydrating);
 
   const hasError = schemesQuery.isError || navHistoryQuery.isError || compositionsQuery.isError;
 

@@ -1,5 +1,6 @@
 import {
   buildMonthEndNavs,
+  computeMaxDrawdown,
   computeMonthlyReturns,
   computeRiskMetrics,
   computeTrailingCagr,
@@ -7,6 +8,7 @@ import {
   mean,
   navOnOrBefore,
   sampleStdDev,
+  selectCompareMetrics,
   DEFAULT_RISK_FREE_RATE,
 } from '../computedFundMetrics';
 import type { NavPoint } from '../navUtils';
@@ -324,5 +326,154 @@ describe('computeTrailingReturns', () => {
     expect(result.y1).not.toBeNull();
     expect(result.y3).not.toBeNull();
     expect(result.y5).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeMaxDrawdown
+// ---------------------------------------------------------------------------
+
+describe('computeMaxDrawdown', () => {
+  const TODAY = new Date('2026-05-08');
+
+  function makeSeries(values: { date: string; value: number }[]): NavPoint[] {
+    return values;
+  }
+
+  it('returns null for series with fewer than 10 data points in window', () => {
+    const series = makeSeries([
+      { date: '2025-01-01', value: 100 },
+      { date: '2025-06-01', value: 90 },
+    ]);
+    expect(computeMaxDrawdown(series, TODAY)).toBeNull();
+  });
+
+  it('returns null when drop is less than 0.1%', () => {
+    const series: NavPoint[] = [];
+    for (let i = 0; i < 15; i++) {
+      series.push({ date: `2025-0${Math.min(i + 1, 9)}-01`, value: 100 });
+    }
+    expect(computeMaxDrawdown(series, TODAY)).toBeNull();
+  });
+
+  it('computes the correct max drawdown for a simple peak-to-trough', () => {
+    // Series: peak at 100, drops to 70 → 30% drawdown
+    const series: NavPoint[] = [];
+    for (let i = 0; i < 10; i++) {
+      const d = new Date(TODAY);
+      d.setMonth(d.getMonth() - 10 + i);
+      series.push({ date: d.toISOString().split('T')[0], value: i < 5 ? 100 : 70 });
+    }
+    const dd = computeMaxDrawdown(series, TODAY);
+    expect(dd).not.toBeNull();
+    expect(dd!).toBeCloseTo(-0.3, 5);
+  });
+
+  it('excludes data points older than 5 years', () => {
+    // All data older than 5y → < 10 in-window points → null
+    const series: NavPoint[] = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(TODAY);
+      d.setFullYear(d.getFullYear() - 6);
+      d.setMonth(i);
+      series.push({ date: d.toISOString().split('T')[0], value: 100 - i * 5 });
+    }
+    expect(computeMaxDrawdown(series, TODAY)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectCompareMetrics — fallback selector
+// ---------------------------------------------------------------------------
+
+describe('selectCompareMetrics', () => {
+  const TODAY = new Date('2026-05-08');
+
+  function buildSeries(months: number, startValue = 100): NavPoint[] {
+    const series: NavPoint[] = [];
+    for (let m = 0; m < months; m++) {
+      const d = new Date(TODAY);
+      d.setMonth(d.getMonth() - (months - 1 - m));
+      series.push({
+        date: d.toISOString().split('T')[0],
+        value: startValue + m * 0.5,
+      });
+    }
+    return series;
+  }
+
+  it('returns computed source when series has enough data for trailing CAGR', () => {
+    const series = buildSeries(60); // 5 years of daily-ish data
+    const result = selectCompareMetrics(series, null, null, TODAY);
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('computed');
+    expect(result!.returnsAsOf).toBeNull();
+    expect(result!.riskAsOf).toBeNull();
+  });
+
+  it('computed source wins even when period_returns blob is present', () => {
+    const series = buildSeries(15); // >1y → y1 non-null
+    const periodReturns = { ret_1y: 0.20, as_of_date: '2026-01-01' };
+    const result = selectCompareMetrics(series, periodReturns, null, TODAY);
+    expect(result!.source).toBe('computed');
+    // The returned y1 must come from local computation, not 0.20 (20%)
+    expect(result!.trailing.y1).not.toBeCloseTo(0.20, 2);
+  });
+
+  it('falls back to as-reported when series is empty', () => {
+    const periodReturns = { ret_1y: 0.185, ret_3y: 0.15, as_of_date: '2026-04-30' };
+    const riskRatios = { risk: { std_deviation: 18.5 }, as_of_date: '2026-04-30' };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('as-reported');
+    expect(result!.trailing.y1).toBeCloseTo(0.185, 5);
+    expect(result!.trailing.y3).toBeCloseTo(0.15, 5);
+    expect(result!.trailing.y5).toBeNull();
+    expect(result!.stdDev).toBeCloseTo(0.185, 5);
+    expect(result!.sharpe).toBeNull();
+    expect(result!.sortino).toBeNull();
+    expect(result!.maxDrawdown).toBeNull();
+    expect(result!.returnsAsOf).toBe('2026-04-30');
+    expect(result!.riskAsOf).toBe('2026-04-30');
+  });
+
+  it('falls back to as-reported (mfdata percentage format)', () => {
+    const periodReturns = { return_1y: 18.5, return_3y: 15.0 };
+    const result = selectCompareMetrics([], periodReturns, null, TODAY);
+    expect(result!.source).toBe('as-reported');
+    expect(result!.trailing.y1).toBeCloseTo(0.185, 5);
+    expect(result!.trailing.y3).toBeCloseTo(0.15, 5);
+  });
+
+  it('returns null when series is empty and period_returns has no return data', () => {
+    expect(selectCompareMetrics([], null, null, TODAY)).toBeNull();
+    expect(selectCompareMetrics([], {}, null, TODAY)).toBeNull();
+    expect(selectCompareMetrics([], { as_of_date: '2026-01-01' }, null, TODAY)).toBeNull();
+  });
+
+  it('as-reported stdDev is null when risk_ratios has no std_deviation', () => {
+    const periodReturns = { ret_1y: 0.10 };
+    const result = selectCompareMetrics([], periodReturns, null, TODAY);
+    expect(result!.stdDev).toBeNull();
+  });
+
+  it('as-reported stdDev converts from percentage to decimal', () => {
+    const periodReturns = { ret_1y: 0.15 };
+    const riskRatios = { risk: { std_deviation: 22.0 } };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    // 22.0% → 0.22 decimal
+    expect(result!.stdDev).toBeCloseTo(0.22, 5);
+  });
+
+  it('does not mix sources: partial local series uses computed for what it has', () => {
+    // 2y of data → y1 non-null, y3/y5 null
+    const series = buildSeries(25);
+    const periodReturns = { ret_3y: 0.15, ret_5y: 0.12 }; // only in as-reported
+    const result = selectCompareMetrics(series, periodReturns, null, TODAY);
+    expect(result!.source).toBe('computed');
+    expect(result!.trailing.y1).not.toBeNull();
+    // y3 must be null (from computed, not fallback) — never silently mix sources
+    expect(result!.trailing.y3).toBeNull();
+    expect(result!.trailing.y5).toBeNull();
   });
 });
