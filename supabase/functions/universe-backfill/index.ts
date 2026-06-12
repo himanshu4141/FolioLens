@@ -41,6 +41,11 @@
  * then kept current by monthly openfolio-sync (composition) and daily
  * sync-fund-meta (held-fund metadata).
  *
+ * Universe loading strategy: per-page incremental lookup. Instead of loading
+ * all 37,595 schemes upfront (38 round trips → ~150s timeout), each page of OF
+ * data triggers a single targeted IN query for the ~300 codes/ISINs on that
+ * page. This reduces per-invocation overhead from ~150s to ~2s.
+ *
  * Deploy with --no-verify-jwt.
  */
 
@@ -50,18 +55,30 @@ import { trackServerEventAwait } from '../_shared/analytics.ts';
 import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
-  runOpenFolioSync,
+  isPlausibleDisclosureDate,
+  mapCompositionToRow,
+  mapCompositionToRegistryRows,
+  resolveSchemeCodes,
   type B1FieldStatus,
   type CompositionRow,
   type FundMetadata,
+  type OpenFolioComposition,
+  type SchemeRegistryRow,
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
 import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
 
-const PAGE_SIZE = 300;
-const TOP = 50;
-const MAX_PAGES = 2000; // full universe headroom (~10-14k schemes / 300 = ~47 pages)
-const PAGES_PER_INVOCATION = 2; // process at most 2 pages (≈600 items) per invocation to fit Supabase edge function memory limits
+// Metadata: small payload per item (no holdings), large pages are fine
+const META_PAGE_SIZE = 300;
+const META_MAX_PAGES = 2000; // ~14k schemes / 300 = ~47 pages
+
+// Composition: each item includes top_holdings — large payload. Use small pages
+// to keep each API response under ~500KB and avoid the 150s edge-fn idle timeout.
+const COMP_PAGE_SIZE = 50;
+const COMP_TOP = 10; // top holdings per family (down from 50: 50×10 vs 300×50 = 30× smaller responses)
+const COMP_MAX_PAGES = 2000; // ~14k families / 50 = ~280 pages
+
+const PAGES_PER_INVOCATION = 1; // 1 OF API call per phase per invocation; 2 calls for phase='both'
 
 const B1_OK_STATUSES = new Set<B1FieldStatus>(['value']);
 
@@ -85,38 +102,6 @@ function resolveB1<T>(
   return ofValue ?? null;
 }
 
-/**
- * Load the **full** scheme_master universe: every scheme code + ISIN map,
- * not filtered by the fund table. This is the expanded universe that lets
- * Compare read composition for schemes nobody holds yet.
- */
-async function loadFullUniverse(
-  supabase: ReturnType<typeof createServiceClient>,
-): Promise<SchemeUniverse> {
-  const knownCodes = new Set<number>();
-  const isinToCode = new Map<string, number>();
-  const PAGE = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await supabase
-      .from('scheme_master')
-      .select('scheme_code, isin')
-      .range(from, from + PAGE - 1);
-    if (error) {
-      console.error('[universe-backfill] scheme_master load failed: %s', error.message);
-      break;
-    }
-    if (!data || data.length === 0) break;
-    for (const row of data as { scheme_code: number; isin: string | null }[]) {
-      knownCodes.add(row.scheme_code);
-      if (row.isin) isinToCode.set(String(row.isin).trim().toUpperCase(), row.scheme_code);
-    }
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return { knownCodes, isinToCode };
-}
-
 interface CompositionBackfillState {
   phase: 'composition';
   cursor: number;
@@ -138,13 +123,57 @@ interface MetadataBackfillState {
 }
 
 /**
- * Fetch and write up to PAGES_PER_INVOCATION pages of composition.
- * Returns the new cursor and stats, or throws on page-fetch failure (fatal).
+ * Build a mini SchemeUniverse for the plan codes and ISINs present on one
+ * composition page by querying scheme_master with targeted IN clauses.
+ * Runs two parallel queries (one per key type) and merges results.
+ */
+async function resolvePageUniverse(
+  supabase: ReturnType<typeof createServiceClient>,
+  items: OpenFolioComposition[],
+): Promise<SchemeUniverse> {
+  const pageCodes: number[] = [];
+  const pageIsins: string[] = [];
+  for (const item of items) {
+    for (const plan of Array.isArray(item?.plans) ? item.plans : []) {
+      if (typeof plan?.plan_code === 'number') pageCodes.push(plan.plan_code);
+      for (const isin of Array.isArray(plan?.isins) ? plan.isins : []) {
+        const norm = (isin ?? '').trim().toUpperCase();
+        if (norm) pageIsins.push(norm);
+      }
+    }
+  }
+
+  const knownCodes = new Set<number>();
+  const isinToCode = new Map<string, number>();
+
+  if (pageCodes.length === 0 && pageIsins.length === 0) return { knownCodes, isinToCode };
+
+  const [codeRes, isinRes] = await Promise.all([
+    pageCodes.length > 0
+      ? supabase.from('scheme_master').select('scheme_code, isin').in('scheme_code', pageCodes)
+      : Promise.resolve({ data: [] as Array<{ scheme_code: number; isin: string | null }> }),
+    pageIsins.length > 0
+      ? supabase.from('scheme_master').select('scheme_code, isin').in('isin', pageIsins)
+      : Promise.resolve({ data: [] as Array<{ scheme_code: number; isin: string | null }> }),
+  ]);
+
+  for (const row of [...(codeRes.data ?? []), ...(isinRes.data ?? [])]) {
+    knownCodes.add(row.scheme_code);
+    if (row.isin) isinToCode.set(String(row.isin).trim().toUpperCase(), row.scheme_code);
+  }
+
+  return { knownCodes, isinToCode };
+}
+
+/**
+ * Fetch and write up to PAGES_PER_INVOCATION pages of composition starting
+ * from startPage. Builds a per-page mini-universe via targeted IN queries
+ * instead of pre-loading all 37k schemes — reduces invocation overhead from
+ * ~150s to ~2s.
  */
 async function runCompositionBackfillChunk(
   supabase: ReturnType<typeof createServiceClient>,
   client: ReturnType<typeof createOpenFolioClient>,
-  universe: SchemeUniverse,
   syncedAt: string,
   startPage: number,
   log: (msg: string) => void,
@@ -157,47 +186,108 @@ async function runCompositionBackfillChunk(
   unmatched: number;
   failed: number;
 }> {
-  const upsertRows = async (rows: CompositionRow[]) => {
-    const { error } = await supabase
-      .from('fund_portfolio_composition')
-      .upsert(rows, { onConflict: 'scheme_code,portfolio_date,source' });
-    return { error: error?.message ?? null };
-  };
-
+  const today = syncedAt.slice(0, 10);
   const upsertSchemeRegistry = makeRegistryUpsert(supabase, '[universe-backfill]');
+  let totalCount = 0;
+  let upserted = 0;
+  let matchedByCode = 0;
+  let matchedByIsin = 0;
+  let unmatched = 0;
+  let failed = 0;
 
-  const stats = await runOpenFolioSync({
-    client,
-    universe,
-    upsertRows,
-    upsertSchemeRegistry,
-    syncedAt,
-    log,
-    pageSize: PAGE_SIZE,
-    top: TOP,
-    maxPages: PAGES_PER_INVOCATION, // chunk it
-    updatedSince: null,
-  });
+  for (let page = startPage; page < startPage + PAGES_PER_INVOCATION && page <= COMP_MAX_PAGES; page++) {
+    let result;
+    try {
+      result = await client.listComposition({ page, pageSize: COMP_PAGE_SIZE, top: COMP_TOP, updatedSince: null, amc: null });
+    } catch (err) {
+      const msg = `[universe-backfill] composition page=${page} fetch failed: ${String(err)}`;
+      log(msg);
+      throw new Error(msg);
+    }
 
-  return {
-    endPage: startPage + stats.pagesFetched,
-    totalCount: stats.totalCount,
-    upserted: stats.upserted,
-    matchedByCode: stats.matchedByCode,
-    matchedByIsin: stats.matchedByIsin,
-    unmatched: stats.unmatched,
-    failed: stats.failed,
-  };
+    const items = Array.isArray(result?.items) ? (result.items as OpenFolioComposition[]) : [];
+    totalCount = typeof result?.count === 'number' ? result.count : totalCount;
+    log(`[universe-backfill] composition page=${page} fetched=${items.length} (count=${totalCount})`);
+
+    // Per-page mini-universe: one targeted IN query instead of 38 full-scan queries
+    const miniUniverse = await resolvePageUniverse(supabase, items);
+    log(`[universe-backfill] composition page=${page} universe resolved: codes=${miniUniverse.knownCodes.size} isins=${miniUniverse.isinToCode.size}`);
+
+    const pageRows: CompositionRow[] = [];
+    const pageRegistryRows: SchemeRegistryRow[] = [];
+
+    for (const item of items) {
+      if (!item) { unmatched++; continue; }
+      const matches = resolveSchemeCodes(item, miniUniverse);
+      if (matches.length === 0) {
+        unmatched++;
+        log(`[universe-backfill] composition skip family=${item.family_id ?? 'none'} (no matches)`);
+        continue;
+      }
+      if (!isPlausibleDisclosureDate(item.disclosure_date, today)) {
+        log(`[universe-backfill] composition skip family=${item.family_id ?? 'none'} bad date=${item.disclosure_date ?? 'none'}`);
+        continue;
+      }
+      for (const match of matches) {
+        if (match.matchedBy === 'plan_code') matchedByCode++;
+        else matchedByIsin++;
+        try {
+          pageRows.push(mapCompositionToRow(item, match.schemeCode, syncedAt));
+        } catch (err) {
+          failed++;
+          log(`[universe-backfill] composition mapRow failed scheme=${match.schemeCode}: ${String(err)}`);
+        }
+      }
+      for (const regRow of mapCompositionToRegistryRows(item, matches)) {
+        pageRegistryRows.push(regRow);
+      }
+    }
+
+    // Batch upsert with per-row fallback on error
+    if (pageRows.length > 0) {
+      const { error } = await supabase
+        .from('fund_portfolio_composition')
+        .upsert(pageRows, { onConflict: 'scheme_code,portfolio_date,source' });
+      if (error) {
+        for (const row of pageRows) {
+          const { error: rowErr } = await supabase
+            .from('fund_portfolio_composition')
+            .upsert([row], { onConflict: 'scheme_code,portfolio_date,source' });
+          if (rowErr) {
+            failed++;
+            log(`[universe-backfill] composition upsert failed scheme=${row.scheme_code}: ${rowErr.message}`);
+          } else {
+            upserted++;
+          }
+        }
+      } else {
+        upserted += pageRows.length;
+      }
+    }
+
+    if (pageRegistryRows.length > 0) {
+      try {
+        await upsertSchemeRegistry(pageRegistryRows);
+      } catch (err) {
+        log(`[universe-backfill] composition registry upsert failed: ${String(err)}`);
+      }
+    }
+
+    if (items.length < COMP_PAGE_SIZE) return { endPage: page + 1, totalCount, upserted, matchedByCode, matchedByIsin, unmatched, failed };
+    if (totalCount > 0 && page * COMP_PAGE_SIZE >= totalCount) return { endPage: page + 1, totalCount, upserted, matchedByCode, matchedByIsin, unmatched, failed };
+  }
+
+  return { endPage: startPage + PAGES_PER_INVOCATION, totalCount, upserted, matchedByCode, matchedByIsin, unmatched, failed };
 }
 
 /**
- * Fetch and write up to PAGES_PER_INVOCATION pages of metadata.
- * Returns the new cursor and stats, or throws on page-fetch failure (fatal).
+ * Fetch and write up to PAGES_PER_INVOCATION pages of metadata starting
+ * from startPage. Resolves known scheme codes per-page via an IN query
+ * instead of holding a 37k-entry Set in memory.
  */
 async function runMetadataBackfillChunk(
   supabase: ReturnType<typeof createServiceClient>,
   client: ReturnType<typeof createOpenFolioClient>,
-  knownCodes: Set<number>,
   syncedAt: string,
   startPage: number,
   log: (msg: string) => void,
@@ -207,10 +297,10 @@ async function runMetadataBackfillChunk(
   let failed = 0;
   let totalCount = 0;
 
-  for (let page = startPage; page < startPage + PAGES_PER_INVOCATION && page <= MAX_PAGES; page++) {
+  for (let page = startPage; page < startPage + PAGES_PER_INVOCATION && page <= META_MAX_PAGES; page++) {
     let result;
     try {
-      result = await client.listMetadata({ page, pageSize: PAGE_SIZE });
+      result = await client.listMetadata({ page, pageSize: META_PAGE_SIZE });
     } catch (err) {
       const msg = `[universe-backfill] metadata page=${page} fetch failed: ${String(err)}`;
       log(msg);
@@ -223,7 +313,18 @@ async function runMetadataBackfillChunk(
         `(count=${totalCount})`,
     );
 
-    const pageWork: Array<{ schemeCode: number; item: FundMetadata; patch: Record<string, unknown> }> = [];
+    // Per-page scheme_code lookup — single IN query for the ~300 codes on this page
+    const pageCodes = items.map((item) => item?.scheme_code).filter((c): c is number => typeof c === 'number');
+    const knownCodes = new Set<number>();
+    if (pageCodes.length > 0) {
+      const { data: knownRows } = await supabase
+        .from('scheme_master')
+        .select('scheme_code')
+        .in('scheme_code', pageCodes);
+      for (const row of knownRows ?? []) knownCodes.add(row.scheme_code);
+    }
+
+    const pageWork: Array<{ schemeCode: number; patch: Record<string, unknown> }> = [];
     for (const item of items) {
       if (!item?.scheme_code || !knownCodes.has(item.scheme_code)) {
         skipped += 1;
@@ -275,7 +376,7 @@ async function runMetadataBackfillChunk(
       const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
       if (incep != null) patch.launch_date = incep;
 
-      pageWork.push({ schemeCode: item.scheme_code, item, patch });
+      pageWork.push({ schemeCode: item.scheme_code, patch });
     }
 
     const BATCH = 50;
@@ -301,8 +402,8 @@ async function runMetadataBackfillChunk(
       }
     }
 
-    if (items.length < PAGE_SIZE) return { endPage: page + 1, totalCount, written, skipped, failed };
-    if (totalCount > 0 && page * PAGE_SIZE >= totalCount) return { endPage: page + 1, totalCount, written, skipped, failed };
+    if (items.length < META_PAGE_SIZE) return { endPage: page + 1, totalCount, written, skipped, failed };
+    if (totalCount > 0 && page * META_PAGE_SIZE >= totalCount) return { endPage: page + 1, totalCount, written, skipped, failed };
   }
 
   return { endPage: startPage + PAGES_PER_INVOCATION, totalCount, written, skipped, failed };
@@ -376,61 +477,6 @@ async function clearDoneMarker(
   await supabase.from('app_config').delete().eq('key', key);
 }
 
-async function readUniverseCache(
-  supabase: ReturnType<typeof createServiceClient>,
-): Promise<SchemeUniverse | null> {
-  const key = 'universe_backfill_cache';
-  const { data, error } = await supabase
-    .from('app_config')
-    .select('value')
-    .eq('key', key)
-    .single();
-  if (error || !data) return null;
-  try {
-    const cached = JSON.parse(data.value);
-    if (!cached.knownCodes || !cached.isinToCode) return null;
-    // Reconstruct Set and Map from JSON arrays
-    return {
-      knownCodes: new Set(cached.knownCodes),
-      isinToCode: new Map(cached.isinToCode),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function writeUniverseCache(
-  supabase: ReturnType<typeof createServiceClient>,
-  universe: SchemeUniverse,
-): Promise<void> {
-  const key = 'universe_backfill_cache';
-  const cacheValue = {
-    knownCodes: Array.from(universe.knownCodes),
-    isinToCode: Array.from(universe.isinToCode.entries()),
-    cachedAt: new Date().toISOString(),
-  };
-  await supabase
-    .from('app_config')
-    .upsert({ key, value: JSON.stringify(cacheValue), description: 'Cached universe for universe-backfill' })
-    .eq('key', key);
-}
-
-async function getOrLoadUniverse(
-  supabase: ReturnType<typeof createServiceClient>,
-): Promise<SchemeUniverse> {
-  // Try to load from cache first
-  const cached = await readUniverseCache(supabase);
-  if (cached) {
-    console.log('[universe-backfill] universe loaded from cache — %d scheme codes, %d ISIN keys', cached.knownCodes.size, cached.isinToCode.size);
-    return cached;
-  }
-
-  // Cache miss, load full universe
-  const universe = await loadFullUniverse(supabase);
-  await writeUniverseCache(supabase, universe);
-  return universe;
-}
-
 Deno.serve(async (req) => {
   const startedAt = Date.now();
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -459,16 +505,6 @@ Deno.serve(async (req) => {
   }
 
   const supabase = createServiceClient();
-
-  // Load universe once (from cache if available) — reused across both composition and metadata phases
-  let universe: SchemeUniverse;
-  try {
-    universe = await getOrLoadUniverse(supabase);
-  } catch (err) {
-    console.error('[universe-backfill] universe load: %s', String(err));
-    return json({ success: false, error: String(err) }, { status: 500 });
-  }
-
   const syncedAt = new Date().toISOString();
 
   // ── Composition phase (chunked with cursor resumption) ────────────────────
@@ -518,13 +554,11 @@ Deno.serve(async (req) => {
       const chunk = await runCompositionBackfillChunk(
         supabase,
         client,
-        universe,
         syncedAt,
         state.cursor,
         (msg) => console.log(msg),
       );
 
-      const failedBefore = state.failed;
       state.cursor = chunk.endPage;
       state.totalCount = chunk.totalCount;
       state.upserted += chunk.upserted;
@@ -537,7 +571,7 @@ Deno.serve(async (req) => {
         console.error('[universe-backfill] composition failed count grew by %d (total=%d)', chunk.failed, state.failed);
       }
 
-      const done = state.totalCount === 0 || state.cursor * PAGE_SIZE > state.totalCount;
+      const done = state.totalCount === 0 || state.cursor * COMP_PAGE_SIZE > state.totalCount;
       if (!done) {
         await writeCursor(supabase, state);
       } else {
@@ -586,14 +620,6 @@ Deno.serve(async (req) => {
   }
 
   // ── Metadata phase (chunked with cursor resumption) ────────────────────────
-  let compositionResult: {
-    phase: 'composition';
-    cursor: number | null;
-    done: boolean;
-    stats: Record<string, unknown>;
-    elapsed_ms: number;
-  } | null = null;
-
   if (phase === 'metadata' || phase === 'both') {
     // Check for done marker and short-circuit
     const metadataDoneAt = await readDoneMarker(supabase, 'metadata');
@@ -638,13 +664,11 @@ Deno.serve(async (req) => {
       const chunk = await runMetadataBackfillChunk(
         supabase,
         client,
-        universe.knownCodes,
         syncedAt,
         state.cursor,
         (msg) => console.log(msg),
       );
 
-      const failedBefore = state.failed;
       state.cursor = chunk.endPage;
       state.totalCount = chunk.totalCount;
       state.written += chunk.written;
@@ -655,7 +679,7 @@ Deno.serve(async (req) => {
         console.error('[universe-backfill] metadata failed count grew by %d (total=%d)', chunk.failed, state.failed);
       }
 
-      const done = state.totalCount === 0 || state.cursor * PAGE_SIZE >= state.totalCount;
+      const done = state.totalCount === 0 || state.cursor * META_PAGE_SIZE >= state.totalCount;
       if (!done) {
         await writeCursor(supabase, state);
       } else {
@@ -675,22 +699,13 @@ Deno.serve(async (req) => {
 
       const elapsedMs = Date.now() - startedAt;
 
-      // For phase='both', collect metadata result for combined response
       if (phase === 'both') {
-        compositionResult = {
-          phase: 'composition',
-          cursor: null, // will be overwritten in the combined response below
-          done: true,
-          stats: { failed: 0, totalCount: 0 },
-          elapsed_ms: elapsedMs,
-        };
-
         // Get actual composition state for the combined response
         const compState = await readCursor(supabase, 'composition');
         const compDoneAt = await readDoneMarker(supabase, 'composition');
-        const compDone = compDoneAt !== null || (compState && compState.totalCount > 0 && compState.cursor * PAGE_SIZE > compState.totalCount);
+        const compDone = compDoneAt !== null || (compState != null && compState.totalCount > 0 && compState.cursor * COMP_PAGE_SIZE > compState.totalCount);
 
-        const bothDone = done && compDone;
+        const bothDone = done && !!compDone;
 
         return json({
           success: true,
