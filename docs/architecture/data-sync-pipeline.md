@@ -272,6 +272,56 @@ Both writers use helpers from `supabase/functions/_shared/period-returns.ts`:
 
 **29 legacy mfdata-shape rows** (percent format, `return_1y` keys) exist on dev as of 2026-06-10. `readReturnPct` in `src/utils/mfdataGuards.ts` handles both shapes at read time and will continue to do so until all rows are refreshed by a cron run. This is `[cache-shape-stable]` — the client code returns identical percentage values regardless of which shape is stored.
 
+## universe-backfill
+
+Monthly bulk refresh of OpenFolio composition + metadata for the full AMFI universe (~37,595 schemes), not just user-held funds. Composition is also refreshed monthly by `openfolio-sync` (15th @ 01:30 UTC); metadata for held funds is refreshed daily by `sync-fund-meta`. The universe-backfill fills the gap for non-held schemes so Compare Funds and the scheme picker read locally without on-demand latency.
+
+**Scheduling:** Monthly on the 16th @ 01:00 UTC (one day after OpenFolio's monthly publish window). The workflow is triggered via GitHub Actions, which invokes the edge function with `phase=both, force=true` to clear done-markers and start a fresh cycle. Intermediate invocations (every 15 min via the frequent cron) resume the multi-run backfill until both phases complete, then clear the monthly refresh marker so the frequent cron can short-circuit to zero cost.
+
+```mermaid
+sequenceDiagram
+  participant Monthly as GitHub Actions<br/>(monthly 16th @ 01:00 UTC)
+  participant Frequent as GitHub Actions<br/>(every 15 min)
+  participant AppConfig as app_config<br/>(refresh_due marker)
+  participant Fn as universe-backfill<br/>(edge function)
+  participant DB as Postgres
+  participant OF as OpenFolio API
+
+  Monthly->>Fn: POST {phase: 'both', force: true}
+  Fn->>DB: SELECT * FROM app_config<br/>WHERE key = 'universe_backfill_refresh_due'
+  DB-->>Fn: marker (if present)
+  Fn->>DB: DELETE done-markers (composition + metadata)
+  Fn->>DB: DELETE cursors (composition + metadata)
+  loop composition pages (~2/invocation)
+    Fn->>OF: GET /v1/composition?page=N
+    OF-->>Fn: { items[], count, page }
+    Fn->>DB: upsert fund_portfolio_composition<br/>(source = 'official')
+    Fn->>DB: upsert scheme_master<br/>(scheme_category, amc_name)
+  end
+  Note over Fn: Composition done: mark done_at
+  loop metadata pages (~1/invocation)
+    Fn->>OF: GET /v1/metadata?page=N
+    OF-->>Fn: { items[], count, page }
+    Fn->>DB: UPDATE scheme_master<br/>on b1_field_meta statuses:<br/>  status='value' → write value or null<br/>  status non-value → write NULL (retract)<br/>  status undefined → no-touch
+  end
+  Note over Fn: Metadata done: mark done_at<br/>Both complete: DELETE refresh_due marker
+  
+  Frequent->>Fn: POST (default phase=both, force=false)
+  Fn->>DB: SELECT * FROM app_config<br/>WHERE key = 'universe_backfill_*_done_at'
+  alt Both phases done + no refresh marker
+    Fn-->>Frequent: {done: true, stats: {...}}
+    Note over Frequent: Zero-cost short-circuit<br/>(1 app_config read)
+  else In progress
+    Fn->>OF: Resume from cursor
+    Fn->>DB: upsert + update cursor
+    Fn-->>Frequent: {done: false, cursor: N}
+  end
+```
+
+**NULL-write semantics (P4 corrections):** When OpenFolio reports a field with `status` other than `'value'` (e.g. `'officially_absent'`, `'parse_failed'`, `'not_applicable'`), the function writes NULL to the column instead of skipping the write. This propagates upstream corrections: if OpenFolio retracts a junk `risk_label` value, FolioLens flips it from the cached value to NULL, signalling the field is unavailable. If the status is missing from the API response entirely (`status === undefined`), the function skips the write to avoid clobbering recent mfdata additions.
+
+**Cursor state + done markers:** Each phase maintains a cursor (next page to fetch) and a done marker (completion timestamp) in `app_config`. On restart, the edge function resumes from the cursor instead of re-fetching pages. After both phases complete, it clears the `universe_backfill_refresh_due` marker so the frequent cron knows the cycle is done.
+
 ## Read-path optimizations
 
 ### month_end_nav RPC
