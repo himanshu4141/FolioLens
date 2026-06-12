@@ -272,6 +272,29 @@ Both writers use helpers from `supabase/functions/_shared/period-returns.ts`:
 
 **29 legacy mfdata-shape rows** (percent format, `return_1y` keys) exist on dev as of 2026-06-10. `readReturnPct` in `src/utils/mfdataGuards.ts` handles both shapes at read time and will continue to do so until all rows are refreshed by a cron run. This is `[cache-shape-stable]` — the client code returns identical percentage values regardless of which shape is stored.
 
+## Read-path optimizations
+
+### month_end_nav RPC
+
+The `month_end_nav(p_scheme_code int)` RPC returns the last NAV per calendar month for a scheme, reducing egress by ~30× compared to full `nav_history` fetches (60–240 monthly rows vs 3,300+ daily rows for typical multi-year windows). Used by the Past SIP Check screen to efficiently calculate historical SIP performance.
+
+```mermaid
+sequenceDiagram
+  participant Screen as Past SIP Check Screen
+  participant Fn as month_end_nav RPC
+  participant DB as Postgres
+  
+  Screen->>Fn: RPC month_end_nav(scheme_code)
+  Fn->>DB: SELECT nav_date, nav FROM nav_history<br/>WHERE scheme_code = p_scheme_code<br/>GROUP BY DATETRUNC('month', nav_date)<br/>ORDER BY nav_date DESC per month
+  DB-->>Fn: [(nav_date, nav), ...]
+  Fn-->>Screen: month-end points (ascending order)
+  Screen->>Screen: simulatePastSip(monthEndPoints) → {installments, currentValue, xirr}
+```
+
+**Note:** Month-end NAV data produces different SIP results than daily data because the simulator looks for NAV "on or after the 1st of month". With month-end-only points, it hits different dates. This trade-off is acceptable — the 30× egress reduction and response-time improvement outweigh the slight difference in valuation accuracy (typically <2% difference in final portfolio value).
+
+**Graceful degradation:** The screen attempts the RPC first; if unavailable (feature detection), it falls back to paginated `nav_history` fetch. This allows the optimization to be deployed independently of client code.
+
 ## Why pg_cron + edge functions instead of GitHub Actions
 
 - **Latency.** `pg_net.http_post` from inside Postgres to a Supabase Edge Function on the same project is ~10ms; a GH Actions cron + REST call would be 30-60s round trip.

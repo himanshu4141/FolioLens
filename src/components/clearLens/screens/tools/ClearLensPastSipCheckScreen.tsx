@@ -108,13 +108,30 @@ interface PickedScheme {
  * just held funds. Returns ascending date order so simulatePastSip can walk
  * forward through it.
  *
- * Pages through the response — Supabase REST caps at 1000 rows per call, so
- * a scheme with 13 years of history (~3,300 NAVs) would otherwise truncate
- * to the oldest 1000 rows and the simulation would chart 2013–2017 against
- * "today" — exactly the stale-data bug seen on DSP TIGER.
+ * Tries the month_end_nav RPC first (which returns ~60–240 rows for typical
+ * multi-year windows, cutting egress ~30×), falling back to the full paginated
+ * fetch if the RPC isn't available (feature detection). The paginated fetch
+ * handles Supabase REST's 1000-row limit — schemes with 13+ years of history
+ * (~3,300 NAVs) would truncate without pagination.
  */
 async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
   perfStart('query:sipCheck:nav');
+
+  // Try the optimized month-end RPC first
+  try {
+    const monthEndRows = await navHistoryRepo.monthEndNav(schemeCode);
+    perfEnd('query:sipCheck:nav', {
+      rows: monthEndRows.length,
+      scheme_code: schemeCode,
+      path: 'rpc:month_end_nav',
+    });
+    return monthEndRows;
+  } catch (rpcError) {
+    // RPC failed; log and fall back to paginated full fetch
+    console.warn('month_end_nav RPC unavailable, falling back to paginated fetch:', rpcError);
+  }
+
+  // Fallback: paginate through the full nav_history
   const rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
     (from, to) => navHistoryRepo
       .from()
@@ -123,7 +140,11 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
       .order('nav_date', { ascending: true })
       .range(from, to),
   );
-  perfEnd('query:sipCheck:nav', { rows: rows.length, scheme_code: schemeCode });
+  perfEnd('query:sipCheck:nav', {
+    rows: rows.length,
+    scheme_code: schemeCode,
+    path: 'paginated:nav_history',
+  });
   return rows.map((row) => ({ date: row.nav_date, value: Number(row.nav) }));
 }
 
