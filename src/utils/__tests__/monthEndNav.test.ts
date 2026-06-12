@@ -6,10 +6,7 @@
  * - Month-end selection edge cases (month with single trading day, current partial month)
  * - Result equivalence between RPC and paginated paths
  */
-import {
-  simulatePastSip,
-  type PastSipInput,
-} from '@/src/utils/pastSipCheck';
+import { simulatePastSip } from '@/src/utils/pastSipCheck';
 import type { NavPoint } from '@/src/utils/navUtils';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +33,6 @@ function buildNavSeries(opts: {
   const points: NavPoint[] = [];
   let nav = 100;
   let current = new Date(start);
-  let lastDayOfMonth = -1;
 
   while (current <= end) {
     const dayOfWeek = current.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
