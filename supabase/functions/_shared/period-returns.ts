@@ -11,8 +11,14 @@
  * then MERGE into the existing blob so no horizons are lost when the two
  * sources write in either order.
  *
- * 29 legacy mfdata-shape rows exist on dev (as of 2026-06-10); readReturnPct
+ * 28 legacy mfdata-shape rows exist on dev (as of 2026-06-12); readReturnPct
  * in src/utils/mfdataGuards.ts keeps dual-shape read support for them.
+ *
+ * Provenance marker: mergeOfReturns stamps of_keys: string[] listing every
+ * ret_ key it has ever written. mergeMfdataReturns uses this to protect
+ * OF-written values from being overwritten by a later mfdata sync, while
+ * allowing mfdata-written values to refresh freely (fixing the staleness
+ * freeze on OF-404 schemes that fall back to the mfdata leg).
  */
 
 /** Maps mfdata percent-key → canonical decimal-key. */
@@ -35,10 +41,16 @@ const MFDATA_PASSTHROUGH_KEYS = [
 
 /**
  * Convert mfdata percent-format returns to canonical decimal keys, then merge
- * with the existing blob. The existing blob wins for any overlapping key —
- * this preserves OF's authoritative values (ret_1y/3y/5y/incep) when mfdata
- * is writing additional horizons (1m/3m/6m/ranks/as_of_date) that OF doesn't
- * supply.
+ * with the existing blob.
+ *
+ * Merge order (later steps win):
+ *   1. Existing blob as base (preserves horizons absent from incoming mfdata)
+ *   2. Incoming mfdata overwrites (enables staleness refresh for mfdata-written values)
+ *   3. OF-written keys restored from existing blob (OF always beats mfdata)
+ *
+ * Step 3 only applies when the existing blob carries of_keys (stamped by
+ * mergeOfReturns). Blobs without of_keys were written purely by mfdata and
+ * are fully refreshable — this closes the staleness freeze on OF-404 schemes.
  *
  * Returns the merged canonical blob, or null when both inputs are null/empty.
  */
@@ -48,7 +60,15 @@ export function mergeMfdataReturns(
 ): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
 
-  // Lay in mfdata's converted values (percent → decimal)
+  // Step 1: start with existing blob as base (preserves previous mfdata values
+  // for horizons not present in the incoming payload).
+  if (existingBlob && typeof existingBlob === 'object') {
+    for (const [k, v] of Object.entries(existingBlob)) {
+      if (v != null) out[k] = v;
+    }
+  }
+
+  // Step 2: overlay incoming mfdata — mfdata wins for keys it provides.
   if (mfdataReturns && typeof mfdataReturns === 'object') {
     for (const [mfKey, canonKey] of Object.entries(MFDATA_RETURN_KEY_MAP)) {
       const v = mfdataReturns[mfKey];
@@ -62,9 +82,15 @@ export function mergeMfdataReturns(
     }
   }
 
-  // Overlay existing blob — existing values win for any key already present
+  // Step 3: restore OF-written keys — OF always beats mfdata.
+  // of_keys is absent on pure-mfdata blobs; skip restoration in that case so
+  // those blobs remain freely refreshable by incoming mfdata.
   if (existingBlob && typeof existingBlob === 'object') {
-    for (const [k, v] of Object.entries(existingBlob)) {
+    const ofKeys = Array.isArray(existingBlob.of_keys)
+      ? (existingBlob.of_keys as string[])
+      : [];
+    for (const k of ofKeys) {
+      const v = existingBlob[k];
       if (v != null) out[k] = v;
     }
   }
@@ -76,14 +102,25 @@ export function mergeMfdataReturns(
  * Merge OpenFolio returns into an existing period_returns blob. OF values win
  * for overlapping keys; mfdata's extra horizons (1m/3m/6m, ranks, as_of_date)
  * already in the blob are preserved untouched.
+ *
+ * Stamps of_keys: the union of all ret_ keys ever written by OF. This marker
+ * lets mergeMfdataReturns protect OF values from later mfdata refreshes.
  */
 export function mergeOfReturns(
   ofReturns: Record<string, number | null>,
   existingBlob: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...(existingBlob ?? {}) };
+  const newOfKeys: string[] = [];
   for (const [k, v] of Object.entries(ofReturns)) {
-    if (v != null) out[k] = v;
+    if (v != null) {
+      out[k] = v;
+      newOfKeys.push(k);
+    }
   }
+  // Union new keys with any previously tracked OF keys (handles partial updates).
+  const prevOfKeys = Array.isArray(out.of_keys) ? (out.of_keys as string[]) : [];
+  const allOfKeys = Array.from(new Set([...prevOfKeys, ...newOfKeys]));
+  if (allOfKeys.length > 0) out.of_keys = allOfKeys;
   return out;
 }
