@@ -53,7 +53,7 @@ import {
   readMfdataBeta,
 } from '@/src/utils/mfdataGuards';
 import type { NavPoint } from '@/src/utils/navUtils';
-import { fetchFundNavHistory, type FetchNavHistoryOptions } from '@/src/hooks/useFundDetail';
+import { appendNavTailIfStale, fetchFundNavHistory, type FetchNavHistoryOptions } from '@/src/hooks/useFundDetail';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 
@@ -2009,11 +2009,22 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-nav', code],
         queryFn: async () => {
-          const { data, error } = await functionsClient.invoke<{ status: string }>(
+          const { data, error } = await functionsClient.invoke<{
+            status: string;
+            last_nav_date: string | null;
+          }>(
             'fetch-fund-nav',
             { body: { scheme_code: code } },
           );
           if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
+          // Top up the local SQLite tail before invalidating. fetch-fund-nav
+          // refreshes Supabase, but the subsequent useFundNavHistory refetch
+          // reads the local SQLite series first. Without the top-up the stale
+          // tail is served forever for non-held funds whose full series was
+          // written before #208 introduced the windowed-fetch guard.
+          if (data?.last_nav_date) {
+            await appendNavTailIfStale(code, data.last_nav_date);
+          }
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history-compare', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });

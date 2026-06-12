@@ -27,11 +27,13 @@ jest.mock('@/src/lib/data/schemeMaster', () => ({
 }));
 
 // eslint-disable-next-line import/first
-import { fetchFundNavHistory } from '@/src/hooks/useFundDetail';
+import { appendNavTailIfStale, fetchFundNavHistory } from '@/src/hooks/useFundDetail';
 // eslint-disable-next-line import/first
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 // eslint-disable-next-line import/first
 import { __setDbForTests } from '@/src/lib/db/db';
+// eslint-disable-next-line import/first
+import * as navRepo from '@/src/lib/db/nav';
 
 const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
   __resetAllForTests: () => void;
@@ -124,13 +126,77 @@ describe('fetchFundNavHistory write-back behaviour', () => {
     const { chain } = makeNavQueryChain(SAMPLE_ROWS);
     (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
 
-    // This test can't directly verify SQLite write-back is skipped because the
-    // SQLite mock is unavailable (SQLITE_AVAILABLE=false). Instead we verify the
-    // property by checking that calling with sinceDate does NOT throw on the
-    // guard path — the logic is: write-back is gated on `!sinceDate`.
-    // The functional guard is covered by the test in poisoning-trap.test.ts.
-    await expect(
-      fetchFundNavHistory(SCHEME_CODE, { sinceDate: '2021-06-11' }),
-    ).resolves.toBeDefined();
+    await fetchFundNavHistory(SCHEME_CODE, { sinceDate: '2021-06-11' });
+
+    // The in-memory SQLite nav table must remain empty: a windowed slice must
+    // never be written back or it would poison useFundNavHistory into thinking
+    // full history is already cached (rows.length > 0 short-circuits the
+    // Supabase fallback), silently breaking Fund Detail charts.
+    const localRows = await navRepo.readBySchemeCode(SCHEME_CODE);
+    expect(localRows).toHaveLength(0);
+  });
+
+  it('DOES write to SQLite for a full-history fetch (no sinceDate)', async () => {
+    const { chain } = makeNavQueryChain(SAMPLE_ROWS);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+
+    await fetchFundNavHistory(SCHEME_CODE);
+
+    const localRows = await navRepo.readBySchemeCode(SCHEME_CODE);
+    expect(localRows).toHaveLength(SAMPLE_ROWS.length);
+    expect(localRows[0]).toMatchObject({ scheme_code: SCHEME_CODE, nav_date: '2022-06-01', nav: 50 });
+  });
+});
+
+// ─── appendNavTailIfStale ─────────────────────────────────────────────────────
+
+const SEED_ROWS = [
+  { scheme_code: SCHEME_CODE, nav_date: '2022-06-01', nav: 50 },
+  { scheme_code: SCHEME_CODE, nav_date: '2023-06-01', nav: 60 },
+  { scheme_code: SCHEME_CODE, nav_date: '2024-06-01', nav: 70 },
+];
+
+describe('appendNavTailIfStale', () => {
+  it('returns topped_up=false when there are no local rows (watermark is null)', async () => {
+    // DB is fresh with empty nav table — watermark returns null
+    const result = await appendNavTailIfStale(SCHEME_CODE, '2025-06-01');
+    expect(result).toEqual({ topped_up: false, rows_appended: 0 });
+  });
+
+  it('returns topped_up=false when local series is already at the hydrated date', async () => {
+    await navRepo.bulkInsert(SEED_ROWS); // localMax = '2024-06-01'
+    const result = await appendNavTailIfStale(SCHEME_CODE, '2024-06-01');
+    expect(result).toEqual({ topped_up: false, rows_appended: 0 });
+  });
+
+  it('fetches and appends the tail when local series is older than the hydration date', async () => {
+    await navRepo.bulkInsert(SEED_ROWS); // localMax = '2024-06-01'
+
+    const TAIL = [
+      { nav_date: '2024-06-01', nav: 70.0 }, // safe duplicate via INSERT OR IGNORE
+      { nav_date: '2025-06-01', nav: 80.0 },
+    ];
+    const { chain } = makeNavQueryChain(TAIL);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+
+    const result = await appendNavTailIfStale(SCHEME_CODE, '2025-06-01');
+
+    expect(result.topped_up).toBe(true);
+    expect(result.rows_appended).toBe(TAIL.length);
+
+    // Verify the new tail row is now in the in-memory SQLite store
+    const localRows = await navRepo.readBySchemeCode(SCHEME_CODE);
+    expect(localRows.map((r) => r.nav_date)).toContain('2025-06-01');
+  });
+
+  it('applies a gte(localMax) filter on the Supabase tail fetch', async () => {
+    await navRepo.bulkInsert([{ scheme_code: SCHEME_CODE, nav_date: '2024-06-01', nav: 70 }]);
+
+    const { chain } = makeNavQueryChain([{ nav_date: '2025-06-01', nav: 80 }]);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+
+    await appendNavTailIfStale(SCHEME_CODE, '2025-06-01');
+
+    expect(chain.gte).toHaveBeenCalledWith('nav_date', '2024-06-01');
   });
 });
