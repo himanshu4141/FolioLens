@@ -36,8 +36,7 @@ import {
 const OPENFOLIO_API_BASE = Deno.env.get('OPENFOLIO_API_BASE') ?? 'https://api.openfolio.com';
 const FOLIOLENS_INBOUND_ROUTER_SECRET = Deno.env.get('FOLIOLENS_INBOUND_ROUTER_SECRET') ?? '';
 const ROUTER_FRESHNESS_ALERT_URL =
-  Deno.env.get('ROUTER_FRESHNESS_ALERT_URL') ??
-  'https://app.foliolens.in/api/freshness-alert';
+  Deno.env.get('ROUTER_FRESHNESS_ALERT_URL') ?? 'https://app.foliolens.in/api/freshness-alert';
 const NOTIFY_ENVIRONMENT = Deno.env.get('NOTIFY_ENVIRONMENT') ?? 'dev';
 
 async function signRouterPayload(body: string): Promise<{ signature: string; timestamp: number }> {
@@ -57,12 +56,31 @@ async function signRouterPayload(body: string): Promise<{ signature: string; tim
 async function fetchNavMaxDate(
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<string | null> {
-  const { data, error } = await supabase
+  const { data: heldRows, error: heldError } = await supabase
     .from('user_fund')
+    .select('scheme_code')
+    .eq('is_active', true);
+
+  if (heldError || !Array.isArray(heldRows) || heldRows.length === 0) {
+    return null;
+  }
+
+  const heldCodes = [
+    ...new Set(
+      heldRows
+        .map((row) => row.scheme_code)
+        .filter((code): code is number => Number.isFinite(code)),
+    ),
+  ];
+  if (heldCodes.length === 0) return null;
+
+  const { data, error } = await supabase
+    .from('nav_history')
     .select('nav_date')
+    .in('scheme_code', heldCodes)
     .order('nav_date', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (error || !data?.nav_date) {
     return null;
@@ -137,10 +155,7 @@ async function fetchOpenFolioHealth(baseUrl: string): Promise<OpenFolioHealthRes
   }
 }
 
-async function sendAlert(
-  checks: CheckResult[],
-  env: string,
-): Promise<void> {
+async function sendAlert(checks: CheckResult[], env: string): Promise<void> {
   const failedChecks = checks.filter((c) => !c.ok);
   if (failedChecks.length === 0) {
     console.log('[freshness-check] all checks passed, no alert sent');
@@ -209,16 +224,13 @@ Deno.serve(async (req) => {
   }
 
   // Fetch data in parallel
-  const [navMaxDate, failureCount, cursors, maxPortfolioDate, ofHealthRaw] =
-    await Promise.all([
-      fetchNavMaxDate(supabase),
-      fetchCronFailureCount(supabase),
-      fetchBackfillCursors(supabase),
-      fetchMaxPortfolioDate(supabase),
-      fetchOpenFolioHealth(
-        (overrides.openfolio_base as string) ?? OPENFOLIO_API_BASE,
-      ),
-    ]);
+  const [navMaxDate, failureCount, cursors, maxPortfolioDate, ofHealthRaw] = await Promise.all([
+    fetchNavMaxDate(supabase),
+    fetchCronFailureCount(supabase),
+    fetchBackfillCursors(supabase),
+    fetchMaxPortfolioDate(supabase),
+    fetchOpenFolioHealth((overrides.openfolio_base as string) ?? OPENFOLIO_API_BASE),
+  ]);
 
   // Run checks
   const checks: CheckResult[] = [
