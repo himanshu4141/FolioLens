@@ -1,6 +1,9 @@
 /**
  * Data-layer wrapper for the `nav_history` table.
  * See `src/lib/data/README.md` for the convention.
+ *
+ * [cache-shape-stable] The monthEndNav() method is an internal optimization
+ * that doesn't affect the shapes of cached React Query payloads.
  */
 import type { NavPoint } from '@/src/utils/navUtils';
 import { supabase } from '@/src/lib/supabase';
