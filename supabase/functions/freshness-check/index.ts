@@ -24,12 +24,16 @@ import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import {
   checkBackfillCursors,
+  checkCompositionCoverage,
   checkCompositionStaleness,
   checkCronFailures,
+  checkDisclosureDateLag,
+  checkMetadataCoverage,
   checkNavFreshness,
   checkOpenFolioHealth,
   type CheckResult,
   type CursorRow,
+  type MonthlyReconciliationReport,
   type OpenFolioHealthResponse,
 } from '../_shared/freshness-check.ts';
 
@@ -155,6 +159,90 @@ async function fetchOpenFolioHealth(baseUrl: string): Promise<OpenFolioHealthRes
   }
 }
 
+/**
+ * Fetch metadata count from OpenFolio /v1/metadata with page_size=1 to get total count.
+ */
+async function fetchOpenFolioMetadataTotal(baseUrl: string, apiKey: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${baseUrl}/v1/metadata?page_size=1`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!res.ok) {
+      console.warn('[freshness-check] OpenFolio /v1/metadata non-2xx: %d', res.status);
+      return null;
+    }
+
+    const data = (await res.json()) as { total?: number };
+    return data.total ?? null;
+  } catch (err) {
+    console.warn('[freshness-check] OpenFolio /v1/metadata fetch failed: %s', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch composition count from OpenFolio /v1/composition with page_size=1 to get total count.
+ */
+async function fetchOpenFolioCompositionTotal(baseUrl: string, apiKey: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${baseUrl}/v1/composition?page_size=1`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!res.ok) {
+      console.warn('[freshness-check] OpenFolio /v1/composition non-2xx: %d', res.status);
+      return null;
+    }
+
+    const data = (await res.json()) as { total?: number };
+    return data.total ?? null;
+  } catch (err) {
+    console.warn('[freshness-check] OpenFolio /v1/composition fetch failed: %s', err);
+    return null;
+  }
+}
+
+/**
+ * Fetch count of schemes in scheme_master with openfolio_meta_synced_at NOT NULL.
+ */
+async function fetchLocalMetadataCount(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<number | null> {
+  const { data, error } = await supabase.rpc('count_synced_metadata_schemes');
+
+  if (error) {
+    console.warn('[freshness-check] local metadata count rpc failed: %s', error.message);
+    return null;
+  }
+
+  return Array.isArray(data) && data.length > 0 ? data[0].count : 0;
+}
+
+/**
+ * Fetch count of distinct scheme_codes in fund_portfolio_composition with source='official'.
+ */
+async function fetchLocalCompositionCount(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<number | null> {
+  const { data, error } = await supabase.rpc('count_official_composition_schemes');
+
+  if (error) {
+    console.warn('[freshness-check] local composition count rpc failed: %s', error.message);
+    return null;
+  }
+
+  return Array.isArray(data) && data.length > 0 ? data[0].count : 0;
+}
+
 async function sendAlert(checks: CheckResult[], env: string): Promise<void> {
   const failedChecks = checks.filter((c) => !c.ok);
   if (failedChecks.length === 0) {
@@ -215,7 +303,7 @@ Deno.serve(async (req) => {
   const supabase = createServiceClient();
   const now = new Date();
 
-  // Allow request body to override parameters for testing (e.g., bad OpenFolio URL)
+  // Allow request body to override parameters for testing (e.g., bad OpenFolio URL) or specify mode
   let overrides: Record<string, unknown> = {};
   try {
     overrides = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -223,6 +311,13 @@ Deno.serve(async (req) => {
     // Ignore malformed body; use defaults
   }
 
+  const mode = (overrides.mode as string) ?? 'daily';
+
+  if (mode === 'monthly') {
+    return handleMonthlyReconciliation(supabase, now, overrides);
+  }
+
+  // Default: daily checks
   // Fetch data in parallel
   const [navMaxDate, failureCount, cursors, maxPortfolioDate, ofHealthRaw] = await Promise.all([
     fetchNavMaxDate(supabase),
@@ -265,3 +360,91 @@ Deno.serve(async (req) => {
     failedCount,
   });
 });
+
+/**
+ * Handle monthly reconciliation mode.
+ */
+async function handleMonthlyReconciliation(
+  supabase: ReturnType<typeof createServiceClient>,
+  now: Date,
+  overrides: Record<string, unknown>,
+): Promise<Response> {
+  const openfolioApiBase = (overrides.openfolio_base as string) ?? OPENFOLIO_API_BASE;
+  const openfolioApiKey = (overrides.openfolio_api_key as string) ?? (Deno.env.get('OPENFOLIO_API_KEY') ?? '');
+
+  // Fetch all data in parallel
+  const [localMetadataCount, localCompositionCount, maxPortfolioDate, ofHealth, ofMetadataTotal, ofCompositionTotal] = await Promise.all([
+    fetchLocalMetadataCount(supabase),
+    fetchLocalCompositionCount(supabase),
+    fetchMaxPortfolioDate(supabase),
+    fetchOpenFolioHealth(openfolioApiBase),
+    fetchOpenFolioMetadataTotal(openfolioApiBase, openfolioApiKey),
+    fetchOpenFolioCompositionTotal(openfolioApiBase, openfolioApiKey),
+  ]);
+
+  const checks: CheckResult[] = [];
+  const details: Record<string, unknown> = {};
+
+  // Check 1: Metadata coverage
+  if (localMetadataCount !== null && ofMetadataTotal !== null) {
+    const coveragePct = Math.round((localMetadataCount / ofMetadataTotal) * 100);
+    checks.push(checkMetadataCoverage(localMetadataCount, ofMetadataTotal));
+    details.metadata_coverage_pct = coveragePct;
+  } else {
+    checks.push({
+      name: 'Metadata coverage',
+      ok: false,
+      detail: 'Failed to fetch metadata counts from local or OpenFolio.',
+    });
+  }
+
+  // Check 2: Composition coverage
+  if (localCompositionCount !== null && ofCompositionTotal !== null) {
+    const coveragePct = Math.round((localCompositionCount / ofCompositionTotal) * 100);
+    checks.push(checkCompositionCoverage(localCompositionCount, ofCompositionTotal));
+    details.composition_coverage_pct = coveragePct;
+  } else {
+    checks.push({
+      name: 'Composition coverage',
+      ok: false,
+      detail: 'Failed to fetch composition counts from local or OpenFolio.',
+    });
+  }
+
+  // Check 3: Disclosure date lag
+  const latestDisclosureDate = ofHealth?.latest_disclosure_date ?? null;
+  const lagCheck = checkDisclosureDateLag(maxPortfolioDate, latestDisclosureDate, now);
+  checks.push(lagCheck);
+
+  if (maxPortfolioDate && latestDisclosureDate) {
+    const portfolioDate = new Date(maxPortfolioDate);
+    const disclosureDate = new Date(latestDisclosureDate);
+    const lagMs = disclosureDate.getTime() - portfolioDate.getTime();
+    const lagDays = Math.ceil(lagMs / (24 * 60 * 60 * 1000));
+    details.disclosure_date_lag_days = lagDays;
+  }
+
+  // Log structured summary
+  const passedCount = checks.filter((c) => c.ok).length;
+  const failedCount = checks.length - passedCount;
+  console.log(
+    '[freshness-check] monthly-reconciliation summary passed=%d failed=%d timestamp=%s',
+    passedCount,
+    failedCount,
+    now.toISOString(),
+  );
+
+  // Send alert if any check failed
+  await sendAlert(checks, NOTIFY_ENVIRONMENT);
+
+  // Return detailed results
+  const report: MonthlyReconciliationReport = {
+    timestamp: now.toISOString(),
+    checks,
+    passedCount,
+    failedCount,
+    details,
+  };
+
+  return json(report);
+}

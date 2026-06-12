@@ -308,6 +308,52 @@ The edge function follows the same pattern as `notify-feedback`: signs the alert
 - `OPENFOLIO_API_BASE` — OpenFolio API base (defaults to `https://api.openfolio.com`).
 - `NOTIFY_ENVIRONMENT` — `'dev'` or `'prod'` (included in alert payload so router knows which email address to send to).
 
+## Runbook: Monthly reconciliation (upstream coverage audit)
+
+**What it is.** A monthly cron job (`freshness-check-monthly`) that runs on the 1st of each month at 02:00 UTC. It compares FolioLens local counts against OpenFolio upstream to detect silent coverage regressions. During the "quiet 4% era", coverage drifted unnoticed; this reconciliation catches both sharp drops and gradual divergence.
+
+**Three checks (each injectable for unit testing):**
+
+1. **Metadata coverage** — `COUNT(openfolio_meta_synced_at IS NOT NULL)` in `scheme_master` vs OpenFolio `/v1/metadata?page_size=1` total count. Failure: < 95% upstream coverage.
+2. **Composition coverage** — `COUNT(DISTINCT scheme_code WHERE source='official')` in `fund_portfolio_composition` vs OpenFolio `/v1/composition?page_size=1` total count. Failure: < 95% upstream coverage.
+3. **Disclosure date lag** — `MAX(portfolio_date WHERE source='official')` in `fund_portfolio_composition` vs OpenFolio `/health latest_disclosure_date`. Failure: lag exceeds 45 days.
+
+**Thresholds (with comments in code):**
+
+- **Coverage threshold**: 95% — high bar to catch coverage regressions early; accommodates ~5% archival delays (new schemes, delisted schemes, occasional sync gaps).
+- **Disclosure lag threshold**: 45 days — accommodates Q-end disclosure batches (many funds report in 45 days).
+
+**On failure:** Sends one consolidated alert via Resend (same pathway as daily freshness check). Logs `[freshness-check] monthly-reconciliation summary`.
+
+**Viewing results:**
+
+- **Real-time logs:** Supabase Dashboard → Edge Functions → `freshness-check` logs (search for `monthly-reconciliation`).
+- **Latest JSON response:** Call manually with `mode='monthly'`:
+  ```bash
+  curl -X POST "https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/freshness-check" \
+    -H "Content-Type: application/json" \
+    -d '{"mode": "monthly"}' \
+    -H "Authorization: Bearer <anon-key>"
+  ```
+  Response includes `details` object with `metadata_coverage_pct`, `composition_coverage_pct`, and `disclosure_date_lag_days`.
+- **Cron run history:** Supabase Dashboard → Database → Cron Jobs → `freshness-check-monthly` (shows next scheduled run and recent execution times).
+
+**Testing a failure (simulating coverage drop):**
+
+```bash
+curl -X POST "https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/freshness-check" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "monthly", "openfolio_base": "https://invalid.example"}' \
+  -H "Authorization: Bearer <anon-key>"
+```
+
+**API requirements:** The function calls:
+- OpenFolio `/v1/metadata?page_size=1` — returns `{ total: <int>, … }`
+- OpenFolio `/v1/composition?page_size=1` — returns `{ total: <int>, … }`
+- OpenFolio `/health` — returns `{ latest_disclosure_date: "YYYY-MM-DD", … }` (reused from daily check)
+
+Env var `OPENFOLIO_API_KEY` (already required for `openfolio-sync`) is also needed here.
+
 **Adding a new check:**
 
 1. Implement a pure check function in `supabase/functions/_shared/freshness-check.ts` with signature:

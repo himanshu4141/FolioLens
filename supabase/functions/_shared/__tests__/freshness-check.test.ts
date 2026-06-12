@@ -1,7 +1,10 @@
 import {
   checkBackfillCursors,
+  checkCompositionCoverage,
   checkCompositionStaleness,
   checkCronFailures,
+  checkDisclosureDateLag,
+  checkMetadataCoverage,
   checkNavFreshness,
   checkOpenFolioHealth,
   type CursorRow,
@@ -247,5 +250,112 @@ describe('checkCompositionStaleness', () => {
     const result = checkCompositionStaleness(null, now);
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('No official composition data');
+  });
+});
+
+describe('checkMetadataCoverage (monthly)', () => {
+  it('returns ok=true when coverage >= 95%', () => {
+    const result = checkMetadataCoverage(9500, 10000);
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('Metadata coverage');
+    expect(result.detail).toContain('95%');
+  });
+
+  it('returns ok=true when coverage is exactly 95%', () => {
+    const result = checkMetadataCoverage(950, 1000);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('95%');
+  });
+
+  it('returns ok=false when coverage < 95%', () => {
+    const result = checkMetadataCoverage(9400, 10000);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('94%');
+    expect(result.detail).toContain('95%');
+  });
+
+  it('returns ok=false when upstream total is 0', () => {
+    const result = checkMetadataCoverage(100, 0);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('0');
+  });
+
+  it('calculates coverage correctly with large numbers', () => {
+    const result = checkMetadataCoverage(35730, 37595);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('95%');
+  });
+});
+
+describe('checkCompositionCoverage (monthly)', () => {
+  it('returns ok=true when coverage >= 95%', () => {
+    const result = checkCompositionCoverage(9500, 10000);
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('Composition coverage');
+    expect(result.detail).toContain('95%');
+  });
+
+  it('returns ok=true when coverage is exactly 95%', () => {
+    const result = checkCompositionCoverage(950, 1000);
+    expect(result.ok).toBe(true);
+  });
+
+  it('returns ok=false when coverage < 95%', () => {
+    const result = checkCompositionCoverage(9400, 10000);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('94%');
+  });
+
+  it('returns ok=false when upstream total is 0', () => {
+    const result = checkCompositionCoverage(100, 0);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('checkDisclosureDateLag (monthly)', () => {
+  const now = new Date('2026-06-11T12:00:00.000Z');
+
+  it('returns ok=true when lag is within 45 days', () => {
+    const portfolioDate = '2026-06-01';
+    const disclosureDate = '2026-06-11';
+    const result = checkDisclosureDateLag(portfolioDate, disclosureDate, now);
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('Disclosure date lag');
+    expect(result.detail).toContain('10 days');
+  });
+
+  it('returns ok=true when lag is exactly 45 days', () => {
+    const portfolioDate = '2026-04-27';
+    const disclosureDate = '2026-06-11';
+    const result = checkDisclosureDateLag(portfolioDate, disclosureDate, now);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('45 days');
+  });
+
+  it('returns ok=false when lag exceeds 45 days', () => {
+    const portfolioDate = '2026-04-26';
+    const disclosureDate = '2026-06-11';
+    const result = checkDisclosureDateLag(portfolioDate, disclosureDate, now);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('46 days');
+  });
+
+  it('returns ok=false when portfolio_date is null', () => {
+    const result = checkDisclosureDateLag(null, '2026-06-11', now);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('Missing data');
+  });
+
+  it('returns ok=false when disclosure_date is null', () => {
+    const result = checkDisclosureDateLag('2026-06-01', null, now);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('Missing data');
+  });
+
+  it('handles same-day disclosure and portfolio dates', () => {
+    const date = '2026-06-11';
+    const result = checkDisclosureDateLag(date, date, now);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('0 days');
   });
 });
