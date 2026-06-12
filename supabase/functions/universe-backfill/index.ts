@@ -117,6 +117,70 @@ async function loadFullUniverse(
   return { knownCodes, isinToCode };
 }
 
+/**
+ * Cache universe in app_config to avoid reloading it on every invocation.
+ * First invocation loads and caches; subsequent invocations use cache.
+ */
+async function readUniverseCache(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<SchemeUniverse | null> {
+  const { data, error } = await supabase
+    .from('app_config')
+    .select('value')
+    .eq('key', 'universe_backfill_cache')
+    .single();
+  if (error || !data) return null;
+  try {
+    const cached = JSON.parse(data.value);
+    if (cached.codes && cached.isins) {
+      // Reconstruct Sets from arrays
+      return {
+        knownCodes: new Set(cached.codes),
+        isinToCode: new Map(cached.isins),
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function writeUniverseCache(
+  supabase: ReturnType<typeof createServiceClient>,
+  universe: SchemeUniverse,
+): Promise<void> {
+  const cached = {
+    codes: Array.from(universe.knownCodes),
+    isins: Array.from(universe.isinToCode.entries()),
+    cachedAt: new Date().toISOString(),
+  };
+  await supabase
+    .from('app_config')
+    .upsert({
+      key: 'universe_backfill_cache',
+      value: JSON.stringify(cached),
+      description: 'Cached scheme universe for universe-backfill (24h TTL)',
+    })
+    .eq('key', 'universe_backfill_cache');
+}
+
+async function getOrLoadUniverse(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<SchemeUniverse> {
+  // Try cache first
+  const cached = await readUniverseCache(supabase);
+  if (cached) {
+    console.log('[universe-backfill] using cached universe (%d codes, %d ISINs)', cached.knownCodes.size, cached.isinToCode.size);
+    return cached;
+  }
+
+  // Load and cache
+  console.log('[universe-backfill] loading universe (not cached)...');
+  const universe = await loadFullUniverse(supabase);
+  await writeUniverseCache(supabase, universe);
+  return universe;
+}
+
 interface CompositionBackfillState {
   phase: 'composition';
   cursor: number;
@@ -393,12 +457,12 @@ Deno.serve(async (req) => {
 
   const supabase = createServiceClient();
 
-  // Load universe once — reused across both composition and metadata phases
+  // Load or use cached universe — reused across both composition and metadata phases
   let universe: SchemeUniverse;
   try {
-    universe = await loadFullUniverse(supabase);
+    universe = await getOrLoadUniverse(supabase);
     console.log(
-      '[universe-backfill] universe loaded — %d scheme codes, %d ISIN keys',
+      '[universe-backfill] universe ready — %d scheme codes, %d ISIN keys',
       universe.knownCodes.size,
       universe.isinToCode.size,
     );
