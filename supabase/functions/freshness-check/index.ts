@@ -42,6 +42,22 @@ const FOLIOLENS_INBOUND_ROUTER_SECRET = Deno.env.get('FOLIOLENS_INBOUND_ROUTER_S
 const ROUTER_FRESHNESS_ALERT_URL =
   Deno.env.get('ROUTER_FRESHNESS_ALERT_URL') ?? 'https://app.foliolens.in/api/freshness-alert';
 const NOTIFY_ENVIRONMENT = Deno.env.get('NOTIFY_ENVIRONMENT') ?? 'dev';
+const OPENFOLIO_FETCH_TIMEOUT_MS = 15_000; // 15 seconds
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  const { timeoutMs = OPENFOLIO_FETCH_TIMEOUT_MS, ...fetchOpts } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...fetchOpts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function signRouterPayload(body: string): Promise<{ signature: string; timestamp: number }> {
   const timestamp = Math.floor(Date.now() / 1000);
@@ -142,9 +158,10 @@ async function fetchMaxPortfolioDate(
 
 async function fetchOpenFolioHealth(baseUrl: string): Promise<OpenFolioHealthResponse | null> {
   try {
-    const res = await fetch(`${baseUrl}/health`, {
+    const res = await fetchWithTimeout(`${baseUrl}/health`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
+      timeoutMs: OPENFOLIO_FETCH_TIMEOUT_MS,
     });
 
     if (!res.ok) {
@@ -164,12 +181,13 @@ async function fetchOpenFolioHealth(baseUrl: string): Promise<OpenFolioHealthRes
  */
 async function fetchOpenFolioMetadataTotal(baseUrl: string, apiKey: string): Promise<number | null> {
   try {
-    const res = await fetch(`${baseUrl}/v1/metadata?page_size=1`, {
+    const res = await fetchWithTimeout(`${baseUrl}/v1/metadata?page_size=1`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'X-API-Key': apiKey,
       },
+      timeoutMs: OPENFOLIO_FETCH_TIMEOUT_MS,
     });
 
     if (!res.ok) {
@@ -190,12 +208,13 @@ async function fetchOpenFolioMetadataTotal(baseUrl: string, apiKey: string): Pro
  */
 async function fetchOpenFolioCompositionTotal(baseUrl: string, apiKey: string): Promise<number | null> {
   try {
-    const res = await fetch(`${baseUrl}/v1/composition?page_size=1`, {
+    const res = await fetchWithTimeout(`${baseUrl}/v1/composition?page_size=1`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'X-API-Key': apiKey,
       },
+      timeoutMs: OPENFOLIO_FETCH_TIMEOUT_MS,
     });
 
     if (!res.ok) {
