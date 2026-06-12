@@ -314,13 +314,13 @@ The edge function follows the same pattern as `notify-feedback`: signs the alert
 
 **Three checks (each injectable for unit testing):**
 
-1. **Metadata coverage** — `COUNT(openfolio_meta_synced_at IS NOT NULL)` in `scheme_master` vs OpenFolio `/v1/metadata?page_size=1` total count. Failure: < 85% upstream coverage.
-2. **Composition coverage** — `COUNT(DISTINCT scheme_code WHERE source='official')` in `fund_portfolio_composition` vs OpenFolio `/v1/composition?page_size=1` total count. Failure: < 85% upstream coverage.
+1. **Metadata coverage** — `COUNT(openfolio_meta_synced_at IS NOT NULL)` in `scheme_master` vs OpenFolio `/v1/metadata?page_size=1` total count. Failure: < 95% upstream coverage.
+2. **Composition coverage** — `COUNT(DISTINCT scheme_code WHERE source='official')` in `fund_portfolio_composition` vs OpenFolio `/v1/composition?page_size=1` total count. Failure: < 95% upstream coverage.
 3. **Disclosure date lag** — `MAX(portfolio_date WHERE source='official')` in `fund_portfolio_composition` vs OpenFolio `/health latest_disclosure_date`. Failure: lag exceeds 45 days.
 
 **Thresholds (with comments in code):**
 
-- **Coverage threshold**: 85% — reflects tolerable archival delays (new schemes take time to sync; delisted schemes linger briefly).
+- **Coverage threshold**: 95% — high bar to catch coverage regressions early; accommodates ~5% archival delays (new schemes, delisted schemes, occasional sync gaps).
 - **Disclosure lag threshold**: 45 days — accommodates Q-end disclosure batches (many funds report in 45 days).
 
 **On failure:** Sends one consolidated alert via Resend (same pathway as daily freshness check). Logs `[freshness-check] monthly-reconciliation summary`.

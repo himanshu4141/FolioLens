@@ -254,24 +254,24 @@ describe('checkCompositionStaleness', () => {
 });
 
 describe('checkMetadataCoverage (monthly)', () => {
-  it('returns ok=true when coverage >= 85%', () => {
-    const result = checkMetadataCoverage(8500, 10000);
+  it('returns ok=true when coverage >= 95%', () => {
+    const result = checkMetadataCoverage(9500, 10000);
     expect(result.ok).toBe(true);
     expect(result.name).toBe('Metadata coverage');
-    expect(result.detail).toContain('85%');
+    expect(result.detail).toContain('95%');
   });
 
-  it('returns ok=true when coverage is exactly 85%', () => {
-    const result = checkMetadataCoverage(850, 1000);
+  it('returns ok=true when coverage is exactly 95%', () => {
+    const result = checkMetadataCoverage(950, 1000);
     expect(result.ok).toBe(true);
-    expect(result.detail).toContain('85%');
+    expect(result.detail).toContain('95%');
   });
 
-  it('returns ok=false when coverage < 85%', () => {
-    const result = checkMetadataCoverage(8400, 10000);
+  it('returns ok=false when coverage < 95%', () => {
+    const result = checkMetadataCoverage(9400, 10000);
     expect(result.ok).toBe(false);
-    expect(result.detail).toContain('84%');
-    expect(result.detail).toContain('85%');
+    expect(result.detail).toContain('94%');
+    expect(result.detail).toContain('95%');
   });
 
   it('returns ok=false when upstream total is 0', () => {
@@ -281,29 +281,29 @@ describe('checkMetadataCoverage (monthly)', () => {
   });
 
   it('calculates coverage correctly with large numbers', () => {
-    const result = checkMetadataCoverage(35637, 37595);
+    const result = checkMetadataCoverage(35730, 37595);
     expect(result.ok).toBe(true);
     expect(result.detail).toContain('95%');
   });
 });
 
 describe('checkCompositionCoverage (monthly)', () => {
-  it('returns ok=true when coverage >= 85%', () => {
-    const result = checkCompositionCoverage(8500, 10000);
+  it('returns ok=true when coverage >= 95%', () => {
+    const result = checkCompositionCoverage(9500, 10000);
     expect(result.ok).toBe(true);
     expect(result.name).toBe('Composition coverage');
-    expect(result.detail).toContain('85%');
+    expect(result.detail).toContain('95%');
   });
 
-  it('returns ok=true when coverage is exactly 85%', () => {
-    const result = checkCompositionCoverage(850, 1000);
+  it('returns ok=true when coverage is exactly 95%', () => {
+    const result = checkCompositionCoverage(950, 1000);
     expect(result.ok).toBe(true);
   });
 
-  it('returns ok=false when coverage < 85%', () => {
-    const result = checkCompositionCoverage(8400, 10000);
+  it('returns ok=false when coverage < 95%', () => {
+    const result = checkCompositionCoverage(9400, 10000);
     expect(result.ok).toBe(false);
-    expect(result.detail).toContain('84%');
+    expect(result.detail).toContain('94%');
   });
 
   it('returns ok=false when upstream total is 0', () => {

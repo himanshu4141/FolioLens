@@ -261,8 +261,8 @@ export interface MonthlyReconciliationReport {
   };
 }
 
-/** Coverage threshold: FolioLens must have >= 85% of upstream counts. */
-const COVERAGE_THRESHOLD_PCT = 85;
+/** Coverage threshold: FolioLens must have >= 95% of upstream counts. */
+const COVERAGE_THRESHOLD_PCT = 95;
 
 /** Disclosure date lag threshold: max 45 days behind OpenFolio latest. */
 const DISCLOSURE_LAG_THRESHOLD_DAYS = 45;
