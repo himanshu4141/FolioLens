@@ -19,6 +19,7 @@ export interface SchemeSearchResult {
   amcName: string | null;
   planType: 'direct' | 'regular' | null;
   isin: string | null;
+  schemeActive: boolean | null;
 }
 
 /**
@@ -36,7 +37,7 @@ export function tokenizeQuery(query: string): string[] {
 }
 
 const SEARCH_COLUMNS =
-  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin';
+  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin, scheme_active';
 
 function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
   return {
@@ -47,6 +48,7 @@ function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
     amcName: (row.amc_name as string | null) ?? null,
     planType: (row.plan_type as 'direct' | 'regular' | null) ?? null,
     isin: (row.isin as string | null) ?? null,
+    schemeActive: (row.scheme_active as boolean | null) ?? null,
   };
 }
 
@@ -88,6 +90,7 @@ export async function searchSchemes(
   let q = schemeMasterRepo
     .from()
     .select(SEARCH_COLUMNS)
+    .order('scheme_active', { ascending: false, nullsFirst: false })
     .order('scheme_name', { ascending: true })
     .range(offset, offset + limit - 1);
 

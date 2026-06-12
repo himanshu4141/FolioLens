@@ -219,6 +219,7 @@ sequenceDiagram
   participant Cron as pg_cron
   participant Fn as sync-fund-meta
   participant DB as Postgres
+  participant OF as OpenFolio API
   participant Mfd as mfdata.in
   participant Mf as api.mfapi.in
 
@@ -226,19 +227,35 @@ sequenceDiagram
   Fn->>DB: SELECT scheme_code FROM user_fund<br/>JOIN scheme_master ON ...<br/>WHERE last_synced_at older than 7 days
   DB-->>Fn: stale schemes[]
   loop each stale scheme
-    Fn->>Mfd: GET metadata
-    alt mfdata has it
-      Mfd-->>Fn: { expense_ratio, aum, isin, family_id, benchmark, rating }
-    else fallback for ISIN only
-      Fn->>Mf: GET /mf/{scheme_code}
-      Mf-->>Fn: { isin }
+    Fn->>OF: GET /v1/schemes/{scheme_code}/metadata (primary)
+    alt OpenFolio returns metadata
+      OF-->>Fn: { ter, fund_manager, expense_ratio, aum, active, … }
+    else fallback
+      Fn->>Mfd: GET metadata
+      alt mfdata has it
+        Mfd-->>Fn: { expense_ratio, aum, isin, family_id, benchmark, rating }
+      else fallback for ISIN only
+        Fn->>Mf: GET /mf/{scheme_code}
+        Mf-->>Fn: { isin }
+      end
     end
-    Fn->>DB: upsert scheme_master + UPDATE last_synced_at
+    Fn->>DB: upsert scheme_master (including scheme_active) + UPDATE fund_meta_synced_at
   end
   Fn-->>Cron: { updated: N }
 ```
 
-`META_STALE_DAYS = 7` keeps mfdata.in calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
+`META_STALE_DAYS = 7` keeps external API calls cheap on most days — only schemes whose users joined recently or whose data aged out get re-pulled.
+
+### scheme_active column — persisting OpenFolio's registry signal
+
+OpenFolio-Data tracks which schemes appeared in the AMFI NAVAll feed within the last 30 days. This `active` field is persisted in `scheme_master.scheme_active` (boolean: true = active, false = wound-up/merged, null = not yet synced).
+
+| Writer | When | Field | Notes |
+|--------|------|-------|-------|
+| `sync-fund-meta` | daily cron | `scheme_active` from OpenFolio `/v1/schemes/{scheme_code}/metadata` | Primary source; writes only when OpenFolio data arrives |
+| `universe-backfill` | chunked bulk refresh (~every 15 min) | `scheme_active` from OpenFolio `/v1/metadata` bulk endpoint | For non-held schemes; same field, same mapping |
+
+The picker (`searchSchemes`) ranks all results by `scheme_active DESC NULLS LAST, scheme_name ASC`, demoting wound-up schemes below active ones while keeping them findable (a CAS can legitimately hold a matured scheme). Null values (not-yet-synced schemes) sort last.
 
 ### period_returns blob — normalise at write, merge semantics
 

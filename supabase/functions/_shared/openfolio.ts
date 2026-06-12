@@ -260,6 +260,7 @@ export interface FundMetadata {
   scheme_code: number;
   name?: string | null;
   amc?: string | null;
+  active?: boolean | null;
   // B1 fields (flat):
   ter?: number | null;
   ter_date?: string | null;
