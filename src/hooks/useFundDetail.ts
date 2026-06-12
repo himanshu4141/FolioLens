@@ -415,6 +415,72 @@ export async function fetchFundNavHistory(
   return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
 }
 
+/**
+ * After a successful fetch-fund-nav hydration, compare the server-reported
+ * last_nav_date against the local SQLite watermark for this scheme. When the
+ * local series is stale (non-empty but missing the most-recent rows), fetches
+ * only the tail from Supabase (nav_date >= localMax) and appends it to SQLite.
+ *
+ * Tail write-back is safe here — unlike a windowed sinceDate slice (which
+ * fetchFundNavHistory guards against), the existing local rows represent a
+ * full-history series up to localMax. Appending the tail produces a complete
+ * series from launch date to hydratedLastNavDate, preserving the invariant
+ * that every row in the nav table belongs to a contiguous, unwindowed series.
+ *
+ * Called BEFORE query invalidation so the subsequent refetch from
+ * useFundNavHistory sees the updated SQLite rows rather than the pre-hydration
+ * stale tail.
+ */
+export async function appendNavTailIfStale(
+  schemeCode: number,
+  hydratedLastNavDate: string,
+): Promise<{ topped_up: boolean; rows_appended: number }> {
+  if (!SQLITE_AVAILABLE) return { topped_up: false, rows_appended: 0 };
+
+  let localMax: string | null = null;
+  try {
+    localMax = await navRepo.getWatermark(schemeCode);
+  } catch (err) {
+    console.warn('[appendNavTailIfStale] watermark read failed', err);
+    return { topped_up: false, rows_appended: 0 };
+  }
+
+  // No local rows: the next fetchFundNavHistory call will fetch the full series.
+  if (localMax === null) return { topped_up: false, rows_appended: 0 };
+  // Already up-to-date.
+  if (localMax >= hydratedLastNavDate) return { topped_up: false, rows_appended: 0 };
+
+  let tailRows: { nav_date: string; nav: number }[] = [];
+  try {
+    tailRows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
+      (from, to) =>
+        navHistoryRepo
+          .from()
+          .select('nav_date, nav')
+          .eq('scheme_code', schemeCode)
+          .gte('nav_date', localMax!)
+          .order('nav_date', { ascending: true })
+          .range(from, to),
+    );
+  } catch (err) {
+    console.warn('[appendNavTailIfStale] tail fetch failed', err);
+    return { topped_up: false, rows_appended: 0 };
+  }
+
+  if (tailRows.length === 0) return { topped_up: false, rows_appended: 0 };
+
+  try {
+    await navRepo.bulkInsert(
+      tailRows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
+    );
+  } catch (err) {
+    console.warn('[appendNavTailIfStale] tail write failed', err);
+    return { topped_up: false, rows_appended: 0 };
+  }
+
+  return { topped_up: true, rows_appended: tailRows.length };
+}
+
 export function useFundNavHistory(schemeCode: number | null | undefined) {
   const previewMode = useAppStore((s) => s.previewMode);
   return useQuery({
