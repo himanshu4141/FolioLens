@@ -20,6 +20,7 @@ export interface SchemeSearchResult {
   planType: 'direct' | 'regular' | null;
   isin: string | null;
   schemeActive: boolean | null;
+  openfolioMetaSyncedAt: string | null;
 }
 
 /**
@@ -37,7 +38,7 @@ export function tokenizeQuery(query: string): string[] {
 }
 
 const SEARCH_COLUMNS =
-  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin, scheme_active';
+  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin, scheme_active, openfolio_meta_synced_at';
 
 function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
   return {
@@ -49,6 +50,7 @@ function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
     planType: (row.plan_type as 'direct' | 'regular' | null) ?? null,
     isin: (row.isin as string | null) ?? null,
     schemeActive: (row.scheme_active as boolean | null) ?? null,
+    openfolioMetaSyncedAt: (row.openfolio_meta_synced_at as string | null) ?? null,
   };
 }
 
@@ -80,6 +82,11 @@ export interface SchemeSearchOptions {
  * All combined with AND. Empty query returns the alphabetic-by-name first
  * page when no filters are set.
  *
+ * Ordering: scheme_active DESC NULLS LAST (live first), then
+ * openfolio_meta_synced_at DESC NULLS LAST (enriched first), then scheme_name
+ * ASC. This surfaces live, well-curated schemes before historical shells and
+ * unsynced rows (95% of the catalog).
+ *
  * RLS allows authenticated users to read scheme_master.
  */
 export async function searchSchemes(
@@ -91,6 +98,7 @@ export async function searchSchemes(
     .from()
     .select(SEARCH_COLUMNS)
     .order('scheme_active', { ascending: false, nullsFirst: false })
+    .order('openfolio_meta_synced_at', { ascending: false, nullsFirst: false })
     .order('scheme_name', { ascending: true })
     .range(offset, offset + limit - 1);
 

@@ -100,7 +100,7 @@ describe('searchSchemes — token AND across columns', () => {
     expect(lastBuilder.eq).toHaveBeenCalledWith('scheme_category', 'Equity');
   });
 
-  it('maps rows including the new sebiCategory field', async () => {
+  it('maps rows including the new sebiCategory field and openfolioMetaSyncedAt', async () => {
     returnedRows = [
       {
         scheme_code: 119071,
@@ -111,6 +111,7 @@ describe('searchSchemes — token AND across columns', () => {
         plan_type: 'direct',
         isin: 'INF000000001',
         scheme_active: true,
+        openfolio_meta_synced_at: '2026-06-01T12:00:00Z',
       },
     ];
     const out: SchemeSearchResult[] = await searchSchemes({ query: 'dsp mid cap' });
@@ -123,18 +124,23 @@ describe('searchSchemes — token AND across columns', () => {
       planType: 'direct',
       isin: 'INF000000001',
       schemeActive: true,
+      openfolioMetaSyncedAt: '2026-06-01T12:00:00Z',
     });
   });
 
-  it('orders by scheme_active DESC NULLS LAST, then scheme_name ASC', async () => {
+  it('orders by scheme_active DESC NULLS LAST, then openfolio_meta_synced_at DESC NULLS LAST, then scheme_name ASC', async () => {
     await searchSchemes({ query: 'cap' });
-    // Should call .order() twice: first for scheme_active, then scheme_name
-    expect(lastBuilder.order).toHaveBeenCalledTimes(2);
+    // Should call .order() three times: scheme_active, openfolio_meta_synced_at, scheme_name
+    expect(lastBuilder.order).toHaveBeenCalledTimes(3);
     expect(lastBuilder.order).toHaveBeenNthCalledWith(1, 'scheme_active', {
       ascending: false,
       nullsFirst: false,
     });
-    expect(lastBuilder.order).toHaveBeenNthCalledWith(2, 'scheme_name', {
+    expect(lastBuilder.order).toHaveBeenNthCalledWith(2, 'openfolio_meta_synced_at', {
+      ascending: false,
+      nullsFirst: false,
+    });
+    expect(lastBuilder.order).toHaveBeenNthCalledWith(3, 'scheme_name', {
       ascending: true,
     });
   });
@@ -152,6 +158,7 @@ describe('searchSchemes — token AND across columns', () => {
         plan_type: 'direct',
         isin: 'INF000000001',
         scheme_active: true,
+        openfolio_meta_synced_at: '2026-06-01T12:00:00Z',
       },
       {
         scheme_code: 100003,
@@ -162,6 +169,7 @@ describe('searchSchemes — token AND across columns', () => {
         plan_type: 'direct',
         isin: 'INF000000003',
         scheme_active: false,
+        openfolio_meta_synced_at: null,
       },
       {
         scheme_code: 100002,
@@ -172,6 +180,7 @@ describe('searchSchemes — token AND across columns', () => {
         plan_type: 'direct',
         isin: 'INF000000002',
         scheme_active: null,
+        openfolio_meta_synced_at: null,
       },
     ];
     const out: SchemeSearchResult[] = await searchSchemes({ query: 'fund' });
@@ -182,5 +191,56 @@ describe('searchSchemes — token AND across columns', () => {
     expect(out[1].schemeActive).toBe(false);
     // null should come last (nullsLast)
     expect(out[2].schemeActive).toBe(null);
+  });
+
+  it('orders by openfolio_meta_synced_at DESC NULLS LAST within same scheme_active', async () => {
+    // Among active schemes, those with recent synced metadata should come first.
+    // Mock returns rows in the order the database would return them after all ordering.
+    returnedRows = [
+      {
+        scheme_code: 100002,
+        scheme_name: 'Beta Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'mid cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000002',
+        scheme_active: true,
+        openfolio_meta_synced_at: '2026-06-05T12:00:00Z',
+      },
+      {
+        scheme_code: 100001,
+        scheme_name: 'Alpha Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'large cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000001',
+        scheme_active: true,
+        openfolio_meta_synced_at: '2026-06-01T12:00:00Z',
+      },
+      {
+        scheme_code: 100003,
+        scheme_name: 'Charlie Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'small cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000003',
+        scheme_active: true,
+        openfolio_meta_synced_at: null,
+      },
+    ];
+    const out: SchemeSearchResult[] = await searchSchemes({ query: 'fund' });
+    expect(out).toHaveLength(3);
+    // Most recent synced metadata first
+    expect(out[0].schemeName).toBe('Beta Fund');
+    expect(out[0].openfolioMetaSyncedAt).toBe('2026-06-05T12:00:00Z');
+    // Then older synced
+    expect(out[1].schemeName).toBe('Alpha Fund');
+    expect(out[1].openfolioMetaSyncedAt).toBe('2026-06-01T12:00:00Z');
+    // Then unsynced (null) last
+    expect(out[2].schemeName).toBe('Charlie Fund');
+    expect(out[2].openfolioMetaSyncedAt).toBe(null);
   });
 });
