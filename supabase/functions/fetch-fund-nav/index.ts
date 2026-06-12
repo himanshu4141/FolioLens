@@ -67,9 +67,10 @@ async function upsertNavRows(
   let upserted = 0;
   for (let i = 0; i < rows.length; i += UPSERT_CHUNK_SIZE) {
     const chunk = rows.slice(i, i + UPSERT_CHUNK_SIZE);
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('nav_history')
-      .upsert(chunk, { onConflict: 'scheme_code,nav_date' });
+      .upsert(chunk, { onConflict: 'scheme_code,nav_date', ignoreDuplicates: true })
+      .select('nav_date');
     if (error) {
       console.error(
         '[fetch-fund-nav] scheme=%d source=%s chunk=%d upsert error: %s',
@@ -77,7 +78,7 @@ async function upsertNavRows(
       );
       throw error;
     }
-    upserted += chunk.length;
+    upserted += data?.length ?? 0;
   }
   return upserted;
 }
