@@ -110,6 +110,7 @@ describe('searchSchemes — token AND across columns', () => {
         amc_name: 'DSP Mutual Fund',
         plan_type: 'direct',
         isin: 'INF000000001',
+        scheme_active: true,
       },
     ];
     const out: SchemeSearchResult[] = await searchSchemes({ query: 'dsp mid cap' });
@@ -121,6 +122,63 @@ describe('searchSchemes — token AND across columns', () => {
       amcName: 'DSP Mutual Fund',
       planType: 'direct',
       isin: 'INF000000001',
+      schemeActive: true,
     });
+  });
+
+  it('orders by scheme_active DESC NULLS LAST, then scheme_name ASC', async () => {
+    await searchSchemes({ query: 'cap' });
+    // Should call .order() twice: first for scheme_active, then scheme_name
+    expect(lastBuilder.order).toHaveBeenCalledTimes(2);
+    expect(lastBuilder.order).toHaveBeenNthCalledWith(1, 'scheme_active', {
+      ascending: false,
+      nullsLast: true,
+    });
+    expect(lastBuilder.order).toHaveBeenNthCalledWith(2, 'scheme_name', {
+      ascending: true,
+    });
+  });
+
+  it('handles schemeActive null correctly (schemes pending first sync)', async () => {
+    returnedRows = [
+      {
+        scheme_code: 100001,
+        scheme_name: 'Active Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'large cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000001',
+        scheme_active: true,
+      },
+      {
+        scheme_code: 100002,
+        scheme_name: 'Unknown Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'mid cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000002',
+        scheme_active: null,
+      },
+      {
+        scheme_code: 100003,
+        scheme_name: 'Inactive Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'small cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000003',
+        scheme_active: false,
+      },
+    ];
+    const out: SchemeSearchResult[] = await searchSchemes({ query: 'fund' });
+    expect(out).toHaveLength(3);
+    // active true should come first
+    expect(out[0].schemeActive).toBe(true);
+    // active false should come next
+    expect(out[1].schemeActive).toBe(false);
+    // null should come last (nullsLast)
+    expect(out[2].schemeActive).toBe(null);
   });
 });

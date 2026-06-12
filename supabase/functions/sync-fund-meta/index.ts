@@ -310,6 +310,8 @@ Deno.serve(async (req) => {
         // keeping the holdings classification path intact.
         payload.openfolio_meta_synced_at = syncedAt;
 
+        if (ofMeta.active != null) payload.scheme_active = ofMeta.active;
+
         const metrics = ofMeta.metrics;
         if (metrics) {
           if (metrics.aum_cr != null) payload.aum_cr = metrics.aum_cr;

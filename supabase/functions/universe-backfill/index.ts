@@ -232,6 +232,7 @@ async function runMetadataBackfillChunk(
       const b1 = item.b1_field_meta;
       const patch: Record<string, unknown> = { openfolio_meta_synced_at: syncedAt };
 
+      if (item.active != null) patch.scheme_active = item.active;
       if (item.metrics?.aum_cr != null) patch.aum_cr = item.metrics.aum_cr;
       if (item.metrics?.returns) {
         const ret = item.metrics.returns;
