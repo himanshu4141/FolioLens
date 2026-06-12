@@ -132,7 +132,7 @@ describe('searchSchemes — token AND across columns', () => {
     expect(lastBuilder.order).toHaveBeenCalledTimes(2);
     expect(lastBuilder.order).toHaveBeenNthCalledWith(1, 'scheme_active', {
       ascending: false,
-      nullsLast: true,
+      nullsFirst: false,
     });
     expect(lastBuilder.order).toHaveBeenNthCalledWith(2, 'scheme_name', {
       ascending: true,
@@ -140,6 +140,8 @@ describe('searchSchemes — token AND across columns', () => {
   });
 
   it('handles schemeActive null correctly (schemes pending first sync)', async () => {
+    // Mock returns rows in the order the database would return them after ordering
+    // scheme_active DESC NULLS LAST, scheme_name ASC: true comes first, then false, then null
     returnedRows = [
       {
         scheme_code: 100001,
@@ -152,16 +154,6 @@ describe('searchSchemes — token AND across columns', () => {
         scheme_active: true,
       },
       {
-        scheme_code: 100002,
-        scheme_name: 'Unknown Fund',
-        scheme_category: 'Equity',
-        sebi_category: 'mid cap fund',
-        amc_name: 'Fund AMC',
-        plan_type: 'direct',
-        isin: 'INF000000002',
-        scheme_active: null,
-      },
-      {
         scheme_code: 100003,
         scheme_name: 'Inactive Fund',
         scheme_category: 'Equity',
@@ -170,6 +162,16 @@ describe('searchSchemes — token AND across columns', () => {
         plan_type: 'direct',
         isin: 'INF000000003',
         scheme_active: false,
+      },
+      {
+        scheme_code: 100002,
+        scheme_name: 'Unknown Fund',
+        scheme_category: 'Equity',
+        sebi_category: 'mid cap fund',
+        amc_name: 'Fund AMC',
+        plan_type: 'direct',
+        isin: 'INF000000002',
+        scheme_active: null,
       },
     ];
     const out: SchemeSearchResult[] = await searchSchemes({ query: 'fund' });

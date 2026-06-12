@@ -247,6 +247,7 @@ export type Database = {
           portfolio_turnover: number | null
           risk_label: string | null
           risk_ratios: Json | null
+          scheme_active: boolean | null
           scheme_category: string | null
           scheme_code: number
           scheme_name: string
@@ -282,6 +283,7 @@ export type Database = {
           portfolio_turnover?: number | null
           risk_label?: string | null
           risk_ratios?: Json | null
+          scheme_active?: boolean | null
           scheme_category?: string | null
           scheme_code: number
           scheme_name: string
@@ -317,6 +319,7 @@ export type Database = {
           portfolio_turnover?: number | null
           risk_label?: string | null
           risk_ratios?: Json | null
+          scheme_active?: boolean | null
           scheme_category?: string | null
           scheme_code?: number
           scheme_name?: string

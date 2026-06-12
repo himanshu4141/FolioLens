@@ -90,7 +90,7 @@ export async function searchSchemes(
   let q = schemeMasterRepo
     .from()
     .select(SEARCH_COLUMNS)
-    .order('scheme_active', { ascending: false, nullsLast: true })
+    .order('scheme_active', { ascending: false, nullsFirst: false })
     .order('scheme_name', { ascending: true })
     .range(offset, offset + limit - 1);
 
