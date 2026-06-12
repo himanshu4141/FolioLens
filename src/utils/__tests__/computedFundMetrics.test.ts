@@ -432,9 +432,31 @@ describe('selectCompareMetrics', () => {
     expect(result!.stdDev).toBeCloseTo(0.185, 5);
     expect(result!.sharpe).toBeNull();
     expect(result!.sortino).toBeNull();
-    expect(result!.maxDrawdown).toBeNull();
+    expect(result!.maxDrawdown).toBeNull(); // no max_drawdown_5y in riskRatios
     expect(result!.returnsAsOf).toBe('2026-04-30');
     expect(result!.riskAsOf).toBe('2026-04-30');
+  });
+
+  it('as-reported maxDrawdown reads from risk_ratios when present', () => {
+    const periodReturns = { ret_1y: 0.15 };
+    const riskRatios = { max_drawdown_5y: -0.26, as_of_date: '2026-04-30' };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result!.source).toBe('as-reported');
+    expect(result!.maxDrawdown).toBeCloseTo(-0.26, 5);
+  });
+
+  it('as-reported maxDrawdown is null when risk_ratios lacks max_drawdown_5y', () => {
+    const periodReturns = { ret_1y: 0.15 };
+    const riskRatios = { risk: { std_deviation: 18.5 } };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result!.maxDrawdown).toBeNull();
+  });
+
+  it('as-reported maxDrawdown null for invalid values (positive, >-1, non-finite)', () => {
+    const periodReturns = { ret_1y: 0.15 };
+    expect(selectCompareMetrics([], periodReturns, { max_drawdown_5y: 0.1 }, TODAY)!.maxDrawdown).toBeNull();
+    expect(selectCompareMetrics([], periodReturns, { max_drawdown_5y: -1.5 }, TODAY)!.maxDrawdown).toBeNull();
+    expect(selectCompareMetrics([], periodReturns, { max_drawdown_5y: NaN }, TODAY)!.maxDrawdown).toBeNull();
   });
 
   it('falls back to as-reported (mfdata percentage format)', () => {

@@ -569,7 +569,7 @@ function BarsViz({
 }: {
   funds: CompareFundData[];
   valFn: (f: CompareFundData) => number | null;
-  formatFn: (v: number) => string;
+  formatFn: (v: number, f?: CompareFundData) => string;
   dark?: boolean;
   tokens: ClearLensTokens;
 }) {
@@ -588,7 +588,7 @@ function BarsViz({
             letter={f.badgeLetter}
             color={f.badgeColor}
             label={fundDisplayName(f.scheme)}
-            value={formatFn(v)}
+            value={formatFn(v, f)}
             widthFraction={fraction}
             dark={dark}
             tokens={tokens}
@@ -1282,8 +1282,8 @@ function buildRiskProvenanceNote(funds: CompareFundData[]): string | null {
     .sort()
     .pop();
   return asOf
-    ? `† ${names}: volatility as reported by fund house (as of ${asOf}). Drawdown, Sharpe, and Sortino require full NAV history.`
-    : `† ${names}: volatility as reported by fund house. Drawdown, Sharpe, and Sortino require full NAV history.`;
+    ? `† ${names}: volatility and drawdown as reported by fund house (as of ${asOf}). Sharpe and Sortino require full NAV history.`
+    : `† ${names}: volatility and drawdown as reported by fund house. Sharpe and Sortino require full NAV history.`;
 }
 
 function RiskCard({
@@ -1320,7 +1320,10 @@ function RiskCard({
       <BarsViz
         funds={fundsWithHistory}
         valFn={(f) => f.metrics?.maxDrawdown != null ? Math.abs(f.metrics.maxDrawdown) : null}
-        formatFn={(v) => `–${(v * 100).toFixed(0)}%`}
+        formatFn={(v, f) => {
+          const formatted = `–${(v * 100).toFixed(0)}%`;
+          return f?.metrics?.source === 'as-reported' ? `${formatted}†` : formatted;
+        }}
         tokens={tokens}
       />
       <NumbersReveal

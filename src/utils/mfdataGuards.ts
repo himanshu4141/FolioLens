@@ -146,6 +146,19 @@ export function readMfdataStdDev(riskRatios: unknown): number | null {
 }
 
 /**
+ * Read max_drawdown_5y from a risk_ratios blob (worst peak-to-trough over 5 years).
+ * OpenFolio stores this as a decimal ≤ 0 (e.g. -0.26 for a 26% drawdown).
+ * Returns null when absent, non-finite, or outside the valid range (> −1, < 0).
+ *
+ * No category gating — drawdown is a valid measure for any fund type.
+ */
+export function readOfMaxDrawdown(riskRatios: unknown): number | null {
+  if (!riskRatios || typeof riskRatios !== 'object') return null;
+  const dd = (riskRatios as { max_drawdown_5y?: unknown }).max_drawdown_5y;
+  return typeof dd === 'number' && Number.isFinite(dd) && dd <= 0 && dd > -1 ? dd : null;
+}
+
+/**
  * Read a CAGR return for a given horizon from period_returns, returning a
  * percentage value (e.g. 12.5 means 12.5%) regardless of the blob's source.
  * Handles two storage formats:

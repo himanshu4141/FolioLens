@@ -17,7 +17,7 @@
  * gating (see `mfdataGuards.ts`).
  */
 import type { NavPoint } from './navUtils';
-import { readMfdataAsOfDate, readMfdataStdDev, readReturnPct } from './mfdataGuards';
+import { readMfdataAsOfDate, readMfdataStdDev, readReturnPct, readOfMaxDrawdown } from './mfdataGuards';
 
 /**
  * Default annual risk-free rate for Sharpe / Sortino (current Indian 1Y T-bill
@@ -330,6 +330,7 @@ export function selectCompareMetrics(
   if (pct1y == null && pct3y == null && pct5y == null) return null;
 
   const stdDevPct = readMfdataStdDev(riskRatios);
+  const maxDD = readOfMaxDrawdown(riskRatios);
   return {
     trailing: {
       y1: pct1y != null ? pct1y / 100 : null,
@@ -343,7 +344,7 @@ export function selectCompareMetrics(
     sharpe: null,
     sortino: null,
     monthlyObservations: 0,
-    maxDrawdown: null,
+    maxDrawdown: maxDD,
     source: 'as-reported',
     returnsAsOf: readMfdataAsOfDate(periodReturns),
     riskAsOf: readMfdataAsOfDate(riskRatios),

@@ -6,6 +6,7 @@ import {
   readMfdataBeta,
   readMfdataRSquared,
   readMfdataStdDev,
+  readOfMaxDrawdown,
   readReturnPct,
   SEBI_DIRECT_PLAN_INTRODUCTION_DATE,
 } from '../mfdataGuards';
@@ -219,5 +220,54 @@ describe('readMfdataStdDev', () => {
   it('has no category gating — returns value for debt/liquid categories too', () => {
     // Unlike beta/r_squared, std_deviation is valid for any fund type
     expect(readMfdataStdDev({ risk: { std_deviation: 1.2 } })).toBeCloseTo(1.2);
+  });
+});
+
+describe('readOfMaxDrawdown', () => {
+  it('returns max_drawdown_5y as a negative decimal', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -0.26 })).toBeCloseTo(-0.26);
+  });
+
+  it('returns zero drawdown (theoretical constant NAV)', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: 0 })).toBe(0);
+  });
+
+  it('returns null when max_drawdown_5y is absent', () => {
+    expect(readOfMaxDrawdown({})).toBeNull();
+    expect(readOfMaxDrawdown({ volatility: 0.18 })).toBeNull();
+  });
+
+  it('returns null for null / non-object inputs', () => {
+    expect(readOfMaxDrawdown(null)).toBeNull();
+    expect(readOfMaxDrawdown(undefined)).toBeNull();
+    expect(readOfMaxDrawdown('string')).toBeNull();
+  });
+
+  it('returns null for non-finite values', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: NaN })).toBeNull();
+    expect(readOfMaxDrawdown({ max_drawdown_5y: Infinity })).toBeNull();
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -Infinity })).toBeNull();
+  });
+
+  it('returns null for drawdown > 0 (logically invalid)', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: 0.1 })).toBeNull();
+    expect(readOfMaxDrawdown({ max_drawdown_5y: 0.26 })).toBeNull();
+  });
+
+  it('returns null for drawdown ≤ -1 (logically invalid — worse than 100%)', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -1.0 })).toBeNull();
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -1.5 })).toBeNull();
+  });
+
+  it('has no category gating — valid for any fund type', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -0.15 })).toBeCloseTo(-0.15);
+  });
+
+  it('handles extreme but valid drawdowns', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -0.99 })).toBeCloseTo(-0.99);
+  });
+
+  it('handles small drawdowns', () => {
+    expect(readOfMaxDrawdown({ max_drawdown_5y: -0.001 })).toBeCloseTo(-0.001);
   });
 });

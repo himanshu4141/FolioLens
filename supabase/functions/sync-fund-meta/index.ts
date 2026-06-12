@@ -331,13 +331,14 @@ Deno.serve(async (req) => {
             }
           }
 
-          if (metrics.volatility != null) {
+          if (metrics.volatility != null || metrics.max_drawdown_5y != null) {
             // Merge into existing risk_ratios — preserves mfdata beta used by
             // mfdataGuards.ts → useFundDetail.ts → ClearLensCompareFundsScreen.
             const existing = existingRiskRatios.get(schemeCode) ?? {};
             payload.risk_ratios = {
               ...existing,
-              volatility: metrics.volatility,
+              ...(metrics.volatility != null ? { volatility: metrics.volatility } : {}),
+              ...(metrics.max_drawdown_5y != null ? { max_drawdown_5y: metrics.max_drawdown_5y } : {}),
               ...(metrics.computed_from_nav_date
                 ? { computed_from_nav_date: metrics.computed_from_nav_date }
                 : {}),
