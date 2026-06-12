@@ -233,6 +233,8 @@ export interface FundMetadataMetrics {
   returns?: FundMetadataReturns | null;
   /** Annualised σ (decimal). */
   volatility?: number | null;
+  /** Worst peak-to-trough drawdown over trailing 5y (decimal ≤ 0). */
+  max_drawdown_5y?: number | null;
   computed_from_nav_date?: string | null;
 }
 

@@ -223,7 +223,7 @@ async function runMetadataBackfillChunk(
         `(count=${totalCount})`,
     );
 
-    const pageWork: Array<{ schemeCode: number; patch: Record<string, unknown> }> = [];
+    const pageWork: Array<{ schemeCode: number; item: FundMetadata; patch: Record<string, unknown> }> = [];
     for (const item of items) {
       if (!item?.scheme_code || !knownCodes.has(item.scheme_code)) {
         skipped += 1;
@@ -240,6 +240,18 @@ async function runMetadataBackfillChunk(
         if (ret.ret_3y != null) pr.ret_3y = ret.ret_3y;
         if (ret.ret_5y != null) pr.ret_5y = ret.ret_5y;
         if (Object.keys(pr).length > 0) patch.period_returns = pr;
+      }
+
+      // Build risk_ratios with volatility and max_drawdown_5y from OF metrics.
+      // Note: universe-backfill doesn't load existing risk_ratios to preserve
+      // mfdata beta; that's sync-fund-meta's responsibility. This backfill
+      // simply populates the OF metrics.
+      if (item.metrics?.volatility != null || item.metrics?.max_drawdown_5y != null) {
+        const rr: Record<string, unknown> = {};
+        if (item.metrics.volatility != null) rr.volatility = item.metrics.volatility;
+        if (item.metrics.max_drawdown_5y != null) rr.max_drawdown_5y = item.metrics.max_drawdown_5y;
+        if (item.metrics.computed_from_nav_date) rr.computed_from_nav_date = item.metrics.computed_from_nav_date;
+        patch.risk_ratios = rr;
       }
 
       const ter = resolveB1(b1?.ter?.status, item.ter);
@@ -263,7 +275,7 @@ async function runMetadataBackfillChunk(
       const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
       if (incep != null) patch.launch_date = incep;
 
-      pageWork.push({ schemeCode: item.scheme_code, patch });
+      pageWork.push({ schemeCode: item.scheme_code, item, patch });
     }
 
     const BATCH = 50;

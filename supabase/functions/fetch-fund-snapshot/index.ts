@@ -269,7 +269,7 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
   // "Equity" can be resolved into a SEBI sub-bucket downstream.
   const { data: existing } = await supabase
     .from('scheme_master')
-    .select('fund_meta_synced_at, mfdata_family_id, scheme_category, scheme_name, period_returns')
+    .select('fund_meta_synced_at, mfdata_family_id, scheme_category, scheme_name, period_returns, risk_ratios')
     .eq('scheme_code', schemeCode)
     .maybeSingle();
 
@@ -339,7 +339,11 @@ async function syncMeta(schemeCode: number): Promise<MetaResult> {
       (existing?.period_returns as Record<string, unknown> | null) ?? null,
     );
     if (mergedReturns !== null) payload.period_returns = mergedReturns;
-    payload.risk_ratios = mfdata.ratios ?? null;
+    // Merge risk_ratios from mfdata with any existing values (e.g. OF metrics).
+    if (mfdata.ratios) {
+      const existingRiskRatios = (existing?.risk_ratios as Record<string, unknown> | null) ?? {};
+      payload.risk_ratios = { ...existingRiskRatios, ...mfdata.ratios };
+    }
   }
 
   // Two-field category model (2026-05-29). Resolve the authoritative granular
