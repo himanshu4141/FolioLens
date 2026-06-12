@@ -20,6 +20,7 @@ import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
+import { buildSchemeLatestMap, SINCE_MAP_PAGE_SIZE } from '../_shared/nav-since-map.ts';
 
 const BATCH_SIZE = 500;
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
@@ -68,24 +69,39 @@ Deno.serve(async (req) => {
     .toISOString()
     .split('T')[0];
 
-  const { data: recentNavRows } = await supabase
-    .from('nav_history')
-    .select('scheme_code, nav_date')
-    .in('scheme_code', schemeCodes)
-    .gte('nav_date', lookbackDate)
-    .order('nav_date', { ascending: false });
+  // Paginate with .range() to avoid the 1,000-row PostgREST default cap.
+  // Without pagination, schemes whose first row falls beyond row 1,000 silently
+  // degrade to since=null (full-history re-fetch).
+  const allNavRows: { scheme_code: number; nav_date: string }[] = [];
+  let navFetchFrom = 0;
+  while (true) {
+    const { data: page, error: pageErr } = await supabase
+      .from('nav_history')
+      .select('scheme_code, nav_date')
+      .in('scheme_code', schemeCodes)
+      .gte('nav_date', lookbackDate)
+      .order('nav_date', { ascending: false })
+      .range(navFetchFrom, navFetchFrom + SINCE_MAP_PAGE_SIZE - 1);
 
-  // Build per-scheme latest map (first occurrence per code = the max, since descending order)
-  const schemeLatest = new Map<number, string>();
-  for (const row of recentNavRows ?? []) {
-    if (!schemeLatest.has(row.scheme_code)) {
-      schemeLatest.set(row.scheme_code, row.nav_date as string);
+    if (pageErr) {
+      console.error('[sync-nav] since-map page fetch error (from=%d): %s', navFetchFrom, pageErr.message);
+      break;
     }
+
+    const rows = page ?? [];
+    allNavRows.push(...rows);
+
+    if (rows.length < SINCE_MAP_PAGE_SIZE) break;
+    navFetchFrom += SINCE_MAP_PAGE_SIZE;
   }
+
+  // First occurrence per scheme_code = max nav_date (rows are desc-ordered).
+  const schemeLatest = buildSchemeLatestMap(allNavRows);
   console.log(
-    '[sync-nav] since-map: %d schemes have recent history (lookback=%s)',
+    '[sync-nav] since-map: %d schemes have recent history (lookback=%s, total_rows=%d)',
     schemeLatest.size,
     lookbackDate,
+    allNavRows.length,
   );
 
   // ── OpenFolio client ───────────────────────────────────────────────────────
