@@ -24,7 +24,15 @@ name: Universe Backfill
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes
+    # Monthly full refresh trigger (16th @ 01:00 UTC, after OpenFolio's monthly publish on 13–15th).
+    # First iteration invokes with {phase:'both', force:true} to begin a full backfill cycle.
+    # Subsequent iterations complete the backfill across multiple runs (max 8 invocations/run).
+    # Once done-markers are set, the frequent cron below skips with a free (1 app_config read) no-op path.
+    - cron: '0 1 16 * *'  # Monthly: 16th @ 01:00 UTC
+    # Frequent cron (every 15 min) to resume an in-progress backfill or detect stalled cursors.
+    # If monthly refresh is not due (no universe_backfill_refresh_due marker) and both phases
+    # are already done, this is a zero-cost short-circuit (one app_config read).
+    - cron: '*/15 * * * *'  # Every 15 minutes (resumes or confirms completion)
   workflow_dispatch:
     inputs:
       environment:
@@ -34,10 +42,9 @@ on:
         default: dev
         options: [dev, prod, both]
       phase:
-        description: 'Which phase to run'
-        required: true
+        description: 'Which phase to run (default: auto-detect from refresh_due marker)'
+        required: false
         type: choice
-        default: both
         options: [composition, metadata, both]
       force:
         description: 'Force re-run (clears done markers)'
@@ -74,8 +81,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY_DEV }}
           FUNCTIONS_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}/functions/v1
-          PHASE: ${{ github.event.inputs.phase || 'both' }}
+          PHASE: ${{ github.event.inputs.phase }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           node << 'EOF'
           const http = require('http');
@@ -84,7 +92,10 @@ jobs:
           const url = new URL('${{ env.FUNCTIONS_URL }}/universe-backfill');
           const protocol = url.protocol === 'https:' ? https : http;
 
-          let phase = '${{ env.PHASE }}';
+          // On monthly schedule (16th @ 01:00 UTC), force='true' and phase='both' to start a fresh cycle.
+          // On frequent schedule (every 15 min), check refresh_due marker to decide if backfill is needed.
+          // On workflow_dispatch, respect user's explicit phase/force selection.
+          let phase = '${{ env.PHASE }}' || 'both';
           let force = '${{ env.FORCE }}' === 'true';
           let iteration = 0;
           const maxIterations = 8;

@@ -43,6 +43,9 @@ apple-api-key*.p8
 supabase/.branches/
 supabase/.temp/
 
+# Deno
+deno.lock
+
 # TypeScript
 *.tsbuildinfo
 

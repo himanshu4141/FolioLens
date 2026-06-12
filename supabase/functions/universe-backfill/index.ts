@@ -83,29 +83,41 @@ const PAGES_PER_INVOCATION = 1; // 1 OF API call per phase per invocation; 2 cal
 const B1_OK_STATUSES = new Set<B1FieldStatus>(['value']);
 
 /**
- * Intentional divergence from `resolveB1Field` in `_shared/b1-field-resolution.ts`:
+ * Resolve B1 fields with NULL-write semantics.
  *
+ * Divergence from `resolveB1Field` in `_shared/b1-field-resolution.ts`:
  * - `resolveB1Field` returns `undefined` for non-'value' statuses to signal
- *   "leave the DB column alone" — callers use `if (v !== undefined)` to skip
- *   the write. That supports the mfdata fallback path (try OF, then mfdata).
+ *   "leave the DB column alone" — supports mfdata fallback (try OF, then mfdata).
+ * - This local `resolveB1` handles three cases:
+ *   1. status='value' → return the OF value (or null if OF has no value)
+ *   2. status='officially_absent' or other non-value → return null (write NULL)
+ *   3. status=undefined (field missing from API) → return undefined (no-touch)
  *
- * - This local `resolveB1` returns `null` for non-'value' statuses. Combined
- *   with `if (ter != null) patch.expense_ratio = ter`, it achieves the same
- *   "only write confirmed values" outcome without the `undefined` sentinel —
- *   cleaner for the no-fallback backfill path where we never call mfdata.
+ * This enables the P4 upstream correction propagation path: when OpenFolio
+ * explicitly reports a field as 'not_applicable', 'parse_failed', etc.,
+ * we write NULL to retract junk values FolioLens previously cached.
  */
-function resolveB1<T>(status: B1FieldStatus | undefined, ofValue: T | null | undefined): T | null {
-  if (!status || !B1_OK_STATUSES.has(status)) return null;
-  return ofValue ?? null;
+function resolveB1<T>(
+  status: B1FieldStatus | undefined,
+  ofValue: T | null | undefined,
+): T | null | undefined {
+  // Missing status = field not in API response = don't touch DB
+  if (status === undefined) return undefined;
+  // status='value' = use OF value (or null if empty)
+  if (B1_OK_STATUSES.has(status)) return ofValue ?? null;
+  // status is non-value (officially_absent, not_applicable, unresolved, parse_failed, source_failed)
+  // → write NULL to retract any previous value (propagates P4 upstream corrections)
+  return null;
 }
 
 function resolveB1Integer(
   status: B1FieldStatus | undefined,
   ofValue: number | null | undefined,
-): number | null {
+): number | null | undefined {
   const value = resolveB1(status, ofValue);
-  if (value == null) return null;
-  if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
+  if (value === undefined) return undefined; // no-touch
+  if (value == null) return null; // write NULL (retract)
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return null; // invalid → null
   return value;
 }
 
@@ -426,25 +438,25 @@ async function runMetadataBackfillChunk(
       }
 
       const ter = resolveB1(b1?.ter?.status, item.ter);
-      if (ter != null) patch.expense_ratio = ter;
+      if (ter !== undefined) patch.expense_ratio = ter;
       const terDate = resolveB1(b1?.ter_date?.status, item.ter_date);
-      if (terDate != null) patch.ter_date = terDate;
+      if (terDate !== undefined) patch.ter_date = terDate;
       const mgr = resolveB1(b1?.fund_manager?.status, item.fund_manager);
-      if (mgr != null) patch.fund_manager = mgr;
+      if (mgr !== undefined) patch.fund_manager = mgr;
       const bench = resolveB1(b1?.benchmark?.status, item.benchmark);
-      if (bench != null) patch.declared_benchmark_name = bench;
+      if (bench !== undefined) patch.declared_benchmark_name = bench;
       const risko = resolveB1(b1?.riskometer?.status, item.riskometer);
-      if (risko != null) patch.risk_label = risko;
+      if (risko !== undefined) patch.risk_label = risko;
       const pt = resolveB1(b1?.portfolio_turnover?.status, item.portfolio_turnover);
-      if (pt != null) patch.portfolio_turnover = pt;
+      if (pt !== undefined) patch.portfolio_turnover = pt;
       const xl = resolveB1(b1?.exit_load?.status, item.exit_load);
-      if (xl != null) patch.exit_load = xl;
+      if (xl !== undefined) patch.exit_load = xl;
       const minSip = resolveB1Integer(b1?.min_sip?.status, item.min_sip);
-      if (minSip != null) patch.min_sip_amount = minSip;
+      if (minSip !== undefined) patch.min_sip_amount = minSip;
       const minInv = resolveB1Integer(b1?.min_investment?.status, item.min_investment);
-      if (minInv != null) patch.min_lumpsum = minInv;
+      if (minInv !== undefined) patch.min_lumpsum = minInv;
       const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
-      if (incep != null) patch.launch_date = incep;
+      if (incep !== undefined) patch.launch_date = incep;
 
       pageWork.push({ schemeCode: item.scheme_code, patch });
     }
@@ -528,6 +540,27 @@ async function readDoneMarker(
   }
 }
 
+async function readRefreshDueMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<string | null> {
+  const key = `universe_backfill_refresh_due`;
+  const { data, error } = await supabase.from('app_config').select('value').eq('key', key).single();
+  if (error || !data) return null;
+  try {
+    const parsed = JSON.parse(data.value);
+    return typeof parsed === 'object' && parsed?.timestamp ? parsed.timestamp : null;
+  } catch {
+    return null;
+  }
+}
+
+async function clearRefreshDueMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<void> {
+  const key = `universe_backfill_refresh_due`;
+  await supabase.from('app_config').delete().eq('key', key);
+}
+
 async function writeDoneMarker(
   supabase: ReturnType<typeof createServiceClient>,
   phase: string,
@@ -558,6 +591,7 @@ Deno.serve(async (req) => {
 
   let phase: 'composition' | 'metadata' | 'both' = 'both';
   let force = false;
+  let autoDetected = false;
   try {
     const body = await req.json().catch(() => ({}));
     if (body?.phase === 'composition') phase = 'composition';
@@ -567,19 +601,42 @@ Deno.serve(async (req) => {
     // default 'both', force=false
   }
 
-  console.log('[universe-backfill] invoked method=%s phase=%s force=%s', req.method, phase, force);
-
+  // Initialize Supabase early to check refresh_due marker
   let client: ReturnType<typeof createOpenFolioClient>;
   try {
     const creds = resolveOpenFolioCredentials(Deno.env);
     client = createOpenFolioClient(creds);
-    console.log('[universe-backfill] using OpenFolio base=%s', creds.baseUrl);
   } catch (err) {
     console.error('[universe-backfill] credentials: %s', String(err));
     return json({ success: false, error: String(err) }, { status: 500 });
   }
 
   const supabase = createServiceClient();
+
+  // Check for monthly refresh marker. If present and phase not explicitly set, auto-detect.
+  // The monthly cron (16th @ 01:00 UTC) invokes with force=true to start a fresh cycle.
+  // The frequent cron (every 15 min) relies on this marker to decide if a backfill is due.
+  if (!force && phase === 'both') {
+    const refreshDueAt = await readRefreshDueMarker(supabase);
+    if (refreshDueAt) {
+      console.log('[universe-backfill] refresh_due marker found (timestamp=%s), clearing done markers for fresh cycle', refreshDueAt);
+      force = true;
+      autoDetected = true;
+      // Clear done markers so the backfill restarts
+      await clearDoneMarker(supabase, 'composition');
+      await clearDoneMarker(supabase, 'metadata');
+      const compositionKey = `universe_backfill_composition_cursor`;
+      const metadataKey = `universe_backfill_metadata_cursor`;
+      await supabase.from('app_config').delete().eq('key', compositionKey);
+      await supabase.from('app_config').delete().eq('key', metadataKey);
+    }
+  }
+
+  console.log('[universe-backfill] invoked method=%s phase=%s force=%s auto_detected=%s', req.method, phase, force, autoDetected);
+
+  const creds = resolveOpenFolioCredentials(Deno.env);
+  console.log('[universe-backfill] using OpenFolio base=%s', creds.baseUrl);
+
   const syncedAt = new Date().toISOString();
 
   // ── Composition phase (chunked with cursor resumption) ────────────────────
@@ -847,6 +904,13 @@ Deno.serve(async (req) => {
 
           const bothDone = done && !!compDone;
 
+          // When both phases complete, clear the monthly refresh marker so the frequent cron
+          // (every 15 min) knows the cycle is done and can short-circuit.
+          if (bothDone) {
+            await clearRefreshDueMarker(supabase);
+            console.log('[universe-backfill] both phases complete, clearing refresh_due marker');
+          }
+
           return json({
             success: true,
             phase: 'both',
@@ -888,6 +952,7 @@ Deno.serve(async (req) => {
             },
             done: bothDone,
             elapsed_ms: elapsedMs,
+            refresh_due_cleared: bothDone,
           });
         } else {
           return json({
