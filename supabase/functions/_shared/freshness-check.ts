@@ -243,3 +243,137 @@ export function checkCompositionStaleness(
     detail: `Latest official composition date is ${maxPortfolioDate}, exceeds ${STALENESS_DAYS}-day threshold (threshold: ${thresholdDate.toISOString()}).`,
   };
 }
+
+/**
+ * Monthly reconciliation data structures and checks.
+ * Compare FolioLens coverage against OpenFolio upstream counts.
+ */
+
+export interface MonthlyReconciliationReport {
+  timestamp: string;
+  checks: CheckResult[];
+  passedCount: number;
+  failedCount: number;
+  details: {
+    metadata_coverage_pct?: number;
+    composition_coverage_pct?: number;
+    disclosure_date_lag_days?: number;
+  };
+}
+
+/** Coverage threshold: FolioLens must have >= 85% of upstream counts. */
+const COVERAGE_THRESHOLD_PCT = 85;
+
+/** Disclosure date lag threshold: max 45 days behind OpenFolio latest. */
+const DISCLOSURE_LAG_THRESHOLD_DAYS = 45;
+
+/**
+ * Check 1 (Monthly): Metadata coverage — count(openfolio_meta_synced_at IS NOT NULL)
+ * in scheme_master vs OpenFolio /v1/metadata page_size=1 total count.
+ */
+export function checkMetadataCoverage(
+  localCount: number,
+  upstreamTotal: number,
+): CheckResult {
+  const name = 'Metadata coverage';
+
+  if (upstreamTotal === 0) {
+    return {
+      name,
+      ok: false,
+      detail: 'OpenFolio metadata total is 0 (unexpected).',
+    };
+  }
+
+  const coveragePct = Math.round((localCount / upstreamTotal) * 100);
+
+  if (coveragePct >= COVERAGE_THRESHOLD_PCT) {
+    return {
+      name,
+      ok: true,
+      detail: `Metadata coverage: ${localCount}/${upstreamTotal} (${coveragePct}%) >= ${COVERAGE_THRESHOLD_PCT}%.`,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: `Metadata coverage: ${localCount}/${upstreamTotal} (${coveragePct}%) < ${COVERAGE_THRESHOLD_PCT}%.`,
+  };
+}
+
+/**
+ * Check 2 (Monthly): Composition coverage — count(DISTINCT scheme_code) WHERE source='official'
+ * in fund_portfolio_composition vs OpenFolio /v1/composition total count.
+ */
+export function checkCompositionCoverage(
+  localCount: number,
+  upstreamTotal: number,
+): CheckResult {
+  const name = 'Composition coverage';
+
+  if (upstreamTotal === 0) {
+    return {
+      name,
+      ok: false,
+      detail: 'OpenFolio composition total is 0 (unexpected).',
+    };
+  }
+
+  const coveragePct = Math.round((localCount / upstreamTotal) * 100);
+
+  if (coveragePct >= COVERAGE_THRESHOLD_PCT) {
+    return {
+      name,
+      ok: true,
+      detail: `Composition coverage: ${localCount}/${upstreamTotal} (${coveragePct}%) >= ${COVERAGE_THRESHOLD_PCT}%.`,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: `Composition coverage: ${localCount}/${upstreamTotal} (${coveragePct}%) < ${COVERAGE_THRESHOLD_PCT}%.`,
+  };
+}
+
+/**
+ * Check 3 (Monthly): Disclosure date lag — max(portfolio_date) of source='official'
+ * in fund_portfolio_composition vs OpenFolio /health latest_disclosure_date.
+ * Lag must not exceed 45 days.
+ */
+export function checkDisclosureDateLag(
+  maxPortfolioDate: string | null,
+  latestDisclosureDate: string | null,
+  now: Date,
+): CheckResult {
+  const name = 'Disclosure date lag';
+
+  if (!maxPortfolioDate || !latestDisclosureDate) {
+    return {
+      name,
+      ok: false,
+      detail: `Missing data: portfolio_date=${maxPortfolioDate}, disclosure_date=${latestDisclosureDate}.`,
+    };
+  }
+
+  const portfolioDate = new Date(maxPortfolioDate);
+  const disclosureDate = new Date(latestDisclosureDate);
+
+  const lagMs = disclosureDate.getTime() - portfolioDate.getTime();
+  const lagDays = Math.ceil(lagMs / (24 * 60 * 60 * 1000));
+
+  if (lagDays <= DISCLOSURE_LAG_THRESHOLD_DAYS) {
+    return {
+      name,
+      ok: true,
+      detail: `Disclosure date lag: ${lagDays} days (${maxPortfolioDate} → ${latestDisclosureDate}), within ${DISCLOSURE_LAG_THRESHOLD_DAYS}-day threshold.`,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: `Disclosure date lag: ${lagDays} days (${maxPortfolioDate} → ${latestDisclosureDate}), exceeds ${DISCLOSURE_LAG_THRESHOLD_DAYS}-day threshold.`,
+  };
+}
