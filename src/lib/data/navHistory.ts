@@ -20,11 +20,16 @@ export const navHistoryRepo = {
    * typical multi-year windows.
    */
   async monthEndNav(schemeCode: number): Promise<NavPoint[]> {
-    const { data, error } = await supabase.rpc('month_end_nav', {
+    // Note: 'month_end_nav' RPC added in migration 20260612000004.
+    // Until the migration is applied, this call will error and fall back to paginated fetch.
+    const { data, error } = await supabase.rpc<{
+      nav_date: string;
+      nav: number;
+    }>('month_end_nav' as any, {
       p_scheme_code: schemeCode,
     });
     if (error) throw new Error(`month_end_nav failed: ${error.message}`);
-    return (data ?? []).map((row: { nav_date: string; nav: number }) => ({
+    return (data ?? []).map((row) => ({
       date: row.nav_date,
       value: row.nav,
     }));

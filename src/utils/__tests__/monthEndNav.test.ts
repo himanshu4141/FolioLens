@@ -155,7 +155,7 @@ describe('month_end_nav logic — edge cases', () => {
 
       // Should be in ascending order
       for (let i = 1; i < monthEnd.length; i++) {
-        expect(monthEnd[i].date).toBeGreaterThanOrEqual(monthEnd[i - 1].date);
+        expect(monthEnd[i].date >= monthEnd[i - 1].date).toBe(true);
       }
     });
 
@@ -241,11 +241,9 @@ describe('RPC equivalence — full series vs month-end', () => {
 
     // First month-end might not be the series start (if it's not a month boundary)
     // but the very first full-series point and first month-end point should be close
-    expect(fullSeries[0].date).toBeLessThanOrEqual(monthEndSeries[0].date);
+    expect(fullSeries[0].date <= monthEndSeries[0].date).toBe(true);
 
     // Last month-end should match or be very close to last full-series point
-    expect(monthEndSeries[monthEndSeries.length - 1].date).toBeGreaterThanOrEqual(
-      fullSeries[fullSeries.length - 1].date.slice(0, 7), // compare YYYY-MM
-    );
+    expect(monthEndSeries[monthEndSeries.length - 1].date >= fullSeries[fullSeries.length - 1].date.slice(0, 7)).toBe(true);
   });
 });
