@@ -77,7 +77,9 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // cache expired. Bump discards the old shape on next launch.
 // v7: scheme_master payload shape change — morningstar_rating dropped from
 // useSchemeMaster select (Phase 3 of deprecate-post-openfolio plan).
-export const __BUSTER__ = 'v7';
+// v8: fund view now exposes scheme_active; useUserFunds/useFundDetail/usePortfolio
+// payloads include schemeActive + navUnavailableCount fields.
+export const __BUSTER__ = 'v8';
 
 export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
