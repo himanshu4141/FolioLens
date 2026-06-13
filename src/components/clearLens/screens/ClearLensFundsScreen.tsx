@@ -29,7 +29,7 @@ import { useAppStore } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { parseFundName } from '@/src/utils/fundName';
-import { navStaleness } from '@/src/utils/navUtils';
+import { navStaleness, isMaturedScheme } from '@/src/utils/navUtils';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -189,7 +189,9 @@ export function FundListItem({
   const { base, planBadge } = parseFundName(fund.schemeName);
   const gain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
   const gainPct = gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
-  const stale = navStaleness(fund.currentNavDate ?? latestNavDate);
+  const matured = isMaturedScheme(fund.schemeActive, fund.schemeName);
+  // Matured schemes have intentionally frozen NAV — suppress the stale badge.
+  const stale = matured ? { stale: false, veryStale: false, critical: false, label: '' } : navStaleness(fund.currentNavDate ?? latestNavDate);
   const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(fund.schemeCategory);
   const categoryColor = isDebtLike ? CLEAR_LENS_DEBT : tokens.semantic.asset.equity;
   const dailyColor = (fund.dailyChangePct ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
@@ -207,12 +209,16 @@ export function FundListItem({
             <Text style={styles.fundMeta} numberOfLines={1}>
               {fund.schemeCategory}{planBadge ? ` · ${planBadge}` : ''}
             </Text>
-            {stale.critical && (
+            {matured ? (
+              <View style={styles.maturedBadge}>
+                <Text style={styles.maturedBadgeText}>Matured</Text>
+              </View>
+            ) : stale.critical ? (
               <View style={styles.staleBadge}>
                 <Ionicons name="warning-outline" size={11} color={CLEAR_LENS_RED} />
                 <Text style={styles.staleBadgeText}>NAV stale · {stale.label}</Text>
               </View>
-            )}
+            ) : null}
           </View>
           <View style={styles.valueBlock}>
             <Text style={styles.fundValue}>{fund.currentValue != null ? formatCurrency(fund.currentValue) : 'NAV pending'}</Text>
@@ -831,6 +837,24 @@ function makeStyles(tokens: ClearLensTokens) {
     fontFamily: ClearLensFonts.semiBold,
     color: CLEAR_LENS_RED,
     fontSize: 10,
+  },
+  maturedBadge: {
+    marginTop: 2,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: ClearLensRadii.sm,
+    backgroundColor: tokens.colors.textTertiary + '18',
+    borderWidth: 1,
+    borderColor: tokens.colors.textTertiary + '44',
+  },
+  maturedBadgeText: {
+    ...ClearLensTypography.caption,
+    fontFamily: ClearLensFonts.semiBold,
+    color: tokens.colors.textTertiary,
+    fontSize: 10,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
   },
   valueBlock: {
     alignItems: 'flex-end',

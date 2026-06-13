@@ -524,6 +524,7 @@ export type Database = {
           mfdata_meta_synced_at: string | null
           min_sip_amount: number | null
           risk_label: string | null
+          scheme_active: boolean | null
           scheme_category: string | null
           scheme_code: number | null
           scheme_name: string | null

@@ -81,6 +81,7 @@ export interface FundDetailData {
   fundManager: string | null;
   portfolioTurnover: number | null;
   terDate: string | null;
+  schemeActive: boolean | null;
 }
 
 interface FundDetailRow {
@@ -95,6 +96,7 @@ interface FundDetailRow {
   aum_cr: number | null;
   min_sip_amount: number | null;
   fund_meta_synced_at: string | null;
+  scheme_active: boolean | null;
 }
 
 function isFundDetailRow(
@@ -111,6 +113,7 @@ function isFundDetailRow(
         aum_cr: number | null;
         min_sip_amount: number | null;
         fund_meta_synced_at: string | null;
+        scheme_active: boolean | null;
       }
     | null
     | undefined,
@@ -253,6 +256,7 @@ export async function fetchFundDetail(
       fundManager: extended?.fund_manager ?? null,
       portfolioTurnover: extended?.portfolio_turnover ?? null,
       terDate: extended?.ter_date ?? null,
+      schemeActive: fund.scheme_active ?? null,
     };
   }
   const currentNav = navHistory[navHistory.length - 1].value;
@@ -307,6 +311,7 @@ export async function fetchFundDetail(
     fundManager: extended?.fund_manager ?? null,
     portfolioTurnover: extended?.portfolio_turnover ?? null,
     terDate: extended?.ter_date ?? null,
+    schemeActive: fund.scheme_active ?? null,
   };
 }
 

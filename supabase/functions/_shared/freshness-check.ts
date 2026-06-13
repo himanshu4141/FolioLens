@@ -19,8 +19,13 @@ export interface CheckResult {
 }
 
 /**
- * Check 1: Held NAV age — max(nav_date) over all schemes in user_fund
+ * Check 1: Held NAV age — max(nav_date) over all non-matured schemes in user_fund
  * must be >= today - 3 calendar days.
+ *
+ * Matured / wound-up schemes are excluded upstream (fetchNavMaxDate filters them)
+ * so a frozen 2021 FMP NAV can't mask a real staleness failure. When null is passed
+ * it means either no active schemes exist or all held schemes are matured — in both
+ * cases the check passes (nothing to be fresh for).
  */
 export function checkNavFreshness(maxNavDate: string | null, now: Date): CheckResult {
   const name = 'NAV freshness';
@@ -28,8 +33,8 @@ export function checkNavFreshness(maxNavDate: string | null, now: Date): CheckRe
   if (!maxNavDate) {
     return {
       name,
-      ok: false,
-      detail: 'No NAV data found in user_fund; no schemes are held.',
+      ok: true,
+      detail: 'No active (non-matured) held schemes found; freshness check skipped.',
     };
   }
 

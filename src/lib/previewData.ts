@@ -423,6 +423,7 @@ function buildFundCard(scheme: PreviewSchemeMeta): FundCardData {
     realizedAmount: agg.realizedAmount,
     redeemedUnits: agg.redeemedUnits,
     navHistory30d: makeNavHistory30d(scheme.currentNav, scheme.schemeCode),
+    schemeActive: true,
   };
 }
 
@@ -450,6 +451,7 @@ export const PREVIEW_PORTFOLIO_SUMMARY: PortfolioSummary = {
   marketXirr: 0.118,
   benchmarkSymbol: '^NSEITRI',
   latestNavDate: '2026-05-09',
+  navUnavailableCount: 0,
 };
 
 /**
@@ -815,5 +817,6 @@ export function buildPreviewFundDetail(fundId: string): FundDetailData | null {
     fundManager: null,
     portfolioTurnover: null,
     terDate: null,
+    schemeActive: true,
   };
 }

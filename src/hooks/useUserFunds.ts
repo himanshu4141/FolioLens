@@ -33,10 +33,11 @@ export interface UserFundRow {
   min_sip_amount: number | null;
   fund_meta_synced_at: string | null;
   is_active: boolean | null;
+  scheme_active: boolean | null;
 }
 
 const FUND_COLUMNS =
-  'id, user_id, scheme_code, scheme_name, scheme_category, benchmark_index, benchmark_index_symbol, isin, expense_ratio, aum_cr, min_sip_amount, fund_meta_synced_at, is_active';
+  'id, user_id, scheme_code, scheme_name, scheme_category, benchmark_index, benchmark_index_symbol, isin, expense_ratio, aum_cr, min_sip_amount, fund_meta_synced_at, is_active, scheme_active';
 
 export async function fetchUserFunds(userId: string): Promise<UserFundRow[]> {
   perfStart('query:userFunds');

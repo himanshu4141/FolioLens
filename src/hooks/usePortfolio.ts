@@ -23,6 +23,7 @@ import {
   computeBenchmarkXirr,
   type Cashflow,
 } from '@/src/utils/xirr';
+import { isMaturedScheme } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
 import { PREVIEW_FUND_CARDS, PREVIEW_PORTFOLIO_SUMMARY } from '@/src/lib/previewData';
@@ -69,6 +70,7 @@ export interface FundCardData {
   redeemedUnits: number;
   navHistory30d: { date: string; value: number }[];
   navUnavailable?: true;
+  schemeActive: boolean | null;
 }
 
 export interface PortfolioSummary {
@@ -79,7 +81,8 @@ export interface PortfolioSummary {
   xirr: number;
   marketXirr: number;
   benchmarkSymbol: string;
-  latestNavDate: string | null; // ISO date of most-recent NAV across all holdings
+  latestNavDate: string | null; // ISO date of most-recent NAV across all non-matured holdings
+  navUnavailableCount: number; // funds with no NAV data, excluded from totals
 }
 
 interface PortfolioFundRow {
@@ -286,12 +289,14 @@ export async function fetchPortfolioData(
   let portfolioTotalValue = 0;
   let portfolioTotalPreviousValue = 0;
   let portfolioTotalInvested = 0;
+  let navUnavailableCount = 0;
 
   const allCashflows: Cashflow[] = [];
 
   for (const fund of validFunds) {
     const navInfo = navByScheme.get(fund.scheme_code);
     const txs = txByFund.get(fund.id) ?? [];
+    const schemeActive = fund.scheme_active ?? null;
 
     if (txs.length === 0) continue;
 
@@ -304,6 +309,7 @@ export async function fetchPortfolioData(
       const { netUnits, investedAmount } = buildCashflowsFromTransactions(txs, 0, today);
       if (netUnits < 0.001) continue; // skip fully-exited funds
       const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs);
+      navUnavailableCount++;
       fundCards.push({
         id: fund.id,
         schemeName: fund.scheme_name,
@@ -323,6 +329,7 @@ export async function fetchPortfolioData(
         redeemedUnits,
         navHistory30d: [],
         navUnavailable: true,
+        schemeActive,
       });
       continue;
     }
@@ -373,6 +380,7 @@ export async function fetchPortfolioData(
       realizedAmount,
       redeemedUnits,
       navHistory30d: navHistoryByScheme.get(fund.scheme_code) ?? [],
+      schemeActive,
     });
 
     portfolioTotalValue += currentValue;
@@ -419,8 +427,20 @@ export async function fetchPortfolioData(
     }).xirr;
   }
 
+  // Exclude matured/inactive schemes from the freshness date so a frozen
+  // NAV (e.g. a matured FMP from 2021) doesn't suppress the "as of today"
+  // label when all live holdings are actually current.
+  const maturedCodes = new Set(
+    validFunds
+      .filter((f) => isMaturedScheme(f.scheme_active ?? null, f.scheme_name ?? ''))
+      .map((f) => f.scheme_code),
+  );
   const latestNavDate =
-    [...navByScheme.values()].map((v) => v.date).sort().pop() ?? null;
+    [...navByScheme.entries()]
+      .filter(([code]) => !maturedCodes.has(code))
+      .map(([, v]) => v.date)
+      .sort()
+      .pop() ?? null;
 
   const summary: PortfolioSummary = {
     totalValue: portfolioTotalValue,
@@ -431,6 +451,7 @@ export async function fetchPortfolioData(
     marketXirr,
     benchmarkSymbol,
     latestNavDate,
+    navUnavailableCount,
   };
 
   perfEnd('query:portfolio', {

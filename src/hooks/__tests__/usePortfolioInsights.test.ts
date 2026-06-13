@@ -47,6 +47,7 @@ function makeFundCard(overrides: Partial<FundCardData> = {}): FundCardData {
     realizedAmount: 0,
     redeemedUnits: 0,
     navHistory30d: [],
+    schemeActive: null,
     ...overrides,
   } as FundCardData;
 }

@@ -62,6 +62,7 @@ import {
   BENCHMARK_DISCLOSURE,
   fundDetailBenchmarkOptions,
 } from '@/src/utils/benchmarkSymbolMap';
+import { isMaturedScheme } from '@/src/utils/navUtils';
 import { ResponsiveRouteFrame } from '@/src/components/responsive';
 
 // Fund Detail follows the list-tier desktop frame (960 px). Charts cap
@@ -1945,7 +1946,10 @@ function ClearLensFundDetailScreen() {
 
   const latestNavDate = navHistory[navHistory.length - 1]?.date ?? null;
   const todayIso = new Date().toISOString().split('T')[0];
-  const navIsStale = latestNavDate !== null && latestNavDate !== todayIso;
+  const isMatured = isMaturedScheme(data.schemeActive, data.schemeName);
+  // Matured schemes have intentionally frozen NAV — suppress the stale label.
+  const navIsStale = !isMatured && latestNavDate !== null && latestNavDate !== todayIso;
+  const navUnavailable = data.currentValue === null;
   const gain = data.currentValue !== null ? data.currentValue - data.investedAmount : null;
   const gainPct = gain !== null && data.investedAmount > 0 ? (gain / data.investedAmount) * 100 : null;
   const hasSignalRow = (gain !== null && gainPct !== null) || Number.isFinite(data.fundXirr);
@@ -1961,16 +1965,33 @@ function ClearLensFundDetailScreen() {
               <Text style={clearDetailStyles.fundName}>{data.schemeName}</Text>
               <Text style={clearDetailStyles.category}>{data.schemeCategory || 'Fund'}</Text>
             </View>
+            {isMatured && (
+              <View style={clearDetailStyles.maturedBadge}>
+                <Text style={clearDetailStyles.maturedBadgeText}>Matured</Text>
+              </View>
+            )}
           </View>
+
+          {navUnavailable && (
+            <View style={clearDetailStyles.navUnavailableBanner}>
+              <Ionicons name="information-circle-outline" size={16} color={tokens.colors.textTertiary} />
+              <Text style={clearDetailStyles.navUnavailableText}>
+                NAV data unavailable for this scheme. Units and cost are shown below; this fund is excluded from portfolio totals.
+              </Text>
+            </View>
+          )}
 
           <View style={clearDetailStyles.statsRow}>
             <View style={clearDetailStyles.statCell}>
               <Text style={clearDetailStyles.statLabel} numberOfLines={1}>Current value</Text>
               <Text style={clearDetailStyles.statValue}>
-                {data.currentValue !== null ? formatCurrency(data.currentValue) : 'NAV pending'}
+                {data.currentValue !== null ? formatCurrency(data.currentValue) : '—'}
               </Text>
               {navIsStale && latestNavDate && (
                 <Text style={clearDetailStyles.statHint}>as of {formatNavDate(latestNavDate)}</Text>
+              )}
+              {isMatured && latestNavDate && (
+                <Text style={clearDetailStyles.statHint}>maturity NAV {formatNavDate(latestNavDate)}</Text>
               )}
             </View>
             <View style={clearDetailStyles.statCell}>
@@ -2057,16 +2078,27 @@ function ClearLensFundDetailScreen() {
         />
 
         {activeTab === 'performance' && (
-          <>
-            <PerformanceTab
-              navHistory={navHistory}
-              fundBenchmarkIndex={data.benchmarkIndex ?? null}
-              fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
-              fundRef={{ id: data.id, schemeCode: data.schemeCode }}
-              userId={userId}
-            />
-            <GrowthConsistencyChart navHistory={navHistory} />
-          </>
+          navUnavailable ? (
+            <ClearLensCard style={clearDetailStyles.navUnavailableCard}>
+              <Ionicons name="bar-chart-outline" size={32} color={tokens.colors.textTertiary} />
+              <Text style={clearDetailStyles.navUnavailableCardTitle}>NAV unavailable for this scheme</Text>
+              <Text style={clearDetailStyles.navUnavailableCardBody}>
+                Performance charts require NAV history, which hasn&apos;t been synced for this scheme yet.
+                The data above shows your units and cost basis.
+              </Text>
+            </ClearLensCard>
+          ) : (
+            <>
+              <PerformanceTab
+                navHistory={navHistory}
+                fundBenchmarkIndex={data.benchmarkIndex ?? null}
+                fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
+                fundRef={{ id: data.id, schemeCode: data.schemeCode }}
+                userId={userId}
+              />
+              <GrowthConsistencyChart navHistory={navHistory} />
+            </>
+          )
         )}
 
         {activeTab === 'nav' && (
@@ -2181,6 +2213,53 @@ function makeClearDetailStyles(tokens: ClearLensTokens) {
     ...ClearLensTypography.caption,
     color: cl.textTertiary,
     fontStyle: 'italic',
+  },
+  maturedBadge: {
+    backgroundColor: cl.textTertiary + '22',
+    borderRadius: ClearLensRadii.sm,
+    paddingHorizontal: ClearLensSpacing.sm,
+    paddingVertical: 3,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+  },
+  maturedBadgeText: {
+    ...ClearLensTypography.label,
+    color: cl.textTertiary,
+    fontFamily: ClearLensFonts.semiBold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    fontSize: 10,
+  },
+  navUnavailableBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: ClearLensSpacing.xs,
+    backgroundColor: cl.background,
+    borderRadius: ClearLensRadii.sm,
+    padding: ClearLensSpacing.sm,
+  },
+  navUnavailableText: {
+    flex: 1,
+    ...ClearLensTypography.bodySmall,
+    color: cl.textTertiary,
+    lineHeight: 18,
+  },
+  navUnavailableCard: {
+    alignItems: 'center',
+    gap: ClearLensSpacing.sm,
+    paddingVertical: ClearLensSpacing.xl,
+  },
+  navUnavailableCardTitle: {
+    ...ClearLensTypography.h3,
+    color: cl.textSecondary,
+    textAlign: 'center',
+  },
+  navUnavailableCardBody: {
+    ...ClearLensTypography.bodySmall,
+    color: cl.textTertiary,
+    textAlign: 'center',
+    lineHeight: 18,
+    maxWidth: 320,
   },
   gainRow: {
     flexDirection: 'row',
