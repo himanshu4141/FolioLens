@@ -38,14 +38,39 @@ the IDCW fix #65) and live dev state on 2026-06-13T08:xxZ.
 #228/#229 merged with all CI checks green.
 
 **Net effect on beta readiness.** The monitoring and source-correctness blockers are closed in
-code. Two things gate *observable* improvement and are **operational, not code**:
-1. **One OF nav cycle** must run with `--aaum` (tonight) so the API serves AUM; then
-2. **One FL metadata re-sync** (the P5 16th refresh, or a manual `force` dispatch) must run to
+code. Three things gate *observable* improvement:
+1. **The monthly OF ingest must successfully publish** (see the blocker below) so the served
+   holdings DB carries sanitised metadata; then
+2. **One OF nav cycle** must run with `--aaum` (the daily nav job, independent of the monthly
+   ingest, writes AUM into `nav.db.fund_metrics`) so the API serves AUM; then
+3. **One FL metadata re-sync** (the P5 16th refresh, or a manual `force` dispatch) must run to
    pull corrected metadata (AUM, sanitised riskometer/benchmark/manager, retractions) into
    `scheme_master`. Until then, dev still shows AUM=0 and the legacy junk strings.
 
-Recommendation: don't re-audit coverage until after a forced FL re-sync post-#66/#62 land in
-the nav.db; then AUM should be >90 % and junk ≈ 0.
+### BLOCKER (found 2026-06-13) — monthly ingest timed out and published nothing
+
+The monthly ingest (`openfolio-ingest-gctzj`, 2026-06-13 00:30→02:30 UTC, image `771dbbd`)
+was **SIGKILLed at the 3600s Cloud Run task timeout** (`maxRetries: 1` → two ~1h attempts). It
+got through the holdings build and **into the metadata phase — sanitise was actively rejecting
+junk benchmarks at 02:28:53** — but timed out **before the AAUM step and before publishing**.
+Proof: `gs://fund-lens-openfolio/funds-holdings.db` last updated **2026-06-07** (unchanged); no
+`Updating fund_metrics AAUM`/publish log lines. The GCP alerts auto-resolved when the failed job
+ended, masking it.
+
+Consequence: the API serves the **June-7 pre-sanitise holdings DB**, so junk metadata persists
+at OpenFolio *and* FolioLens regardless of any FL re-sync — **P3/P4 propagation is blocked by the
+ingest failure, not merely awaiting the schedule.** Root cause: `build --all --metadata --aaum
+--publish` no longer fits in 1h once a slow/failing AMC source (HSBC fetch errors in the logs)
+burns the fetch budget — the timeout cousin of the repo's OOM history. Distinction worth keeping:
+**sanitised metadata** lives in the holdings DB (only the monthly ingest publishes it → blocked);
+**AUM** lives in `nav.db` and is also written by the daily nav job's `--aaum` (so AUM can still
+arrive via nav-daily, independent of this failure — pending validation that nav-daily's own 600s
+timeout accommodates the added AAUM fetch). Fixes tracked as **§11 item 11 / §12 P10**; the task
+timeout bump is OpenFolio-Data PR #67 (3600s→10800s).
+
+Recommendation: don't re-audit coverage until (a) the monthly ingest publishes a sanitised
+holdings DB, (b) nav-daily lands AAUM in nav.db, and (c) a forced FL re-sync runs; then AUM should
+be >90 % and junk ≈ 0.
 
 ### P6 (IDCW honesty) is now **reduced**, not cancelled
 
@@ -403,6 +428,7 @@ Ranked by (impact × frequency × trust damage):
 | 8 | **Category coverage** — map the 1,033 active nulls (AMFI seed re-map + name heuristics + one mfdata sweep) | FL | Compare grouping/insights for 12 % of funds | S–M | Low | **Should** | open |
 | 9 | **Held edge cases** — investigate 130503 (no NAV); model matured schemes as "closed" state | FL | 100 beta users importing CAS files will hit matured schemes immediately | S | None | **Should** | open |
 | 10 | Persistent backfill failure audit table (OP1 follow-up 3/6) | FL | Operational forensics; row failures currently vanish with cursors | S | None | Can wait | open |
+| 11 | **Monthly-ingest reliability** — raise task timeout (done, OD #67), time-box/fast-skip a failing AMC fetch so it can't burn the budget, optionally decouple publish, and **alert loudly when the holdings DB isn't republished** (GCP alerts auto-resolved on the 06-13 timeout) | OD (+FL monitor) | The ingest is the *only* path that publishes sanitised metadata; a silent timeout blocks all of P3/P4 reaching users. The 06-13 failure proves it's fragile | S–M | Low | **Must** | ⏳ #67 (timeout) merged; AMC time-box + alert open (§12 P10) |
 
 Not on the list (deliberately): FL11/runbook (prod-launch-timed, beta is on dev), FL16,
 index-series ownership, any re-architecture. (Item 1's "repurpose the no-op 15-min cron"
@@ -618,6 +644,33 @@ Use the standard preambles from the 2026-06-11 review §10.3 (FolioLens / OpenFo
 > "stale data" affordances. Detection: scheme_active=false OR maturity-date pattern in
 > name; implement as a pure helper with tests. Validate on dev with the two real schemes
 > and paste screenshots/SQL.
+
+### P10 (OD) `fix(ingest): monthly-ingest reliability — survive a slow AMC + alert on no-publish`
+
+> The 2026-06-13 monthly ingest (`openfolio-ingest-gctzj`) was SIGKILLed at the 3600s task
+> timeout mid-metadata and published nothing — `gs://fund-lens-openfolio/funds-holdings.db`
+> is still the 2026-06-07 build, so the API serves pre-sanitise junk metadata and the P4
+> sanitise work never reached users. The task timeout was already raised to 10800s in **PR #67**
+> (merged) — this PR is the durable hardening so a single fragile source can't waste the budget
+> and so a failed publish never again goes unnoticed. Three parts: (1) **Time-box per-AMC
+> fetch:** in `src/mfholdings/fetch.py` (the `_download`/`fetch` path that raised
+> `RuntimeError: Failed to fetch …hsbc-large-cap-fund-…xlsx`), enforce a hard per-AMC wall-clock
+> budget so a slow/failing source (HSBC was the 06-13 culprit) is abandoned fast and the build
+> carries forward last month's holdings for that AMC (carry-forward already exists — confirm it
+> triggers on fetch-timeout, not just on parse-failure). Keep retries bounded. (2) **Decouple
+> publish from a complete holdings build (optional but recommended):** ensure that once the
+> `--metadata` (sanitise) and `--aaum` steps have run, the holdings DB is published even if a
+> *later* AMC's holdings fetch stalls — i.e. a partial-but-improved DB still ships rather than
+> being discarded on timeout. Justify the ordering you choose in DECISIONS.md. (3) **Alert on
+> no-publish:** the GCP timeout alert auto-resolved when the job ended, masking the failure. Add
+> a loud signal that the monthly holdings DB was NOT republished within its window — simplest:
+> a check that `funds-holdings.db`'s GCS object age (or a `build_date` in the DB / `/health`
+> `latest_build_date`) is < ~35 days, surfaced both in OpenFolio `/health` and in the FolioLens
+> `freshness-check` monthly mode (which already runs — add this assertion there). Validate by
+> running `build --all --metadata --aaum` locally/offline against fixtures (no full live build
+> needed) to prove carry-forward fires on a simulated fetch-timeout and that publish still
+> happens; ruff/pyright/pytest green; DECISIONS.md entry. **FolioLens follow-up:** after a
+> clean ingest publishes, run the P5 forced metadata re-sync to propagate sanitised metadata.
 
 ---
 
