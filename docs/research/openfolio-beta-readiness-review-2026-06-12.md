@@ -19,6 +19,59 @@ treated as hypotheses.
 
 ---
 
+## Update 2026-06-13 — P1–P5 shipped & validated; P6 reduced
+
+The five pre-beta items were implemented and merged within a day. Re-validated against
+refreshed mains (FolioLens `a8b9c52` #229; OpenFolio-Data `771dbbd`, incl. #62/#63/#64/#66 and
+the IDCW fix #65) and live dev state on 2026-06-13T08:xxZ.
+
+| Item | PR(s) | Status | Evidence (2026-06-13) |
+|---|---|---|---|
+| **P1** — OF `/health` O(1) | OD #64 | ✅ **Verified live** | `/health` returns 200 in **0.94 s** (was >280 s) with full counts (`db_nav_rows`, `db_nav_latest`) |
+| **P2** — freshness-check timeouts + `X-API-Key` | FL #228 | ✅ **Verified live** | All 3 OF fetchers use a 15 s `AbortController` + `X-API-Key` (no Bearer); per-check try/catch isolation; **today's 08:00 UTC daily run succeeded** (the run predicted to hang) |
+| **P3** — scheme-wise AAUM | OD #66 | ✅ **Code+deploy verified; AUM end-to-end pending** | New `amfiindia.com/api/average-aum-schemewise` source resolves **7,936 distinct scheme codes** live (was 0); 153415 = ₹52.39 Cr matches factsheet; `--aaum` is in the deployed nav-daily job args. **But**: OF API still serves `aum_cr=null` and dev `scheme_master.aum_cr` is still 0 — the Jun-12 evening nav runs predate the `--aaum` deploy (#66 merged 23:14 UTC; no "Updating fund_metrics AAUM" log line yet). First AAUM-bearing run is the next nav cycle (~tonight); FL then needs a metadata re-sync to ingest it |
+| **P4** — central sanitise + retraction | OD #62, #63 | ✅ **Code verified; not yet propagated** | `metadata/sanitise.py` wired into `metadata/job.py` (nulls suspicious fields + emits `validation_failed` audit = the retraction signal). Dev FL still shows the junk (223 junk risk labels, 212 long benchmarks, 253 long managers, 92 TER≤0) because cleanup reaches FL only after the next OF monthly metadata ingest **and** the P5 forced re-sync |
+| **P5** — monthly forced refresh + clear-on-null | FL #229 | ✅ **Code verified; first fire 16th** | `universe-backfill` `resolveB1` now writes **NULL for non-`value` B1 status** (retracts cached junk — the propagation path for P4) and `undefined`/no-touch for missing fields; workflow gains a monthly **16th @ 01:00 UTC** `force` trigger plus a gated `*/15` resume. First scheduled full refresh: 2026-06-16 |
+| **#65** — IDCW metrics (was P6-upstream) | OD #65 | ✅ **Merged & corrected** | Name-based Growth-sibling resolver (82% / 6,319 of 7,617 live); single-pass streaming (OOM fixed); Dividend-Yield-Growth no longer mis-flagged. Not yet in the deployed image (next build) |
+
+**Quality gates:** OpenFolio-Data main — ruff/pyright clean, **606 pytest passed**. FolioLens
+#228/#229 merged with all CI checks green.
+
+**Net effect on beta readiness.** The monitoring and source-correctness blockers are closed in
+code. Two things gate *observable* improvement and are **operational, not code**:
+1. **One OF nav cycle** must run with `--aaum` (tonight) so the API serves AUM; then
+2. **One FL metadata re-sync** (the P5 16th refresh, or a manual `force` dispatch) must run to
+   pull corrected metadata (AUM, sanitised riskometer/benchmark/manager, retractions) into
+   `scheme_master`. Until then, dev still shows AUM=0 and the legacy junk strings.
+
+Recommendation: don't re-audit coverage until after a forced FL re-sync post-#66/#62 land in
+the nav.db; then AUM should be >90 % and junk ≈ 0.
+
+### P6 (IDCW honesty) is now **reduced**, not cancelled
+
+#65 fixes the **as-reported** metrics tier upstream (Growth-twin numbers, or honest null for the
+~18 % with no resolvable twin). But FolioLens Compare's `selectCompareMetrics`
+([src/utils/computedFundMetrics.ts:309-323](../../src/utils/computedFundMetrics.ts#L309-L323))
+**prefers locally-computed-from-NAV metrics over as-reported** whenever the series yields any
+trailing return. For an IDCW fund, Compare hydrates that fund's *own* (payout-distorted) NAV, so
+`hasComputed` is true and it renders the distorted −34 %-drawdown numbers locally — **bypassing
+#65 entirely** in Compare's primary tier. So:
+
+- **Obsolete:** the original P6 goal of fixing/suppressing *stored* payout metrics (#65 does it
+  better, upstream).
+- **Still required (smaller):** stop Compare from overriding the now-correct as-reported value
+  with a local computation off the distorted NAV. Detect payout plans client-side
+  (`isPayoutPlan(name, optionType)` — reuse the upstream `is_idcw_scheme` name logic) and, for
+  those, **skip the computed branch and use the as-reported value** (no client-side Growth-twin
+  hydration needed — #65 already did that work). Nice-to-have: relabel the unresolved ~18 % as
+  "unavailable", a Fund-Detail NAV-chart caveat, and a "View Growth plan" link.
+- **Ordering dependency:** this must land **after** #65 is deployed **and** the FL re-sync
+  populates corrected `period_returns`/`risk_ratios`. Bypassing local compute before as-reported
+  is corrected would surface null/stale instead of wrong — worse. Sequence: **#65 deploy → FL
+  re-sync → reduced P6.** See the revised prompt in §12 (P6).
+
+---
+
 ## 1. Executive summary
 
 The remediation wave **worked**. All 14 claimed FolioLens items (FL1–10, FL12–15) are merged,
@@ -334,22 +387,26 @@ Ranked by (impact × frequency × trust damage):
 
 ## 11. Remaining high-leverage work (top 10, ranked)
 
-| # | Item | Repo | Why it matters / user impact | Effort | Risk | Before beta? |
-|---|---|---|---|---|---|---|
-| 1 | **Fix `/health`** — stop COUNT(*) over FUSE; serve cached/build-time counts | OD | Unblocks all monitoring; uptime checks; freshness-check | S | None | **Must** |
-| 2 | **Harden freshness-check** — per-check timeout + isolation; `X-API-Key` header fix | FL | The monitor must survive a broken upstream; monthly reconciliation must work on Jul 1 | S | None | **Must** |
-| 3 | **Re-source AAUM scheme-wise** — quarterly scheme-level AAUM; reject junk/empty pages; wire into daily or post-publish job | OD | Turns the app-wide empty AUM column into real data; OP1's #1 blocker | M | Low | **Must** |
-| 4 | **Merge + extend PR #62 (sanitise)** and deploy; includes null-out-rejected semantics | OD | Kills visible junk at the source; protects every future sync | S–M | Low | **Must** |
-| 5 | **Monthly forced universe refresh** — schedule `force=true` metadata+composition re-run after OF monthly publish (e.g. 16th); repurpose the no-op 15-min cron | FL | The propagation path for AUM, #62 cleanups, fresh returns/TER/composition — converts every upstream fix from "held funds only" to "everyone"; also needs clear-on-null for sanitised fields | S | Low (idempotent, proven by OP1) | **Must** |
-| 6 | **IDCW honesty pass** — detect payout plans (name regex / option_type); suppress or caveat NAV-only returns/vol/DD; prefer growth-plan twin where resolvable | FL (+optional OD flag) | Removes the single biggest "this app is wrong" experience for 54 % of schemes | M | Med (matching growth twins) | **Should** (minimum: label + suppress risk metrics) |
-| 7 | **Read-time render guards** — clamp risk_label to known set, length-cap benchmark/manager display | FL | Defense-in-depth: junk already in scheme_master keeps rendering until #62+refresh lands; cheap insurance forever | S | None | **Should** |
-| 8 | **Category coverage** — map the 1,033 active nulls (AMFI seed re-map + name heuristics + one mfdata sweep) | FL | Compare grouping/insights for 12 % of funds | S–M | Low | **Should** |
-| 9 | **Held edge cases** — investigate 130503 (no NAV); model matured schemes as "closed" state | FL | 100 beta users importing CAS files will hit matured schemes immediately | S | None | **Should** |
-| 10 | Persistent backfill failure audit table (OP1 follow-up 3/6) | FL | Operational forensics; row failures currently vanish with cursors | S | None | Can wait |
+> **Status note (2026-06-13):** items 1–5 below are now **DONE** (merged; see the Update
+> section at the top for validation). The IDCW item (6) is **reduced** and the rest are
+> unchanged. The live table is kept for the record.
+
+| # | Item | Repo | Why it matters / user impact | Effort | Risk | Before beta? | Status |
+|---|---|---|---|---|---|---|---|
+| 1 | **Fix `/health`** — stop COUNT(*) over FUSE; serve cached/build-time counts | OD | Unblocks all monitoring; uptime checks; freshness-check | S | None | **Must** | ✅ #64 (live, 0.94 s) |
+| 2 | **Harden freshness-check** — per-check timeout + isolation; `X-API-Key` header fix | FL | The monitor must survive a broken upstream; monthly reconciliation must work on Jul 1 | S | None | **Must** | ✅ #228 (08:00 run green) |
+| 3 | **Re-source AAUM scheme-wise** — quarterly scheme-level AAUM; reject junk/empty pages; wire into daily or post-publish job | OD | Turns the app-wide empty AUM column into real data; OP1's #1 blocker | M | Low | **Must** | ✅ #66 (7,936 resolve; AUM end-to-end pending next nav cycle + FL re-sync) |
+| 4 | **Merge + extend PR #62 (sanitise)** and deploy; includes null-out-rejected semantics | OD | Kills visible junk at the source; protects every future sync | S–M | Low | **Must** | ✅ #62/#63 (propagates to FL on next monthly ingest + re-sync) |
+| 5 | **Monthly forced universe refresh** — schedule `force=true` metadata+composition re-run after OF monthly publish (e.g. 16th); repurpose the no-op 15-min cron | FL | The propagation path for AUM, #62 cleanups, fresh returns/TER/composition — converts every upstream fix from "held funds only" to "everyone"; also needs clear-on-null for sanitised fields | S | Low (idempotent, proven by OP1) | **Must** | ✅ #229 (clear-on-null + 16th trigger; first fire 2026-06-16) |
+| 6 | **IDCW honesty (reduced)** — stop Compare overriding corrected as-reported metrics with local-from-distorted-NAV compute for payout plans (upstream #65 now fixes the stored tier) | FL | Removes the "this app is wrong" experience for 54 % of schemes in Compare's primary tier | S | Low | **Should** | ⏳ revised; depends on #65 deploy + FL re-sync (§12 P6) |
+| 7 | **Read-time render guards** — clamp risk_label to known set, length-cap benchmark/manager display | FL | Defense-in-depth: junk already in scheme_master keeps rendering until #62 cleanup propagates (next monthly ingest + 16th re-sync); cheap insurance forever | S | None | **Should** | open (still 223/212/253 junk live) |
+| 8 | **Category coverage** — map the 1,033 active nulls (AMFI seed re-map + name heuristics + one mfdata sweep) | FL | Compare grouping/insights for 12 % of funds | S–M | Low | **Should** | open |
+| 9 | **Held edge cases** — investigate 130503 (no NAV); model matured schemes as "closed" state | FL | 100 beta users importing CAS files will hit matured schemes immediately | S | None | **Should** | open |
+| 10 | Persistent backfill failure audit table (OP1 follow-up 3/6) | FL | Operational forensics; row failures currently vanish with cursors | S | None | Can wait | open |
 
 Not on the list (deliberately): FL11/runbook (prod-launch-timed, beta is on dev), FL16,
-index-series ownership, any re-architecture. The 15-min scheduled backfill cron should be
-folded into #5 (monthly cadence) rather than left no-opping 2,880×/month.
+index-series ownership, any re-architecture. (Item 1's "repurpose the no-op 15-min cron"
+concern is addressed by #229's monthly trigger + gated resume.)
 
 ---
 
@@ -474,29 +531,39 @@ Use the standard preambles from the 2026-06-11 review §10.3 (FolioLens / OpenFo
 > upstream (or simulate with a stubbed response in tests). cache-surfaces.md: no
 > client-visible shape change expected — justify `[cache-shape-stable]`.
 
-### P6 (FL) `feat(trust): IDCW plan metric honesty`
+### P6 (FL) `fix(compare): stop overriding corrected as-reported metrics for payout plans`
 
-> 4,515 of 8,351 active schemes (54 %) are IDCW/payout plans. Their NAV series drop on every
-> income distribution, so NAV-only math — BOTH OpenFolio's as-reported metrics AND
-> FolioLens's locally-computed Compare metrics — shows nonsense: live example, scheme 119551
-> (Aditya Birla SL Banking & PSU Debt - DIRECT - IDCW): ret_5y −7.4 %, max_drawdown_5y
-> −34 %, volatility 7.5 % — for a high-grade short-duration debt fund. 1,195 active IDCW
-> schemes carry max_drawdown_5y worse than −20 %. Dev DB: detect plan kind via
-> `option_type` where present plus a name regex
-> (`(idcw|dividend|payout|income distribution)` case-insensitive — verify counts with
-> read-only SQL and cite). Implement, in order of priority: (1) a pure helper
-> `isPayoutPlan(schemeName, optionType)` in src/utils (unit-tested incl. tricky names like
-> "Dividend Yield Fund - Growth" which must NOT match — require the payout token outside
-> the strategy name, e.g. match only after the plan-segment delimiters; get this right with
-> fixtures from real scheme_master names); (2) Compare + Fund Detail: for payout plans,
-> suppress drawdown/volatility/Sharpe/Sortino rows and show returns with an explicit
-> footnote "NAV-based; excludes income payouts — see the Growth plan for total returns"
-> (follow feedback_trust_numbers: never show a value we believe is misleading as if it were
-> comparable); (3) where a same-family Growth twin is resolvable (match on family/base name
-> + plan_type with the existing scheme_master fields), add a one-tap "View Growth plan"
-> link — do NOT silently substitute the twin's numbers. Tests: helper edge cases, Compare
-> row suppression, footnote rendering, twin resolution happy/no-match. cache-surfaces.md
-> check; `[cache-shape-stable]` if reads only.
+> **REVISED 2026-06-13 — scope reduced.** OpenFolio #65 (merged) now fixes payout/IDCW
+> metrics at the source: each payout scheme inherits its Growth-option sibling's metrics
+> (82 % resolve; the rest are honest null). That correction lands in
+> `scheme_master.period_returns` / `risk_ratios` after a metadata re-sync. The remaining
+> problem is purely client-side precedence: `selectCompareMetrics`
+> (src/utils/computedFundMetrics.ts:309–323) prefers **locally-computed-from-NAV** metrics
+> over the as-reported blob whenever the local series yields any trailing return. For a
+> payout fund, Compare hydrates that fund's *own* (distorted) NAV via `fetch-fund-nav`, so
+> `hasComputed` is true and Compare renders the local −34 %-drawdown numbers — **bypassing
+> #65's corrected as-reported values**. Fix: (1) add a pure
+> `isPayoutPlan(schemeName, optionType)` helper in src/utils — port the upstream
+> `is_idcw_scheme` logic exactly (never flag an explicit `Growth` option; treat
+> `Dividend Yield` as a strategy, flagged only with an IDCW marker; flag
+> idcw/payout/income-distribution/reinvestment/bonus/bare-dividend) and unit-test the tricky
+> names from real `scheme_master` rows incl. "...Dividend Yield Fund - Growth" (must NOT
+> match) and "...Dividend Yield Fund - IDCW" (must match). (2) In `selectCompareMetrics`, when
+> the fund is a payout plan, **skip the computed-from-local-NAV branch and use the
+> as-reported blob** (now the Growth-twin's correct numbers), so Compare and Fund Detail show
+> consistent, correct figures. Do NOT hydrate or compute from the Growth twin client-side —
+> #65 already did that work; FolioLens only needs to stop overriding it. (3) Nice-to-have:
+> when as-reported is also null (the ~18 % with no resolvable twin), label "Total-return data
+> unavailable for this payout plan — see the Growth plan" rather than bare "—"; optional
+> "View Growth plan" link via base-name+plan match. Tests: helper edge cases, payout fund
+> uses as-reported (not computed) in `selectCompareMetrics`, growth fund still uses computed.
+> `[cache-shape-stable]` (reads only).
+>
+> **Dependency / sequencing:** land this only AFTER #65 is deployed (next OF image build) and
+> a FolioLens metadata re-sync has populated corrected payout metrics (the P5 monthly refresh
+> on the 16th, or a manual `force` dispatch). Shipping it before then would replace wrong
+> numbers with null/stale ones. Validate by picking a known IDCW debt fund (e.g. 119551) in
+> Compare and confirming its drawdown/return match the Growth plan, not the distorted NAV.
 
 ### P7 (FL) `fix(ui): read-time render guards for metadata strings`
 
