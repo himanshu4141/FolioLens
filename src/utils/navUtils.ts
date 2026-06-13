@@ -86,6 +86,27 @@ export function navStaleness(latestNavDate: string | null): {
   return { label, stale: bizDays > 1, veryStale: bizDays > 3, critical: bizDays > 60 };
 }
 
+/**
+ * Returns true when a scheme should be rendered as "Matured / Closed".
+ *
+ * Two detection signals are ORed together:
+ *   1. scheme_active === false — explicit OpenFolio / universe-backfill signal
+ *      that the scheme is wound-up or merged.
+ *   2. AMFI name contains a maturity-date pattern ("Mat Dt.DD-Mon-YYYY"),
+ *      common for close-ended FMPs that predate OpenFolio's coverage.
+ *
+ * Treat null / undefined as "unknown" (not matured) so that schemes whose
+ * scheme_active hasn't been synced yet don't get incorrectly badged.
+ */
+export function isMaturedScheme(
+  schemeActive: boolean | null | undefined,
+  schemeName: string,
+): boolean {
+  if (schemeActive === false) return true;
+  if (schemeActive === true) return false; // explicit registry signal overrides name heuristic
+  return /\bMat(?:urity)?\s*Dt[\.\s]/i.test(schemeName);
+}
+
 /** Index a series to 100 at its first point (for relative comparison charts) */
 export function indexTo100(history: NavPoint[]): NavPoint[] {
   if (history.length === 0) return [];

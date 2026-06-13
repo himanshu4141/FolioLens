@@ -73,9 +73,16 @@ async function signRouterPayload(body: string): Promise<{ signature: string; tim
   return { signature: `v1,${encodeBase64(new Uint8Array(sig))}`, timestamp };
 }
 
+/** Matches AMFI FMP maturity-date pattern in scheme names ("Mat Dt.DD-Mon-YYYY"). */
+function isMaturedSchemeName(schemeName: string | null | undefined): boolean {
+  if (!schemeName) return false;
+  return /\bMat(?:urity)?\s*Dt[\.\s]/i.test(schemeName);
+}
+
 async function fetchNavMaxDate(
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<string | null> {
+  // Step 1: all active held scheme codes
   const { data: heldRows, error: heldError } = await supabase
     .from('user_fund')
     .select('scheme_code')
@@ -85,19 +92,40 @@ async function fetchNavMaxDate(
     return null;
   }
 
-  const heldCodes = [
+  const allCodes = [
     ...new Set(
       heldRows
         .map((row) => row.scheme_code)
         .filter((code): code is number => Number.isFinite(code)),
     ),
   ];
-  if (heldCodes.length === 0) return null;
+  if (allCodes.length === 0) return null;
 
+  // Step 2: exclude matured/inactive schemes so a frozen FMP NAV from 2021
+  // can't suppress the freshness alert when all active holdings are current.
+  // Detection: scheme_active === false (OpenFolio) OR AMFI maturity-date pattern in name.
+  const { data: schemeRows } = await supabase
+    .from('scheme_master')
+    .select('scheme_code, scheme_active, scheme_name')
+    .in('scheme_code', allCodes);
+
+  const maturedCodes = new Set<number>(
+    (schemeRows ?? [])
+      .filter((r) => r.scheme_active === false || isMaturedSchemeName(r.scheme_name))
+      .map((r) => r.scheme_code as number),
+  );
+
+  const activeCodes = allCodes.filter((c) => !maturedCodes.has(c));
+  if (activeCodes.length === 0) {
+    // All held schemes are matured — no meaningful freshness signal.
+    return null;
+  }
+
+  // Step 3: max nav_date over active codes only
   const { data, error } = await supabase
     .from('nav_history')
     .select('nav_date')
-    .in('scheme_code', heldCodes)
+    .in('scheme_code', activeCodes)
     .order('nav_date', { ascending: false })
     .limit(1)
     .maybeSingle();

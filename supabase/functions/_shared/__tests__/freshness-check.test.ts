@@ -31,10 +31,10 @@ describe('checkNavFreshness', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('returns ok=false when maxNavDate is null', () => {
+  it('returns ok=true when maxNavDate is null (no active non-matured schemes, skip check)', () => {
     const result = checkNavFreshness(null, now);
-    expect(result.ok).toBe(false);
-    expect(result.detail).toContain('No NAV data');
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('non-matured');
   });
 
   it('returns ok=true on a Friday for a Monday NAV (weekend tolerance)', () => {

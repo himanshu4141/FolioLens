@@ -148,6 +148,21 @@ export function PortfolioHero({
   );
 }
 
+function NavUnavailableNote({ count }: { count: number }) {
+  const tokens = useClearLensTokens();
+  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  return (
+    <View style={styles.navUnavailableNote}>
+      <Ionicons name="information-circle-outline" size={14} color={tokens.colors.textTertiary} />
+      <Text style={styles.navUnavailableNoteText}>
+        {count === 1
+          ? '1 fund excluded from totals — NAV unavailable'
+          : `${count} funds excluded from totals — NAV unavailable`}
+      </Text>
+    </View>
+  );
+}
+
 export function BenchmarkComparisonCard({
   xirr,
   marketXirr,
@@ -1039,6 +1054,10 @@ function ClearLensPortfolioScreenMobile() {
             latestNavDate={summary.latestNavDate}
           />
 
+          {summary.navUnavailableCount > 0 && (
+            <NavUnavailableNote count={summary.navUnavailableCount} />
+          )}
+
           <BenchmarkComparisonCard
             xirr={summary.xirr}
             marketXirr={summary.marketXirr}
@@ -1132,6 +1151,22 @@ function makeStyles(tokens: ClearLensTokens) {
   heroNavStampCritical: {
     color: CLEAR_LENS_RED,
     opacity: 1,
+  },
+  navUnavailableNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: ClearLensSpacing.xs,
+    paddingHorizontal: ClearLensSpacing.sm,
+    paddingVertical: ClearLensSpacing.xs,
+    backgroundColor: cl.background,
+    borderRadius: ClearLensRadii.sm,
+    borderWidth: 1,
+    borderColor: cl.borderLight,
+  },
+  navUnavailableNoteText: {
+    ...ClearLensTypography.caption,
+    color: cl.textTertiary,
+    flex: 1,
   },
   heroBottomRow: {
     flexDirection: 'row',

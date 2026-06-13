@@ -6,7 +6,7 @@
  * and veryStale flags for boundary cases.
  */
 
-import { navStaleness, filterToWindow, indexTo100, NavPoint } from '@/src/utils/navUtils';
+import { navStaleness, filterToWindow, indexTo100, isMaturedScheme, NavPoint } from '@/src/utils/navUtils';
 
 // Freeze time to a known date for all tests
 const FAKE_TODAY = new Date('2026-03-26T10:00:00.000Z');
@@ -271,5 +271,50 @@ describe('indexTo100()', () => {
     const pts: NavPoint[] = [{ date: '2025-01-01', value: 0 }];
     const result = indexTo100(pts);
     expect(result).toBe(pts); // same reference
+  });
+});
+
+// ── isMaturedScheme() ─────────────────────────────────────────────────────────
+
+describe('isMaturedScheme()', () => {
+  test('scheme_active false → matured regardless of name', () => {
+    expect(isMaturedScheme(false, 'HDFC Small Cap Fund')).toBe(true);
+    expect(isMaturedScheme(false, 'DSP A.C.E. Fund')).toBe(true);
+  });
+
+  test('scheme_active true → not matured (even if name looks like FMP)', () => {
+    expect(isMaturedScheme(true, 'DSP A.C.E. Fund Mat Dt.28-Jun-2021')).toBe(false);
+  });
+
+  test('scheme_active null → falls back to name pattern', () => {
+    expect(isMaturedScheme(null, 'DSP A.C.E. Fund - Series 2 - Dir - Growth Mat Dt.28-Jun-2021')).toBe(true);
+    expect(isMaturedScheme(null, 'HDFC Small Cap Fund - Direct Growth Plan')).toBe(false);
+  });
+
+  test('scheme_active undefined → falls back to name pattern', () => {
+    expect(isMaturedScheme(undefined, 'Reliance FMP Series XIV Plan A Mat Dt.15-Aug-2019')).toBe(true);
+    expect(isMaturedScheme(undefined, 'Axis Bluechip Fund - Direct Plan')).toBe(false);
+  });
+
+  test('name pattern is case-insensitive', () => {
+    expect(isMaturedScheme(null, 'Some Fund mat dt.01-Jan-2020')).toBe(true);
+    expect(isMaturedScheme(null, 'Some Fund MAT DT.01-JAN-2020')).toBe(true);
+  });
+
+  test('name pattern: "Maturity Dt." variant', () => {
+    expect(isMaturedScheme(null, 'XYZ Fund Maturity Dt.30-Sep-2022')).toBe(true);
+  });
+
+  test('ordinary fund name with word "mat" not at word boundary → not matured', () => {
+    // "smart" contains "mat" but does not start with word boundary \b
+    expect(isMaturedScheme(null, 'Axis Smart Beta Fund')).toBe(false);
+  });
+
+  test('real scheme 142499 name → matured', () => {
+    expect(isMaturedScheme(null, 'DSP A.C.E. Fund - Series 2 - Dir - Growth Mat Dt.28-Jun-2021')).toBe(true);
+  });
+
+  test('real scheme 130503 name → not matured', () => {
+    expect(isMaturedScheme(true, 'HDFC Small Cap Fund - Direct Growth Plan')).toBe(false);
   });
 });
