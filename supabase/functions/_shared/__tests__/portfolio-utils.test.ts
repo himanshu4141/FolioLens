@@ -8,9 +8,12 @@ import {
   isGenericSchemeCategory,
   resolveSebiCategory,
   broadCategoryFromSebi,
+  normaliseSchemeName,
+  selectCategoryFromSiblings,
   type CategoryComposition,
   type DebtHolding,
   type EquityHolding,
+  type SiblingCandidateRow,
 } from '../portfolio-utils';
 
 // ---------------------------------------------------------------------------
@@ -479,6 +482,114 @@ describe('deriveSchemeCategoryFromName', () => {
       expect(deriveSchemeCategoryFromName('DSP MID CAP FUND')).toBe('mid cap fund');
       expect(deriveSchemeCategoryFromName('dsp mid cap fund')).toBe('mid cap fund');
     });
+    it('"banking and psu" wins over standalone "psu" (banking-and-psu fund)', () => {
+      expect(deriveSchemeCategoryFromName('ICICI Prudential Banking and PSU Debt Fund')).toBe(
+        'banking and psu fund',
+      );
+    });
+    it('"gold fund" does not match when "etf" is also in the name', () => {
+      // "Gold ETF" → 'other etfs' (etf pattern checked first)
+      expect(deriveSchemeCategoryFromName('SBI Gold ETF')).toBe('other etfs');
+    });
+    it('"medium to long duration" wins over "medium term" and "medium duration"', () => {
+      expect(deriveSchemeCategoryFromName('Kotak Medium to Long Duration Fund')).toBe(
+        'medium to long duration',
+      );
+    });
+    it('"tax savings" → elss (catches before savings-fund patterns)', () => {
+      expect(deriveSchemeCategoryFromName('Mirae Asset Tax Savings Fund')).toBe('elss');
+    });
+  });
+
+  describe('new patterns (PR: null-category backfill)', () => {
+    it('multi-cap (hyphen) → multi cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life Multi-Cap Fund')).toBe(
+        'multi cap fund',
+      );
+    });
+    it('equity hybrid → aggressive hybrid fund', () => {
+      expect(deriveSchemeCategoryFromName("Aditya Birla Sun Life Equity Hybrid'95 Fund")).toBe(
+        'aggressive hybrid fund',
+      );
+    });
+    it('balanced hyrbrid (typo) → balanced hybrid fund', () => {
+      expect(deriveSchemeCategoryFromName('360 ONE Balanced Hyrbrid Fund - Regular Plan - IDCW')).toBe(
+        'balanced hybrid fund',
+      );
+    });
+    it('momentum → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Axis Momentum Fund - Direct Plan - Growth Option')).toBe(
+        'sectoral/thematic',
+      );
+    });
+    it('innovation → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Axis Innovation Fund - Regular Plan - Growth Option')).toBe(
+        'sectoral/thematic',
+      );
+    });
+    it('psu (equity theme) → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life PSU Equity Fund')).toBe(
+        'sectoral/thematic',
+      );
+    });
+    it('esg → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life ESG Integration Strategy Fund')).toBe(
+        'sectoral/thematic',
+      );
+    });
+    it('ethical → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Tata Ethical Fund - Regular Plan - Growth Option')).toBe(
+        'sectoral/thematic',
+      );
+    });
+    it('government securities → gilt fund', () => {
+      expect(deriveSchemeCategoryFromName('Franklin India Government Securities Fund - Growth')).toBe(
+        'gilt fund',
+      );
+    });
+    it('govenment securities (AMFI typo) → gilt fund', () => {
+      expect(
+        deriveSchemeCategoryFromName('Aditya Birla Sun Life Govenment Securities Fund - Growth'),
+      ).toBe('gilt fund');
+    });
+    it('money manager → money market fund', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life Money Manager Fund')).toBe(
+        'money market fund',
+      );
+    });
+    it('medium term → medium duration fund', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life Medium Term Plan')).toBe(
+        'medium duration fund',
+      );
+    });
+    it('strategic bond → dynamic bond fund', () => {
+      expect(deriveSchemeCategoryFromName('Axis Strategic Bond Fund - Direct Plan - Growth Option')).toBe(
+        'dynamic bond fund',
+      );
+    });
+    it('long term bond → long duration fund', () => {
+      expect(deriveSchemeCategoryFromName('ICICI Prudential Long Term Bond Fund - Growth')).toBe(
+        'long duration fund',
+      );
+    });
+    it('gold fund (no etf in name) → fund of funds domestic', () => {
+      expect(deriveSchemeCategoryFromName('SBI Gold Fund - Regular Plan - Growth')).toBe(
+        'fund of funds domestic',
+      );
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life Gold Fund-Growth')).toBe(
+        'fund of funds domestic',
+      );
+    });
+    it('bal bhavishya → solution oriented - childrens', () => {
+      expect(deriveSchemeCategoryFromName('Aditya Birla Sun Life Bal Bhavishya Yojna - Direct')).toBe(
+        'solution oriented - childrens',
+      );
+    });
+    it('financial services → sectoral/thematic', () => {
+      expect(deriveSchemeCategoryFromName('Bandhan Financial Services Fund - Direct Plan - Growth')).toBe(
+        'sectoral/thematic',
+      );
+    });
   });
 });
 
@@ -570,5 +681,204 @@ describe('broadCategoryFromSebi', () => {
     for (const k of keys) {
       expect(broadCategoryFromSebi(k)).not.toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normaliseSchemeName
+// ---------------------------------------------------------------------------
+
+describe('normaliseSchemeName', () => {
+  it('strips "- Direct Plan - Growth" suffix', () => {
+    expect(normaliseSchemeName('DSP Bond Fund - Direct Plan - Growth')).toBe('dsp bond fund');
+  });
+  it('strips "- Regular Plan - IDCW" suffix', () => {
+    expect(normaliseSchemeName('DSP Bond Fund - Regular Plan - IDCW')).toBe('dsp bond fund');
+  });
+  it('strips bare "- Growth" suffix (no plan keyword)', () => {
+    expect(normaliseSchemeName('DSP Bond Fund - Growth')).toBe('dsp bond fund');
+  });
+  it('strips bare "- IDCW" suffix', () => {
+    expect(normaliseSchemeName('DSP Bond Fund - IDCW')).toBe('dsp bond fund');
+  });
+  it('strips "- DIRECT - IDCW" (no Plan keyword, no space before dash)', () => {
+    expect(normaliseSchemeName('Aditya Birla Sun Life MNC Fund - DIRECT - IDCW')).toBe(
+      'aditya birla sun life mnc fund',
+    );
+  });
+  it('strips "- Regular Plan Daily IDCW" (frequency before option)', () => {
+    expect(
+      normaliseSchemeName(
+        'SBI Savings Fund - Regular Plan Daily Income Distribution cum Capital Withdrawal Option (IDCW)',
+      ),
+    ).toBe('sbi savings fund');
+  });
+  it('strips "- Growth - Direct Plan" (option before plan type at end)', () => {
+    expect(
+      normaliseSchemeName('Franklin India Government Securities Fund - Growth - Direct Plan'),
+    ).toBe('franklin india government securities fund');
+  });
+  it('strips "- Direct Plan Growth" (option appended without second dash)', () => {
+    expect(normaliseSchemeName('Parag Parikh Flexi Cap Fund - Direct Plan Growth')).toBe(
+      'parag parikh flexi cap fund',
+    );
+  });
+  it('handles no suffix at all (unrecognised name format)', () => {
+    expect(normaliseSchemeName('SBI Bluechip Fund')).toBe('sbi bluechip fund');
+  });
+  it('trims leading/trailing whitespace and lower-cases', () => {
+    expect(normaliseSchemeName('  HDFC Flexi Cap Fund - Regular Plan - Growth  ')).toBe(
+      'hdfc flexi cap fund',
+    );
+  });
+  it('handles Fixed Term Plan series names (strips only plan/option, keeps series)', () => {
+    expect(
+      normaliseSchemeName(
+        'Aditya Birla Sun Life Fixed Term Plan - Series TI (1837 days) - Direct Plan - Growth Option',
+      ),
+    ).toBe('aditya birla sun life fixed term plan - series ti (1837 days)');
+  });
+  it('handles -DIRECT (no space before dash)', () => {
+    expect(normaliseSchemeName('Aditya Birla Sun Life Digital India Fund -DIRECT - IDCW')).toBe(
+      'aditya birla sun life digital india fund',
+    );
+  });
+  it('DSP Savings Fund - Direct Plan - Growth → same base as regular', () => {
+    const direct = normaliseSchemeName('DSP Savings Fund - Direct Plan - Growth');
+    const regular = normaliseSchemeName('DSP Savings Fund - Regular Plan - Growth');
+    expect(direct).toBe(regular);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectCategoryFromSiblings
+// ---------------------------------------------------------------------------
+
+function makeRow(
+  scheme_code: number,
+  scheme_name: string,
+  amc_name: string,
+  sebi_category: string | null = null,
+  scheme_category: string | null = null,
+): SiblingCandidateRow {
+  return { scheme_code, scheme_name, amc_name, sebi_category, scheme_category };
+}
+
+describe('selectCategoryFromSiblings', () => {
+  const target = makeRow(1, 'DSP Bond Fund - Direct Plan - Growth', 'DSP Mutual Fund');
+
+  it('returns null when target already has sebi_category (never overwrite)', () => {
+    const withCat = { ...target, sebi_category: 'medium duration fund' };
+    const sibling = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(withCat, [sibling])).toBeNull();
+  });
+
+  it('returns null when target already has scheme_category (never overwrite)', () => {
+    const withCat = { ...target, scheme_category: 'Debt' };
+    const sibling = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(withCat, [sibling])).toBeNull();
+  });
+
+  it('returns null when no candidates match the same base name', () => {
+    const unrelated = makeRow(99, 'DSP Savings Fund - IDCW', 'DSP Mutual Fund', 'money market fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [unrelated])).toBeNull();
+  });
+
+  it('returns null when candidates have different AMC', () => {
+    const wrongAmc = makeRow(2, 'DSP Bond Fund - IDCW', 'ICICI Prudential Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [wrongAmc])).toBeNull();
+  });
+
+  it('returns null when sibling has null sebi_category', () => {
+    const nullCat = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', null, 'Debt');
+    expect(selectCategoryFromSiblings(target, [nullCat])).toBeNull();
+  });
+
+  it('returns null when sibling has null scheme_category', () => {
+    const nullCat = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', null);
+    expect(selectCategoryFromSiblings(target, [nullCat])).toBeNull();
+  });
+
+  it('returns category pair when exactly one sibling matches', () => {
+    const sibling = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [sibling])).toEqual({
+      sebi_category: 'medium duration fund',
+      scheme_category: 'Debt',
+    });
+  });
+
+  it('returns category pair when multiple siblings all agree', () => {
+    const s1 = makeRow(2, 'DSP Bond Fund - Growth', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    const s2 = makeRow(3, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    const s3 = makeRow(4, 'DSP Bond Fund - Regular Plan - Growth', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [s1, s2, s3])).toEqual({
+      sebi_category: 'medium duration fund',
+      scheme_category: 'Debt',
+    });
+  });
+
+  it('returns null when siblings disagree on sebi_category (ambiguous family)', () => {
+    const s1 = makeRow(2, 'DSP Bond Fund - Growth', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    const s2 = makeRow(3, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'dynamic bond fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [s1, s2])).toBeNull();
+  });
+
+  it('returns null when siblings disagree on scheme_category (ambiguous family)', () => {
+    const s1 = makeRow(2, 'DSP Bond Fund - Growth', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    const s2 = makeRow(3, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Hybrid');
+    expect(selectCategoryFromSiblings(target, [s1, s2])).toBeNull();
+  });
+
+  it('ignores candidates with the same scheme_code as target', () => {
+    // The target itself should never be its own sibling.
+    const selfRef = makeRow(1, 'DSP Bond Fund - Direct Plan - Growth', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    expect(selectCategoryFromSiblings(target, [selfRef])).toBeNull();
+  });
+
+  it('works for real-world DSP Savings Fund sibling pair', () => {
+    const directTarget = makeRow(10, 'DSP Savings Fund - Direct Plan - Growth', 'DSP Mutual Fund');
+    const regularSibling = makeRow(11, 'DSP Savings Fund - Regular Plan - Growth', 'DSP Mutual Fund', 'money market fund', 'Debt');
+    expect(selectCategoryFromSiblings(directTarget, [regularSibling])).toEqual({
+      sebi_category: 'money market fund',
+      scheme_category: 'Debt',
+    });
+  });
+
+  it('returns null for empty candidates array', () => {
+    expect(selectCategoryFromSiblings(target, [])).toBeNull();
+  });
+
+  it('handles null amc_name on target (treated as empty string AMC)', () => {
+    const nullAmcTarget = makeRow(1, 'DSP Bond Fund - Growth', null as unknown as string);
+    const sibling = makeRow(2, 'DSP Bond Fund - IDCW', 'DSP Mutual Fund', 'medium duration fund', 'Debt');
+    // null AMC !== 'dsp mutual fund' → no match
+    expect(selectCategoryFromSiblings(nullAmcTarget, [sibling])).toBeNull();
+  });
+
+  it('handles null amc_name on candidate (treated as empty string AMC)', () => {
+    const nullAmcSibling = makeRow(
+      2,
+      'DSP Bond Fund - IDCW',
+      null as unknown as string,
+      'medium duration fund',
+      'Debt',
+    );
+    // candidate AMC '' !== 'dsp mutual fund' → no match
+    expect(selectCategoryFromSiblings(target, [nullAmcSibling])).toBeNull();
+  });
+
+  it('matches when both target and candidate have null amc_name', () => {
+    const nullAmcTarget = makeRow(1, 'DSP Bond Fund - Growth', null as unknown as string);
+    const nullAmcSibling = makeRow(
+      2,
+      'DSP Bond Fund - IDCW',
+      null as unknown as string,
+      'medium duration fund',
+      'Debt',
+    );
+    expect(selectCategoryFromSiblings(nullAmcTarget, [nullAmcSibling])).toEqual({
+      sebi_category: 'medium duration fund',
+      scheme_category: 'Debt',
+    });
   });
 });

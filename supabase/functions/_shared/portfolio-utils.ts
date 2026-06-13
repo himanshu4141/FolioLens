@@ -122,7 +122,7 @@ export function deriveSchemeCategoryFromName(
   const PATTERNS: Array<[string[], string]> = [
     // Equity sub-buckets — most specific first.
     [['large & mid cap', 'large and mid cap', 'largemidcap', 'large-mid cap'], 'large & mid cap fund'],
-    [['multi cap'], 'multi cap fund'],
+    [['multi cap', 'multi-cap', 'multicap'], 'multi cap fund'],
     [['flexi cap', 'flexicap'], 'flexi cap fund'],
     [['mid cap', 'midcap'], 'mid cap fund'],
     [['small cap', 'smallcap'], 'small cap fund'],
@@ -131,25 +131,34 @@ export function deriveSchemeCategoryFromName(
     [['contra'], 'contra fund'],
     [['dividend yield'], 'dividend yield fund'],
     [['value'], 'value fund'],
-    [['elss', 'tax saver', 'tax plan', 'long term equity', 'long-term equity'], 'elss'],
+    // 'tax savings' added so "Tax Savings Fund" names catch ELSS before 'savings fund' below.
+    [['elss', 'tax saver', 'tax plan', 'tax savings', 'long term equity', 'long-term equity'], 'elss'],
+    // 'banking and psu' must come BEFORE the sectoral/thematic 'psu' needle so that
+    // "Banking and PSU Debt Fund" names resolve to banking-and-psu rather than thematic.
+    [['banking and psu', 'banking & psu'], 'banking and psu fund'],
     [['sectoral', 'thematic', 'banking and financial', 'banking & financial',
       'pharma', 'healthcare', 'technology', 'infrastructure', 'consumption',
       'energy', 'manufacturing', 'business cycle', 'transport', 'logistics',
-      'commodities', 'natural resources', 'india opportunities'], 'sectoral/thematic'],
+      'commodities', 'natural resources', 'india opportunities',
+      // Additional high-confidence thematic patterns (null-category backfill).
+      'momentum', 'innovation', 'esg', 'ethical', 'sustainability',
+      'financial services', 'special opportunities', 'psu'], 'sectoral/thematic'],
 
     // Hybrid sub-buckets — order matters because "balanced" vs "balanced advantage".
     [['balanced advantage', 'dynamic asset allocation'], 'balanced advantage fund'],
-    [['aggressive hybrid'], 'aggressive hybrid fund'],
+    [['aggressive hybrid', 'equity hybrid', 'hybrid equity'], 'aggressive hybrid fund'],
     [['conservative hybrid'], 'conservative hybrid fund'],
     [['equity savings'], 'equity savings fund'],
     [['multi asset'], 'multi asset allocation'],
-    [['balanced hybrid'], 'balanced hybrid fund'],
+    // 'balanced hyrbrid' catches the typo seen in 360 ONE Balanced Hyrbrid Fund.
+    [['balanced hybrid', 'balanced hyrbrid'], 'balanced hybrid fund'],
     [['arbitrage'], 'arbitrage fund'],
 
-    // Passive / FoF. ETF is checked before nifty/sensex because most ETFs
-    // also reference a benchmark in their name (e.g. "Nifty BeES ETF").
+    // Passive / FoF. ETF is checked before 'gold fund' so "Gold ETF" stays in 'other etfs'.
     [['fund of fund', 'fund of funds', 'fof'], 'fund of funds domestic'],
     [['etf', ' bees'], 'other etfs'],
+    // Gold Funds (without "etf" in the name) are FoFs investing in a domestic gold ETF.
+    [['gold fund'], 'fund of funds domestic'],
     [['index fund', 'nifty', 'sensex', ' bse '], 'index funds'],
 
     // Debt sub-buckets.
@@ -157,21 +166,27 @@ export function deriveSchemeCategoryFromName(
     [['liquid'], 'liquid fund'],
     [['ultra short'], 'ultra short duration fund'],
     [['low duration'], 'low duration fund'],
-    [['money market'], 'money market fund'],
+    [['money market', 'money manager'], 'money market fund'],
     [['short duration', 'short term'], 'short duration fund'],
     [['medium to long duration'], 'medium to long duration'],
-    [['medium duration'], 'medium duration fund'],
-    [['long duration'], 'long duration fund'],
-    [['dynamic bond'], 'dynamic bond fund'],
+    // 'medium term' covers "Medium Term Plan" fund names used by some AMCs for
+    // what SEBI now calls medium duration funds (Macaulay duration 3–4 years).
+    [['medium duration', 'medium term'], 'medium duration fund'],
+    // 'long term bond' covers ICICI Prudential / Franklin "Long Term Bond Fund"
+    // which SEBI classifies as Long Duration (Macaulay duration > 7 years).
+    [['long duration', 'long term bond'], 'long duration fund'],
+    [['strategic bond', 'dynamic bond'], 'dynamic bond fund'],
     [['corporate bond'], 'corporate bond fund'],
     [['credit risk'], 'credit risk fund'],
-    [['banking and psu', 'banking & psu'], 'banking and psu fund'],
-    [['gilt'], 'gilt fund'],
+    // 'government securities' / 'government bond' are the common fund-name form of gilt funds.
+    // 'govenment' is a known AMFI typo in legacy scheme names.
+    [['gilt', 'government securities', 'government bond', 'govt securities', 'govenment securities'], 'gilt fund'],
     [['floater', 'floating rate'], 'floater fund'],
 
     // Solution-oriented.
     [['retirement'], 'solution oriented - retirement'],
-    [["children's", 'childrens', 'children'], 'solution oriented - childrens'],
+    // 'bal bhavishya' is the Hindi name for ABSL's children's fund.
+    [["children's", 'childrens', 'children', 'bal bhavishya'], 'solution oriented - childrens'],
   ];
 
   for (const [needles, key] of PATTERNS) {
@@ -268,4 +283,112 @@ export function resolveSebiCategory(
     return (schemeCategory as string).toLowerCase().trim();
   }
   return deriveSchemeCategoryFromName(schemeName);
+}
+
+// ── Sibling-category inheritance helpers ──────────────────────────────────
+
+/**
+ * Strips AMFI plan/option suffixes from a scheme name so that all plan
+ * variants of the same fund (Direct/Regular, Growth/IDCW) share a common
+ * "base name" string.  Used by `selectCategoryFromSiblings` to identify
+ * same-family schemes within an AMC.
+ *
+ * Handles the real AMFI naming patterns seen in the wild:
+ *   "Fund Name - Direct Plan - Growth"
+ *   "Fund Name - Regular Plan Daily IDCW"
+ *   "Fund Name - DIRECT - IDCW"  (no "Plan" word)
+ *   "Fund Name - Growth"          (bare option suffix)
+ *   "Fund Name - Growth - Direct Plan"  (option before plan type)
+ */
+export function normaliseSchemeName(name: string): string {
+  return name
+    .trim()
+    // 1. Strip "- {plan_type} [Plan] [sep] {option}…" from the end.
+    //    The option keyword is optional — handles bare "- Direct Plan" endings.
+    //    'sep' = optional dash or space between "Plan" and the option word.
+    .replace(
+      /\s*-+\s*(?:direct|regular|dir)(?:\s+plan)?\s*(?:[-–]\s*|\s+)?(?:growth|idcw|income distribution|dividend|payout|reinvest|daily|weekly|monthly|quarterly|half\s*yearly|annual|standard|periodic|plan).*$/i,
+      '',
+    )
+    // 2. Strip bare "- {option}…" suffix (no preceding plan-type keyword).
+    .replace(
+      /\s*-+\s*(?:growth|idcw|income distribution|dividend|payout|reinvest|daily|weekly|monthly|quarterly|half\s*yearly|annual|standard|periodic).*$/i,
+      '',
+    )
+    // 3. Strip trailing bare plan type "- Direct [Plan]" / "- Regular [Plan]"
+    //    that remains after earlier passes (e.g. "Fund - Growth - Direct Plan").
+    .replace(/\s*-+\s*(?:direct|regular|dir)(?:\s+plan)?\s*$/i, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Scheme row shape expected by selectCategoryFromSiblings.
+ * Carries only the fields needed for sibling-category lookup.
+ */
+export interface SiblingCandidateRow {
+  scheme_code: number;
+  scheme_name: string;
+  amc_name: string | null;
+  scheme_category: string | null;
+  sebi_category: string | null;
+}
+
+/**
+ * Given a null-category target scheme and a pool of candidate rows from the
+ * same DB (all scheme_active = true), returns the {sebi_category,
+ * scheme_category} pair to inherit if:
+ *
+ *   • At least one candidate shares the same AMC and the same normalised base
+ *     name as the target (i.e. the same fund family, different plan/option).
+ *   • All matching candidates agree on the SAME {sebi_category, scheme_category}
+ *     pair (unambiguous family).
+ *
+ * Returns null when:
+ *   • The target already has sebi_category OR scheme_category (never overwrites).
+ *   • No candidate matches (no categorised sibling found).
+ *   • Candidates disagree on categories (ambiguous; skip rather than guess).
+ *
+ * Assumption: categories are family-level facts — all plan/option variants of
+ * the same fund belong to the same SEBI sub-bucket and broad asset class.
+ */
+export function selectCategoryFromSiblings(
+  target: SiblingCandidateRow,
+  candidates: SiblingCandidateRow[],
+): { sebi_category: string; scheme_category: string } | null {
+  // Safety guard: never overwrite an existing category.
+  if (target.sebi_category != null || target.scheme_category != null) return null;
+
+  const targetBase = normaliseSchemeName(target.scheme_name);
+  const targetAmc = (target.amc_name ?? '').toLowerCase().trim();
+
+  // Find candidates that are a different scheme, same AMC, have both categories,
+  // and share the same normalised base name.
+  const matches = candidates.filter(
+    (c) =>
+      c.scheme_code !== target.scheme_code &&
+      (c.amc_name ?? '').toLowerCase().trim() === targetAmc &&
+      c.sebi_category != null &&
+      c.scheme_category != null &&
+      normaliseSchemeName(c.scheme_name) === targetBase,
+  );
+
+  if (matches.length === 0) return null;
+
+  // Collect distinct {sebi_category, scheme_category} pairs.
+  const pairs = new Map<string, { sebi_category: string; scheme_category: string }>();
+  for (const m of matches) {
+    const key = `${m.sebi_category}|||${m.scheme_category}`;
+    if (!pairs.has(key)) {
+      pairs.set(key, {
+        sebi_category: m.sebi_category as string,
+        scheme_category: m.scheme_category as string,
+      });
+    }
+  }
+
+  // Ambiguous family — different siblings disagree on category; skip.
+  if (pairs.size !== 1) return null;
+
+  return [...pairs.values()][0];
 }

@@ -67,6 +67,12 @@ import {
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
 import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
+import {
+  resolveSebiCategory,
+  broadCategoryFromSebi,
+  selectCategoryFromSiblings,
+  type SiblingCandidateRow,
+} from '../_shared/portfolio-utils.ts';
 
 // Metadata: small payload per item (no holdings), large pages are fine
 const META_PAGE_SIZE = 300;
@@ -487,6 +493,20 @@ async function runMetadataBackfillChunk(
       }
     }
 
+    // Category inheritance for schemes processed on this page (Layer 1 + Layer 2).
+    // Uses all codes that were queued for update (errors are fine — the DB guards
+    // against overwrite and the inheritance queries simply find nothing to do).
+    const pageProcessedCodes = pageWork.map((w) => w.schemeCode);
+    if (pageProcessedCodes.length > 0) {
+      const inherited = await applyMetadataSiblingInheritance(supabase, pageProcessedCodes, log);
+      const nameResolved = await applyMetadataNameHeuristics(supabase, pageProcessedCodes, log);
+      if (inherited > 0 || nameResolved > 0) {
+        log(
+          `[universe-backfill] category fill — sibling_inherited=${inherited} name_resolved=${nameResolved}`,
+        );
+      }
+    }
+
     if (items.length < META_PAGE_SIZE)
       return { endPage: page + 1, totalCount, written, skipped, failed };
     if (totalCount > 0 && page * META_PAGE_SIZE >= totalCount)
@@ -494,6 +514,134 @@ async function runMetadataBackfillChunk(
   }
 
   return { endPage: startPage + PAGES_PER_INVOCATION, totalCount, written, skipped, failed };
+}
+
+/**
+ * Layer 1 sibling inheritance — copy sebi_category + scheme_category from a
+ * categorised plan-sibling when the current page introduced new null-category
+ * scheme_master rows.  Runs once per metadata chunk invocation after the main
+ * OF metadata write, so future plan aliases pick up their family category
+ * immediately rather than waiting for the next mfdata / backfill pass.
+ *
+ * Assumption: category is a family-level fact — all plan/option variants of
+ * the same fund belong to the same SEBI sub-bucket and broad asset class.
+ * See selectCategoryFromSiblings for safety guards (never-overwrite, skip-
+ * ambiguous).
+ *
+ * Returns the count of schemes updated.
+ */
+async function applyMetadataSiblingInheritance(
+  supabase: ReturnType<typeof createServiceClient>,
+  updatedCodes: number[],
+  log: (msg: string) => void,
+): Promise<number> {
+  if (updatedCodes.length === 0) return 0;
+
+  // Load the schemes we just wrote that are still missing a category.
+  const { data: nullRows } = await supabase
+    .from('scheme_master')
+    .select('scheme_code, scheme_name, amc_name, scheme_category, sebi_category')
+    .in('scheme_code', updatedCodes)
+    .is('sebi_category', null)
+    .is('scheme_category', null)
+    .eq('scheme_active', true);
+
+  if (!nullRows?.length) return 0;
+
+  // Collect AMC names to limit the sibling pool query.
+  const amcNames = [...new Set(nullRows.map((r) => r.amc_name).filter(Boolean))] as string[];
+
+  // Load all categorised active schemes for the same AMCs.
+  const { data: siblingPool } = await supabase
+    .from('scheme_master')
+    .select('scheme_code, scheme_name, amc_name, scheme_category, sebi_category')
+    .in('amc_name', amcNames)
+    .not('sebi_category', 'is', null)
+    .not('scheme_category', 'is', null)
+    .eq('scheme_active', true);
+
+  if (!siblingPool?.length) return 0;
+
+  const candidates = siblingPool as SiblingCandidateRow[];
+  let inherited = 0;
+
+  for (const row of nullRows as SiblingCandidateRow[]) {
+    const pair = selectCategoryFromSiblings(row, candidates);
+    if (!pair) continue;
+
+    const { error } = await supabase
+      .from('scheme_master')
+      .update({ sebi_category: pair.sebi_category, scheme_category: pair.scheme_category })
+      .eq('scheme_code', row.scheme_code)
+      .is('sebi_category', null) // idempotency guard: skip if filled in the interim
+      .is('scheme_category', null);
+
+    if (error) {
+      log(
+        `[universe-backfill] sibling-inherit scheme=${row.scheme_code} update error: ${error.message}`,
+      );
+    } else {
+      log(
+        `[universe-backfill] sibling-inherit scheme=${row.scheme_code} ` +
+          `"${row.scheme_name.slice(0, 50)}" → sebi=${pair.sebi_category}`,
+      );
+      inherited++;
+    }
+  }
+
+  return inherited;
+}
+
+/**
+ * Layer 2 name-heuristic pass — applies resolveSebiCategory + broadCategoryFromSebi
+ * to newly written null-category rows using only the scheme_name already in the DB.
+ * No network calls.  Run after sibling inheritance so we only touch the residue.
+ */
+async function applyMetadataNameHeuristics(
+  supabase: ReturnType<typeof createServiceClient>,
+  updatedCodes: number[],
+  log: (msg: string) => void,
+): Promise<number> {
+  if (updatedCodes.length === 0) return 0;
+
+  const { data: nullRows } = await supabase
+    .from('scheme_master')
+    .select('scheme_code, scheme_name, scheme_category, sebi_category')
+    .in('scheme_code', updatedCodes)
+    .is('sebi_category', null)
+    .is('scheme_category', null)
+    .eq('scheme_active', true);
+
+  if (!nullRows?.length) return 0;
+
+  let resolved = 0;
+  for (const row of nullRows) {
+    const sebi = resolveSebiCategory(
+      row.scheme_category as string | null,
+      row.scheme_name as string | null,
+    );
+    if (!sebi) continue;
+
+    const broad = broadCategoryFromSebi(sebi);
+    const patch: Record<string, string> = { sebi_category: sebi };
+    if (broad) patch.scheme_category = broad;
+
+    const { error } = await supabase
+      .from('scheme_master')
+      .update(patch)
+      .eq('scheme_code', row.scheme_code as number)
+      .is('sebi_category', null);
+
+    if (error) {
+      log(
+        `[universe-backfill] name-heuristic scheme=${row.scheme_code} update error: ${error.message}`,
+      );
+    } else {
+      resolved++;
+    }
+  }
+
+  return resolved;
 }
 
 async function readCursor(
