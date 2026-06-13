@@ -38,14 +38,19 @@ the IDCW fix #65) and live dev state on 2026-06-13T08:xxZ.
 #228/#229 merged with all CI checks green.
 
 **Net effect on beta readiness.** The monitoring and source-correctness blockers are closed in
-code. Three things gate *observable* improvement:
-1. **The monthly OF ingest must successfully publish** (see the blocker below) so the served
-   holdings DB carries sanitised metadata; then
-2. **One OF nav cycle** must run with `--aaum` (the daily nav job, independent of the monthly
-   ingest, writes AUM into `nav.db.fund_metrics`) so the API serves AUM; then
-3. **One FL metadata re-sync** (the P5 16th refresh, or a manual `force` dispatch) must run to
-   pull corrected metadata (AUM, sanitised riskometer/benchmark/manager, retractions) into
-   `scheme_master`. Until then, dev still shows AUM=0 and the legacy junk strings.
+code. Gating items for *observable* improvement:
+1. ✅ **AUM + IDCW correction now live on the OF API** — a manual `nav-daily` retrigger on
+   2026-06-13 08:38–08:40 UTC (incremental, no backfill) wrote `AMFI AAUM … updated=7936`,
+   recomputed metrics with the IDCW fix (`6323 payout plans from Growth sibling, 1298 nulled`),
+   and uploaded nav.db. API now serves AUM (153415 = ₹52.39 Cr ✓) and corrected payout metrics
+   (119551 max_drawdown −34 % → **−0.83 %** ✓); growth-fund returns intact. nav-daily ran in
+   ~2 min, well within its 600s timeout.
+2. ❌ **The monthly OF ingest must still successfully publish** (see the blocker below) — the
+   served *holdings DB* carries the sanitised B1 metadata (riskometer/benchmark/manager/TER) and
+   is still the stale 2026-06-07 build. This half is independent of nav.db/AUM.
+3. ⏳ **One FL metadata re-sync** (the P5 16th refresh, or a manual `force` dispatch) must run to
+   pull corrected metadata (AUM + sanitised B1 + retractions) into `scheme_master`. Until then,
+   FL dev still shows AUM=0 and the legacy junk strings even though the OF API now has AUM.
 
 ### BLOCKER (found 2026-06-13) — monthly ingest timed out and published nothing
 
