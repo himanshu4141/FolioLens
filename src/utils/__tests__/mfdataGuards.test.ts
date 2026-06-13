@@ -2,12 +2,15 @@ import {
   isCompositionImplausible,
   isLaunchDateDirectPlanIntroduction,
   isRiskRatioCategoryBlocked,
+  readBenchmarkName,
+  readFundManager,
   readMfdataAsOfDate,
   readMfdataBeta,
   readMfdataRSquared,
   readMfdataStdDev,
   readOfMaxDrawdown,
   readReturnPct,
+  readRiskLabel,
   SEBI_DIRECT_PLAN_INTRODUCTION_DATE,
 } from '../mfdataGuards';
 
@@ -269,5 +272,239 @@ describe('readOfMaxDrawdown', () => {
 
   it('handles small drawdowns', () => {
     expect(readOfMaxDrawdown({ max_drawdown_5y: -0.001 })).toBeCloseTo(-0.001);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readRiskLabel
+// ---------------------------------------------------------------------------
+
+describe('readRiskLabel', () => {
+  // Canonical labels — exact case
+  it('returns canonical label for "Low"', () => {
+    expect(readRiskLabel('Low')).toBe('Low');
+  });
+
+  it('returns canonical label for "Low to Moderate"', () => {
+    expect(readRiskLabel('Low to Moderate')).toBe('Low to Moderate');
+  });
+
+  it('returns canonical label for "Moderate"', () => {
+    expect(readRiskLabel('Moderate')).toBe('Moderate');
+  });
+
+  it('returns canonical label for "Moderately High"', () => {
+    expect(readRiskLabel('Moderately High')).toBe('Moderately High');
+  });
+
+  it('returns canonical label for "High"', () => {
+    expect(readRiskLabel('High')).toBe('High');
+  });
+
+  it('returns canonical label for "Very High"', () => {
+    expect(readRiskLabel('Very High')).toBe('Very High');
+  });
+
+  // Case-insensitive normalisation
+  it('normalises "Low To Moderate" (48 live rows) → "Low to Moderate"', () => {
+    expect(readRiskLabel('Low To Moderate')).toBe('Low to Moderate');
+  });
+
+  it('normalises "low to moderate" (all-lowercase) → "Low to Moderate"', () => {
+    expect(readRiskLabel('low to moderate')).toBe('Low to Moderate');
+  });
+
+  it('normalises "VERY HIGH" → "Very High"', () => {
+    expect(readRiskLabel('VERY HIGH')).toBe('Very High');
+  });
+
+  it('normalises "moderately high" → "Moderately High"', () => {
+    expect(readRiskLabel('moderately high')).toBe('Moderately High');
+  });
+
+  // Whitespace trimming
+  it('trims leading/trailing whitespace before matching', () => {
+    expect(readRiskLabel('  High  ')).toBe('High');
+    expect(readRiskLabel('\tModerate\n')).toBe('Moderate');
+  });
+
+  // Real junk from live dev DB (2026-06-13)
+  it('returns null for OCR shrapnel ("Very High Risk L M o o w de t r o at e")', () => {
+    expect(readRiskLabel('Very High Risk L M o o w de t r o at e')).toBeNull();
+  });
+
+  it('returns null for free-rate annotation ("free rate assumed to be 5.34%…")', () => {
+    expect(readRiskLabel('free rate assumed to be 5.34% (FBIL Overnight MIBOR as on Apr 30, 2026)')).toBeNull();
+  });
+
+  it('returns null for suitability paragraph (6 live rows)', () => {
+    expect(
+      readRiskLabel(
+        'This product is suitable for investors who are seeking long-term capital appreciation through investment in equity/equity related instruments in a concentrated portfolio of maximum 30 stocks across market capitalization.',
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for "and Relatively low Credit Risk" (6 live rows)', () => {
+    expect(readRiskLabel('and Relatively low Credit Risk')).toBeNull();
+  });
+
+  // "Moderately Low" is not in SEBI's current 6-label set
+  it('returns null for non-standard label "Moderately Low"', () => {
+    expect(readRiskLabel('Moderately Low')).toBeNull();
+  });
+
+  // Null / empty
+  it('returns null for null', () => {
+    expect(readRiskLabel(null)).toBeNull();
+  });
+
+  it('returns null for undefined', () => {
+    expect(readRiskLabel(undefined)).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(readRiskLabel('')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readBenchmarkName
+// ---------------------------------------------------------------------------
+
+describe('readBenchmarkName', () => {
+  // Clean values pass through
+  it('returns a short clean benchmark name as-is', () => {
+    expect(readBenchmarkName('Nifty 50 TRI')).toBe('Nifty 50 TRI');
+  });
+
+  it('returns benchmark at exactly 120 chars', () => {
+    const s = 'A'.repeat(120);
+    expect(readBenchmarkName(s)).toBe(s);
+  });
+
+  // Length guard
+  it('returns null when benchmark exceeds 120 chars', () => {
+    expect(readBenchmarkName('A'.repeat(121))).toBeNull();
+  });
+
+  it('returns null for 269-char holdings-bleed name from live dev DB', () => {
+    const junk =
+      'Nifty Large Mid Cap 250 TRI Schaeffler India Ltd 1.0 Devyani international limited 0.3 ZF Commercial Vehicle Control Systems Non - Ferrous Metals 2.4 Coforge Ltd 1.7 Persistent Systems Ltd 1.6 Sona BLW Precision Forgings Ltd 1.3 Equitas Small Finance Bank 1.1';
+    expect(readBenchmarkName(junk)).toBeNull();
+  });
+
+  // Bleed-pattern guard — real live-DB fixtures
+  it('returns null when "portfolio" appears (live: "Additional Benchmark** Annualized Portfolio YTM*")', () => {
+    expect(readBenchmarkName('Additional Benchmark** Annualized Portfolio YTM*')).toBeNull();
+  });
+
+  it('returns null for portfolio-duration bleed (live junk)', () => {
+    expect(
+      readBenchmarkName(
+        'Duration of the portfolio will be dynamically managed within the range of the 0-7 years.',
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null when "holdings" appears (live: "Nitori Holdings Co Ltd 2.20 Bridgestone Corp 2.75")', () => {
+    expect(readBenchmarkName('Nitori Holdings Co Ltd 2.20 Bridgestone Corp 2.75')).toBeNull();
+  });
+
+  it('returns null when "% of" appears (live: "65% of Nifty 500 TRI + 20% of…")', () => {
+    expect(readBenchmarkName('65% of Nifty 500 TRI + 20% of NIFTY Composite Debt Index')).toBeNull();
+  });
+
+  it('returns null when "top 10" appears', () => {
+    expect(readBenchmarkName('Top 10 holdings by weight')).toBeNull();
+  });
+
+  it('returns null when "aum" appears as a word', () => {
+    expect(readBenchmarkName('Portfolio AUM breakdown')).toBeNull();
+  });
+
+  // Bleed pattern is case-insensitive
+  it('bleed patterns are case-insensitive', () => {
+    expect(readBenchmarkName('PORTFOLIO DETAIL')).toBeNull();
+    expect(readBenchmarkName('HOLDINGS LIST')).toBeNull();
+  });
+
+  // Trimming
+  it('trims leading/trailing whitespace before returning', () => {
+    expect(readBenchmarkName('  Nifty 50 TRI  ')).toBe('Nifty 50 TRI');
+  });
+
+  it('returns null after trimming if result >120 chars', () => {
+    const padded = '  ' + 'B'.repeat(121) + '  ';
+    expect(readBenchmarkName(padded)).toBeNull();
+  });
+
+  // Null / empty
+  it('returns null for null', () => {
+    expect(readBenchmarkName(null)).toBeNull();
+  });
+
+  it('returns null for undefined', () => {
+    expect(readBenchmarkName(undefined)).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(readBenchmarkName('')).toBeNull();
+  });
+
+  it('returns null for whitespace-only string', () => {
+    expect(readBenchmarkName('   ')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readFundManager
+// ---------------------------------------------------------------------------
+
+describe('readFundManager', () => {
+  // Clean values pass through
+  it('returns a short manager name as-is', () => {
+    expect(readFundManager('Prashant Jain')).toBe('Prashant Jain');
+  });
+
+  it('returns manager name at exactly 160 chars', () => {
+    const s = 'A'.repeat(160);
+    expect(readFundManager(s)).toBe(s);
+  });
+
+  it('returns a multi-manager string under 160 chars', () => {
+    const val = 'Abhishek Gupta (Equity), Mayank Chaturvedi (Overseas Investments)';
+    expect(readFundManager(val)).toBe(val);
+  });
+
+  // Length guard
+  it('returns null when value exceeds 160 chars', () => {
+    expect(readFundManager('A'.repeat(161))).toBeNull();
+  });
+
+  // Real OCR bleed from live dev DB (2026-06-13)
+  it('returns null for 2538-char OCR-bleed string (live: "Abhishek Gupta… Minimum Investment… Load Structure…")', () => {
+    const junk =
+      'Abhishek Gupta (Equity), Mayank Chaturvedi (Overseas Investments), Minimum Investment1, Lumpsum ₹ 5,000, SIP## Please refer page 85, Additional Purchase ₹ 1,000, Load Structure, Entry load: "NA", Exit load: In respect of each purchase/switch-in of Units within 18 months from the date of allotment...';
+    expect(readFundManager(junk)).toBeNull();
+  });
+
+  it('returns null for 2358-char bleed string (live: "Neelotpal Sahai…")', () => {
+    const junk =
+      'Neelotpal Sahai (Equity), Mayank Chaturvedi (Overseas Investments), Minimum Investment1, Lumpsum ₹ 5,000, SIP## Please refer page 85, Additional Purchase ₹ 1,000, Load Structure, Entry load: "NA", Exit load: In respect of each purchase/switch-in';
+    expect(readFundManager(junk)).toBeNull();
+  });
+
+  // Null / empty
+  it('returns null for null', () => {
+    expect(readFundManager(null)).toBeNull();
+  });
+
+  it('returns null for undefined', () => {
+    expect(readFundManager(undefined)).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(readFundManager('')).toBeNull();
   });
 });

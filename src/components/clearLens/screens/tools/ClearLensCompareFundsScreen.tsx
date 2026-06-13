@@ -50,7 +50,10 @@ import {
 } from '@/src/utils/computedFundMetrics';
 import {
   isCompositionImplausible,
+  readBenchmarkName,
+  readFundManager,
   readMfdataBeta,
+  readRiskLabel,
 } from '@/src/utils/mfdataGuards';
 import type { NavPoint } from '@/src/utils/navUtils';
 import { appendNavTailIfStale, fetchFundNavHistory, type FetchNavHistoryOptions } from '@/src/hooks/useFundDetail';
@@ -91,6 +94,7 @@ interface SchemeMasterRow {
   minLumpsum: number | null;
   minAdditional: number | null;
   riskLabel: string | null;
+  fundManager: string | null;
   periodReturns: unknown;
   riskRatios: unknown;
 }
@@ -163,6 +167,7 @@ async function fetchSchemes(
     minLumpsum: row.min_lumpsum,
     minAdditional: row.min_additional,
     riskLabel: row.risk_label,
+    fundManager: row.fund_manager,
     periodReturns: row.period_returns,
     riskRatios: row.risk_ratios,
   }));
@@ -868,7 +873,7 @@ function OneFundState({
               {fundDisplayName(scheme)}
             </Text>
             <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary }} numberOfLines={1}>
-              {fundCategory(scheme)}{scheme.benchmark ? ` · ${scheme.benchmark}` : ''}
+              {fundCategory(scheme)}{(() => { const b = readBenchmarkName(scheme.benchmark); return b ? ` · ${b}` : ''; })()}
             </Text>
           </View>
           <TouchableOpacity
@@ -1879,7 +1884,15 @@ function BasicsCard({
     },
     {
       label: 'Benchmark',
-      cells: fundData.map((f) => f.scheme.benchmark ?? '—'),
+      cells: fundData.map((f) => readBenchmarkName(f.scheme.benchmark) ?? '—'),
+    },
+    {
+      label: 'Riskometer',
+      cells: fundData.map((f) => readRiskLabel(f.scheme.riskLabel) ?? '—'),
+    },
+    {
+      label: 'Manager',
+      cells: fundData.map((f) => readFundManager(f.scheme.fundManager) ?? '—'),
     },
     {
       label: 'Exit load',

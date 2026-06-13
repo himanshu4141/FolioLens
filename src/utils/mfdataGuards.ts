@@ -178,6 +178,85 @@ export function readReturnPct(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Display guards for junk stored in scheme_master text columns
+// ---------------------------------------------------------------------------
+
+/**
+ * SEBI's six current riskometer levels (SEBI circular June 2021).
+ * Keyed by their lowercase form for O(1) case-insensitive lookup.
+ */
+const CANONICAL_RISK_LABELS = [
+  'Low',
+  'Low to Moderate',
+  'Moderate',
+  'Moderately High',
+  'High',
+  'Very High',
+] as const;
+
+const RISK_LABEL_LOOKUP: Map<string, string> = new Map(
+  CANONICAL_RISK_LABELS.map((label) => [label.toLowerCase(), label]),
+);
+
+/**
+ * Returns the canonical SEBI riskometer label when the raw value
+ * matches one of the six levels case-insensitively, else null.
+ *
+ * Filters out OCR shrapnel ("Very High Risk L M o o w de t r o at e"),
+ * suitability sentences ("This product is suitable for investors…"),
+ * and stray annotation text ("free rate assumed to be 5.34%…").
+ *
+ * Live dev counts (2026-06-13): 14 junk rows out of ~1 000 non-null
+ * risk_label values (6 × "and Relatively low Credit Risk", 6 × suitability
+ * paragraph, 1 × OCR shrapnel, 1 × "free rate assumed to be 5.34%…").
+ */
+export function readRiskLabel(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return RISK_LABEL_LOOKUP.get(raw.trim().toLowerCase()) ?? null;
+}
+
+/**
+ * Patterns that indicate a benchmark-name field contains data bleed from
+ * adjacent columns (holdings, portfolio detail, etc.).
+ *
+ * Tuned against live junk in declared_benchmark_name (dev, 2026-06-13):
+ *   "Additional Benchmark** Annualized Portfolio YTM*"   → portfolio
+ *   "Nitori Holdings Co Ltd 2.20 Bridgestone Corp…"      → holdings
+ *   "65% of Nifty 500 TRI + 20% of NIFTY…"              → % of
+ *   Long values with holdings names (269 chars)           → >120 chars
+ */
+const BENCHMARK_BLEED_RE = /portfolio|holdings|% of|top 10|\baum\b/i;
+
+/**
+ * Returns the trimmed benchmark name, or null when the value is absent,
+ * exceeds 120 characters, or matches known data-bleed patterns.
+ *
+ * Live dev counts: 15 distinct declared_benchmark_name values >120 chars;
+ * 3 distinct values matching bleed patterns (some overlap with length check).
+ */
+export function readBenchmarkName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 120) return null;
+  if (BENCHMARK_BLEED_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * Returns the fund manager name, or null when the value exceeds 160
+ * characters (indicating PDF OCR bleed from adjacent columns).
+ *
+ * Live dev counts: 11 distinct fund_manager values >160 chars, some
+ * reaching 2 500 chars with embedded load-structure boilerplate.
+ */
+export function readFundManager(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (raw.length > 160) return null;
+  return raw;
+}
+
 /** Pluck the as_of_date from a returns or ratios blob. */
 export function readMfdataAsOfDate(blob: unknown): string | null {
   if (!blob || typeof blob !== 'object') return null;

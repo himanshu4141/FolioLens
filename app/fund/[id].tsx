@@ -52,7 +52,12 @@ import {
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
-import { readReturnPct } from '@/src/utils/mfdataGuards';
+import {
+  readBenchmarkName,
+  readFundManager,
+  readReturnPct,
+  readRiskLabel,
+} from '@/src/utils/mfdataGuards';
 import {
   BENCHMARK_DISCLOSURE,
   fundDetailBenchmarkOptions,
@@ -1024,10 +1029,10 @@ function TechnicalDetailsCard({
   const ret3y = readReturnPct(periodReturns, '3y');
   const ret5y = readReturnPct(periodReturns, '5y');
   const hasReturns = ret1y != null || ret3y != null || ret5y != null;
-  const hasOFMeta = fundManager != null || portfolioTurnover != null || terDate != null;
-  // Fall back to benchmark_index (mfdata) until sync-fund-meta re-populates
-  // declared_benchmark_name via the OpenFolio sweep.
-  const benchmarkDisplay = declaredBenchmarkName ?? benchmarkIndex;
+  const guardedRiskLabel = readRiskLabel(riskLabel);
+  const guardedBenchmarkDisplay = readBenchmarkName(declaredBenchmarkName ?? benchmarkIndex);
+  const guardedFundManager = readFundManager(fundManager);
+  const hasOFMeta = guardedFundManager != null || portfolioTurnover != null || terDate != null;
 
   return (
     <View style={[ts.card, ts.clearLensCard]}>
@@ -1091,12 +1096,12 @@ function TechnicalDetailsCard({
         </View>
         <View style={ts.cell}>
           <Text style={ts.label}>Benchmark</Text>
-          <Text style={ts.valueSmall} numberOfLines={2}>{benchmarkDisplay ?? '—'}</Text>
+          <Text style={ts.valueSmall} numberOfLines={2}>{guardedBenchmarkDisplay ?? '—'}</Text>
         </View>
       </View>
 
       {/* Fourth row — category + risk label + min additional */}
-      {(schemeCategory || riskLabel || minAdditional != null) ? (
+      {(schemeCategory || guardedRiskLabel || minAdditional != null) ? (
         <View style={ts.row}>
           <View style={ts.cell}>
             <Text style={ts.label}>Category</Text>
@@ -1104,7 +1109,7 @@ function TechnicalDetailsCard({
           </View>
           <View style={ts.cell}>
             <Text style={ts.label}>Riskometer</Text>
-            <Text style={ts.valueSmall}>{riskLabel ?? '—'}</Text>
+            <Text style={ts.valueSmall}>{guardedRiskLabel ?? '—'}</Text>
           </View>
           <View style={ts.cell}>
             <Text style={ts.label}>Min addl</Text>
@@ -1120,7 +1125,7 @@ function TechnicalDetailsCard({
         <View style={ts.row}>
           <View style={ts.cell}>
             <Text style={ts.label}>Manager</Text>
-            <Text style={ts.valueSmall} numberOfLines={2}>{fundManager ?? '—'}</Text>
+            <Text style={ts.valueSmall} numberOfLines={2}>{guardedFundManager ?? '—'}</Text>
           </View>
           <View style={ts.cell}>
             <Text style={ts.label}>Turnover</Text>
