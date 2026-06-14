@@ -25,14 +25,19 @@ name: Universe Backfill
 on:
   schedule:
     # Monthly full refresh trigger (16th @ 01:00 UTC, after OpenFolio's monthly publish on 13–15th).
-    # First iteration invokes with {phase:'both', force:true} to begin a full backfill cycle.
-    # Subsequent iterations complete the backfill across multiple runs (max 8 invocations/run).
-    # Once done-markers are set, the frequent cron below skips with a free (1 app_config read) no-op path.
+    # The 15th @ 23:00 UTC pg_cron (universe-backfill-monthly-refresh-marker) sets the
+    # `refresh_due` marker; this run sees it, clears done markers, and begins a fresh cycle.
+    # Each run does up to 8 invocations (~8 chunks); a full refresh is ~48 metadata chunks, so it
+    # needs several runs — the resume cron below carries it to completion.
     - cron: '0 1 16 * *'  # Monthly: 16th @ 01:00 UTC
-    # Frequent cron (every 15 min) to resume an in-progress backfill or detect stalled cursors.
-    # If monthly refresh is not due (no universe_backfill_refresh_due marker) and both phases
-    # are already done, this is a zero-cost short-circuit (one app_config read).
-    - cron: '*/15 * * * *'  # Every 15 minutes (resumes or confirms completion)
+    # Resume cron: completes an in-progress backfill across runs. Runs HOURLY (not every 15 min):
+    # GitHub throttles/drops sub-hourly scheduled workflows under load (observed: a `*/15` resume
+    # silently failed to fire for 50+ min, forcing a manual drive), and an hourly cadence GitHub
+    # honours far more reliably. ~6 runs × 1 h completes the monthly refresh well within the day.
+    # Scoped to the 16th–17th (the refresh window) so it isn't a 24×/day no-op the rest of the
+    # month. If both phases are done / no refresh_due, the function short-circuits (1 app_config
+    # read). Off-cycle manual refreshes are driven by re-dispatching workflow_dispatch.
+    - cron: '0 * 16,17 * *'  # Hourly on the 16th–17th (resumes or confirms completion)
   workflow_dispatch:
     inputs:
       environment:
