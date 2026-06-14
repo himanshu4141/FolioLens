@@ -154,6 +154,23 @@ Held-fund and random-active-fund experiences are now **materially stronger**: AU
 > and asserts equality. Until then, FolioLens is protected by the P7 render guards (so this is
 > data-hygiene, not user-facing). Effort S–M, risk low, **Should (post-beta acceptable given P7)**.
 
+### Closing update (2026-06-14 later) — P6 + P11 shipped; all pre-beta items done
+
+Both remaining items landed and are validated:
+
+| Item | PR | Verdict |
+|---|---|---|
+| **P6 (reduced)** — Compare bypasses local-NAV compute for payout plans | FL #234 | ✅ `isPayoutPlan(schemeName, optionType)` ports `is_idcw_scheme` (Dividend-Yield-Growth tested against 4 real names); `selectCompareMetrics` skips the computed branch for payout plans → uses the as-reported blob (Growth-twin numbers from #65), legacy-call-safe; Compare passes `schemeName`+`optionType`. **62 tests pass**, CI green. With the re-sync already having corrected 119551's `risk_ratios` (DD −0.83%), Compare now shows the correct payout-plan numbers |
+| **P11** — bulk `/v1/metadata` sanitise consistency | OD #72 | ✅ read-time `sanitise_record` in shared `_build_fund_metadata` makes both endpoints byte-consistent (test seeds the exact scheme 100602 I found); read-time fix → works on the existing DB with no re-ingest. **655 pass**, deployed (API on `cd0688c`) |
+| (bonus) carry-forward adapters | OD #71 | ✅ live-data fixes for Kotak/Bandhan/Sundaram/Wealth discovery (the May laggards), with a real Bandhan fixture |
+
+**All Must/Should pre-beta items (P1–P11) are now complete and validated.** Residual note:
+P11 is a read-time fix, so the OF bulk endpoint now serves clean B1 immediately, but the junk
+already stored in dev `scheme_master` will only clear on the **next** FL metadata re-sync (the
+16th monthly run, or a manual `force` dispatch). This is invisible to users today via the P7
+render guards, so it's optional cleanup, not a blocker. **Recommendation: dev is ready for final
+pre-prod testing.**
+
 ---
 
 ## 1. Executive summary
