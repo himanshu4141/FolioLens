@@ -123,7 +123,7 @@ The monthly `openfolio-ingest` was re-run (after raising the task timeout to 3h,
 
 ### Forced dev re-sync results (P5 path) — the headline
 
-`universe-backfill` `phase=both force=true` was dispatched on dev and **driven to completion** (the `*/15` resume cron is throttled by GitHub, so the metadata phase was driven via sequential dispatches; `metadata_done_at` set, all 8,347 active schemes re-synced). Before → after, active-scheme coverage:
+`universe-backfill` `phase=both force=true` was dispatched on dev and **driven to completion** (the `*/15` resume cron is throttled by GitHub, so the metadata phase was driven via sequential dispatches; `metadata_done_at` set, all 8,347 active schemes re-synced). The monthly *trigger* is reliable (pg_cron sets `refresh_due` on the 15th @ 23:00 UTC); only the GitHub-driven *resume* was flaky — **fixed by FL #235**, which moves the resume cron from `*/15` to hourly on the 16th–17th so the next monthly refresh completes unattended. Before → after, active-scheme coverage:
 
 | field | before | after | note |
 |---|---|---|---|
