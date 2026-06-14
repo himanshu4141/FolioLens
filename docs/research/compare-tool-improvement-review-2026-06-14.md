@@ -191,18 +191,101 @@ returns and monthly σ at ~20× less data and CPU.
 
 ---
 
+## 6.5 Search & Select redesign — family-first picker (the headline change)
+
+This came out of testing: the picker shows **one row per plan** (Direct/Regular × Growth/IDCW ×
+Daily/Weekly/Monthly variants), so a search like "axis large mid" returns a dozen near-identical
+rows, every pick triggers heavy hydration, and a user can accidentally compare two plans of the
+*same* fund (issue B). The ask: **search/select on the base fund, with plan/option as a second
+level, and fewer options / less loading.** Agreed — this is the right model and it makes the C1
+normaliser do double duty.
+
+### Why it's not free today (data reality)
+
+There is **no existing column that groups plans into a fund.** Verified live:
+`family_name` is NULL for **8,235 / 8,347** active rows (and where present it's the AMC, only
+84 distinct); `mfdata_family_id` is all-null. So the fund ("family") key must be **derived** =
+`normalize(amc_name)` + `baseSchemeName(scheme_name)` — and `amc_name` is **100 %** populated, so
+the key is reliable *once C1 exists*. A naive strip (today's `shortSchemeName`) only collapses
+8,347 plan rows to ~6,043 — barely better — whereas a proper normaliser reaches OpenFolio's real
+**~2,046 families**. **C1 is the prerequisite for a good family-first picker.**
+
+### Recommended UX (you asked for a suggestion)
+
+**Family-first search + smart default plan + a global plan toggle.** Compare is inherently
+apples-to-apples — you almost always compare the *same* plan type across funds — so lean into
+that instead of making plan a per-fund chore:
+
+```
+Search: "axis large mid"
+┌───────────────────────────────────────────┐
+│ Axis Large & Mid Cap Fund                 │  ← ONE row per fund (~2,046, not 8,347)
+│ Axis Mutual Fund · Large & Mid Cap        │
+├───────────────────────────────────────────┤
+│ Axis Growth Opportunities Fund            │
+│ Axis Mutual Fund · Large & Mid Cap        │
+└───────────────────────────────────────────┘
+
+Comparing:  [ Direct ▾ ]   [ Growth ▾ ]        ← ONE global plan context for all funds
+
+┌───────────┐ ┌───────────┐ ┌───────────┐
+│ A  Axis   │ │ B  DSP    │ │ C  Bandhan│
+│ L&M Cap   │ │ L&M Cap   │ │ L&M Cap   │
+│ Direct·Gr │ │ Direct·Gr │ │ Direct·Gr │     ← chip; tap to override ONE fund (rare)
+└───────────┘ └───────────┘ └───────────┘
+```
+
+1. **Search returns funds, not plans** — one row per derived family (AMC + base name + category).
+   ~2,046 active funds vs 8,347 plan rows → far less scroll/noise, faster query, and the
+   Growth-vs-IDCW twin confusion (issue B) disappears by construction.
+2. **One tap selects the fund, defaulted to Direct · Growth** — the plan the vast majority want.
+   No second step in the common case.
+3. **A single global "Comparing: Direct · Growth" toggle** resolves *all* selected funds to that
+   plan/option (Direct/Regular × Growth/IDCW). Flip it → every fund re-resolves. This matches how
+   people actually compare (like-for-like) and prevents accidental Direct-vs-Regular mixes.
+4. **Per-fund override** is a small chip on a card for the rare case one fund needs a different
+   plan.
+
+**Why this over the alternatives:** a two-step "pick fund → pick plan" modal adds a tap for
+everyone; per-fund plan pickers everywhere are more taps and let you compare apples-to-oranges;
+the current plan-level list is the noisy status quo. The global-default-plus-toggle is the
+fewest taps for the common case and the safest for correctness. It also **subsumes C5** (plan
+twins) and pairs with **C2** (you hydrate/compute one canonical series per fund, not several).
+
+### Data approach (staged)
+
+- **Now (enables the UX):** derive the family key with the C1 normaliser; collapse search results
+  to one row per `(amc, base_name)`, tracking which plans/options exist per family so the toggle
+  can resolve a concrete `scheme_code` (and gracefully fall back + label when a fund lacks the
+  chosen plan, e.g. Regular-only or IDCW-only).
+- **For scale (recommended):** searching 37,595 rows and grouping client-side is heavy — persist
+  a `family_key` column on `scheme_master` (written by the universe-backfill via the normaliser,
+  indexed) plus a search RPC/view returning DISTINCT families with a representative row +
+  available-plan flags. Keeps the picker fast at full-catalog scale.
+- **Eventual source of truth:** OpenFolio already resolves families (family_id ↔ plan aliases,
+  2,046 families); syncing OF's family_id into `scheme_master` would make the derived key a
+  fallback rather than the primary. Out of scope here, noted for later.
+
+This is the centerpiece of the "fewer options / less loading" ask and is tracked as **C6** below
+(depends on **C1**; pairs with **C2**).
+
+---
+
 ## 7. Plan (prioritised)
 
 | ID | Title | Addresses | Effort | Risk | Priority |
 |---|---|---|---|---|---|
-| C1 | Robust scheme-name normaliser + consistent plan/option chip | #1, A | S–M | Low | **Must** |
+| C1 | Robust scheme-name normaliser + consistent plan/option chip | #1, A | S–M | Low | **Must** (foundation) |
+| C6 | **Family-first search & select (two-level picker + global plan toggle)** | §6.5, B, "fewer options/less loading" | M–L | Med | **Must** |
 | C2 | Compare perf: gate hydration + month-end compute + stable as-reported | #4, C, D | M | Med | **Must** |
 | C3 | Category data hardening + tolerant cross-category banner | #2 | S–M | Low | **Should** |
 | C4 | Risk-card as-reported completeness + honest missing-field labels | #3 | S–M | Low | **Should** |
-| C5 | Picker: de-dupe / label Growth-vs-IDCW plan twins | B | S–M | Low | **Should** |
+| ~~C5~~ | ~~Picker: de-dupe / label plan twins~~ → **subsumed by C6** | B | — | — | folded into C6 |
 
-C1 + C2 are the felt issues (names + latency) → do first. C3/C4 are trust polish. C5 prevents
-the confusing same-fund comparison.
+**Dependency order:** C1 (normaliser) is the foundation → C6 (family-first picker, built on the
+normaliser) is the headline UX win and the user's main ask → C2 (perf) pairs with C6 (one
+canonical series per fund). C3/C4 are trust polish. C5 is folded into C6 (family grouping
+de-dupes plan twins for free). Suggested order: **C1 → C6 → C2 → C4 → C3**.
 
 ---
 
@@ -233,6 +316,35 @@ docs + `__BUSTER__`/`[cache-shape-stable]` as needed; validate every test-plan i
 > tricky set (Series funds, "Growth Option", caps, no-Plan). Wire into Compare
 > (`fundDisplayName`) and any other `shortSchemeName` callers (grep). `[cache-shape-stable]`
 > (display only). Evidence: before/after rendered names for the 5 funds in §2.
+
+### C6 (FL) `feat(compare): family-first search & select (two-level picker + global plan toggle)`
+
+> Depends on **C1** (confirm the robust `baseSchemeName` normaliser + `planOptionLabel` helpers
+> are merged). Today the picker (`src/utils/fundSearch.ts` `searchSchemes` + the Compare picker
+> UI) returns **one row per plan**, so "axis large mid" yields a dozen near-identical rows, every
+> pick triggers heavy hydration, and users can compare two plans of the same fund (issue B). Data
+> reality to verify first: `family_name` is NULL for 8,235/8,347 active rows and
+> `mfdata_family_id` is all-null (no existing family key), but `amc_name` is 100% populated — so
+> the fund key must be derived = `normalize(amc_name) + '|' + baseSchemeName(scheme_name)`
+> (~2,046 families vs 8,347 plan rows). Build the **family-first picker** per §6.5: (1) search
+> returns **one row per derived family** (AMC + base name + category label), with the set of
+> available plans/options per family; (2) tapping a fund selects it defaulted to **Direct ·
+> Growth**; (3) a single **global "Comparing: Direct · Growth" toggle** (Direct/Regular ×
+> Growth/IDCW) resolves every selected family to a concrete `scheme_code`, with a labelled
+> graceful fallback when a fund lacks the chosen plan (Regular-only / IDCW-only); (4) a per-fund
+> chip allows overriding one fund. This subsumes C5 (twins de-dupe by construction) and pairs
+> with C2 (one canonical series per fund). **Implementation choice to justify in the PR:** do the
+> family grouping (a) client-side over the existing search results for v1, or (b) persist a
+> `family_key` column on `scheme_master` (written by universe-backfill via the normaliser, with a
+> migration + index) plus a search RPC/view returning distinct families — recommend (b) for
+> full-catalog (37,595-row) search performance; measure search latency before/after with
+> `EXPLAIN ANALYZE`. Keep matured/inactive families findable (don't drop them; demote per the
+> existing FL13 ranking). Unit-test family grouping (incl. the tricky names from §2), plan
+> resolution + fallback, and the toggle. Update `docs/SCREENS.md` for the new picker flow.
+> cache-surfaces.md: the search/select payload shape changes → bump the relevant `__BUSTER__` or
+> justify `[cache-shape-stable]`. This is the user's primary ask ("fewer options / less
+> loading") — get the empty/loading/zero-result states right, and validate the full select →
+> compare flow on dev with 3 Large & Mid Cap funds.
 
 ### C2 (FL) `perf(compare): gate hydration + compute metrics from month-end NAV`
 
@@ -291,17 +403,23 @@ docs + `__BUSTER__`/`[cache-shape-stable]` as needed; validate every test-plan i
 
 > The picker lets a user compare two plans of the *same* fund unknowingly — e.g. 119436
 > (Growth, AUM ₹726 Cr) and 119433 (IDCW, AUM ₹20 Cr): same scheme, same returns, AUM differs
-> ~36×, so the AUM row is misleading. In the Compare picker, detect plan twins (same base name +
-> AMC via the C1 normaliser) and either collapse them to one entry with a plan selector, or show
-> a clear "Direct · Growth / IDCW" chip + a one-line note when two selected funds are the same
-> scheme in different plans (and suppress/caveat the AUM-comparison row in that case). Reuse the
-> C1 base-name + `planOptionLabel` helpers. Unit-test twin detection. `[cache-shape-stable]`.
+> ~36×, so the AUM row is misleading. **Folded into C6** — family-first grouping de-dupes plan
+> twins by construction. Kept here only as the explicit requirement C6 must satisfy: when two
+> selected funds resolve to the same family, never present them as distinct, and never compare
+> their AUM as if they were different funds.
 
 ---
 
 ## 9. Final recommendation
 
-Ship **C1** (names) and **C2** (perf) first — they're the felt issues and both are
-contained. **C3/C4** remove the false-category and half-blank-Risk papercuts. **C5** stops the
-confusing same-fund comparison. None require schema changes beyond the category data fix, and
-all are independently shippable. Suggested order: C1 → C2 → C4 → C3 → C5.
+The headline change is **C6 — family-first search & select**, which is exactly the user's ask
+("search/select on base family; option as a second level; fewer options / less loading") and
+also removes the plan-twin confusion (C5). It rests on **C1** (the robust normaliser), so build
+C1 first. Then **C2** (perf) compounds the win — with one canonical series per fund, hydration
+and compute shrink. **C3/C4** are trust polish (false-category banner, half-blank Risk card).
+
+**Suggested order: C1 → C6 → C2 → C4 → C3.** Only C3 (category data) and the recommended C6
+variant (persisted `family_key`) touch schema/data; everything else is client + edge. All are
+independently shippable, but C1→C6→C2 should land as a coherent set since they reshape the same
+select-and-compare flow. Get the family-picker empty/loading/zero-result states right — that's
+where "too much loading" is felt today.
