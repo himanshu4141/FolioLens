@@ -64,11 +64,15 @@ So names like BANK OF INDIA's `Fund Direct Plan-Growth` (no dashes, glued option
 `option_type=null` despite "Direct/IDCW" in the name; most rows have `option_type=null`), so the
 UI can't fall back to structured fields to render a clean, consistent plan chip.
 
-**Fix:** replace the regex with a robust base-name extractor (port OpenFolio's
-`base_scheme_name` logic: strip trailing plan/option/series tails tolerant of glued tokens,
-missing "Plan", caps, and no-space dashes) **and** render plan (Direct/Regular) + option
-(Growth/IDCW) as a separate, consistent chip derived from the name when the column is null. The
-display should never show the plan inline in the title for one fund and not another.
+**Fix (sync from OpenFolio, do not parse names in FolioLens):** OpenFolio already owns scheme
+identity and already runs the `base_scheme_name` normaliser internally
+(`src/mfholdings/scheme_master/normalize.py:143`) — FolioLens should **sync** a clean
+family/display name + structured plan/option, not re-derive them client-side (the same principle
+the category path already follows: "no client-side name parsing — the data pipeline is the
+single source of truth"). The display should never show the plan inline in the title for one
+fund and not another. See §6.5 for the identity-from-OpenFolio design and the small upstream gap
+that needs closing; the brittle `shortSchemeName` regex is retired (kept only as a thin fallback
+for inactive registry shells OpenFolio doesn't cover).
 
 ---
 
@@ -197,18 +201,39 @@ This came out of testing: the picker shows **one row per plan** (Direct/Regular 
 Daily/Weekly/Monthly variants), so a search like "axis large mid" returns a dozen near-identical
 rows, every pick triggers heavy hydration, and a user can accidentally compare two plans of the
 *same* fund (issue B). The ask: **search/select on the base fund, with plan/option as a second
-level, and fewer options / less loading.** Agreed — this is the right model and it makes the C1
-normaliser do double duty.
+level, and fewer options / less loading.** Agreed — and the family key should be **synced from
+OpenFolio, not derived in FolioLens** (OpenFolio owns scheme identity; FolioLens shouldn't
+re-implement name parsing it doesn't own).
 
-### Why it's not free today (data reality)
+### Identity belongs to OpenFolio — sync it, don't derive it (data reality)
 
-There is **no existing column that groups plans into a fund.** Verified live:
-`family_name` is NULL for **8,235 / 8,347** active rows (and where present it's the AMC, only
-84 distinct); `mfdata_family_id` is all-null. So the fund ("family") key must be **derived** =
-`normalize(amc_name)` + `baseSchemeName(scheme_name)` — and `amc_name` is **100 %** populated, so
-the key is reliable *once C1 exists*. A naive strip (today's `shortSchemeName`) only collapses
-8,347 plan rows to ~6,043 — barely better — whereas a proper normaliser reaches OpenFolio's real
-**~2,046 families**. **C1 is the prerequisite for a good family-first picker.**
+There is **no existing column that groups plans into a fund** on the FolioLens side. Verified
+live: `family_name` is NULL for **8,235 / 8,347** active rows (and where present it's the AMC,
+only 84 distinct); `mfdata_family_id` is all-null.
+
+But OpenFolio **already models this properly** (verified in its contract): a stable
+`family_id` (`OF-…`, the documented join key) groups every plan (Regular/Direct × Growth/IDCW),
+each `Plan` carries `plan_code` + `isins`, and OpenFolio already runs the `base_scheme_name`
+normaliser internally (`normalize.py:143`). `family_id` is already exposed on `/v1/schemes`
+(`SchemeSummary`), holdings, composition, and ISIN endpoints.
+
+**The only gap:** the `/v1/metadata` endpoint (the one the FolioLens `universe-backfill` consumes
+to populate `scheme_master`) does **not** carry `family_id`, a clean family **display name**, or
+structured `plan_type`/`option_type` — `FundMetadata` has `scheme_code`, `name`, `amc`, … but no
+family. So the correct fix is a **small upstream addition + a sync**, not client-side derivation:
+
+1. **OpenFolio** adds `family_id`, a clean `family_name` (run its existing `base_scheme_name` on a
+   representative plan), and structured `plan_type`/`option_type` (parse `plan_name` once
+   upstream) to `FundMetadata` / the metadata endpoints. The normaliser already exists upstream —
+   this just exposes its output.
+2. **FolioLens** syncs those into `scheme_master` (new columns, written by `universe-backfill`).
+   The picker groups by the synced `family_id`, shows the synced `family_name`, and the plan
+   toggle uses the synced `plan_type`/`option_type`. **Zero name parsing in FolioLens.** (This
+   also fixes issue A — today's unreliable `plan_type`/`option_type` come from mfdata.)
+
+This collapses 8,347 plan rows to OpenFolio's real **~2,046 families** authoritatively (a naive
+client strip only reaches ~6,043 — another reason not to derive client-side). A thin FolioLens
+display fallback is acceptable only for inactive registry shells OpenFolio doesn't index.
 
 ### Recommended UX (you asked for a suggestion)
 
@@ -252,40 +277,47 @@ the current plan-level list is the noisy status quo. The global-default-plus-tog
 fewest taps for the common case and the safest for correctness. It also **subsumes C5** (plan
 twins) and pairs with **C2** (you hydrate/compute one canonical series per fund, not several).
 
-### Data approach (staged)
+### Data approach — sync OpenFolio's family identity (no client derivation)
 
-- **Now (enables the UX):** derive the family key with the C1 normaliser; collapse search results
-  to one row per `(amc, base_name)`, tracking which plans/options exist per family so the toggle
-  can resolve a concrete `scheme_code` (and gracefully fall back + label when a fund lacks the
-  chosen plan, e.g. Regular-only or IDCW-only).
-- **For scale (recommended):** searching 37,595 rows and grouping client-side is heavy — persist
-  a `family_key` column on `scheme_master` (written by the universe-backfill via the normaliser,
-  indexed) plus a search RPC/view returning DISTINCT families with a representative row +
-  available-plan flags. Keeps the picker fast at full-catalog scale.
-- **Eventual source of truth:** OpenFolio already resolves families (family_id ↔ plan aliases,
-  2,046 families); syncing OF's family_id into `scheme_master` would make the derived key a
-  fallback rather than the primary. Out of scope here, noted for later.
+1. **OpenFolio (CD-OD):** add `family_id`, a clean `family_name`, and structured
+   `plan_type`/`option_type` to `FundMetadata` / the `/v1/metadata` endpoints (reusing the
+   existing `base_scheme_name` + family/plan resolution — output already exists internally).
+2. **FolioLens sync (C1):** add `of_family_id`, `family_name`, and reliable
+   `plan_type`/`option_type` columns to `scheme_master` (migration), mapped by
+   `universe-backfill`/`sync-fund-meta`. Index `of_family_id`.
+3. **Picker (C6):** search/group by the synced `of_family_id`, display the synced `family_name`,
+   and resolve the plan toggle via the synced `plan_type`/`option_type` (graceful, labelled
+   fallback when a family lacks the chosen plan — Regular-only / IDCW-only). A search RPC/view
+   returns DISTINCT families (representative row + available-plan flags) so the picker stays fast
+   over the full 37,595-row catalog.
 
-This is the centerpiece of the "fewer options / less loading" ask and is tracked as **C6** below
-(depends on **C1**; pairs with **C2**).
+No `base_scheme_name` logic in FolioLens — the normalisation stays in OpenFolio where the code and
+the family model already live. (A thin FL display fallback remains only for inactive shells OF
+doesn't index.)
+
+This is the centerpiece of the "fewer options / less loading" ask, tracked as **CD-OD** (upstream
+expose) + **C1** (sync) + **C6** (picker); pairs with **C2**.
 
 ---
 
 ## 7. Plan (prioritised)
 
-| ID | Title | Addresses | Effort | Risk | Priority |
-|---|---|---|---|---|---|
-| C1 | Robust scheme-name normaliser + consistent plan/option chip | #1, A | S–M | Low | **Must** (foundation) |
-| C6 | **Family-first search & select (two-level picker + global plan toggle)** | §6.5, B, "fewer options/less loading" | M–L | Med | **Must** |
-| C2 | Compare perf: gate hydration + month-end compute + stable as-reported | #4, C, D | M | Med | **Must** |
-| C3 | Category data hardening + tolerant cross-category banner | #2 | S–M | Low | **Should** |
-| C4 | Risk-card as-reported completeness + honest missing-field labels | #3 | S–M | Low | **Should** |
-| ~~C5~~ | ~~Picker: de-dupe / label plan twins~~ → **subsumed by C6** | B | — | — | folded into C6 |
+| ID | Title | Repo | Addresses | Effort | Risk | Priority |
+|---|---|---|---|---|---|---|
+| CD-OD | Expose `family_id` + clean `family_name` + structured `plan_type`/`option_type` on `/v1/metadata` | **OD** | §6.5, #1, A, B | S–M | Low | **Must** (foundation) |
+| C1 | Sync family identity into `scheme_master`; display synced name + plan chip; retire `shortSchemeName` | FL | #1, A | S–M | Low | **Must** |
+| C6 | **Family-first search & select (two-level picker + global plan toggle)** | FL | §6.5, B, "fewer options/less loading" | M–L | Med | **Must** |
+| C2 | Compare perf: gate hydration + month-end compute + stable as-reported | FL | #4, C, D | M | Med | **Must** |
+| C3 | Category data hardening + tolerant cross-category banner | OD+FL | #2 | S–M | Low | **Should** |
+| C4 | Risk-card as-reported completeness + honest missing-field labels | FL | #3 | S–M | Low | **Should** |
+| ~~C5~~ | ~~Picker: de-dupe / label plan twins~~ → **subsumed by C6** | — | B | — | — | folded into C6 |
 
-**Dependency order:** C1 (normaliser) is the foundation → C6 (family-first picker, built on the
-normaliser) is the headline UX win and the user's main ask → C2 (perf) pairs with C6 (one
-canonical series per fund). C3/C4 are trust polish. C5 is folded into C6 (family grouping
-de-dupes plan twins for free). Suggested order: **C1 → C6 → C2 → C4 → C3**.
+**Identity is synced from OpenFolio, never derived in FolioLens.** Dependency order:
+**CD-OD** (upstream exposes family_id/name/plan-option — it already has the normaliser + family
+model) → **C1** (FolioLens syncs them into `scheme_master`, retires the brittle name regex) →
+**C6** (family-first picker over the synced family_id — the headline UX win) → **C2** (perf,
+pairs with C6: one canonical series per fund). C3/C4 are trust polish. C5 folds into C6.
+Suggested order: **CD-OD → C1 → C6 → C2 → C4 → C3**.
 
 ---
 
@@ -296,55 +328,67 @@ Standard FolioLens preamble applies (branch from `origin/main`; `npm run typeche
 boundaries; migrations via `supabase db push` to dev only; verify live claims yourself; update
 docs + `__BUSTER__`/`[cache-shape-stable]` as needed; validate every test-plan item before PR).
 
-### C1 (FL) `fix(compare): robust scheme-name normaliser + consistent plan/option chip`
+### CD-OD (OpenFolio-Data) `feat(api): expose family_id + family_name + structured plan/option on /v1/metadata`
 
-> `shortSchemeName` (src/utils/schemeName.ts:11-16) only strips the canonical
-> `" - Direct Plan - Growth"` shape, so AMFI variants keep the plan/option text — verify live:
-> `BANK OF INDIA Large & Mid Cap Fund Direct Plan-Growth` (no spaced dashes) and
-> `Aditya Birla Sun Life Large & Mid Cap Fund -Direct - IDCW` (no leading space) both fail to
-> strip, while `Axis … - Direct Plan - Growth` works — "some show Direct, some don't". Replace
-> the two regexes with a robust base-name extractor that ports OpenFolio's `base_scheme_name`
-> behaviour (src/mfholdings/scheme_master/normalize.py in OpenFolio-Data — read it): split on
-> dashes that may or may not have surrounding spaces, drop trailing segments that are purely
-> plan/option tokens (direct, regular, plan, growth, idcw, dividend, payout, reinvest(ment),
-> bonus, option — case-insensitive, tolerant of glued tokens like `Plan-Growth` and `-Direct`),
-> and keep the scheme name up to its type word (Fund/ETF/FoF). Add a separate pure
-> `planOptionLabel(schemeName, planType, optionType)` that returns a consistent chip string
-> (e.g. "Direct · Growth") derived from the structured columns when present and from the name
-> otherwise — so the Compare card shows the base name + a uniform plan chip for ALL funds, never
-> inline plan text for some and not others. Unit-test against the real names above plus the
-> tricky set (Series funds, "Growth Option", caps, no-Plan). Wire into Compare
-> (`fundDisplayName`) and any other `shortSchemeName` callers (grep). `[cache-shape-stable]`
-> (display only). Evidence: before/after rendered names for the 5 funds in §2.
+> Use the OpenFolio-Data preamble. OpenFolio already owns scheme identity: a stable `family_id`
+> (`OF-…`) groups every plan, the family/plan model is in `contract.py`, and the base-name
+> normaliser already exists (`src/mfholdings/scheme_master/normalize.py:143` `base_scheme_name`).
+> But the `/v1/metadata` endpoints (`FundMetadata` — the per-scheme + bulk metadata FolioLens
+> consumes) do NOT carry family identity — verify: `FundMetadata` has `scheme_code, name, amc, …`
+> but no `family_id`/family name/plan-option (it's only on `/v1/schemes`, holdings, composition).
+> Add to `FundMetadata` (and the bulk page): (1) `family_id` (resolve the plan_code → family via
+> the existing registry/alias mapping); (2) `family_name` — a clean human-readable fund name from
+> `base_scheme_name(representative_plan_name)` (the family's shared name, no plan/option tail);
+> (3) structured `plan_type` ('direct'|'regular'|null) and `option_type`
+> ('growth'|'idcw'|'reinvest'|…|null) parsed once upstream from the plan name/identity (don't make
+> FolioLens parse strings). Keep both endpoints byte-consistent (the §P11 read-time path). Update
+> `docs/openapi.yaml`, add fixture tests asserting the new fields for a multi-plan family, and a
+> `DECISIONS.md` entry. ruff/pyright/pytest green. Note for the FolioLens PR (C1): these become
+> `scheme_master` columns synced by `universe-backfill`.
+
+### C1 (FL) `feat(scheme-master): sync OpenFolio family identity; retire client name parsing`
+
+> Depends on **CD-OD** (confirm `/v1/metadata` now returns `family_id`, `family_name`,
+> `plan_type`, `option_type`). Today FolioLens has no family key (`family_name` NULL for
+> 8,235/8,347 actives, `mfdata_family_id` all-null) and `shortSchemeName`
+> (src/utils/schemeName.ts:11-16) parses names client-side but only matches the canonical
+> `" - Direct Plan - Growth"` shape — verify it fails for `BANK OF INDIA … Fund Direct Plan-Growth`
+> and `… Fund -Direct - IDCW` ("some show Direct, some don't"). Changes (no name parsing in
+> FolioLens): (1) migration adds `of_family_id text`, `family_name text`, `plan_type text`,
+> `option_type text` to `scheme_master`, with an index on `of_family_id`; regenerate
+> `database.types.ts`. (2) Map the four new OF fields in the metadata writers (`universe-backfill`
+> metadata phase + `sync-fund-meta` OF leg) via the twins' `FundMetadata` type. (3) Compare
+> displays `family_name` for the title and a `plan_type · option_type` chip for ALL funds
+> uniformly; **retire `shortSchemeName`** — keep at most a thin fallback (clearly marked) only for
+> inactive registry shells OF doesn't index. (4) Run a forced metadata re-sync on dev and verify
+> `family_name`/`plan_type` populate for the §2 funds and the title no longer shows inline
+> "Direct". Tests: writer mapping, display fallback. `[cache-shape-stable]` if the picker/Compare
+> select head is unchanged; otherwise bump `__BUSTER__` (see cache-surfaces.md).
 
 ### C6 (FL) `feat(compare): family-first search & select (two-level picker + global plan toggle)`
 
-> Depends on **C1** (confirm the robust `baseSchemeName` normaliser + `planOptionLabel` helpers
-> are merged). Today the picker (`src/utils/fundSearch.ts` `searchSchemes` + the Compare picker
-> UI) returns **one row per plan**, so "axis large mid" yields a dozen near-identical rows, every
-> pick triggers heavy hydration, and users can compare two plans of the same fund (issue B). Data
-> reality to verify first: `family_name` is NULL for 8,235/8,347 active rows and
-> `mfdata_family_id` is all-null (no existing family key), but `amc_name` is 100% populated — so
-> the fund key must be derived = `normalize(amc_name) + '|' + baseSchemeName(scheme_name)`
-> (~2,046 families vs 8,347 plan rows). Build the **family-first picker** per §6.5: (1) search
-> returns **one row per derived family** (AMC + base name + category label), with the set of
-> available plans/options per family; (2) tapping a fund selects it defaulted to **Direct ·
-> Growth**; (3) a single **global "Comparing: Direct · Growth" toggle** (Direct/Regular ×
-> Growth/IDCW) resolves every selected family to a concrete `scheme_code`, with a labelled
-> graceful fallback when a fund lacks the chosen plan (Regular-only / IDCW-only); (4) a per-fund
-> chip allows overriding one fund. This subsumes C5 (twins de-dupe by construction) and pairs
-> with C2 (one canonical series per fund). **Implementation choice to justify in the PR:** do the
-> family grouping (a) client-side over the existing search results for v1, or (b) persist a
-> `family_key` column on `scheme_master` (written by universe-backfill via the normaliser, with a
-> migration + index) plus a search RPC/view returning distinct families — recommend (b) for
-> full-catalog (37,595-row) search performance; measure search latency before/after with
-> `EXPLAIN ANALYZE`. Keep matured/inactive families findable (don't drop them; demote per the
-> existing FL13 ranking). Unit-test family grouping (incl. the tricky names from §2), plan
-> resolution + fallback, and the toggle. Update `docs/SCREENS.md` for the new picker flow.
-> cache-surfaces.md: the search/select payload shape changes → bump the relevant `__BUSTER__` or
-> justify `[cache-shape-stable]`. This is the user's primary ask ("fewer options / less
-> loading") — get the empty/loading/zero-result states right, and validate the full select →
-> compare flow on dev with 3 Large & Mid Cap funds.
+> Depends on **CD-OD + C1** (confirm `scheme_master` now has synced `of_family_id`, `family_name`,
+> `plan_type`, `option_type`, populated by a re-sync). Today the picker
+> (`src/utils/fundSearch.ts` `searchSchemes` + the Compare picker UI) returns **one row per
+> plan**, so "axis large mid" yields a dozen near-identical rows, every pick triggers heavy
+> hydration, and users can compare two plans of the same fund (issue B). Build the
+> **family-first picker** per §6.5, grouping on the **synced `of_family_id`** (no client name
+> derivation): (1) search returns **one row per family** (`family_name` + AMC + category label;
+> ~2,046 active vs 8,347 plan rows), carrying the available plans/options per family; (2) tapping
+> a fund selects it defaulted to **Direct · Growth**; (3) a single **global "Comparing: Direct ·
+> Growth" toggle** (Direct/Regular × Growth/IDCW) resolves every selected family to a concrete
+> `scheme_code` via the synced `plan_type`/`option_type`, with a labelled graceful fallback when a
+> family lacks the chosen plan (Regular-only / IDCW-only); (4) a per-fund chip overrides one fund.
+> This subsumes C5 (twins de-dupe by construction) and pairs with C2 (one canonical series per
+> fund). For full-catalog (37,595-row) search performance, add a search RPC/view returning
+> DISTINCT families (representative row + available-plan flags) keyed on the indexed
+> `of_family_id`; measure latency before/after with `EXPLAIN ANALYZE`. Keep matured/inactive
+> families findable (don't drop; demote per the FL13 ranking). Unit-test grouping, plan resolution
+> + fallback, and the toggle. Update `docs/SCREENS.md` for the new picker flow. cache-surfaces.md:
+> the search/select payload shape changes → bump the relevant `__BUSTER__` or justify
+> `[cache-shape-stable]`. This is the user's primary ask ("fewer options / less loading") — get
+> the empty/loading/zero-result states right, and validate the full select → compare flow on dev
+> with 3 Large & Mid Cap funds.
 
 ### C2 (FL) `perf(compare): gate hydration + compute metrics from month-end NAV`
 
@@ -412,14 +456,18 @@ docs + `__BUSTER__`/`[cache-shape-stable]` as needed; validate every test-plan i
 
 ## 9. Final recommendation
 
-The headline change is **C6 — family-first search & select**, which is exactly the user's ask
-("search/select on base family; option as a second level; fewer options / less loading") and
-also removes the plan-twin confusion (C5). It rests on **C1** (the robust normaliser), so build
-C1 first. Then **C2** (perf) compounds the win — with one canonical series per fund, hydration
-and compute shrink. **C3/C4** are trust polish (false-category banner, half-blank Risk card).
+The headline change is **family-first search & select (C6)** — exactly the user's ask. Crucially,
+the fund/family identity is **synced from OpenFolio, not derived in FolioLens**: OpenFolio already
+owns scheme identity, already has the `base_scheme_name` normaliser and the `family_id` model, and
+already exposes `family_id` on most endpoints — it just isn't on the `/v1/metadata` endpoint that
+populates `scheme_master`. So the foundation is **CD-OD** (expose `family_id` + clean `family_name`
++ structured `plan_type`/`option_type` upstream) → **C1** (FolioLens syncs them into
+`scheme_master` and retires its brittle client-side name regex) → **C6** (family-first picker over
+the synced `of_family_id`). Then **C2** (perf) compounds the win — one canonical series per fund.
+**C3/C4** are trust polish.
 
-**Suggested order: C1 → C6 → C2 → C4 → C3.** Only C3 (category data) and the recommended C6
-variant (persisted `family_key`) touch schema/data; everything else is client + edge. All are
-independently shippable, but C1→C6→C2 should land as a coherent set since they reshape the same
-select-and-compare flow. Get the family-picker empty/loading/zero-result states right — that's
-where "too much loading" is felt today.
+**Suggested order: CD-OD → C1 → C6 → C2 → C4 → C3.** CD-OD/C1/C6/C2 should land as a coherent set
+(they reshape the same identity → select → compare flow). Schema/data touches: CD-OD (OF contract),
+C1 (`scheme_master` columns + re-sync), C3 (category data); the rest is client + edge. Get the
+family-picker empty/loading/zero-result states right — that's where "too much loading" is felt
+today.
