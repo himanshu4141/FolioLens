@@ -102,6 +102,60 @@ trailing return. For an IDCW fund, Compare hydrates that fund's *own* (payout-di
 
 ---
 
+## Update 2026-06-14 — P7–P10 validated; OpenFolio re-ingested; dev re-sync run
+
+### P7–P10 all landed & validated
+
+| Item | PR | Verdict |
+|---|---|---|
+| **P7** read-time render guards (risk/benchmark/manager) | FL #231 | ✅ `readRiskLabel`/`readBenchmarkName`/`readFundManager` in `mfdataGuards.ts` (237 test lines, cache-shape-stable), wired in `app/fund/[id].tsx` (guarded* vars) **and** Compare. Junk strings are filtered at **display** regardless of what's stored — this turned out to matter (see re-sync finding below) |
+| **P8** category gap (1,033 nulls) | FL #232 | ✅ `selectCategoryFromSiblings` + extended name heuristics, **wired into universe-backfill** (`applyMetadataSiblingInheritance` per page); 310 test lines. Live effect confirmed by the re-sync: active category 7,318 → **7,618** |
+| **P9** matured/closed schemes | FL #233 | ✅ `isMaturedScheme` (scheme_active=false OR "Mat Dt." pattern), Matured badge + stale-NAV exclusion in fund detail/portfolio; freshness-check excludes inactive; migration `20260613000001_fund_view_scheme_active` **applied to dev** |
+| **P10** monthly-ingest reliability | OD #69/#70 | ✅ time-box (120s/AMC) + carry-forward, decouple-publish, `/health` `db_freshness`, carry-forward spike guard. Proven live (see ingest run + carry-forward investigation below) |
+
+So **reduced P6 (Compare payout-plan precedence) is the only remaining pre-beta code item** — confirmed: `selectCompareMetrics` still unconditionally prefers computed-from-local-NAV (no `isPayoutPlan` branch).
+
+### OpenFolio re-ingest (OD #62/#66/#69/#70 in effect)
+
+The monthly `openfolio-ingest` was re-run (after raising the task timeout to 3h, OD #67) and **succeeded** — published a fresh, sanitised `funds-holdings.db` + AAUM in nav.db. A manual `nav-daily` run also landed AUM (7,936 resolved) and the IDCW correction (6,323 from growth sibling, 1,298 nulled) into nav.db. `/health` returns `db_freshness:"ok"`.
+
+**Carry-forward laggards (separate finding, not beta-blocking):** the May-31 cycle carried 7 AMCs forward (Kotak/Motilal/Bandhan/Edelweiss/Franklin/Sundaram/Wealth, ~429 schemes). OD #70 added per-AMC fixes + a spike alert, but a post-fix re-run still carried the same 7 — live discovery shows their May files don't resolve (Kotak's S3 path 403s even with the Referer #70 added; Bandhan/Sundaram find nothing). Root cause is **month-boundary disclosure availability**, not a parser regression (the holdings path was untouched). #70's fixes were validated against offline fixtures, not live data. Action: re-run after ~June 18 and re-diagnose against live sites if they persist (then `awaiting-disclosure` auto-escalates to `adapter-needs-fix`). Holdings remain present (April-30) and now correctly alerted.
+
+### Forced dev re-sync results (P5 path) — the headline
+
+`universe-backfill` `phase=both force=true` was dispatched on dev and **driven to completion** (the `*/15` resume cron is throttled by GitHub, so the metadata phase was driven via sequential dispatches; `metadata_done_at` set, all 8,347 active schemes re-synced). Before → after, active-scheme coverage:
+
+| field | before | after | note |
+|---|---|---|---|
+| **AUM** | 0 | **7,626 (91%)** | ✅ the OD #66 AAUM, end-to-end into `scheme_master` |
+| **category** | 7,318 | **7,618 (91%)** | ✅ P8 sibling inheritance |
+| TER | 8,255 | 8,251 | stable (99%) |
+| returns | 7,769 | 7,850 (94%) | refreshed |
+| risk_ratios refreshed (computed ≥06-11) | — | **8,254** | ✅ incl. IDCW-corrected DD/vol |
+| **IDCW correction (spot)** | 119551 DD −34% | **119551 DD −0.83%** in `scheme_master` | ✅ propagated |
+
+**One real gap found — OpenFolio bulk-endpoint sanitise inconsistency (P11, below).** All 8,347 actives were re-synced, yet the stored junk counts are *unchanged* (junk riskometer 223, benchmark >120c 212, manager >200c 253). Spot-checks show the cause: the FL universe-backfill reads OpenFolio's **bulk** `/v1/metadata`, which returns some B1 strings (notably benchmark, and ~223 riskometers) **un-sanitised** (`status='value'` + the junk string), while the **per-scheme** `/v1/schemes/{id}/metadata` returns them clean (e.g. 100602 benchmark: per-scheme = "Nifty Medium Duration Debt Index"; bulk-sourced `scheme_master` = "…Cholamandalam Cash, Call, NCA…"). The #62 sanitise reaches the per-scheme path but not the bulk feed. The FL writer's NULL-retraction (`resolveB1` + `!== undefined`) is correct — it just never sees a non-`value` status for these fields from the bulk endpoint.
+
+**User-facing impact of that gap: none.** P7's render guards (`readBenchmarkName` length-caps + bleed-rejects, `readRiskLabel` clamps to canonical, `readFundManager` caps) filter the junk at display in both Fund Detail and Compare — exactly the defense-in-depth P7 was built for. So beta testers see clean metadata; the stored junk is data-hygiene only.
+
+### Net state for beta (dev)
+
+Held-fund and random-active-fund experiences are now **materially stronger**: AUM populated (91%), categories filled (91%), IDCW performance corrected, junk invisible via P7. The two open items: **(a) reduced P6** (Compare still overrides corrected as-reported with local-from-distorted-NAV for payout plans — the last pre-beta code fix), and **(b) P11** the OF bulk-endpoint sanitise gap (storage hygiene; non-user-facing). Neither blocks final testing; P6 should land before public beta. Composition phase was left mid-cursor (data already at 8,020 active); the monthly 16th run completes it.
+
+### New follow-up — P11 (OD): bulk `/v1/metadata` must apply the same sanitise as per-scheme
+
+> The FolioLens universe-backfill consumes the **bulk** `/v1/metadata` endpoint, which serves
+> some B1 fields (benchmark, ~223 riskometers, long fund-manager strings) **un-sanitised** —
+> `status='value'` with the raw junk — while `/v1/schemes/{id}/metadata` returns them clean
+> (verified live: scheme 100602 benchmark clean per-scheme, junk in bulk-sourced
+> `scheme_master`). Make the bulk path apply the #62 `metadata/sanitise.py` layer (or the same
+> per-field B1-status flip) so the two endpoints are byte-consistent and downstream retraction
+> (`resolveB1` NULL-write) can fire. Add a test that renders a known-junk scheme via both paths
+> and asserts equality. Until then, FolioLens is protected by the P7 render guards (so this is
+> data-hygiene, not user-facing). Effort S–M, risk low, **Should (post-beta acceptable given P7)**.
+
+---
+
 ## 1. Executive summary
 
 The remediation wave **worked**. All 14 claimed FolioLens items (FL1–10, FL12–15) are merged,
