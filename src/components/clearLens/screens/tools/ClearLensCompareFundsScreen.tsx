@@ -2108,7 +2108,14 @@ export function ClearLensCompareFundsScreen() {
       const scheme = schemeByCode.get(code);
       if (!scheme) continue;
       const series = navMap?.get(code) ?? [];
-      const m = selectCompareMetrics(series, scheme.periodReturns, scheme.riskRatios);
+      const m = selectCompareMetrics(
+        series,
+        scheme.periodReturns,
+        scheme.riskRatios,
+        undefined,
+        scheme.schemeName,
+        scheme.optionType,
+      );
       if (m) map.set(code, m);
     }
     return map;

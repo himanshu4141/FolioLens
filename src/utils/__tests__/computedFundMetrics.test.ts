@@ -5,6 +5,7 @@ import {
   computeRiskMetrics,
   computeTrailingCagr,
   computeTrailingReturns,
+  isPayoutPlan,
   mean,
   navOnOrBefore,
   sampleStdDev,
@@ -497,5 +498,175 @@ describe('selectCompareMetrics', () => {
     // y3 must be null (from computed, not fallback) — never silently mix sources
     expect(result!.trailing.y3).toBeNull();
     expect(result!.trailing.y5).toBeNull();
+  });
+
+  it('payout fund uses as-reported even when NAV series is long enough to compute', () => {
+    const series = buildSeries(15); // >1y → y1 non-null (hasComputed=true)
+    const periodReturns = { ret_1y: 0.12, ret_3y: 0.10 };
+    const result = selectCompareMetrics(
+      series, periodReturns, null, TODAY,
+      'HDFC Top 100 Fund - IDCW', 'idcw_payout',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('as-reported');
+    expect(result!.trailing.y1).toBeCloseTo(0.12, 5);
+    expect(result!.trailing.y3).toBeCloseTo(0.10, 5);
+  });
+
+  it('payout detection works from schemeName alone when optionType is null', () => {
+    const series = buildSeries(15);
+    const periodReturns = { ret_1y: 0.08 };
+    const result = selectCompareMetrics(
+      series, periodReturns, null, TODAY,
+      'Franklin India Flexi Cap Fund - IDCW', null,
+    );
+    expect(result!.source).toBe('as-reported');
+  });
+
+  it('growth fund still uses computed even when as-reported blob is present', () => {
+    const series = buildSeries(15);
+    const periodReturns = { ret_1y: 0.20 };
+    const result = selectCompareMetrics(
+      series, periodReturns, null, TODAY,
+      'HDFC Top 100 Fund - Direct Plan - Growth', 'growth',
+    );
+    expect(result!.source).toBe('computed');
+    expect(result!.trailing.y1).not.toBeCloseTo(0.20, 2);
+  });
+
+  it('payout fund with no as-reported data returns null', () => {
+    const series = buildSeries(15);
+    const result = selectCompareMetrics(
+      series, null, null, TODAY,
+      'HDFC Top 100 Fund - IDCW', 'idcw_payout',
+    );
+    expect(result).toBeNull();
+  });
+
+  it('omitting schemeName preserves legacy behaviour: computed wins', () => {
+    const series = buildSeries(15);
+    const result = selectCompareMetrics(series, null, null, TODAY);
+    expect(result!.source).toBe('computed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPayoutPlan
+// ---------------------------------------------------------------------------
+
+describe('isPayoutPlan', () => {
+  // ── option_type-based short-circuits ──────────────────────────────────────
+  it('returns false for option_type="growth"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - Growth', 'growth')).toBe(false);
+  });
+
+  it('returns false for option_type starting with "growth" (any casing)', () => {
+    expect(isPayoutPlan('Any Fund - Growth Option', 'Growth Option')).toBe(false);
+    expect(isPayoutPlan('Any Fund - Growth', 'growth_plan')).toBe(false);
+  });
+
+  it('returns true for option_type="idcw_payout"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', 'idcw_payout')).toBe(true);
+  });
+
+  it('returns true for option_type="idcw_reinvest"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', 'idcw_reinvest')).toBe(true);
+  });
+
+  it('returns true for option_type="dividend"', () => {
+    expect(isPayoutPlan('SBI Bond Fund - Dividend', 'dividend')).toBe(true);
+  });
+
+  // ── Name-based IDCW — option_type null ────────────────────────────────────
+  it('returns true for IDCW in scheme name (various real AMFI formats)', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('Aditya Birla Sun Life Low Duration Fund -Regular - DAILY IDCW', null)).toBe(true);
+    expect(isPayoutPlan('UTI Short Duration Fund - Regular Plan - Half-Yearly IDCW', null)).toBe(true);
+    expect(isPayoutPlan('ITI Arbitrage Fund - Regular Plan - IDCW Option', null)).toBe(true);
+    expect(isPayoutPlan('CANARA ROBECO GILT FUND - REGULAR PLAN - IDCW (Payout/Reinvestment)', null)).toBe(true);
+    expect(isPayoutPlan('quant Multi Cap Fund-IDCW Option - Regular Plan', null)).toBe(true);
+    expect(isPayoutPlan('Franklin India Flexi Cap Fund - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('UTI ELSS Tax Saver Fund - Regular Plan - IDCW', null)).toBe(true);
+  });
+
+  // ── Dividend Yield Fund — the tricky cases from real scheme_master rows ───
+  it('returns false for Dividend Yield Fund with Growth option (must NOT match)', () => {
+    // "Dividend Yield" is a strategy name, NOT a payout type; Growth option = not payout.
+    expect(isPayoutPlan('Aditya Birla Sun Life Dividend Yield Fund - Growth - Direct Plan', null)).toBe(false);
+    expect(isPayoutPlan('UTI-Dividend Yield Fund.-Growth', null)).toBe(false);
+    expect(isPayoutPlan('Franklin India Dividend Yield Fund-Growth Plan', null)).toBe(false);
+    expect(isPayoutPlan('ICICI Prudential Dividend Yield Equity Fund Growth Option', null)).toBe(false);
+    expect(isPayoutPlan('ICICI Prudential Dividend Yield Equity Fund Direct Plan Growth Option', null)).toBe(false);
+    expect(isPayoutPlan('HDFC Dividend Yield Fund - Growth Plan', null)).toBe(false);
+    expect(isPayoutPlan('HDFC Dividend Yield Fund - Growth Option Direct Plan', null)).toBe(false);
+    expect(isPayoutPlan('SBI Dividend Yield Fund - Regular Plan - Growth', null)).toBe(false);
+    expect(isPayoutPlan('SBI Dividend Yield Fund - Direct Plan - Growth', null)).toBe(false);
+    expect(isPayoutPlan('Franklin India Dividend Yield Fund - Direct - Growth', null)).toBe(false);
+    expect(isPayoutPlan('Tata Dividend Yield Fund-Direct Plan-Growth', null)).toBe(false);
+    expect(isPayoutPlan('LIC MF Dividend Yield Fund-Regular Plan-Growth', null)).toBe(false);
+  });
+
+  it('returns true for Dividend Yield Fund with IDCW option (must match)', () => {
+    expect(isPayoutPlan('Aditya Birla Sun Life Dividend Yield Fund -REGULAR - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('Aditya Birla Sun Life Dividend Yield Fund -DIRECT - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('UTI Dividend Yield Fund - Regular Plan - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('Franklin India Dividend Yield Fund - Direct - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('ICICI Prudential Dividend Yield Equity Fund IDCW Option', null)).toBe(true);
+    expect(isPayoutPlan('ICICI Prudential Dividend Yield Equity Fund Direct Plan IDCW Option', null)).toBe(true);
+    expect(isPayoutPlan('HDFC Dividend Yield Fund - IDCW Plan', null)).toBe(true);
+    expect(isPayoutPlan('Franklin India Dividend Yield Fund - IDCW', null)).toBe(true);
+    expect(isPayoutPlan('LIC MF Dividend Yield Fund-Regular Plan-IDCW', null)).toBe(true);
+    expect(isPayoutPlan('Baroda BNP Paribas Dividend Yield Fund - Regular Plan - IDCW Option', null)).toBe(true);
+    expect(isPayoutPlan(
+      'SBI Dividend Yield Fund - Regular Plan - Income Distribution cum Capital Withdrawal (IDCW) Option',
+      null,
+    )).toBe(true);
+    expect(isPayoutPlan('Tata Dividend Yield Fund-Direct Plan-IDCW Payout', null)).toBe(true);
+    expect(isPayoutPlan('Tata Dividend Yield Fund-Direct Plan-IDCW Reinvestment', null)).toBe(true);
+  });
+
+  // ── Other payout markers ───────────────────────────────────────────────────
+  it('returns true for income distribution phrase in name', () => {
+    expect(isPayoutPlan(
+      'Sundaram Corporate Bond Fund Regular Plan - Half yearly Income Distribution cum Capital Withdrawal (IDCW)',
+      null,
+    )).toBe(true);
+    expect(isPayoutPlan('SBI Savings Fund - Regular Plan Daily Income Distribution cum Capital Withdrawal Option (IDCW)', null)).toBe(true);
+  });
+
+  it('returns true for payout in name', () => {
+    expect(isPayoutPlan('Tata ELSS Fund- Regular Plan - Payout of IDCW Option', null)).toBe(true);
+    expect(isPayoutPlan(
+      'Reliance Dual Advantage Fixed Tenure Fund III - Plan B - Dividend Payout Option',
+      null,
+    )).toBe(true);
+    expect(isPayoutPlan(
+      'Kotak Bond Short Term Plan-(Payout of Income Distribution cum capital withdrawal option)',
+      null,
+    )).toBe(true);
+    expect(isPayoutPlan('Aditya Birla Sun Life Retirement Fund-The 40s Plan- Direct - Payout of IDCW', null)).toBe(true);
+  });
+
+  it('returns true for reinvestment in name', () => {
+    expect(isPayoutPlan('Tata Dividend Yield Fund-Direct Plan-IDCW Reinvestment', null)).toBe(true);
+    expect(isPayoutPlan('DSP Bond Fund - Regular Plan - Dividend Reinvestment', null)).toBe(true);
+  });
+
+  it('returns true for bonus in name', () => {
+    expect(isPayoutPlan('XYZ Fund - Bonus Option', null)).toBe(true);
+  });
+
+  it('returns true for bare dividend (not dividend yield) in name', () => {
+    expect(isPayoutPlan('DSP Bond Fund - Dividend', null)).toBe(true);
+    expect(isPayoutPlan('SBI Bond Fund - Regular Plan - Dividend', null)).toBe(true);
+    expect(isPayoutPlan('Reliance Fixed Horizon Fund - XXIII - Series 11 - Dividend Payout Option', null)).toBe(true);
+  });
+
+  // ── Pure growth funds — must always return false ──────────────────────────
+  it('returns false for growth-only funds', () => {
+    expect(isPayoutPlan('Parag Parikh Flexi Cap Fund - Direct Plan - Growth', null)).toBe(false);
+    expect(isPayoutPlan('HDFC Top 100 Fund - Direct Plan - Growth', 'growth')).toBe(false);
+    expect(isPayoutPlan('Franklin Growth Fund - Regular Plan - Growth', null)).toBe(false);
+    expect(isPayoutPlan('Abakkus Flexi Cap Fund - Regular - Growth', null)).toBe(false);
   });
 });

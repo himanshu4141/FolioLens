@@ -295,10 +295,68 @@ export interface CompareMetrics {
 }
 
 /**
+ * Returns true when a scheme is a payout plan (IDCW / dividend / payout / etc.)
+ * whose locally-computed NAV metrics must be bypassed in favour of the
+ * as-reported blob.
+ *
+ * Ported from upstream is_idcw_scheme logic. Rules:
+ *  - option_type starting with "growth" → never a payout plan.
+ *  - option_type starting with an IDCW / payout / dividend / reinvest / bonus
+ *    keyword → always a payout plan.
+ *  - "Dividend Yield" in the fund base name is a strategy (invests in
+ *    dividend-paying stocks), NOT a distribution type: flag it only when an
+ *    IDCW or other payout marker is also present in the name (e.g.
+ *    "…Dividend Yield Fund - IDCW" → payout;
+ *    "…Dividend Yield Fund - Growth" → not payout).
+ *  - Otherwise check the name for IDCW / income-distribution / payout /
+ *    reinvest / bonus / bare-dividend (after stripping "dividend yield").
+ */
+export function isPayoutPlan(schemeName: string, optionType: string | null | undefined): boolean {
+  const opt = (optionType ?? '').trim().toLowerCase();
+
+  // Explicit Growth option_type → not a payout plan.
+  if (/^growth/.test(opt)) return false;
+
+  // option_type carries a payout marker → flag immediately.
+  if (opt && /^(?:idcw|payout|income[\s-]?distribution|reinvest(?:ment)?|bonus|dividend)/.test(opt)) return true;
+
+  const n = schemeName.trim().toLowerCase();
+
+  // IDCW anywhere in the name → always a payout plan (never used as a
+  // strategy name, unlike "Dividend Yield").
+  if (/\bidcw\b/.test(n)) return true;
+
+  // Full "income distribution" phrase (pre-SEBI-rename wording).
+  if (/\bincome\s+distribution\b/.test(n)) return true;
+
+  // "Payout" as a word — always a distribution marker.
+  if (/\bpayout\b/.test(n)) return true;
+
+  // "Reinvest" / "Reinvestment" — IDCW reinvested into units.
+  if (/\breinvest(?:ment)?\b/.test(n)) return true;
+
+  // "Bonus" option — additional units distributed as bonus dividend.
+  if (/\bbonus\b/.test(n)) return true;
+
+  // "Dividend" as a payout option — but NOT the "Dividend Yield" strategy.
+  // Strip "dividend yield" occurrences first, then check for bare "dividend".
+  const withoutDivYield = n.replace(/\bdividend\s+yield\b/g, '');
+  if (/\bdividend\b/.test(withoutDivYield)) return true;
+
+  return false;
+}
+
+/**
  * Select the best available metrics for a fund in the Compare screen.
  *
- * Priority: computed from local NAV series (if any trailing return is non-null)
- * > as-reported from period_returns / risk_ratios blobs.
+ * Priority: computed from local NAV series (if any trailing return is non-null
+ * AND the fund is not a payout plan) > as-reported from period_returns /
+ * risk_ratios blobs.
+ *
+ * Payout plans (IDCW / dividend / etc.) always use the as-reported blob:
+ * their NAV is distorted by distributions so locally-computed CAGRs and
+ * drawdown are misleading. OpenFolio #65 populated the as-reported blob with
+ * the Growth-twin's correct numbers for ~82% of payout schemes.
  *
  * Returns null when neither source has any return data.
  *
@@ -313,11 +371,16 @@ export function selectCompareMetrics(
   periodReturns: unknown,
   riskRatios: unknown,
   today?: Date,
+  schemeName?: string,
+  optionType?: string | null,
 ): CompareMetrics | null {
   const trailing = computeTrailingReturns(series, today);
   const hasComputed = trailing.y1 != null || trailing.y3 != null || trailing.y5 != null;
 
-  if (hasComputed) {
+  // Skip computed branch for payout plans: their NAV reflects distributions
+  // and distorts CAGR/drawdown. schemeName absent → legacy call, preserve
+  // existing behaviour.
+  if (hasComputed && !(schemeName != null && isPayoutPlan(schemeName, optionType))) {
     const risk = computeRiskMetrics(series, { windowYears: 3, today });
     const maxDrawdown = computeMaxDrawdown(series, today);
     return { trailing, ...risk, maxDrawdown, source: 'computed', returnsAsOf: null, riskAsOf: null };
