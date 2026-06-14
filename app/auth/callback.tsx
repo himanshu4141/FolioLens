@@ -128,7 +128,7 @@ export default function OAuthCallbackScreen() {
             }
 
             setState('linked');
-            router.replace('/(tabs)');
+            // AuthGate in _layout.tsx will detect the new session and handle routing.
             return;
           }
 
@@ -176,7 +176,7 @@ export default function OAuthCallbackScreen() {
         }
 
         setState('linked');
-        router.replace('/(tabs)');
+        // AuthGate in _layout.tsx will detect the new session and handle routing.
       } catch (err) {
         console.error(
           '[auth/callback] unexpected error during exchange: %s',
