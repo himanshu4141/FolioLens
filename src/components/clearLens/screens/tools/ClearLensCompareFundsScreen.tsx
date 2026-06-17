@@ -43,7 +43,7 @@ import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { holdingsKey } from '@/src/utils/holdingOverlap';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { type SchemeSearchResult } from '@/src/utils/fundSearch';
-import { fundComparisonCategory, shortSchemeName } from '@/src/utils/schemeName';
+import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '@/src/utils/schemeName';
 import {
   selectCompareMetrics,
   type CompareMetrics,
@@ -261,10 +261,10 @@ function hasHistory(metrics: CompareMetrics | null): boolean {
 }
 
 function fundDisplayName(scheme: SchemeMasterRow): string {
-  // schemeName is the full AMFI name; shortSchemeName trims the plan/option
-  // suffix. We deliberately avoid schemeCategory ("Equity") and familyName
-  // (the AMC family) here — neither distinguishes one fund from another.
-  return shortSchemeName(scheme.schemeName);
+  // Prefer the OF-sourced family_name (no plan/option suffix). Fall back to
+  // shortSchemeName only for inactive registry shells OF doesn't index
+  // (family_name null). See schemeName.ts for the fallback's known limitations.
+  return scheme.familyName ?? shortSchemeName(scheme.schemeName);
 }
 
 // The SEBI sub-category we compare on. scheme_category alone is too broad
@@ -383,12 +383,14 @@ function FundChip({
   color,
   soft,
   label,
+  planOption,
   onRemove,
 }: {
   letter: string;
   color: string;
   soft: string;
   label: string;
+  planOption?: string | null;
   onRemove?: () => void;
 }) {
   return (
@@ -416,6 +418,21 @@ function FundChip({
       >
         {label}
       </Text>
+      {planOption ? (
+        <View
+          style={{
+            backgroundColor: 'rgba(10,20,48,0.07)',
+            borderRadius: ClearLensRadii.sm,
+            paddingHorizontal: 5,
+            paddingVertical: 2,
+            flexShrink: 0,
+          }}
+        >
+          <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.medium, color: '#0A1430' }}>
+            {planOption}
+          </Text>
+        </View>
+      ) : null}
       {onRemove ? (
         <TouchableOpacity
           onPress={onRemove}
@@ -1169,6 +1186,7 @@ function FundStripView({
             color={f.badgeColor}
             soft={f.badgeSoft}
             label={fundDisplayName(f.scheme)}
+            planOption={planOptionLabel(f.scheme.planType, f.scheme.optionType)}
             onRemove={() => onRemove(f)}
           />
         ))}

@@ -5,8 +5,19 @@
 
 /**
  * Trim AMFI plan/option suffixes off a scheme name for compact display.
- * Used by the universal fund picker rows and the Compare Funds chip / hero
- * labels.
+ *
+ * FALLBACK ONLY — used when `scheme_master.family_name` is NULL (inactive
+ * registry shells that OpenFolio doesn't index). For all actively-synced
+ * schemes, prefer `family_name` directly from the DB (populated by
+ * universe-backfill + sync-fund-meta from the OF /v1/metadata endpoint).
+ *
+ * Client-side regex parsing is kept as a last resort because the canonical
+ * " - Direct Plan - Growth" shape it targets covers ~80 % of the long-tail
+ * inactive shells, but it fails for non-canonical AMFI names such as:
+ *   "BANK OF INDIA … Fund Direct Plan-Growth"  (hyphen without spaces)
+ *   "… Fund -Direct - IDCW"                    (leading hyphen, no "Plan")
+ * Those edge cases are acceptable for inactive shells; they are not shown for
+ * any fund OF indexes (which is all active schemes).
  */
 export function shortSchemeName(name: string): string {
   return name
@@ -14,6 +25,42 @@ export function shortSchemeName(name: string): string {
     .replace(/\s+-\s+(Direct|Regular)\s+Plan(\s+-\s+(Growth|IDCW)(\s+(Option|Reinvest|Payout))?)?$/i, '')
     .replace(/\s+-\s+(Growth|IDCW)(\s+(Option|Reinvest|Payout))?$/i, '')
     .trim();
+}
+
+const PLAN_TYPE_LABELS: Record<string, string> = {
+  direct: 'Direct',
+  regular: 'Regular',
+};
+
+const OPTION_TYPE_LABELS: Record<string, string> = {
+  growth: 'Growth',
+  idcw_payout: 'IDCW',
+  idcw_reinvest: 'IDCW Reinvest',
+  idcw: 'IDCW',
+  dividend_payout: 'IDCW',
+  dividend_reinvest: 'IDCW Reinvest',
+  bonus: 'Bonus',
+};
+
+/**
+ * Format a compact "Direct · Growth" label from the OF-sourced plan_type and
+ * option_type columns. Returns null when both fields are absent (e.g. inactive
+ * registry shells without OF metadata).
+ */
+export function planOptionLabel(
+  planType: string | null | undefined,
+  optionType: string | null | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (planType) {
+    const key = planType.toLowerCase().trim();
+    parts.push(PLAN_TYPE_LABELS[key] ?? planType);
+  }
+  if (optionType) {
+    const key = optionType.toLowerCase().trim();
+    parts.push(OPTION_TYPE_LABELS[key] ?? optionType);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 /**

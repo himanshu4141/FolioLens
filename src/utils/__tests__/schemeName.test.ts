@@ -1,6 +1,6 @@
-import { fundComparisonCategory, shortSchemeName } from '../schemeName';
+import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '../schemeName';
 
-describe('shortSchemeName', () => {
+describe('shortSchemeName (fallback for inactive registry shells)', () => {
   it('trims direct plan + growth suffix', () => {
     expect(shortSchemeName('HDFC Top 100 Fund - Direct Plan - Growth')).toBe('HDFC Top 100 Fund');
     expect(shortSchemeName('Axis Bluechip Fund - Direct Plan - Growth Option')).toBe('Axis Bluechip Fund');
@@ -34,6 +34,52 @@ describe('shortSchemeName', () => {
 
   it('handles whitespace around the suffix', () => {
     expect(shortSchemeName('Quant Active Fund   -  Direct Plan - Growth   ')).toBe('Quant Active Fund');
+  });
+
+  it('passes through non-canonical AMFI names unchanged (known fallback limitation)', () => {
+    // Hyphen-without-spaces suffix is not matched, so the full name is preserved.
+    // This is an acceptable limitation for inactive shells; OF-indexed active
+    // schemes use family_name directly.
+    expect(shortSchemeName('BANK OF INDIA Small Cap Fund Direct Plan-Growth')).toBe(
+      'BANK OF INDIA Small Cap Fund Direct Plan-Growth',
+    );
+  });
+});
+
+describe('planOptionLabel', () => {
+  it('formats canonical plan + option pairs', () => {
+    expect(planOptionLabel('direct', 'growth')).toBe('Direct · Growth');
+    expect(planOptionLabel('regular', 'growth')).toBe('Regular · Growth');
+    expect(planOptionLabel('direct', 'idcw_payout')).toBe('Direct · IDCW');
+    expect(planOptionLabel('direct', 'idcw_reinvest')).toBe('Direct · IDCW Reinvest');
+  });
+
+  it('handles legacy/alias option keys', () => {
+    expect(planOptionLabel('direct', 'idcw')).toBe('Direct · IDCW');
+    expect(planOptionLabel('direct', 'dividend_payout')).toBe('Direct · IDCW');
+    expect(planOptionLabel('direct', 'dividend_reinvest')).toBe('Direct · IDCW Reinvest');
+  });
+
+  it('returns plan-only when option_type is absent', () => {
+    expect(planOptionLabel('direct', null)).toBe('Direct');
+    expect(planOptionLabel('regular', undefined)).toBe('Regular');
+  });
+
+  it('returns option-only when plan_type is absent', () => {
+    expect(planOptionLabel(null, 'growth')).toBe('Growth');
+    expect(planOptionLabel(undefined, 'idcw_payout')).toBe('IDCW');
+  });
+
+  it('returns null when both fields are absent', () => {
+    expect(planOptionLabel(null, null)).toBeNull();
+    expect(planOptionLabel(undefined, undefined)).toBeNull();
+  });
+
+  it('passes through unknown values verbatim', () => {
+    expect(planOptionLabel('direct', 'bonus')).toBe('Direct · Bonus');
+    expect(planOptionLabel('direct', 'custom_option')).toBe('Direct · custom_option');
+    // Unknown plan_type falls back to the raw string
+    expect(planOptionLabel('institutional', 'growth')).toBe('institutional · Growth');
   });
 });
 

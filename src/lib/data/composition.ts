@@ -262,6 +262,11 @@ export interface FundMetadata {
   name?: string | null;
   amc?: string | null;
   active?: boolean | null;
+  // Family identity (added in OF v2.1):
+  family_id?: string | null;
+  family_name?: string | null;
+  plan_type?: string | null;
+  option_type?: string | null;
   // B1 fields (flat):
   ter?: number | null;
   ter_date?: string | null;

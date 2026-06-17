@@ -310,6 +310,12 @@ Deno.serve(async (req) => {
         // keeping the holdings classification path intact.
         payload.openfolio_meta_synced_at = syncedAt;
 
+        // Family identity fields — no B1 status, just present or absent:
+        if (ofMeta.family_id != null) payload.of_family_id = ofMeta.family_id;
+        if (ofMeta.family_name != null) payload.family_name = ofMeta.family_name;
+        if (ofMeta.plan_type != null) payload.plan_type = ofMeta.plan_type;
+        if (ofMeta.option_type != null) payload.option_type = ofMeta.option_type;
+
         if (ofMeta.active != null) payload.scheme_active = ofMeta.active;
 
         const metrics = ofMeta.metrics;
@@ -445,12 +451,15 @@ Deno.serve(async (req) => {
         payload.min_additional = Math.round(Number(mfdata.min_additional));
       }
 
-      // ── mfdata-exclusive fields (always from mfdata, OpenFolio has none) ─
+      // ── mfdata-exclusive fields ────────────────────────────────────────────
+      // OF family fields (family_name, plan_type, option_type) already written
+      // above; only fall back to mfdata when OF didn't supply them so we don't
+      // downgrade authoritative OF values to mfdata's coarser labels.
       if (mfdata) {
         payload.mfdata_family_id = mfdata.family_id ?? null;
-        if (mfdata.plan_type != null) payload.plan_type = mfdata.plan_type;
-        if (mfdata.option_type != null) payload.option_type = mfdata.option_type;
-        if (mfdata.family_name != null) payload.family_name = mfdata.family_name;
+        if (payload.plan_type == null && mfdata.plan_type != null) payload.plan_type = mfdata.plan_type;
+        if (payload.option_type == null && mfdata.option_type != null) payload.option_type = mfdata.option_type;
+        if (payload.family_name == null && mfdata.family_name != null) payload.family_name = mfdata.family_name;
         if (mfdata.amc_name != null) payload.amc_name = mfdata.amc_name;
         // amc_slug deliberately not written — no reader in src/ or app/ (grep confirms)
         payload.mfdata_meta_synced_at = syncedAt;

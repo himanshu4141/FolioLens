@@ -443,6 +443,12 @@ async function runMetadataBackfillChunk(
         patch.risk_ratios = rr;
       }
 
+      // Family identity fields (no B1 status — always present or absent):
+      if (item.family_id != null) patch.of_family_id = item.family_id;
+      if (item.family_name != null) patch.family_name = item.family_name;
+      if (item.plan_type != null) patch.plan_type = item.plan_type;
+      if (item.option_type != null) patch.option_type = item.option_type;
+
       const ter = resolveB1(b1?.ter?.status, item.ter);
       if (ter !== undefined) patch.expense_ratio = ter;
       const terDate = resolveB1(b1?.ter_date?.status, item.ter_date);
