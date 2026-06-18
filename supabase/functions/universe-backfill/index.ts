@@ -67,6 +67,7 @@ import {
   type SchemeUniverse,
 } from '../_shared/openfolio.ts';
 import { makeRegistryUpsert } from '../_shared/registry-upsert.ts';
+import { shouldStartFreshCycle } from '../_shared/refresh-cycle.ts';
 import {
   resolveSebiCategory,
   broadCategoryFromSebi,
@@ -696,13 +697,19 @@ async function readDoneMarker(
 
 async function readRefreshDueMarker(
   supabase: ReturnType<typeof createServiceClient>,
-): Promise<string | null> {
+): Promise<{ month: string | null; timestamp: string } | null> {
   const key = `universe_backfill_refresh_due`;
   const { data, error } = await supabase.from('app_config').select('value').eq('key', key).single();
   if (error || !data) return null;
   try {
     const parsed = JSON.parse(data.value);
-    return typeof parsed === 'object' && parsed?.timestamp ? parsed.timestamp : null;
+    if (typeof parsed === 'object' && parsed?.timestamp) {
+      return {
+        month: typeof parsed.month === 'string' ? parsed.month : null,
+        timestamp: parsed.timestamp,
+      };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -712,6 +719,47 @@ async function clearRefreshDueMarker(
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<void> {
   const key = `universe_backfill_refresh_due`;
+  await supabase.from('app_config').delete().eq('key', key);
+}
+
+/**
+ * The month ("YYYY-MM") of the backfill cycle currently in progress, or null.
+ * Written once when a fresh cycle starts and cleared when both phases finish,
+ * so resume runs can tell "new month → reset" from "same month → resume".
+ */
+async function readCycleStartedMonth(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<string | null> {
+  const key = `universe_backfill_cycle_started`;
+  const { data, error } = await supabase.from('app_config').select('value').eq('key', key).single();
+  if (error || !data) return null;
+  try {
+    const parsed = JSON.parse(data.value);
+    return typeof parsed === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCycleStartedMonth(
+  supabase: ReturnType<typeof createServiceClient>,
+  month: string,
+): Promise<void> {
+  const key = `universe_backfill_cycle_started`;
+  await supabase
+    .from('app_config')
+    .upsert({
+      key,
+      value: JSON.stringify(month),
+      description: 'Month (YYYY-MM) of the universe-backfill cycle currently in progress',
+    })
+    .eq('key', key);
+}
+
+async function clearCycleStartedMarker(
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<void> {
+  const key = `universe_backfill_cycle_started`;
   await supabase.from('app_config').delete().eq('key', key);
 }
 
@@ -767,22 +815,42 @@ Deno.serve(async (req) => {
 
   const supabase = createServiceClient();
 
-  // Check for monthly refresh marker. If present and phase not explicitly set, auto-detect.
-  // The monthly cron (16th @ 01:00 UTC) invokes with force=true to start a fresh cycle.
-  // The frequent cron (every 15 min) relies on this marker to decide if a backfill is due.
-  if (!force && phase === 'both') {
-    const refreshDueAt = await readRefreshDueMarker(supabase);
-    if (refreshDueAt) {
-      console.log('[universe-backfill] refresh_due marker found (timestamp=%s), clearing done markers for fresh cycle', refreshDueAt);
-      force = true;
-      autoDetected = true;
-      // Clear done markers so the backfill restarts
-      await clearDoneMarker(supabase, 'composition');
-      await clearDoneMarker(supabase, 'metadata');
-      const compositionKey = `universe_backfill_composition_cursor`;
-      const metadataKey = `universe_backfill_metadata_cursor`;
-      await supabase.from('app_config').delete().eq('key', compositionKey);
-      await supabase.from('app_config').delete().eq('key', metadataKey);
+  // Check for the monthly refresh marker. When a cycle is due we must start it
+  // EXACTLY ONCE — clearing done markers + cursors — then RESUME (not reset) on
+  // every subsequent invocation until both phases finish.
+  //
+  // The cycle is keyed by month: the first force=true monthly kickoff (16th @
+  // 01:00 UTC), or the first resume run that observes a new month, clears state
+  // and records the month in `universe_backfill_cycle_started`; later resume
+  // runs see the same month and continue from the persisted cursor. Without this
+  // guard every force=false resume re-cleared the cursor, pinning the backfill
+  // at page 1→2 forever — the refresh_due marker only clears once both phases
+  // reach `done`, which a perpetually-resetting cursor never does.
+  if (phase === 'both') {
+    const refreshDue = await readRefreshDueMarker(supabase);
+    if (refreshDue) {
+      const cycleStartedMonth = await readCycleStartedMonth(supabase);
+      const refreshDueMonth = refreshDue.month;
+      if (shouldStartFreshCycle({ force, refreshDueMonth, cycleStartedMonth })) {
+        console.log(
+          '[universe-backfill] starting fresh cycle (month=%s force=%s prevCycle=%s) — clearing done markers + cursors',
+          refreshDueMonth,
+          force,
+          cycleStartedMonth,
+        );
+        force = true;
+        autoDetected = true;
+        await clearDoneMarker(supabase, 'composition');
+        await clearDoneMarker(supabase, 'metadata');
+        await supabase.from('app_config').delete().eq('key', 'universe_backfill_composition_cursor');
+        await supabase.from('app_config').delete().eq('key', 'universe_backfill_metadata_cursor');
+        if (refreshDueMonth) await writeCycleStartedMonth(supabase, refreshDueMonth);
+      } else {
+        console.log(
+          '[universe-backfill] resuming in-progress cycle (month=%s) — keeping persisted cursor',
+          refreshDueMonth,
+        );
+      }
     }
   }
 
@@ -1058,11 +1126,15 @@ Deno.serve(async (req) => {
 
           const bothDone = done && !!compDone;
 
-          // When both phases complete, clear the monthly refresh marker so the frequent cron
-          // (every 15 min) knows the cycle is done and can short-circuit.
+          // When both phases complete, clear the monthly refresh marker (so the
+          // resume cron knows the cycle is done and short-circuits) and the
+          // cycle-started marker (so next month's refresh is detected as new).
           if (bothDone) {
             await clearRefreshDueMarker(supabase);
-            console.log('[universe-backfill] both phases complete, clearing refresh_due marker');
+            await clearCycleStartedMarker(supabase);
+            console.log(
+              '[universe-backfill] both phases complete, clearing refresh_due + cycle_started markers',
+            );
           }
 
           return json({
