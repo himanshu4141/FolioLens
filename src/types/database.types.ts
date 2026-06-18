@@ -240,6 +240,7 @@ export type Database = {
           min_lumpsum: number | null
           min_sip_amount: number | null
           nav_backfilled_at: string | null
+          of_family_id: string | null
           openfolio_meta_synced_at: string | null
           option_type: string | null
           period_returns: Json | null
@@ -276,6 +277,7 @@ export type Database = {
           min_lumpsum?: number | null
           min_sip_amount?: number | null
           nav_backfilled_at?: string | null
+          of_family_id?: string | null
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
@@ -312,6 +314,7 @@ export type Database = {
           min_lumpsum?: number | null
           min_sip_amount?: number | null
           nav_backfilled_at?: string | null
+          of_family_id?: string | null
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null

@@ -229,11 +229,13 @@ sequenceDiagram
   loop each stale scheme
     Fn->>OF: GET /v1/schemes/{scheme_code}/metadata (primary)
     alt OpenFolio returns metadata
-      OF-->>Fn: { ter, fund_manager, expense_ratio, aum, active, … }
+      OF-->>Fn: { ter, fund_manager, aum, active, family_id, family_name, plan_type, option_type, … }
+      Note over Fn: Write family identity first (of_family_id, family_name,<br/>plan_type, option_type — no B1 status, presence-gated).<br/>Then apply B1 field statuses for remaining fields.
     else fallback
       Fn->>Mfd: GET metadata
       alt mfdata has it
         Mfd-->>Fn: { expense_ratio, aum, isin, family_id, benchmark, rating }
+        Note over Fn: mfdata only fills fields still NULL after the OF pass<br/>(plan_type, option_type, family_name — OF values are never overwritten)
       else fallback for ISIN only
         Fn->>Mf: GET /mf/{scheme_code}
         Mf-->>Fn: { isin }
@@ -302,7 +304,7 @@ sequenceDiagram
   loop metadata pages (~1/invocation)
     Fn->>OF: GET /v1/metadata?page=N
     OF-->>Fn: { items[], count, page }
-    Fn->>DB: UPDATE scheme_master<br/>on b1_field_meta statuses:<br/>  status='value' → write value or null<br/>  status non-value → write NULL (retract)<br/>  status undefined → no-touch
+    Fn->>DB: UPDATE scheme_master<br/>family identity (no B1 status):<br/>  family_id → of_family_id, family_name, plan_type, option_type<br/>  only written when non-null<br/>B1 fields (b1_field_meta statuses):<br/>  status='value' → write value or null<br/>  status non-value → write NULL (retract)<br/>  status undefined → no-touch
   end
   Note over Fn: Metadata done: mark done_at<br/>Both complete: DELETE refresh_due marker
   
