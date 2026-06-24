@@ -42,7 +42,6 @@ import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioCompos
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { holdingsKey } from '@/src/utils/holdingOverlap';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
-import { type SchemeSearchResult } from '@/src/utils/fundSearch';
 import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '@/src/utils/schemeName';
 import {
   selectCompareMetrics,
@@ -2152,12 +2151,8 @@ export function ClearLensCompareFundsScreen() {
     }));
   }, [schemes, metricsByCode, compositionsByCode, tokens.colors.surfaceSoft]);
 
-  const handleToggle = (scheme: SchemeSearchResult) => {
-    setSelectedCodes((prev) => {
-      if (prev.includes(scheme.schemeCode)) return prev.filter((c) => c !== scheme.schemeCode);
-      if (prev.length >= MAX_FUNDS) return prev;
-      return [...prev, scheme.schemeCode];
-    });
+  const handleCodesChange = (codes: number[]) => {
+    setSelectedCodes(codes);
   };
 
   const handleRemove = (fund: CompareFundData) => {
@@ -2376,7 +2371,7 @@ export function ClearLensCompareFundsScreen() {
         selectedCodes={selectedCodes}
         mode="multi"
         maxFunds={MAX_FUNDS}
-        onToggle={handleToggle}
+        onCodesChange={handleCodesChange}
         onClose={() => setPickerOpen(false)}
         title="Pick funds to compare"
       />

@@ -177,6 +177,49 @@ Includes:
 
 Feature flags live in `appStore.toolsFlags`. All flags default to `false`. Each is flipped to `true` when the corresponding tool milestone ships.
 
+### 8a. Compare Funds (`/tools/compare-funds`)
+
+Stack route under Tools Hub. Shows side-by-side metric cards for up to 4 mutual funds.
+
+**Fund selection — family-first picker (`UniversalFundPicker` in `mode='multi'`)**
+
+The picker collapses ~8,347 plan/option variants from `scheme_master` into ~2,046 logical fund families using the `v_fund_family_search` PostgreSQL view (grouped on `of_family_id`). The user sees one row per family and selects up to 4.
+
+Plan/option resolution flow:
+
+1. **Global toggle** — a single "Comparing: Direct · Growth" strip at the top of the picker lets the user choose a plan type (Direct / Regular) and option type (Growth / IDCW). Every selected family resolves to a concrete `scheme_code` using this preference.
+2. **Per-fund chip override** — tapping the plan label on a selected-fund chip cycles through the plan/option combos that family actually has (`has_direct`, `has_regular`, `has_growth`, `has_idcw` flags from the view), overriding the global toggle for just that fund.
+3. **Graceful fallback** — if the chosen plan is unavailable for a family (e.g. Direct-only family when "Regular" is selected), the chip shows a labelled fallback ("Regular-only", "Direct-only", "Growth-only", "IDCW-only").
+
+Resolution priority (`resolveFamilyToScheme` in `src/utils/fundSearch.ts`):
+
+1. Exact match — preferred planType + preferred optionType (payout priority: `idcw_payout` > `idcw` > `idcw_reinvest`).
+2. Preferred optionType, any planType → fallback label.
+3. Preferred planType, any optionType → fallback label.
+4. Any available plan → "Different plan available".
+
+FL13 ranking (active families surface first):
+
+- `family_active = TRUE` rows before inactive/matured.
+- Within same activity tier, `max_synced_at DESC` (enriched before unseen).
+- Then `family_name ASC` (alphabetical).
+
+Matured and inactive families are demoted but never hidden — a user searching by name will still find them.
+
+**"Your funds" section** — if the user holds funds, a pre-seeded section of families the user already owns (fetched via `fetchUserHeldFamilies`) appears above the search results.
+
+**Comparison view**
+
+After selection the screen shows:
+
+- Fund name chips (badge letter A–D, colour coded) with a remove × and undo toast.
+- Return metrics (1M / 3M / 6M / 1Y / 3Y CAGR) rendered as a grouped bar + numeric table.
+- Risk metrics (std-dev, max-drawdown, Sharpe) per fund.
+- Category overlap matrix showing % shared securities between any two selected funds.
+- NAV history sparklines (3-year trailing, aligned to a common base of 100).
+
+All comparison data comes from `scheme_master`, `nav_history`, and `fund_portfolio_composition` via React Query (in-memory only — these queries are not in `PERSIST_ALLOWLIST`).
+
 ### 9. Onboarding / Import CAS
 
 Reusable for first-run onboarding and later imports. Drop-zone hero on Welcome is the primary action; the "Get it in 2 mins →" link routes users who don't have a statement yet through a one-question app-family tile picker (Zerodha-family ⇒ CDSL/NSDL portal list; Groww-family ⇒ CAMS/KFintech portal list; "a bit of both" ⇒ combined). Acronyms (CAS, CAMS, KFintech, CDSL, NSDL) are hidden from the user surface.
