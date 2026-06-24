@@ -548,6 +548,32 @@ describe('selectCompareMetrics', () => {
     const result = selectCompareMetrics(series, null, null, TODAY);
     expect(result!.source).toBe('computed');
   });
+
+  it('stays with as-reported when y1 is computable but Sharpe is null (source-swap guard)', () => {
+    // 11 month-end points spanning > 1 year (y1 non-null, hasComputed=true) but
+    // only 10 monthly returns which is below the 12-observation threshold for
+    // Sharpe. With as-reported returns present and computedAddsValue=false, the
+    // guard falls through to as-reported to prevent a visible value-flip.
+    const sparseSeries: NavPoint[] = [
+      { date: '2025-04-30', value: 100 },
+      { date: '2025-05-31', value: 101 },
+      { date: '2025-06-30', value: 102 },
+      { date: '2025-07-31', value: 103 },
+      { date: '2025-08-31', value: 104 },
+      { date: '2025-09-30', value: 105 },
+      { date: '2025-10-31', value: 106 },
+      { date: '2025-11-30', value: 107 },
+      { date: '2025-12-31', value: 108 },
+      { date: '2026-01-31', value: 109 },
+      { date: '2026-04-30', value: 113 },
+    ];
+    const periodReturns = { ret_1y: 0.12, ret_3y: 0.10 };
+    const result = selectCompareMetrics(sparseSeries, periodReturns, null, TODAY);
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe('as-reported');
+    expect(result!.trailing.y1).toBeCloseTo(0.12, 5);
+    expect(result!.sharpe).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -668,5 +694,104 @@ describe('isPayoutPlan', () => {
     expect(isPayoutPlan('HDFC Top 100 Fund - Direct Plan - Growth', 'growth')).toBe(false);
     expect(isPayoutPlan('Franklin Growth Fund - Regular Plan - Growth', null)).toBe(false);
     expect(isPayoutPlan('Abakkus Flexi Cap Fund - Regular - Growth', null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Month-end NAV tolerance — daily vs month-end series
+//
+// Validates that using month-end points (~60 rows for 5y) instead of a full
+// daily series (~1,250 rows) yields results within acceptable bounds:
+//  - σ / Sharpe / Sortino: identical (both paths call buildMonthEndNavs internally)
+//  - CAGR: within ±0.5pp (start date offset ≤ 31 days; at ~11% annual ≈ 0.9pp worst-case)
+//  - max-DD: within ±5pp (sustained crash visible at month-ends too)
+// ---------------------------------------------------------------------------
+
+describe('month-end NAV tolerance — daily vs month-end series', () => {
+  const TODAY_LOCAL = new Date('2026-05-08');
+
+  /**
+   * Deterministic 5-year daily series (trading days only) with a mid-stream
+   * drawdown. NAV grows ~11% per year on trend, with a -0.3%/day crash from
+   * Nov 2023 to Apr 2024 that is recoverable and visible at month-end boundaries.
+   */
+  function buildTestDailySeries(startDate: string, endDate: string): NavPoint[] {
+    const out: NavPoint[] = [];
+    let nav = 100;
+    const d = new Date(startDate + 'T00:00:00Z');
+    const end = new Date(endDate + 'T00:00:00Z');
+    const crashStart = new Date('2023-11-01T00:00:00Z');
+    const crashEnd = new Date('2024-05-01T00:00:00Z');
+
+    while (d <= end) {
+      const dow = d.getUTCDay();
+      if (dow !== 0 && dow !== 6) {
+        const inCrash = d >= crashStart && d < crashEnd;
+        nav *= inCrash ? 0.997 : 1.00042;
+        out.push({ date: d.toISOString().split('T')[0], value: parseFloat(nav.toFixed(6)) });
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return out;
+  }
+
+  it('σ / Sharpe from month-end series are identical to daily (both use buildMonthEndNavs internally)', () => {
+    const daily = buildTestDailySeries('2021-04-01', '2026-05-08');
+    const monthEnd = buildMonthEndNavs(daily);
+
+    const dailyM = selectCompareMetrics(daily, null, null, TODAY_LOCAL);
+    const monthEndM = selectCompareMetrics(monthEnd, null, null, TODAY_LOCAL);
+
+    expect(dailyM!.source).toBe('computed');
+    expect(monthEndM!.source).toBe('computed');
+    expect(dailyM!.stdDev).not.toBeNull();
+    expect(monthEndM!.stdDev).not.toBeNull();
+    // computeRiskMetrics calls buildMonthEndNavs on whatever series it receives,
+    // so daily and month-end inputs produce the same monthly return sequence.
+    expect(dailyM!.stdDev).toBeCloseTo(monthEndM!.stdDev!, 8);
+    if (dailyM!.sharpe != null && monthEndM!.sharpe != null) {
+      expect(dailyM!.sharpe).toBeCloseTo(monthEndM!.sharpe, 8);
+    }
+  });
+
+  it('CAGR from month-end series matches daily within ±0.5pp', () => {
+    const daily = buildTestDailySeries('2021-04-01', '2026-05-08');
+    const monthEnd = buildMonthEndNavs(daily);
+
+    const dailyM = selectCompareMetrics(daily, null, null, TODAY_LOCAL);
+    const monthEndM = selectCompareMetrics(monthEnd, null, null, TODAY_LOCAL);
+
+    // Target dates (May 8) fall after the April month-end, giving ≤8-day start
+    // offset. At ~11% annual trend: 8 days ≈ 0.24pp CAGR difference — well within ±0.5pp.
+    for (const [d, m] of [
+      [dailyM!.trailing.y1, monthEndM!.trailing.y1],
+      [dailyM!.trailing.y3, monthEndM!.trailing.y3],
+      [dailyM!.trailing.y5, monthEndM!.trailing.y5],
+    ] as [number | null, number | null][]) {
+      if (d != null && m != null) {
+        expect(Math.abs(d - m)).toBeLessThan(0.005);
+      }
+    }
+  });
+
+  it('max-DD from month-end series is within ±5pp of daily', () => {
+    const daily = buildTestDailySeries('2021-04-01', '2026-05-08');
+    const monthEnd = buildMonthEndNavs(daily);
+
+    const dailyM = selectCompareMetrics(daily, null, null, TODAY_LOCAL);
+    const monthEndM = selectCompareMetrics(monthEnd, null, null, TODAY_LOCAL);
+
+    expect(dailyM!.maxDrawdown).not.toBeNull();
+    expect(monthEndM!.maxDrawdown).not.toBeNull();
+    // The crash (Nov 2023 – Apr 2024) has peak at Oct 31 2023 and trough at
+    // Apr 30 2024 — both exact month-end boundaries — so daily and month-end
+    // series agree to within a fraction of 1pp.
+    expect(Math.abs(dailyM!.maxDrawdown! - monthEndM!.maxDrawdown!)).toBeLessThan(0.05);
+  });
+
+  it('month-end series is >20× smaller than a 5-year daily series', () => {
+    const daily = buildTestDailySeries('2021-04-01', '2026-05-08');
+    const monthEnd = buildMonthEndNavs(daily);
+    expect(daily.length / monthEnd.length).toBeGreaterThan(20);
   });
 });

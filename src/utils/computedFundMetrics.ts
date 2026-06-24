@@ -365,6 +365,12 @@ export function isPayoutPlan(schemeName: string, optionType: string | null | und
  * show "—" for y3/y5 rather than filling in the gaps from period_returns.
  * This prevents "computed locally" and "as reported" from silently coexisting
  * in the same row.
+ *
+ * Source-swap rule — only switch from as-reported to computed when computed
+ * adds information as-reported doesn't carry (Sharpe / Sortino). If the
+ * computed path yields the same CAGR / σ / drawdown but no Sharpe/Sortino,
+ * keeping as-reported avoids a visible value-flip with near-identical numbers
+ * when the NAV series loads (typically from month-end points).
  */
 export function selectCompareMetrics(
   series: NavPoint[],
@@ -383,7 +389,21 @@ export function selectCompareMetrics(
   if (hasComputed && !(schemeName != null && isPayoutPlan(schemeName, optionType))) {
     const risk = computeRiskMetrics(series, { windowYears: 3, today });
     const maxDrawdown = computeMaxDrawdown(series, today);
-    return { trailing, ...risk, maxDrawdown, source: 'computed', returnsAsOf: null, riskAsOf: null };
+
+    // Only recompute-swap when computed adds Sharpe / Sortino (not available
+    // from the as-reported blob). If as-reported already covers returns and
+    // computed can't produce Sharpe/Sortino (too few monthly observations),
+    // stay with as-reported to prevent a jarring value-flip for identical numbers.
+    const asReportedHasReturns =
+      readReturnPct(periodReturns, '1y') != null ||
+      readReturnPct(periodReturns, '3y') != null ||
+      readReturnPct(periodReturns, '5y') != null;
+    const computedAddsValue = risk.sharpe != null || risk.sortino != null;
+    if (asReportedHasReturns && !computedAddsValue) {
+      // Fall through to the as-reported path below.
+    } else {
+      return { trailing, ...risk, maxDrawdown, source: 'computed', returnsAsOf: null, riskAsOf: null };
+    }
   }
 
   // Fall back to the persisted as-reported blobs.

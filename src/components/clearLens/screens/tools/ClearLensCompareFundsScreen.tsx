@@ -44,6 +44,7 @@ import { holdingsKey } from '@/src/utils/holdingOverlap';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '@/src/utils/schemeName';
 import {
+  buildMonthEndNavs,
   selectCompareMetrics,
   type CompareMetrics,
 } from '@/src/utils/computedFundMetrics';
@@ -55,15 +56,22 @@ import {
   readRiskLabel,
 } from '@/src/utils/mfdataGuards';
 import type { NavPoint } from '@/src/utils/navUtils';
-import { appendNavTailIfStale, fetchFundNavHistory, type FetchNavHistoryOptions } from '@/src/hooks/useFundDetail';
+import { appendNavTailIfStale } from '@/src/hooks/useFundDetail';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import * as navRepo from '@/src/lib/db/nav';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { schemeMasterRepo } from '@/src/lib/data/schemeMaster';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const MAX_FUNDS = 3;
+
+// Skip fetch-fund-nav invoke when the local SQLite series is this many days old or less.
+const COMPARE_NAV_FRESH_DAYS = 3;
 
 // Stable A/B/C identity colors — NOT theme tokens (read on both light/dark).
 const BADGE_LETTERS = ['A', 'B', 'C'] as const;
@@ -212,14 +220,44 @@ function compareSinceDate(): string {
 }
 
 /**
- * Fetch the 5-year NAV window for each scheme in the Compare screen.
+ * Fetch month-end NAV series for Compare Funds metric computation.
  *
- * Uses a separate React Query key ('fund-nav-history-compare') so the windowed
- * slice never lands in the same cache entry as Fund Detail's full-history fetch
- * (keyed 'fund-nav-history'). The fetcher passes sinceDate so the Supabase
- * fallback only pulls ~5y of rows instead of the full 3–6k-row history, and
- * explicitly skips the SQLite write-back to prevent the poisoning trap
- * documented in useFundDetail.ts lines 186-194.
+ * [cache-shape-stable] The React Query cache key is ['fund-nav-history-compare', code]
+ * in both the old (daily) and new (month-end) paths — the value is always NavPoint[].
+ * No __BUSTER__ bump needed: the series is in-memory only (not in PERSIST_ALLOWLIST).
+ *
+ * Native: reads the local SQLite series (populated by compare:hydrate-nav) and
+ * extracts month-end points — zero network cost for held / previously-compared
+ * funds, ~20× fewer JS objects handed to selectCompareMetrics.
+ *
+ * Web (no SQLite) or when SQLite is empty: uses the month_end_nav RPC which
+ * returns ~60 rows for a 5-year window instead of ~1,250 daily rows.
+ */
+async function fetchMonthEndNavForCompare(code: number): Promise<NavPoint[]> {
+  const since = compareSinceDate(); // 5y window
+
+  if (SQLITE_AVAILABLE) {
+    try {
+      const rows = await navRepo.readBySchemeCodes([code], { sinceDate: since });
+      if (rows.length > 0) {
+        return buildMonthEndNavs(rows.map((r) => ({ date: r.nav_date, value: r.nav })));
+      }
+    } catch (err) {
+      console.warn('[compare] sqlite month-end read failed scheme=%d %s', code, String(err));
+    }
+  }
+
+  // Web path or no local data: call the month_end_nav RPC (~60 rows vs ~1,250).
+  return navHistoryRepo.monthEndNav(code);
+}
+
+/**
+ * Fetch month-end NAV series for each scheme in the Compare screen.
+ *
+ * Uses key 'fund-nav-history-compare' (separate from Fund Detail's 'fund-nav-history')
+ * so the windowed slice never contaminates the full-history cache. Fetches month-end
+ * points only (~60 rows per fund vs ~1,250 daily) — sufficient for CAGR / σ / max-DD
+ * computation and ~20× lighter on network + JS thread.
  */
 async function fetchNavHistoryForCompare(
   qc: QueryClient,
@@ -228,13 +266,11 @@ async function fetchNavHistoryForCompare(
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
   perfStart('query:compare:navHistory');
-  const since = compareSinceDate();
-  const opts: FetchNavHistoryOptions = { sinceDate: since };
   const entries = await Promise.all(
     schemeCodes.map(async (code) => {
       const rows = await qc.fetchQuery({
         queryKey: ['fund-nav-history-compare', code],
-        queryFn: () => fetchFundNavHistory(code, opts),
+        queryFn: () => fetchMonthEndNavForCompare(code),
         staleTime: STALE_TIMES.NAV_HISTORY,
       });
       return [code, rows] as const;
@@ -2027,6 +2063,40 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-snapshot', code],
         queryFn: async () => {
+          perfStart(`hydrate:snapshot:${code}`);
+          // ── Gate: skip edge-function round-trip when scheme_master is populated
+          // and a fresh official composition row already exists. Mirrors the
+          // 7-day meta + current-month comp freshness checks inside fetch-fund-snapshot.
+          try {
+            const currentMonthStart = new Date();
+            currentMonthStart.setDate(1);
+            const compThreshold = currentMonthStart.toISOString().split('T')[0];
+            const [smRes, compRes] = await Promise.all([
+              schemeMasterRepo.from()
+                .select('period_returns, risk_ratios, aum_cr')
+                .eq('scheme_code', code)
+                .maybeSingle(),
+              fundPortfolioCompositionRepo.from()
+                .select('id')
+                .eq('scheme_code', code)
+                .gte('portfolio_date', compThreshold)
+                .in('source', ['official', 'amfi', 'category_fallback'])
+                .limit(1),
+            ]);
+            const smFresh =
+              !smRes.error &&
+              smRes.data?.period_returns != null &&
+              smRes.data?.risk_ratios != null &&
+              smRes.data?.aum_cr != null;
+            const compFresh = !compRes.error && (compRes.data?.length ?? 0) > 0;
+            if (smFresh && compFresh) {
+              perfEnd(`hydrate:snapshot:${code}`, { skipped: true, reason: 'cache_hit' });
+              return { status: 'cache_hit' };
+            }
+          } catch (gateErr) {
+            // Gate check failed — fall through to the invoke rather than blocking the user.
+            console.warn('[compare:hydrate-snapshot] gate failed scheme=%d: %s', code, String(gateErr));
+          }
           const { data, error } = await functionsClient.invoke<{ status: string }>(
             'fetch-fund-snapshot',
             { body: { scheme_code: code } },
@@ -2035,6 +2105,7 @@ export function ClearLensCompareFundsScreen() {
           queryClient.invalidateQueries({ queryKey: ['scheme-master', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:schemes'] });
           queryClient.invalidateQueries({ queryKey: ['compare:compositions'] });
+          perfEnd(`hydrate:snapshot:${code}`, { skipped: false });
           return data;
         },
         staleTime: 5 * 60 * 1000,
@@ -2042,6 +2113,26 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-nav', code],
         queryFn: async () => {
+          perfStart(`hydrate:nav:${code}`);
+          // ── Gate: skip edge-function round-trip when SQLite series is fresh ──
+          // (native only — web has no SQLite). Matches fetch-fund-nav's own
+          // FRESH_NAV_DAYS=3 short-circuit, saving 1–3s of cold-invoke latency
+          // for held funds and previously-compared non-held funds.
+          if (SQLITE_AVAILABLE) {
+            try {
+              const watermark = await navRepo.getWatermark(code);
+              if (watermark) {
+                const ageDays =
+                  (Date.now() - new Date(watermark).getTime()) / (24 * 60 * 60 * 1000);
+                if (ageDays <= COMPARE_NAV_FRESH_DAYS) {
+                  perfEnd(`hydrate:nav:${code}`, { skipped: true, watermark, ageDays });
+                  return { status: 'cache_hit', last_nav_date: watermark };
+                }
+              }
+            } catch (gateErr) {
+              console.warn('[compare:hydrate-nav] watermark gate failed scheme=%d: %s', code, String(gateErr));
+            }
+          }
           const { data, error } = await functionsClient.invoke<{
             status: string;
             last_nav_date: string | null;
@@ -2051,16 +2142,16 @@ export function ClearLensCompareFundsScreen() {
           );
           if (error) throw new Error(`fetch-fund-nav: ${error.message}`);
           // Top up the local SQLite tail before invalidating. fetch-fund-nav
-          // refreshes Supabase, but the subsequent useFundNavHistory refetch
-          // reads the local SQLite series first. Without the top-up the stale
-          // tail is served forever for non-held funds whose full series was
-          // written before #208 introduced the windowed-fetch guard.
+          // refreshes Supabase, but the subsequent navHistory refetch reads the
+          // local SQLite series first. Without the top-up the stale tail is
+          // served forever for non-held funds.
           if (data?.last_nav_date) {
             await appendNavTailIfStale(code, data.last_nav_date);
           }
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history-compare', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
+          perfEnd(`hydrate:nav:${code}`, { skipped: false });
           return data;
         },
         staleTime: 5 * 60 * 1000,
