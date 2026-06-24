@@ -121,7 +121,10 @@ export function deriveSchemeCategoryFromName(
   // Each entry: [substrings to match (any), canonical CATEGORY_RULES key].
   const PATTERNS: Array<[string[], string]> = [
     // Equity sub-buckets — most specific first.
-    [['large & mid cap', 'large and mid cap', 'largemidcap', 'large-mid cap'], 'large & mid cap fund'],
+    // 'large & midcap' catches "Kotak Large & Midcap Fund" style names (one-word midcap).
+    // 'large midcap' catches "Edelweiss NIFTY Large Midcap 250" style names (space, no &).
+    // Both must appear before the bare 'midcap' entry below so they win over it.
+    [['large & mid cap', 'large and mid cap', 'largemidcap', 'large-mid cap', 'large & midcap', 'large midcap'], 'large & mid cap fund'],
     [['multi cap', 'multi-cap', 'multicap'], 'multi cap fund'],
     [['flexi cap', 'flexicap'], 'flexi cap fund'],
     [['mid cap', 'midcap'], 'mid cap fund'],
@@ -194,6 +197,21 @@ export function deriveSchemeCategoryFromName(
   }
   return null;
 }
+
+/**
+ * Non-canonical SEBI key spellings seen in mfdata.in responses and older AMFI
+ * seed data. Each maps the raw (already lower-cased + trimmed) string to the
+ * canonical key used by CATEGORY_RULES. Used by `resolveSebiCategory` so that
+ * a non-generic but mis-spelled scheme_category still resolves correctly.
+ *
+ * Example: mfdata.in returns `"Large & Mid-Cap"` (hyphen, no "fund" suffix)
+ * for some Aditya Birla / ICICI schemes; the canonical key is
+ * `"large & mid cap fund"`.
+ */
+export const SEBI_CATEGORY_ALIASES: Record<string, string> = {
+  'large & mid-cap': 'large & mid cap fund',  // hyphenated, no "fund" suffix
+  'large & mid cap': 'large & mid cap fund',   // missing "fund" suffix
+};
 
 /**
  * Generic categories that AMFI / mfdata.in occasionally return as the bare
@@ -280,7 +298,8 @@ export function resolveSebiCategory(
   schemeName: string | null | undefined,
 ): string | null {
   if (!isGenericSchemeCategory(schemeCategory)) {
-    return (schemeCategory as string).toLowerCase().trim();
+    const raw = (schemeCategory as string).toLowerCase().trim();
+    return SEBI_CATEGORY_ALIASES[raw] ?? raw;
   }
   return deriveSchemeCategoryFromName(schemeName);
 }

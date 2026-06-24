@@ -1,4 +1,4 @@
-import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '../schemeName';
+import { categoriesInSameGroup, fundComparisonCategory, fundComparisonKey, planOptionLabel, shortSchemeName } from '../schemeName';
 
 describe('shortSchemeName (fallback for inactive registry shells)', () => {
   it('trims direct plan + growth suffix', () => {
@@ -130,5 +130,84 @@ describe('fundComparisonCategory', () => {
     expect(fundComparisonCategory('large cap fund', 'Equity')).toBe(
       fundComparisonCategory('large cap fund', 'Equity'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fundComparisonKey
+// ---------------------------------------------------------------------------
+
+describe('fundComparisonKey', () => {
+  it('returns the canonical lowercase sebi key when sebiCategory is set', () => {
+    expect(fundComparisonKey('large & mid cap fund', 'Equity')).toBe('large & mid cap fund');
+    expect(fundComparisonKey('mid cap fund', 'Equity')).toBe('mid cap fund');
+    expect(fundComparisonKey('Large Cap Fund', null)).toBe('large cap fund');
+  });
+
+  it('normalises "large & mid-cap" (hyphenated, legacy) to the canonical key', () => {
+    expect(fundComparisonKey('large & mid-cap', 'Large & Mid Cap Fund')).toBe('large & mid cap fund');
+    expect(fundComparisonKey('Large & Mid-Cap', null)).toBe('large & mid cap fund');
+  });
+
+  it('normalises "large & mid cap" (missing "fund" suffix) to the canonical key', () => {
+    expect(fundComparisonKey('large & mid cap', null)).toBe('large & mid cap fund');
+  });
+
+  it('falls back to broad category (lowercase) when sebiCategory is null', () => {
+    expect(fundComparisonKey(null, 'Equity')).toBe('equity');
+    expect(fundComparisonKey(null, 'Debt')).toBe('debt');
+    expect(fundComparisonKey(undefined, 'Hybrid')).toBe('hybrid');
+  });
+
+  it('returns "other" when both are absent', () => {
+    expect(fundComparisonKey(null, null)).toBe('other');
+    expect(fundComparisonKey(undefined, undefined)).toBe('other');
+  });
+
+  it('returns "other" when sebiCategory is whitespace-only', () => {
+    expect(fundComparisonKey('   ', null)).toBe('other');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// categoriesInSameGroup  — §3 rows (the 3 dirty-data scenarios)
+// ---------------------------------------------------------------------------
+
+describe('categoriesInSameGroup', () => {
+  // §3 row 1: non-canonical alias normalised before comparison
+  it('same canonical key after normalisation → same group (banner should NOT fire)', () => {
+    // Callers pass the output of fundComparisonKey; these are already normalised.
+    expect(categoriesInSameGroup('large & mid cap fund', 'large & mid cap fund')).toBe(true);
+  });
+
+  // §3 row 2: broad 'equity' fallback vs a specific sub-bucket
+  it('broad equity fallback vs specific equity sub-bucket → same group (not yet backfilled)', () => {
+    expect(categoriesInSameGroup('equity', 'large & mid cap fund')).toBe(true);
+    expect(categoriesInSameGroup('large & mid cap fund', 'equity')).toBe(true);
+    expect(categoriesInSameGroup('equity', 'mid cap fund')).toBe(true);
+    expect(categoriesInSameGroup('equity', 'large cap fund')).toBe(true);
+    expect(categoriesInSameGroup('equity', 'index funds')).toBe(true);
+  });
+
+  // §3 row 3: genuinely different categories must still fire the banner
+  it('mid cap vs large & mid cap → different groups (banner SHOULD fire)', () => {
+    expect(categoriesInSameGroup('mid cap fund', 'large & mid cap fund')).toBe(false);
+  });
+
+  it('large cap vs mid cap → different groups', () => {
+    expect(categoriesInSameGroup('large cap fund', 'mid cap fund')).toBe(false);
+  });
+
+  it('equity vs debt → different groups', () => {
+    expect(categoriesInSameGroup('equity', 'liquid fund')).toBe(false);
+    expect(categoriesInSameGroup('equity', 'debt')).toBe(false);
+  });
+
+  it('hybrid vs equity → different groups', () => {
+    expect(categoriesInSameGroup('hybrid', 'large cap fund')).toBe(false);
+  });
+
+  it('broad debt vs broad equity → different groups', () => {
+    expect(categoriesInSameGroup('debt', 'equity')).toBe(false);
   });
 });

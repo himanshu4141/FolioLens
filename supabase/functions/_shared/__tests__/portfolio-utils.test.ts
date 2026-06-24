@@ -10,6 +10,7 @@ import {
   broadCategoryFromSebi,
   normaliseSchemeName,
   selectCategoryFromSiblings,
+  SEBI_CATEGORY_ALIASES,
   type CategoryComposition,
   type DebtHolding,
   type EquityHolding,
@@ -591,6 +592,41 @@ describe('deriveSchemeCategoryFromName', () => {
       );
     });
   });
+
+  describe('large & mid cap fund — space-separated and ampersand-one-word variants', () => {
+    // Root cause: "Large Midcap" (space) and "Large & Midcap" (one-word midcap)
+    // both escaped the 'largemidcap' pattern, fell through to bare 'midcap',
+    // and were mis-classified as 'mid cap fund' in the DB.
+    it('"large midcap" (space, no &) → large & mid cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Edelweiss NIFTY Large Midcap 250 Index Fund - Direct Plan Growth')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('"large midcap" beats "midcap" (ordering guard)', () => {
+      // Without the new needle, "large midcap" would fall to 'mid cap fund'.
+      expect(deriveSchemeCategoryFromName('Foo Large Midcap Bar')).toBe('large & mid cap fund');
+    });
+    it('"Large & Midcap" (one-word midcap, with &) → large & mid cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Kotak Large & Midcap Fund - Growth-Regular')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('"Large & Midcap" beats "midcap" (ordering guard)', () => {
+      expect(deriveSchemeCategoryFromName('Mirae Asset Large & Midcap Fund - Direct Plan - Growth')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('"Navi Large & Midcap Fund" → large & mid cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Navi Large & Midcap Fund- Direct Plan- Growth Option')).toBe(
+        'large & mid cap fund',
+      );
+    });
+    it('"Union Large & Midcap Fund" → large & mid cap fund', () => {
+      expect(deriveSchemeCategoryFromName('Union Large & Midcap Fund - Regular Plan - Growth Option')).toBe(
+        'large & mid cap fund',
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -618,6 +654,22 @@ describe('resolveSebiCategory', () => {
   it('returns null when neither source disambiguates', () => {
     expect(resolveSebiCategory('Equity', 'Random Scheme XYZ')).toBeNull();
     expect(resolveSebiCategory(null, null)).toBeNull();
+  });
+
+  describe('SEBI_CATEGORY_ALIASES normalisation (non-canonical scheme_category spellings)', () => {
+    // §3 rows — the 3 dirty-data patterns confirmed in production DB.
+    it('"Large & Mid-Cap" (hyphenated, no "fund") → canonical large & mid cap fund', () => {
+      expect(resolveSebiCategory('Large & Mid-Cap', null)).toBe('large & mid cap fund');
+      expect(resolveSebiCategory('large & mid-cap', null)).toBe('large & mid cap fund');
+    });
+    it('"Large & Mid Cap" (missing "fund" suffix) → canonical large & mid cap fund', () => {
+      expect(resolveSebiCategory('Large & Mid Cap', null)).toBe('large & mid cap fund');
+    });
+    it('SEBI_CATEGORY_ALIASES covers all exported alias keys', () => {
+      for (const [alias, canonical] of Object.entries(SEBI_CATEGORY_ALIASES)) {
+        expect(resolveSebiCategory(alias, null)).toBe(canonical);
+      }
+    });
   });
 });
 
