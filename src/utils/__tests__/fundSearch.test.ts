@@ -608,10 +608,7 @@ describe('fetchUserHeldSchemes', () => {
 // ---------------------------------------------------------------------------
 
 describe('fetchUserHeldFamilies', () => {
-  let schemeMasterCallCount: number;
-
   beforeEach(() => {
-    schemeMasterCallCount = 0;
     lastSchemeMasterBuilder = undefined as unknown as QB;
   });
 
