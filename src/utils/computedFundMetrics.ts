@@ -279,16 +279,36 @@ export type MetricsSource = 'computed' | 'as-reported';
  * null because they require full NAV history to compute. `returnsAsOf` and
  * `riskAsOf` carry the as_of_date from those blobs so the UI can label the
  * provenance.
+ *
+ * When `source === 'computed'`, some trailing periods may still come from the
+ * as-reported blob (when the local NAV series is too short to cover a longer
+ * window). `trailingPeriodSources` records the provenance of each period so
+ * the UI can mark gap-filled values with a `†` footnote rather than showing
+ * a bare "—".
  */
 export interface CompareMetrics {
   trailing: TrailingPeriodReturns;
+  /**
+   * Per-period provenance. 'computed' = from local NAV history; 'as-reported'
+   * = from period_returns blob (either direct as-reported or gap-fill inside
+   * the computed path); null = no value from either source.
+   */
+  trailingPeriodSources: {
+    y1: 'computed' | 'as-reported' | null;
+    y3: 'computed' | 'as-reported' | null;
+    y5: 'computed' | 'as-reported' | null;
+  };
   sharpe: number | null;
   sortino: number | null;
   stdDev: number | null;
   monthlyObservations: number;
   maxDrawdown: number | null;
   source: MetricsSource;
-  /** Only set when source === 'as-reported'; from period_returns.as_of_date. */
+  /**
+   * Set when any trailing period comes from the as-reported blob (either full
+   * as-reported source, or gap-fill inside the computed path). Carries the
+   * period_returns.as_of_date for the provenance footnote.
+   */
   returnsAsOf: string | null;
   /** Only set when source === 'as-reported'; from risk_ratios.as_of_date. */
   riskAsOf: string | null;
@@ -402,7 +422,40 @@ export function selectCompareMetrics(
     if (asReportedHasReturns && !computedAddsValue) {
       // Fall through to the as-reported path below.
     } else {
-      return { trailing, ...risk, maxDrawdown, source: 'computed', returnsAsOf: null, riskAsOf: null };
+      // Computed wins. Fill in periods where the local series is too short from
+      // as-reported so longer-window numbers aren't blanked. Each period uses
+      // exactly one source — no blending within a period.
+      const asY1Pct = trailing.y1 == null ? readReturnPct(periodReturns, '1y') : null;
+      const asY3Pct = trailing.y3 == null ? readReturnPct(periodReturns, '3y') : null;
+      const asY5Pct = trailing.y5 == null ? readReturnPct(periodReturns, '5y') : null;
+
+      const hybridTrailing: TrailingPeriodReturns = {
+        ...trailing,
+        y1: trailing.y1 ?? (asY1Pct != null ? asY1Pct / 100 : null),
+        y3: trailing.y3 ?? (asY3Pct != null ? asY3Pct / 100 : null),
+        y5: trailing.y5 ?? (asY5Pct != null ? asY5Pct / 100 : null),
+      };
+
+      const trailingPeriodSources = {
+        y1: trailing.y1 != null ? 'computed' as const : (asY1Pct != null ? 'as-reported' as const : null),
+        y3: trailing.y3 != null ? 'computed' as const : (asY3Pct != null ? 'as-reported' as const : null),
+        y5: trailing.y5 != null ? 'computed' as const : (asY5Pct != null ? 'as-reported' as const : null),
+      };
+
+      const anyAsReportedPeriod =
+        trailingPeriodSources.y1 === 'as-reported' ||
+        trailingPeriodSources.y3 === 'as-reported' ||
+        trailingPeriodSources.y5 === 'as-reported';
+
+      return {
+        trailing: hybridTrailing,
+        trailingPeriodSources,
+        ...risk,
+        maxDrawdown,
+        source: 'computed',
+        returnsAsOf: anyAsReportedPeriod ? readMfdataAsOfDate(periodReturns) : null,
+        riskAsOf: null,
+      };
     }
   }
 
@@ -422,6 +475,11 @@ export function selectCompareMetrics(
       navCount: 0,
       earliestDate: null,
       latestDate: null,
+    },
+    trailingPeriodSources: {
+      y1: pct1y != null ? 'as-reported' as const : null,
+      y3: pct3y != null ? 'as-reported' as const : null,
+      y5: pct5y != null ? 'as-reported' as const : null,
     },
     stdDev: stdDevPct != null ? stdDevPct / 100 : null,
     sharpe: null,
