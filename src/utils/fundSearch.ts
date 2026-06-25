@@ -181,7 +181,7 @@ export function resolveFamilyToScheme(
   if (planMatch.length > 0) {
     const withGrowth = planMatch.filter((p) => p.optionType === 'growth');
     const best = withGrowth.length > 0 ? withGrowth[0] : [...planMatch].sort(sortIdcw)[0];
-    const optLabel = preferredOption === 'growth' ? 'Growth' : 'IDCW';
+    const optLabel = best.optionType === 'growth' ? 'Growth' : 'IDCW';
     return {
       schemeCode: best.schemeCode,
       planType: best.planType,

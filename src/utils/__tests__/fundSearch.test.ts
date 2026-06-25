@@ -430,7 +430,7 @@ describe('resolveFamilyToScheme', () => {
     expect(result).toMatchObject({
       schemeCode: 5001,
       isFallback: true,
-      fallbackReason: 'IDCW-only',
+      fallbackReason: 'Growth-only',
     });
   });
 
@@ -443,7 +443,21 @@ describe('resolveFamilyToScheme', () => {
     expect(result).toMatchObject({
       schemeCode: 6001,
       isFallback: true,
-      fallbackReason: 'Growth-only',
+      fallbackReason: 'IDCW-only',
+    });
+  });
+
+  it('label is IDCW-only regardless of which IDCW variant (payout vs reinvest) wins', () => {
+    const plans: FamilyPlan[] = [
+      makePlan(13001, 'direct', 'idcw_reinvest'),
+      makePlan(13002, 'direct', 'idcw_payout'),
+    ];
+    // Growth preference, direct plan → branch 3 (no growth at all); payout wins sort
+    const result = resolveFamilyToScheme(plans, directGrowth);
+    expect(result).toMatchObject({
+      schemeCode: 13002,
+      isFallback: true,
+      fallbackReason: 'IDCW-only',
     });
   });
 
