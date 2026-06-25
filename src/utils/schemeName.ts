@@ -125,3 +125,71 @@ export function fundComparisonCategory(
   }
   return broadCategory ?? 'Other';
 }
+
+// ---------------------------------------------------------------------------
+// Category equivalence helpers (for isCrossCategory banner logic only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-canonical SEBI key spellings seen in legacy mfdata.in / AMFI data.
+ * Normalised at comparison time so a stale mis-spelled sebi_category doesn't
+ * falsely trigger the cross-category banner. Keyed by lowercase-trimmed value.
+ */
+const SEBI_KEY_ALIASES: Record<string, string> = {
+  'large & mid-cap': 'large & mid cap fund',  // hyphenated, no "fund" suffix
+  'large & mid cap': 'large & mid cap fund',   // missing "fund" suffix
+};
+
+/**
+ * Canonical SEBI sub-buckets that belong to the Equity broad class.
+ * A fund whose sebi_category is null falls back to the broad 'Equity' label;
+ * that broad label is compatible with any of these sub-buckets (the fund is
+ * just not yet backfilled, not definitively a different category).
+ */
+const EQUITY_SUB_BUCKETS = new Set([
+  'large cap fund', 'mid cap fund', 'small cap fund', 'multi cap fund',
+  'flexi cap fund', 'large & mid cap fund', 'elss', 'value fund',
+  'contra fund', 'focused fund', 'sectoral/thematic', 'dividend yield fund',
+  'index funds', 'other etfs',
+]);
+
+/**
+ * Returns the canonical comparison key for a fund's SEBI category.
+ * Used ONLY for the isCrossCategory banner decision — never for display.
+ *
+ * Differs from `fundComparisonCategory` in two ways:
+ *  1. Returns a lowercase key (not a human label).
+ *  2. Normalises known non-canonical spellings to the canonical key so legacy
+ *     dirty data in sebi_category never falsely triggers the banner.
+ *
+ * When sebi_category is null the function returns the broad asset class
+ * lowercased (e.g. `"equity"`), which `categoriesInSameGroup` treats as
+ * compatible with any specific equity sub-bucket.
+ */
+export function fundComparisonKey(
+  sebiCategory: string | null | undefined,
+  broadCategory: string | null | undefined,
+): string {
+  if (sebiCategory) {
+    const raw = sebiCategory.toLowerCase().trim();
+    if (raw) return SEBI_KEY_ALIASES[raw] ?? raw;
+  }
+  return (broadCategory ?? 'other').toLowerCase().trim();
+}
+
+/**
+ * Returns true when two comparison keys (from `fundComparisonKey`) represent
+ * the same fund family for banner purposes — i.e. the banner should NOT fire.
+ *
+ * Two keys are in the same group when:
+ *  • They are identical (after normalisation), OR
+ *  • One is the broad `"equity"` fallback (null sebi_category) and the other
+ *    is a specific equity sub-bucket — the broad label just means "not yet
+ *    backfilled", not "genuinely different category".
+ */
+export function categoriesInSameGroup(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a === 'equity' && EQUITY_SUB_BUCKETS.has(b)) return true;
+  if (b === 'equity' && EQUITY_SUB_BUCKETS.has(a)) return true;
+  return false;
+}

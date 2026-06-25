@@ -42,7 +42,7 @@ import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioCompos
 import { pickBestCompositionRows } from '@/src/utils/compositionSource';
 import { holdingsKey } from '@/src/utils/holdingOverlap';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
-import { fundComparisonCategory, planOptionLabel, shortSchemeName } from '@/src/utils/schemeName';
+import { categoriesInSameGroup, fundComparisonCategory, fundComparisonKey, planOptionLabel, shortSchemeName } from '@/src/utils/schemeName';
 import {
   buildMonthEndNavs,
   selectCompareMetrics,
@@ -1264,9 +1264,10 @@ function ReturnsCard({
   tokens: ClearLensTokens;
 }) {
   const cl = tokens.colors;
-  const allSameCategory = fundData.length > 0 && fundData.every(
-    (f) => fundCategory(f.scheme) === fundCategory(fundData[0].scheme),
-  );
+  const allSameCategory = fundData.length > 0 && (() => {
+    const keys = fundData.map((f) => fundComparisonKey(f.scheme.sebiCategory, f.scheme.schemeCategory));
+    return keys.every((k) => categoriesInSameGroup(k, keys[0]));
+  })();
 
   const headline = returnsHeadline(fundsWithHistory);
   const sub = allSameCategory
@@ -2347,7 +2348,12 @@ export function ClearLensCompareFundsScreen() {
   const fundsWithHistory = fundData.filter((f) => hasHistory(f.metrics));
   const fundsWithoutHistory = fundData.filter((f) => !hasHistory(f.metrics));
   const uniqueCategories = [...new Set(fundData.map((f) => fundCategory(f.scheme)))];
-  const isCrossCategory = uniqueCategories.length > 1;
+  // Use canonical comparison keys rather than display labels to decide whether
+  // the banner fires. This tolerates legacy dirty sebi_category spellings
+  // ('large & mid-cap') and suppresses false positives when one fund has only
+  // a broad 'Equity' fallback (null sebi_category, not yet backfilled).
+  const compKeys = fundData.map((f) => fundComparisonKey(f.scheme.sebiCategory, f.scheme.schemeCategory));
+  const isCrossCategory = compKeys.length > 1 && !compKeys.every((k) => categoriesInSameGroup(k, compKeys[0]));
 
   const renderContent = () => {
     if (fundData.length === 0 && !isLoading) {
