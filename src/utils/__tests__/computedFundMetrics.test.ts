@@ -404,12 +404,15 @@ describe('selectCompareMetrics', () => {
   }
 
   it('returns computed source when series has enough data for trailing CAGR', () => {
-    const series = buildSeries(60); // 5 years of daily-ish data
+    const series = buildSeries(62); // >5 years: first point 61 months ago, covers y5
     const result = selectCompareMetrics(series, null, null, TODAY);
     expect(result).not.toBeNull();
     expect(result!.source).toBe('computed');
     expect(result!.returnsAsOf).toBeNull();
     expect(result!.riskAsOf).toBeNull();
+    expect(result!.trailingPeriodSources.y1).toBe('computed');
+    expect(result!.trailingPeriodSources.y3).toBe('computed');
+    expect(result!.trailingPeriodSources.y5).toBe('computed');
   });
 
   it('computed source wins even when period_returns blob is present', () => {
@@ -436,6 +439,10 @@ describe('selectCompareMetrics', () => {
     expect(result!.maxDrawdown).toBeNull(); // no max_drawdown_5y in riskRatios
     expect(result!.returnsAsOf).toBe('2026-04-30');
     expect(result!.riskAsOf).toBe('2026-04-30');
+    // trailingPeriodSources reflects as-reported for non-null periods
+    expect(result!.trailingPeriodSources.y1).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y3).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y5).toBeNull();
   });
 
   it('as-reported maxDrawdown reads from risk_ratios when present', () => {
@@ -488,16 +495,22 @@ describe('selectCompareMetrics', () => {
     expect(result!.stdDev).toBeCloseTo(0.22, 5);
   });
 
-  it('does not mix sources: partial local series uses computed for what it has', () => {
-    // 2y of data → y1 non-null, y3/y5 null
+  it('gap-fills longer periods from as-reported when computed is too short', () => {
+    // 2y of data → computed covers y1; y3/y5 filled from as-reported blob with
+    // trailingPeriodSources tracking so the UI can mark them with †.
     const series = buildSeries(25);
-    const periodReturns = { ret_3y: 0.15, ret_5y: 0.12 }; // only in as-reported
+    const periodReturns = { ret_3y: 0.15, ret_5y: 0.12, as_of_date: '2026-03-31' };
     const result = selectCompareMetrics(series, periodReturns, null, TODAY);
     expect(result!.source).toBe('computed');
     expect(result!.trailing.y1).not.toBeNull();
-    // y3 must be null (from computed, not fallback) — never silently mix sources
-    expect(result!.trailing.y3).toBeNull();
-    expect(result!.trailing.y5).toBeNull();
+    // y3 and y5 filled from as-reported (gap-fill, not silent mix — provenance tracked)
+    expect(result!.trailing.y3).toBeCloseTo(0.15, 5);
+    expect(result!.trailing.y5).toBeCloseTo(0.12, 5);
+    expect(result!.trailingPeriodSources.y1).toBe('computed');
+    expect(result!.trailingPeriodSources.y3).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y5).toBe('as-reported');
+    // returnsAsOf is set so the provenance footnote can appear for the as-reported periods
+    expect(result!.returnsAsOf).toBe('2026-03-31');
   });
 
   it('payout fund uses as-reported even when NAV series is long enough to compute', () => {
@@ -573,6 +586,88 @@ describe('selectCompareMetrics', () => {
     expect(result!.source).toBe('as-reported');
     expect(result!.trailing.y1).toBeCloseTo(0.12, 5);
     expect(result!.sharpe).toBeNull();
+    // Source-swap guard → fully as-reported, all non-null periods are 'as-reported'
+    expect(result!.trailingPeriodSources.y1).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y3).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y5).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // as-reported Risk shape — stdDev + maxDrawdown surfaced, Sharpe/Sortino null
+  // ---------------------------------------------------------------------------
+
+  it('as-reported Risk shape: stdDev from risk_ratios.risk.std_deviation', () => {
+    const periodReturns = { ret_1y: 0.14 };
+    const riskRatios = { risk: { std_deviation: 15.5 }, as_of_date: '2026-04-30' };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result!.source).toBe('as-reported');
+    expect(result!.stdDev).toBeCloseTo(0.155, 5);
+    expect(result!.sharpe).toBeNull();
+    expect(result!.sortino).toBeNull();
+    expect(result!.riskAsOf).toBe('2026-04-30');
+  });
+
+  it('as-reported Risk shape: maxDrawdown from risk_ratios.max_drawdown_5y', () => {
+    const periodReturns = { ret_1y: 0.14 };
+    const riskRatios = { max_drawdown_5y: -0.31, as_of_date: '2026-04-30' };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result!.source).toBe('as-reported');
+    expect(result!.maxDrawdown).toBeCloseTo(-0.31, 5);
+    expect(result!.sharpe).toBeNull();
+    expect(result!.sortino).toBeNull();
+  });
+
+  it('as-reported Risk shape: both stdDev and maxDrawdown in same blob', () => {
+    const periodReturns = { ret_1y: 0.14 };
+    const riskRatios = {
+      risk: { std_deviation: 18.2 },
+      max_drawdown_5y: -0.26,
+      as_of_date: '2026-05-01',
+    };
+    const result = selectCompareMetrics([], periodReturns, riskRatios, TODAY);
+    expect(result!.source).toBe('as-reported');
+    expect(result!.stdDev).toBeCloseTo(0.182, 5);
+    expect(result!.maxDrawdown).toBeCloseTo(-0.26, 5);
+    expect(result!.sharpe).toBeNull();
+    expect(result!.sortino).toBeNull();
+  });
+
+  it('gap-fill: computed with full 5y coverage produces all-computed trailingPeriodSources', () => {
+    const series = buildSeries(65); // > 5y → y1/y3/y5 all non-null from computed
+    const periodReturns = { ret_1y: 0.25, ret_3y: 0.18, ret_5y: 0.14 };
+    const result = selectCompareMetrics(series, periodReturns, null, TODAY);
+    expect(result!.source).toBe('computed');
+    expect(result!.trailingPeriodSources.y1).toBe('computed');
+    expect(result!.trailingPeriodSources.y3).toBe('computed');
+    expect(result!.trailingPeriodSources.y5).toBe('computed');
+    // No gap-fill → returnsAsOf is null for a fully computed fund
+    expect(result!.returnsAsOf).toBeNull();
+  });
+
+  it('gap-fill: only missing periods use as-reported; present periods remain computed', () => {
+    // ~2y series → y1 computed, y3/y5 null → fill y3 from as-reported; y5 absent in blob
+    const series = buildSeries(26);
+    const periodReturns = { ret_3y: 0.11, as_of_date: '2026-03-31' };
+    const result = selectCompareMetrics(series, periodReturns, null, TODAY);
+    expect(result!.source).toBe('computed');
+    expect(result!.trailingPeriodSources.y1).toBe('computed');
+    expect(result!.trailingPeriodSources.y3).toBe('as-reported');
+    expect(result!.trailingPeriodSources.y5).toBeNull(); // not in blob
+    expect(result!.trailing.y1).not.toBeNull();
+    expect(result!.trailing.y3).toBeCloseTo(0.11, 5);
+    expect(result!.trailing.y5).toBeNull();
+    expect(result!.returnsAsOf).toBe('2026-03-31');
+  });
+
+  it('gap-fill: no gap-fill when as-reported has no data for a null period', () => {
+    // ~14m series → y1 computed, y3/y5 null; as-reported has no y3/y5 either
+    const series = buildSeries(15);
+    const result = selectCompareMetrics(series, null, null, TODAY);
+    expect(result!.source).toBe('computed');
+    expect(result!.trailingPeriodSources.y1).toBe('computed');
+    expect(result!.trailingPeriodSources.y3).toBeNull();
+    expect(result!.trailingPeriodSources.y5).toBeNull();
+    expect(result!.returnsAsOf).toBeNull();
   });
 });
 

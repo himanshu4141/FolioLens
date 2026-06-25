@@ -355,9 +355,15 @@ function fmtAumCr(aumCr: number | null): string {
   return `₹${aumCr.toLocaleString('en-IN')} Cr`;
 }
 
-function fmtPct(v: number | null, digits = 1): string {
-  if (v == null) return '—';
-  return `${(v * 100).toFixed(digits)}%`;
+/**
+ * Format a trailing-period return value. Shows the percentage when available,
+ * "Too new" when the fund hasn't existed through the requested period, and
+ * "—" otherwise (data absent for other reasons).
+ */
+function fmtPeriodReturn(value: number | null, periodYears: number, launchDate: string | null): string {
+  if (value != null) return `${(value * 100).toFixed(1)}%`;
+  if (launchDate && launchMonthsAgo(launchDate) < periodYears * 12) return 'Too new';
+  return '—';
 }
 
 /** Join labels into prose: ["A"] → "A"; ["A","B"] → "A and B"; ["A","B","C"] → "A, B and C". */
@@ -951,6 +957,7 @@ function OneFundState({
         >
           {(['y1', 'y3', 'y5'] as const).map((k) => {
             const label = k === 'y1' ? '1Y' : k === 'y3' ? '3Y' : '5Y';
+            const periodYears = k === 'y1' ? 1 : k === 'y3' ? 3 : 5;
             const v = metrics?.trailing[k] ?? null;
             return (
               <View key={k} style={{ flex: 1, gap: 2 }}>
@@ -958,7 +965,7 @@ function OneFundState({
                   {label}
                 </Text>
                 <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 18, lineHeight: 24, color: cl.navy, fontVariant: ['tabular-nums'] }}>
-                  {fmtPct(v)}
+                  {fmtPeriodReturn(v, periodYears, scheme.launchDate)}
                 </Text>
               </View>
             );
@@ -1239,12 +1246,20 @@ function markCell(value: string, isAsReported: boolean): string {
   return isAsReported && value !== '—' ? `${value}†` : value;
 }
 
-/** One-line provenance footnote for as-reported funds. */
+/**
+ * One-line provenance footnote for funds whose trailing periods include
+ * as-reported values — either because the fund is in full as-reported mode,
+ * or because some periods were gap-filled from the as-reported blob inside
+ * the computed path.
+ */
 function buildReturnsProvenanceNote(funds: CompareFundData[]): string | null {
-  const asReported = funds.filter((f) => f.metrics?.source === 'as-reported');
-  if (asReported.length === 0) return null;
-  const names = formatLabelList(asReported.map((f) => fundDisplayName(f.scheme)));
-  const asOf = asReported
+  const relevant = funds.filter((f) => {
+    const s = f.metrics?.trailingPeriodSources;
+    return s && (s.y1 === 'as-reported' || s.y3 === 'as-reported' || s.y5 === 'as-reported');
+  });
+  if (relevant.length === 0) return null;
+  const names = formatLabelList(relevant.map((f) => fundDisplayName(f.scheme)));
+  const asOf = relevant
     .map((f) => f.metrics?.returnsAsOf)
     .filter((d): d is string => !!d)
     .sort()
@@ -1293,19 +1308,28 @@ function ReturnsCard({
           {
             label: '1Y return',
             cells: fundsWithHistory.map((f) =>
-              markCell(fmtPct(f.metrics?.trailing.y1 ?? null), f.metrics?.source === 'as-reported'),
+              markCell(
+                fmtPeriodReturn(f.metrics?.trailing.y1 ?? null, 1, f.scheme.launchDate),
+                f.metrics?.trailingPeriodSources?.y1 === 'as-reported',
+              ),
             ),
           },
           {
             label: '3Y return',
             cells: fundsWithHistory.map((f) =>
-              markCell(fmtPct(f.metrics?.trailing.y3 ?? null), f.metrics?.source === 'as-reported'),
+              markCell(
+                fmtPeriodReturn(f.metrics?.trailing.y3 ?? null, 3, f.scheme.launchDate),
+                f.metrics?.trailingPeriodSources?.y3 === 'as-reported',
+              ),
             ),
           },
           {
             label: '5Y return',
             cells: fundsWithHistory.map((f) =>
-              markCell(fmtPct(f.metrics?.trailing.y5 ?? null), f.metrics?.source === 'as-reported'),
+              markCell(
+                fmtPeriodReturn(f.metrics?.trailing.y5 ?? null, 5, f.scheme.launchDate),
+                f.metrics?.trailingPeriodSources?.y5 === 'as-reported',
+              ),
             ),
           },
         ]}
@@ -1398,9 +1422,19 @@ function RiskCard({
           },
           {
             label: 'Sharpe ratio',
-            cells: fundsWithHistory.map((f) =>
-              f.metrics?.sharpe != null ? f.metrics.sharpe.toFixed(2) : '—',
-            ),
+            cells: fundsWithHistory.map((f) => {
+              if (f.metrics?.sharpe != null) return f.metrics.sharpe.toFixed(2);
+              if (f.metrics?.source === 'as-reported') return 'Needs history';
+              return '—';
+            }),
+          },
+          {
+            label: 'Sortino ratio',
+            cells: fundsWithHistory.map((f) => {
+              if (f.metrics?.sortino != null) return f.metrics.sortino.toFixed(2);
+              if (f.metrics?.source === 'as-reported') return 'Needs history';
+              return '—';
+            }),
           },
           {
             label: 'Beta',
@@ -1946,7 +1980,7 @@ function BasicsCard({
     },
     {
       label: 'Manager',
-      cells: fundData.map((f) => readFundManager(f.scheme.fundManager) ?? '—'),
+      cells: fundData.map((f) => readFundManager(f.scheme.fundManager) ?? 'Not disclosed'),
     },
     {
       label: 'Exit load',
