@@ -10,6 +10,25 @@ benchmark pill) all paint first, then the chart area sits empty with an `Activit
 
 ---
 
+## Implementation status (2026-06-27)
+
+Fixes F1–F4 were implemented and shipped in the same PR as this document
+([#245](https://github.com/himanshu4141/FolioLens/pull/245)).
+
+| Fix | Status | Commit |
+|-----|--------|--------|
+| F1 — SQLite read-through in `fetchAllNavRows` | ✅ Done | `a2ca408` |
+| F2 — SQLite read-through in `fetchAllTransactions` + `txRepo.readByFundIds` | ✅ Done | `a2ca408` |
+| F3 — Prefetch chart query on portfolio data ready | ✅ Done | `a2ca408` |
+| F4 — Raise `PERSIST_MAX_AGE_MS` to 48h | ✅ Done | `a2ca408` |
+| F5 — Bootstrap-to-chart signalling | Future work | — |
+| F6 — CDN NAV snapshot | Future work | — |
+
+The implementation prompts in §6 document the intended approach; the actual diffs are the
+canonical record of what shipped.
+
+---
+
 ## Baselines
 
 | | |
@@ -269,14 +288,14 @@ scenario and still produces a 1.5–4 s visible chart spinner. The fix is to mak
 
 ## 5. Ranked fix list
 
-| # | Fix | Impact | Effort | Risk |
-|---|---|---|---|---|
-| F1 | Add SQLite read-through in `fetchAllNavRows` (mirror `usePortfolio`'s nav read) | **Critical** | S | Low |
-| F2 | Add SQLite read-through in `fetchAllTransactions` (use `txRepo.readAll()` or filter from it) | **High** | S | Low |
-| F3 | Prefetch `investmentVsBenchmarkTimeline` from `usePortfolio` once portfolio data lands | **High** | S | Low |
-| F4 | Raise `PERSIST_MAX_AGE_MS` from 24h to 48h (or per-key TTL for timeline vs volatile data) | Medium | S | Low |
-| F5 | Bootstrap writes nav/idx to SQLite then signals readiness so chart can read locally | Medium | M | Medium |
-| F6 | Add a CDN-served daily NAV snapshot (one JSON per user or per scheme set) to eliminate the paginated NAV fetch | High (long-term) | L | Medium |
+| # | Fix | Impact | Effort | Risk | Status |
+|---|---|---|---|---|---|
+| F1 | Add SQLite read-through in `fetchAllNavRows` (mirror `usePortfolio`'s nav read) | **Critical** | S | Low | ✅ Shipped (#245) |
+| F2 | Add SQLite read-through in `fetchAllTransactions` (use `txRepo.readByFundIds`) | **High** | S | Low | ✅ Shipped (#245) |
+| F3 | Prefetch `investmentVsBenchmarkTimeline` from `ClearLensPortfolioScreenMobile` once portfolio data lands | **High** | S | Low | ✅ Shipped (#245) |
+| F4 | Raise `PERSIST_MAX_AGE_MS` from 24h to 48h | Medium | S | Low | ✅ Shipped (#245) |
+| F5 | Bootstrap writes nav/idx to SQLite then signals readiness so chart can read locally | Medium | M | Medium | Future work |
+| F6 | Add a CDN-served daily NAV snapshot (one JSON per user or per scheme set) to eliminate the paginated NAV fetch | High (long-term) | L | Medium | Future work |
 
 ---
 
@@ -445,25 +464,23 @@ scenario and still produces a 1.5–4 s visible chart spinner. The fix is to mak
 
 ## 7. Sequencing recommendation
 
-Ship in this order:
+**Actual shipping order (2026-06-27):** F1, F2, F3, and F4 all shipped together in PR #245
+alongside this research document. The changes were small enough (~60 lines of production code)
+that combining them reduced review overhead versus separate PRs.
 
-1. **F1 + F2 together** (same PR, same file). These are the highest-impact fixes and fully
-   independent of anything else. Once merged, the chart's nav and transaction reads hit SQLite
-   on every morning open where the device has been used before. The visible spinner goes from
-   1.5–4 s to < 100 ms on warm-SQLite devices.
+Original intended order (preserved for reference):
 
-2. **F3** (separate PR). The prefetch fire-on-portfolio-data means that even on first cold
-   launch (before SQLite is warm), the chart's React Query entry is populated while the user
-   is reading the hero numbers / scrolling, so by the time they look at the chart it may already
-   be ready. Also catches the edge case where SQLite is empty for a specific scheme (new fund
-   recently added to portfolio — SQLite has no rows yet for that scheme_code).
+1. **F1 + F2 together** — highest-impact, fully independent. Once merged, the chart's nav and
+   transaction reads hit SQLite on every morning open where the device has been used before.
+   The visible spinner goes from 1.5–4 s to < 100 ms on warm-SQLite devices.
 
-3. **F4** (small follow-up). Raises the cache lifetime so users who open the app every 25–30h
-   (common for casual users) still get a warm cache. Low risk, 2-line change.
+2. **F3** — prefetch fire-on-portfolio-data means that even on first cold launch (before SQLite
+   is warm), the chart's React Query entry is populated while the user reads the hero numbers.
 
-4. **F5 / F6** are longer-term and not needed if F1+F2+F3 land. F6 (CDN NAV snapshot) would
-   be the ultimate solution for first-ever-launch speed, but F1+F2 already solve the daily
-   open problem by using the on-device SQLite that bootstrap already populated.
+3. **F4** — raises cache lifetime for users who open the app every 25–30h. Low risk, 2-line change.
+
+4. **F5 / F6** are longer-term. F6 (CDN NAV snapshot) would be the ultimate solution for
+   first-ever-launch speed, but F1+F2 already solve the daily open problem via on-device SQLite.
 
 ---
 
