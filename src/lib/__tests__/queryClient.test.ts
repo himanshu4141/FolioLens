@@ -67,8 +67,8 @@ describe('shouldPersistQueryKey()', () => {
 });
 
 describe('persister config constants', () => {
-  it('exports a 24-hour max age', () => {
-    expect(PERSIST_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000);
+  it('exports a 48-hour max age', () => {
+    expect(PERSIST_MAX_AGE_MS).toBe(48 * 60 * 60 * 1000);
   });
 
   it('exports a non-empty buster string so future bumps invalidate the cache', () => {
