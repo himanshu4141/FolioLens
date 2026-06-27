@@ -11,13 +11,11 @@
  *
  * All colors via useClearLensTokens() — no literal hex values.
  */
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  Animated,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -666,7 +664,7 @@ export function ClearLensDirectVsRegularScreen() {
     staleTime: 60_000,
   });
 
-  const allFunds = fundsQuery.data ?? [];
+  const allFunds = useMemo(() => fundsQuery.data ?? [], [fundsQuery.data]);
 
   const breakdown = useMemo(() => {
     const rows: FundPlanRow[] = allFunds.map((f) => ({
