@@ -30,8 +30,10 @@ import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
   useInvestmentVsBenchmarkTimeline,
+  fetchInvestmentVsBenchmarkTimeline,
   type InvestmentVsBenchmarkPoint,
 } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { navStaleness, type TimeWindow } from '@/src/utils/navUtils';
@@ -930,7 +932,7 @@ function ClearLensPortfolioScreenMobile() {
   const userId = session?.user.id;
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
-  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol } = useAppStore();
+  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore();
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const queryClient = useQueryClient();
@@ -1000,6 +1002,23 @@ function ClearLensPortfolioScreenMobile() {
         .map((fund) => ({ id: fund.id as string, schemeCode: fund.scheme_code as number })),
     [userFunds],
   );
+  // Eagerly prime the chart query as soon as portfolio data and fundRefs
+  // are both ready, before `InvestmentVsBenchmarkChart` mounts. Without
+  // this, the chart fires its own `useQuery` only after the portfolio
+  // spinner clears — adding a sequential delay on top of the portfolio
+  // load. The prefetch overlaps with the portfolio render, so on warm
+  // SQLite the chart paints in the same frame as the rest of the screen.
+  useEffect(() => {
+    if (!data || !userId || fundRefs.length === 0) return;
+    const fundKey = fundRefs.map((f) => f.id).sort().join(',');
+    queryClient.prefetchQuery({
+      queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, defaultBenchmarkSymbol, portfolioChartWindow],
+      queryFn: () =>
+        fetchInvestmentVsBenchmarkTimeline(fundRefs, userId, defaultBenchmarkSymbol, portfolioChartWindow),
+      staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
+    });
+  }, [data, userId, fundRefs, defaultBenchmarkSymbol, portfolioChartWindow, queryClient]);
+
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
 

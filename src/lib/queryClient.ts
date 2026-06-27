@@ -81,7 +81,7 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // payloads include schemeActive + navUnavailableCount fields.
 export const __BUSTER__ = 'v8';
 
-export const PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 let inFlightSignOut: Promise<void> | null = null;
 

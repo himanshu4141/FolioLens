@@ -14,6 +14,9 @@ import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
+import * as navRepo from '@/src/lib/db/nav';
+import * as txRepo from '@/src/lib/db/tx';
+import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 
 /**
  * React Query key prefixes whose contents this hook's queryFn reads
@@ -348,6 +351,15 @@ export async function fetchInvestmentVsBenchmarkTimeline(
 }
 
 async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<RawTxRow[]> {
+  if (SQLITE_AVAILABLE) {
+    try {
+      const cached = await txRepo.readByFundIds(fundIds);
+      if (cached.length > 0) return cached;
+    } catch (err) {
+      console.warn('[timeline] sqlite tx read failed', err);
+    }
+  }
+
   const rows: RawTxRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await transactionRepo
@@ -367,6 +379,16 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
 
 async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promise<RawNavRow[]> {
   if (schemeCodes.length === 0) return [];
+
+  if (SQLITE_AVAILABLE) {
+    try {
+      const cached = await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: startDate });
+      if (cached.length > 0) return cached;
+    } catch (err) {
+      console.warn('[timeline] sqlite nav read failed', err);
+    }
+  }
+
   const rows: RawNavRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await navHistoryRepo
@@ -381,6 +403,13 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
     rows.push(...((data ?? []) as RawNavRow[]));
     if ((data ?? []).length < PAGE_SIZE) break;
   }
+
+  if (SQLITE_AVAILABLE && rows.length > 0) {
+    navRepo.bulkInsert(rows.map((r) => ({ scheme_code: r.scheme_code, nav_date: r.nav_date, nav: r.nav }))).catch(
+      (err) => console.warn('[timeline] sqlite nav write-back failed', err),
+    );
+  }
+
   return rows;
 }
 

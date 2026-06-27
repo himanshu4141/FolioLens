@@ -41,6 +41,16 @@ export async function readByFundId(fundId: string): Promise<DbTxRow[]> {
   );
 }
 
+export async function readByFundIds(fundIds: string[]): Promise<DbTxRow[]> {
+  if (fundIds.length === 0) return [];
+  const db = await getDb();
+  const placeholders = fundIds.map(() => '?').join(', ');
+  return db.getAllAsync<DbTxRow>(
+    `SELECT ${COLUMNS} FROM tx WHERE fund_id IN (${placeholders}) ORDER BY transaction_date ASC`,
+    fundIds,
+  );
+}
+
 export async function bulkInsert(rows: DbTxRow[]): Promise<void> {
   if (rows.length === 0) return;
   const db = await getDb();
