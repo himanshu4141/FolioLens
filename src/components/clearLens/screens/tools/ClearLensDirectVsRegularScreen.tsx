@@ -1,31 +1,48 @@
 /**
- * Direct vs Regular Impact — surfaces the cost-drag between regular- and
- * direct-plan mutual funds in the user's portfolio. Brand-faithful factory
- * shape: inputs → hero (lead with the answer) → short prose insights →
- * disclosure.
+ * Direct vs Regular Impact — cohesion redesign (M4 Phase 4 Tools Hub).
  *
- * Detection is name-based (AMFI naming convention puts "Direct Plan" or
- * "Regular Plan" right in the scheme name). Cost impact is a future-value
- * differential: same corpus + SIP, two return streams, base − delta.
+ * Flow: title block → detected inputs → ToolResultHero → compact two-bar
+ * compare viz + "See the assumptions" reveal → "What this means" →
+ * "Your portfolio" (per-fund). No "What to do" card; no prescriptive copy.
+ *
+ * Personalized path: drag computed per regular fund from its own ER delta
+ * vs its direct-plan sibling (family_name lookup in scheme_master). Falls
+ * back to per-category commission constant when no sibling is found.
+ *
+ * All colors via useClearLensTokens() — no literal hex values.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  Animated,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
-import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { Ionicons } from '@expo/vector-icons';
+import {
+  ClearLensCard,
+  ClearLensHeader,
+  ClearLensScreen,
+  ClearLensSegmentedControl,
+} from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
+import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
+import {
+  RevealSection,
+  StatusChip,
+  ToolResultHero,
+  ToolTitleBlock,
+} from '@/src/components/clearLens/tools/kit';
 import {
   ClearLensFonts,
   ClearLensRadii,
-  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
@@ -36,15 +53,28 @@ import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { fundViewRepo } from '@/src/lib/data/userFund';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { schemeMasterRepo } from '@/src/lib/data/schemeMaster';
 import { useAppStore } from '@/src/store/appStore';
-import { PREVIEW_TOOL_FUND_ROWS } from '@/src/lib/previewData';
+import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
+import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import {
   buildPlanBreakdown,
   computeCostImpact,
+  computeFundDrags,
+  detectPlanType,
+  weightedFeeGapPct,
+  type DirectErSource,
+  type FundDragInput,
+  type FundDragResult,
   type FundPlanRow,
+  type PlanType,
 } from '@/src/utils/directVsRegularCalc';
 import { formatCurrency } from '@/src/utils/formatting';
-import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
+import { shortSchemeName } from '@/src/utils/schemeName';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 const HORIZON_OPTIONS: { value: HorizonKey; label: string }[] = [
   { value: '5Y', label: '5Y' },
@@ -56,21 +86,56 @@ const HORIZON_OPTIONS: { value: HorizonKey; label: string }[] = [
 type HorizonKey = '5Y' | '10Y' | '15Y' | '20Y';
 
 const HORIZON_YEARS: Record<HorizonKey, number> = {
-  '5Y': 5, '10Y': 10, '15Y': 15, '20Y': 20,
+  '5Y': 5,
+  '10Y': 10,
+  '15Y': 15,
+  '20Y': 20,
 };
 
 const DEFAULT_BASE_RETURN = 0.10;
-// 70 bps — typical commission delta between regular and direct equity plans.
-const DEFAULT_EXPENSE_DELTA_PCT = 0.7;
+const DEFAULT_EXPENSE_DELTA_PCT = 0.007; // 70 bps — illustrative only
+const DEFAULT_SIP = 10_000;
+const ILLUSTRATIVE_CORPUS = 5_00_000; // used when no funds detected
 
-interface UserFundRow {
-  id: string;
-  schemeName: string;
-  currentValue: number;
-  expenseRatio: number | null;
+// Per-category commission constants (Option 2 fallback for sibling-lookup miss).
+const CATEGORY_COMMISSION_PCT: { pattern: RegExp; pct: number }[] = [
+  { pattern: /equity|flexi|large.?cap|mid.?cap|small.?cap|multi.?cap|elss|index|etf/i, pct: 0.90 },
+  { pattern: /hybrid|balanced|multi.?asset|aggressive|conservative|arbitrage/i, pct: 0.70 },
+  { pattern: /debt|credit|bond|duration|liquid|overnight|money.?market|banking|psu/i, pct: 0.40 },
+  { pattern: /solution|retirement|children/i, pct: 0.50 },
+];
+
+function categoryCommission(sebiCat: string | null, schemeCat: string | null): number {
+  const cat = (sebiCat ?? schemeCat ?? '').toLowerCase();
+  for (const { pattern, pct } of CATEGORY_COMMISSION_PCT) {
+    if (pattern.test(cat)) return pct;
+  }
+  return 0.70;
 }
 
-async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface DvrFund {
+  id: string;
+  schemeName: string;
+  schemeCode: number | null;
+  currentValue: number;
+  expenseRatio: number | null;
+  planType: PlanType;
+  familyName: string | null;
+  sebiCategory: string | null;
+  schemeCategory: string | null;
+  directEr: number | null;
+  directErSource: DirectErSource | null;
+}
+
+// ---------------------------------------------------------------------------
+// Data helpers
+// ---------------------------------------------------------------------------
+
+async function fetchRawFunds(userId: string) {
   const { data: funds, error } = await fundViewRepo
     .from()
     .select('id, scheme_name, scheme_code, expense_ratio')
@@ -79,7 +144,6 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
   if (error) throw error;
   if (!funds?.length) return [];
 
-  // Compute current value per fund: latest NAV × net units (purchases − redemptions).
   const fundIds = funds.map((f) => f.id as string);
   const { data: txs } = await transactionRepo
     .from()
@@ -91,10 +155,9 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
     const fid = tx.fund_id as string;
     const t = (tx.transaction_type as string) ?? '';
     const u = Number(tx.units) || 0;
-    const isOut = ['purchase', 'switch_in', 'dividend_reinvest'].includes(t);
-    const isIn = ['redemption', 'switch_out'].includes(t);
-    const delta = isOut ? u : isIn ? -u : 0;
-    unitsByFund.set(fid, (unitsByFund.get(fid) ?? 0) + delta);
+    const isIn = ['purchase', 'switch_in', 'dividend_reinvest'].includes(t);
+    const isOut = ['redemption', 'switch_out'].includes(t);
+    unitsByFund.set(fid, (unitsByFund.get(fid) ?? 0) + (isIn ? u : isOut ? -u : 0));
   }
 
   const schemeCodes = funds
@@ -115,294 +178,694 @@ async function fetchPlanRows(userId: string): Promise<UserFundRow[]> {
 
   return funds
     .filter((f) => f.id && f.scheme_name)
-    .map((f) => {
-      const units = Math.max(0, unitsByFund.get(f.id as string) ?? 0);
-      const nav = f.scheme_code != null ? navByScheme.get(f.scheme_code as number) ?? 0 : 0;
-      return {
-        id: f.id as string,
-        schemeName: f.scheme_name as string,
-        currentValue: units * nav,
-        expenseRatio: (f.expense_ratio as number | null) ?? null,
-      };
-    });
+    .map((f) => ({
+      id: f.id as string,
+      schemeName: f.scheme_name as string,
+      schemeCode: (f.scheme_code as number | null) ?? null,
+      currentValue: Math.max(
+        0,
+        (Math.max(0, unitsByFund.get(f.id as string) ?? 0)) *
+          (f.scheme_code != null ? navByScheme.get(f.scheme_code as number) ?? 0 : 0),
+      ),
+      expenseRatio: (f.expense_ratio as number | null) ?? null,
+    }));
 }
+
+async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]> {
+  const raw = await fetchRawFunds(userId);
+  if (raw.length === 0) return [];
+
+  // Detect plan type for every fund.
+  const withPlanType = raw.map((f) => ({
+    ...f,
+    planType: detectPlanType(f.schemeName),
+  }));
+
+  // Identify regular-plan funds that need sibling ER lookup.
+  const regularFunds = withPlanType.filter(
+    (f) => f.planType === 'regular' && f.schemeCode != null,
+  );
+
+  if (regularFunds.length === 0) {
+    return withPlanType.map((f) => ({
+      ...f,
+      familyName: null,
+      sebiCategory: null,
+      schemeCategory: null,
+      directEr: null,
+      directErSource: null,
+    }));
+  }
+
+  // Fetch scheme master for regular funds to get family_name + category.
+  const schemeMasters = await Promise.all(
+    regularFunds.map((f) =>
+      qc.fetchQuery({
+        queryKey: ['scheme-master', f.schemeCode],
+        queryFn: () => fetchSchemeMaster(f.schemeCode!),
+        staleTime: STALE_TIMES.NAV_HISTORY,
+      }),
+    ),
+  );
+
+  const metaByCode = new Map<
+    number,
+    { familyName: string | null; sebiCategory: string | null; schemeCategory: string | null }
+  >();
+  for (let i = 0; i < regularFunds.length; i++) {
+    const sm = schemeMasters[i];
+    const code = regularFunds[i].schemeCode!;
+    metaByCode.set(code, {
+      familyName: sm?.family_name ?? null,
+      sebiCategory: sm?.sebi_category ?? null,
+      schemeCategory: sm?.scheme_category ?? null,
+    });
+  }
+
+  // Batch-fetch direct-plan siblings by family_name.
+  const familyNames = [
+    ...new Set(
+      regularFunds
+        .map((f) => metaByCode.get(f.schemeCode!)?.familyName)
+        .filter((n): n is string => n != null && n.length > 0),
+    ),
+  ];
+
+  const directErByFamily = new Map<string, number>();
+  if (familyNames.length > 0) {
+    const { data: siblings } = await schemeMasterRepo
+      .from()
+      .select('family_name, expense_ratio')
+      .in('family_name', familyNames)
+      .eq('plan_type', 'direct')
+      .not('expense_ratio', 'is', null);
+    for (const row of siblings ?? []) {
+      const fn = row.family_name as string | null;
+      const er = row.expense_ratio as number | null;
+      if (fn && er != null && !directErByFamily.has(fn)) {
+        directErByFamily.set(fn, er);
+      }
+    }
+  }
+
+  // Enrich each fund.
+  return withPlanType.map((f) => {
+    const meta =
+      f.schemeCode != null ? metaByCode.get(f.schemeCode) : undefined;
+    const familyName = meta?.familyName ?? null;
+    const sebiCategory = meta?.sebiCategory ?? null;
+    const schemeCategory = meta?.schemeCategory ?? null;
+
+    let directEr: number | null = null;
+    let directErSource: DirectErSource | null = null;
+
+    if (f.planType === 'regular' && f.expenseRatio != null) {
+      if (familyName && directErByFamily.has(familyName)) {
+        directEr = directErByFamily.get(familyName)!;
+        directErSource = 'sibling-lookup';
+      } else {
+        const commPct = categoryCommission(sebiCategory, schemeCategory);
+        directEr = Math.max(0, f.expenseRatio - commPct);
+        directErSource = 'category-constant';
+      }
+    }
+
+    return { ...f, familyName, sebiCategory, schemeCategory, directEr, directErSource };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Format helpers
+// ---------------------------------------------------------------------------
+
+/** Compact lakh/crore formatter for hero value and bar labels. */
+function inrCompact(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(2)} Cr`;
+  if (abs >= 1_00_000) return `₹${(n / 1_00_000).toFixed(2)} L`;
+  if (abs >= 1_000) return `₹${(n / 1_000).toFixed(1)} K`;
+  return `₹${Math.round(n).toLocaleString('en-IN')}`;
+}
+
+function displayName(fund: DvrFund): string {
+  return fund.familyName ?? shortSchemeName(fund.schemeName);
+}
+
+// ---------------------------------------------------------------------------
+// Preview sample data (frozen — computed from real calc)
+// ---------------------------------------------------------------------------
+
+// directFV / regularFV over 10Y on ₹5L @10% / 9.07% — 6 evenly-spaced points.
+const PREVIEW_DIRECT_PTS = [500000, 605000, 732050, 885780, 1071794, 1296871];
+const PREVIEW_REGULAR_PTS = [500000, 596000, 710000, 845000, 1006000, 1191740];
+
+// ---------------------------------------------------------------------------
+// CompareTwoBar
+// ---------------------------------------------------------------------------
+
+function CompareTwoBar({
+  directFV,
+  regularFV,
+  tokens,
+}: {
+  directFV: number;
+  regularFV: number;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const max = Math.max(directFV, regularFV, 1);
+  const gap = directFV - regularFV;
+  const gapPct = regularFV > 0 ? (gap / regularFV) * 100 : 0;
+
+  const rows = [
+    { key: 'direct', label: 'If held in direct plans', v: directFV, color: cl.emerald },
+    { key: 'regular', label: 'In regular plans (now)', v: regularFV, color: cl.lavender },
+  ];
+
+  return (
+    <View style={{ gap: 12 }}>
+      {rows.map((r) => (
+        <View key={r.key} style={{ gap: 5 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+            <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.semiBold, color: cl.textSecondary, flex: 1 }}>
+              {r.label}
+            </Text>
+            <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 16, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+              {inrCompact(r.v)}
+            </Text>
+          </View>
+          <View style={{ height: 14, borderRadius: ClearLensRadii.full, backgroundColor: cl.surfaceSoft, overflow: 'hidden' }}>
+            <View
+              style={{
+                width: `${(r.v / max) * 100}%` as unknown as number,
+                height: '100%',
+                borderRadius: ClearLensRadii.full,
+                backgroundColor: r.color,
+              }}
+            />
+          </View>
+        </View>
+      ))}
+
+      {/* Gap tile */}
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          backgroundColor: cl.surfaceSoft,
+          borderRadius: ClearLensRadii.md,
+          padding: 12,
+          paddingHorizontal: 14,
+        }}
+      >
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.textTertiary }}>
+          The gap
+        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+          <Text style={{ fontFamily: ClearLensFonts.extraBold, fontSize: 18, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+            {inrCompact(gap)}
+          </Text>
+          <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.bold, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}>
+            ~{Math.abs(gapPct).toFixed(1)}%
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AssumptionRow
+// ---------------------------------------------------------------------------
+
+function AssumptionRow({
+  label,
+  value,
+  isFirst = false,
+  tokens,
+}: {
+  label: string;
+  value: string;
+  isFirst?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        paddingVertical: 9,
+        borderTopWidth: isFirst ? 0 : 1,
+        borderTopColor: cl.borderLight,
+      }}
+    >
+      <Text style={{ fontSize: 13, fontFamily: ClearLensFonts.regular, color: cl.textSecondary, flex: 1 }}>
+        {label}
+      </Text>
+      <Text style={{ fontSize: 13, fontFamily: ClearLensFonts.bold, color: cl.navy, fontVariant: ['tabular-nums'], textAlign: 'right' }}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RegularBadge — lavender chip used in per-fund rows
+// ---------------------------------------------------------------------------
+
+function RegularBadge({ tokens }: { tokens: ClearLensTokens }) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={{
+        backgroundColor: 'rgba(110,115,196,0.12)',
+        borderRadius: ClearLensRadii.sm,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        flexShrink: 0,
+      }}
+    >
+      <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.lavender }}>
+        Regular
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// InputsCard
+// ---------------------------------------------------------------------------
+
+function InputsCard({
+  personalized,
+  horizon,
+  onHorizonChange,
+  weightedGapPct,
+  sipStr,
+  onSipChange,
+  tokens,
+}: {
+  personalized: boolean;
+  horizon: HorizonKey;
+  onHorizonChange: (h: HorizonKey) => void;
+  weightedGapPct: number | null;
+  sipStr: string;
+  onSipChange: (s: string) => void;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const sep = <View style={{ height: 1, backgroundColor: cl.borderLight, marginHorizontal: ClearLensSpacing.md }} />;
+
+  return (
+    <ClearLensCard style={{ padding: 0, gap: 0 }}>
+      {/* Horizon */}
+      <View style={{ padding: ClearLensSpacing.md, paddingBottom: 12, gap: 8 }}>
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+          Horizon
+        </Text>
+        <ClearLensSegmentedControl
+          options={HORIZON_OPTIONS}
+          selected={horizon}
+          onChange={onHorizonChange}
+        />
+      </View>
+
+      {sep}
+
+      {personalized ? (
+        /* Detected fee gap — read-only */
+        <View
+          style={{
+            paddingVertical: 12,
+            paddingHorizontal: ClearLensSpacing.md,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+              Fee gap · detected
+            </Text>
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.regular, color: cl.textTertiary }}>
+              Value-weighted across your regular-plan funds.
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <View style={{ width: 5, height: 5, borderRadius: ClearLensRadii.full, backgroundColor: cl.emerald }} />
+            <Text style={{ fontSize: 15, fontFamily: ClearLensFonts.bold, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+              {weightedGapPct != null ? `${weightedGapPct.toFixed(2)}%/yr` : '—'}
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <>
+          {/* Monthly SIP (illustrative path) */}
+          <View style={{ paddingVertical: 12, paddingHorizontal: ClearLensSpacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+              Monthly SIP (₹)
+            </Text>
+            <TextInput
+              style={{
+                fontFamily: ClearLensFonts.bold,
+                fontSize: 15,
+                color: cl.navy,
+                textAlign: 'right',
+                minWidth: 80,
+                fontVariant: ['tabular-nums'],
+              }}
+              value={sipStr}
+              onChangeText={onSipChange}
+              keyboardType="numeric"
+              returnKeyType="done"
+              placeholderTextColor={cl.textTertiary}
+              accessibilityLabel="Monthly SIP amount"
+            />
+          </View>
+
+          {sep}
+
+          {/* Expense ratio delta — read-only, labelled illustrative */}
+          <View style={{ paddingVertical: 12, paddingHorizontal: ClearLensSpacing.md, paddingBottom: ClearLensSpacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, letterSpacing: 0.4, textTransform: 'uppercase', color: cl.textTertiary }}>
+                Fee difference · illustrative
+              </Text>
+              <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.regular, color: cl.textTertiary }}>
+                Typical equity-fund commission is 0.5%–1.0%/yr.
+              </Text>
+            </View>
+            <Text style={{ fontSize: 15, fontFamily: ClearLensFonts.bold, color: cl.navy, fontVariant: ['tabular-nums'] }}>
+              {(DEFAULT_EXPENSE_DELTA_PCT * 100).toFixed(2)}%
+            </Text>
+          </View>
+        </>
+      )}
+    </ClearLensCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading / Error / NoFunds states
+// ---------------------------------------------------------------------------
+
+function LoadingState({ tokens }: { tokens: ClearLensTokens }) {
+  const cl = tokens.colors;
+  return (
+    <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+      <Text style={{ ...ClearLensTypography.body, color: cl.textTertiary }}>
+        Loading your funds…
+      </Text>
+    </View>
+  );
+}
+
+function ErrorState({
+  onRetry,
+  tokens,
+}: {
+  onRetry: () => void;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View style={{ paddingVertical: 40, alignItems: 'center', gap: 16 }}>
+      <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, textAlign: 'center' }}>
+        {"Couldn't load your funds. Check your connection and try again."}
+      </Text>
+      <TouchableOpacity
+        onPress={onRetry}
+        style={{
+          backgroundColor: cl.emerald,
+          paddingVertical: 10,
+          paddingHorizontal: 24,
+          borderRadius: ClearLensRadii.full,
+          minHeight: 44,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Retry"
+      >
+        <Text style={{ fontSize: 14, fontFamily: ClearLensFonts.bold, color: '#fff' }}>
+          Retry
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function NoFundsState({ tokens }: { tokens: ClearLensTokens }) {
+  const cl = tokens.colors;
+  return (
+    <View style={{ paddingVertical: 32, gap: 8, paddingHorizontal: ClearLensSpacing.xs }}>
+      <Ionicons name="albums-outline" size={32} color={cl.textTertiary} />
+      <Text style={{ ...ClearLensTypography.h3, color: cl.navy }}>
+        No funds imported yet
+      </Text>
+      <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+        Import your portfolio via CAS or MF Central to detect plan types and calculate your actual cost drag.
+      </Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main screen
+// ---------------------------------------------------------------------------
 
 export function ClearLensDirectVsRegularScreen() {
   useTrackInsightViewed('direct_vs_regular');
   const router = useRouter();
   const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const cl = tokens.colors;
   const { session } = useSession();
   const userId = session?.user.id;
   const previewMode = useAppStore((s) => s.previewMode);
+  const queryClient = useQueryClient();
 
   const [horizon, setHorizon] = useState<HorizonKey>('10Y');
-  const [deltaStr, setDeltaStr] = useState<string>(String(DEFAULT_EXPENSE_DELTA_PCT));
-  const [sipStr, setSipStr] = useState<string>('10000');
+  const [sipStr, setSipStr] = useState<string>(String(DEFAULT_SIP));
+
+  const years = HORIZON_YEARS[horizon];
+
+  // ---------------------------------------------------------------------------
+  // Data
+  // ---------------------------------------------------------------------------
 
   const fundsQuery = useQuery({
-    queryKey: previewMode
-      ? ['direct-vs-regular-funds', 'preview']
-      : ['direct-vs-regular-funds', userId],
-    queryFn: () => {
-      if (previewMode) {
-        return Promise.resolve(
-          PREVIEW_TOOL_FUND_ROWS.map((r) => ({
-            id: r.id,
-            schemeName: r.schemeName,
-            currentValue: r.currentValue,
-            expenseRatio: r.expenseRatio,
-          })) as UserFundRow[],
-        );
-      }
-      return userId ? fetchPlanRows(userId) : Promise.resolve([] as UserFundRow[]);
-    },
-    enabled: previewMode || !!userId,
+    queryKey: ['dvr-funds', userId],
+    queryFn: () => fetchDvrData(userId!, queryClient),
+    enabled: !previewMode && !!userId,
     staleTime: 60_000,
   });
 
+  const allFunds = fundsQuery.data ?? [];
+
   const breakdown = useMemo(() => {
-    const rows: FundPlanRow[] = (fundsQuery.data ?? []).map((f) => ({
+    const rows: FundPlanRow[] = allFunds.map((f) => ({
       id: f.id,
       schemeName: f.schemeName,
+      planType: f.planType,
       currentValue: f.currentValue,
       expenseRatio: f.expenseRatio,
     }));
     return buildPlanBreakdown(rows);
-  }, [fundsQuery.data]);
+  }, [allFunds]);
 
-  const years = HORIZON_YEARS[horizon];
-  const expenseRatioDelta = parsePct(deltaStr);
-  const monthlySip = parseRupees(sipStr);
+  const fundDrags: FundDragResult[] = useMemo(() => {
+    const inputs: FundDragInput[] = allFunds
+      .filter(
+        (f): f is DvrFund & { directEr: number; directErSource: DirectErSource } =>
+          f.planType === 'regular' &&
+          f.expenseRatio != null &&
+          f.directEr != null &&
+          f.directErSource != null,
+      )
+      .map((f) => ({
+        fund: {
+          id: f.id,
+          schemeName: f.schemeName,
+          planType: 'regular',
+          currentValue: f.currentValue,
+          expenseRatio: f.expenseRatio,
+        },
+        directEr: f.directEr,
+        directErSource: f.directErSource,
+      }));
+    return computeFundDrags(inputs, years);
+  }, [allFunds, years]);
 
-  // Headline impact uses the regular-plan corpus only (the lever the user can
-  // actually move). If no regular plan detected, fall back to the total corpus
-  // so the what-if illustration still works.
-  const corpusForImpact =
-    breakdown.regularValue > 0
-      ? breakdown.regularValue
-      : breakdown.totalValue > 0
-        ? breakdown.totalValue
-        : 5_00_000;
+  const totalDrag = fundDrags.reduce((s, d) => s + d.drag, 0);
+  const wGapPct = weightedFeeGapPct(fundDrags);
 
-  const impact = useMemo(
-    () =>
-      computeCostImpact({
-        currentCorpus: corpusForImpact,
-        monthlySip,
-        years,
-        directAnnualReturn: DEFAULT_BASE_RETURN,
-        expenseRatioDelta,
-      }),
-    [corpusForImpact, monthlySip, years, expenseRatioDelta],
+  const regularMissingEr = allFunds.filter(
+    (f) => f.planType === 'regular' && f.expenseRatio == null,
   );
 
   const hasRegular = breakdown.regular.length > 0;
   const hasAnyFunds = breakdown.totalValue > 0;
-  const allDirect = hasAnyFunds && breakdown.direct.length > 0 && !hasRegular && breakdown.unknown.length === 0;
-  const regularSharePct = hasAnyFunds
-    ? (breakdown.regularValue / breakdown.totalValue) * 100
-    : 0;
+  const allDirect =
+    hasAnyFunds &&
+    breakdown.direct.length > 0 &&
+    breakdown.regular.length === 0 &&
+    breakdown.unknown.length === 0;
 
-  if (!userId && !previewMode) {
+  // Illustrative path inputs
+  const monthlySip = parseSip(sipStr);
+  const illustrativeCorpus =
+    breakdown.totalValue > 0 ? breakdown.totalValue : ILLUSTRATIVE_CORPUS;
+
+  const illustrativeImpact = useMemo(
+    () =>
+      computeCostImpact({
+        currentCorpus: illustrativeCorpus,
+        monthlySip,
+        years,
+        directAnnualReturn: DEFAULT_BASE_RETURN,
+        expenseRatioDelta: DEFAULT_EXPENSE_DELTA_PCT,
+      }),
+    [illustrativeCorpus, monthlySip, years],
+  );
+
+  // ---------------------------------------------------------------------------
+  // Preview
+  // ---------------------------------------------------------------------------
+
+  if (previewMode) {
     return (
       <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
-        <View style={styles.center}><Text style={styles.emptyTitle}>Sign in to use this tool</Text></View>
+        <ScrollView
+          contentContainerStyle={scrollStyle}
+          showsVerticalScrollIndicator={false}
+        >
+          <ToolTitleBlock
+            eyebrow="Direct vs Regular"
+            title="How much do plan fees add up to?"
+            subtitle="Direct plans skip the distributor commission, so they cost less each year. Over time, that gap compounds."
+          />
+          <ToolsPreviewSampleCard
+            bannerMessage="A sample portfolio with two regular-plan funds, 10-year horizon. Sign up to detect your own funds' actual expense ratios."
+            heroLabel="Cost drag on regular-plan holdings · 10Y"
+            heroValue={inrCompact(105_131)}
+            heroSubtitle="~8.8% smaller than the same ₹5.0 L held in the direct versions."
+            chart={{
+              series: [
+                { label: `Direct ${inrCompact(PREVIEW_DIRECT_PTS[PREVIEW_DIRECT_PTS.length - 1])}`, color: cl.emerald, points: PREVIEW_DIRECT_PTS },
+                { label: `Regular ${inrCompact(PREVIEW_REGULAR_PTS[PREVIEW_REGULAR_PTS.length - 1])}`, color: cl.lavender, points: PREVIEW_REGULAR_PTS },
+              ],
+            }}
+            rows={[
+              { label: 'Regular-plan holdings', value: '₹5.0 L' },
+              { label: 'Detected fee gap', value: '0.93%/yr' },
+              { label: 'Cost drag over 10Y', value: `−${inrCompact(105_131)}`, tone: 'negative' },
+            ]}
+            footnote="Sample figures. Sign up to detect your own plan types from scheme names and run this on your portfolio."
+          />
+          <PortfolioDisclaimer />
+        </ScrollView>
       </ClearLensScreen>
     );
   }
 
+  if (!userId) {
+    return (
+      <ClearLensScreen>
+        <ClearLensHeader onPressBack={() => router.back()} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: ClearLensSpacing.xl }}>
+          <Text style={{ ...ClearLensTypography.h3, color: cl.navy, textAlign: 'center' }}>
+            Sign in to use this tool
+          </Text>
+        </View>
+      </ClearLensScreen>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  const personalized = hasRegular && fundDrags.length > 0;
+
   return (
     <ClearLensScreen>
       <ClearLensHeader onPressBack={() => router.back()} />
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={scrollStyle}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.titleBlock}>
-            <Text style={styles.eyebrow}>Direct vs Regular</Text>
-            <Text style={styles.title}>How much could fees cost you?</Text>
-            <Text style={styles.subtitle}>
-              Direct plans skip the distributor commission, so they have a lower expense ratio. Over years,
-              that compounds. Here&apos;s the size of that drag for your portfolio.
-            </Text>
-          </View>
+          <ToolTitleBlock
+            eyebrow="Direct vs Regular"
+            title="How much do plan fees add up to?"
+            subtitle="Direct plans skip the distributor commission, so they cost less each year. Over time, that gap compounds."
+          />
 
-          <ToolsPreviewBanner message="A sample portfolio with one regular-plan fund, 10-year horizon, ₹10,000/mo SIP. Sign up to plug in your own." />
-
-          {/* Inputs — hidden in preview mode (controls are locked there). */}
-          {!previewMode && (
-            <View style={styles.card}>
-              <View style={styles.inputRow}>
-                <Text style={styles.inputLabel}>Horizon</Text>
-                <ClearLensSegmentedControl
-                  options={HORIZON_OPTIONS}
-                  selected={horizon}
-                  onChange={setHorizon}
-                />
-              </View>
-
-              <Separator />
-
-              <View style={styles.inputRow}>
-                <Text style={styles.inputLabel}>Monthly SIP (₹)</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g. 10,000"
-                  placeholderTextColor={tokens.colors.textTertiary}
-                  value={sipStr}
-                  onChangeText={setSipStr}
-                  keyboardType="numeric"
-                  returnKeyType="next"
-                />
-              </View>
-
-              <Separator />
-
-              <View style={styles.inputRow}>
-                <Text style={styles.inputLabel}>Expense ratio difference (% per year)</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g. 0.7"
-                  placeholderTextColor={tokens.colors.textTertiary}
-                  value={deltaStr}
-                  onChangeText={setDeltaStr}
-                  keyboardType="numeric"
-                  returnKeyType="done"
-                />
-                <Text style={styles.inputHint}>
-                  Typical equity-fund commission is around 0.5%–1.0% per year.
-                </Text>
-              </View>
-            </View>
-          )}
-
+          {/* ----- Loading / Error / No-funds ----- */}
           {fundsQuery.isLoading ? (
-            <View style={styles.center}><Text style={styles.helperText}>Loading your funds…</Text></View>
-          ) : (
+            <LoadingState tokens={tokens} />
+          ) : fundsQuery.isError ? (
+            <ErrorState onRetry={() => fundsQuery.refetch()} tokens={tokens} />
+          ) : !hasAnyFunds ? (
             <>
-              {/* Hero — leads with the rupee gap and the % corpus shrinkage */}
-              <View style={styles.banner}>
-                <Text style={styles.bannerLabel}>
-                  {hasRegular ? `Estimated cost drag over ${horizon}` : `Illustrative cost drag over ${horizon}`}
-                </Text>
-                <Text style={styles.bannerValue}>{formatCurrency(impact.impact)}</Text>
-                <Text style={styles.bannerSubtitle}>
-                  ~{impact.impactPct.toFixed(1)}% smaller corpus vs the same money in direct plans
-                </Text>
-              </View>
-
-              {/* Comparison detail — replaces the 5-row spreadsheet card */}
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>What that looks like</Text>
-                <Text style={styles.insightBody}>
-                  Same SIP, two return streams. In <Text style={styles.insightStrong}>{horizon}</Text>,{' '}
-                  {formatCurrency(corpusForImpact)} + {formatCurrency(monthlySip)}/mo grows to{' '}
-                  <Text style={styles.insightStrong}>{formatCurrency(impact.directFutureValue)}</Text> in direct plans
-                  vs{' '}
-                  <Text style={styles.insightStrong}>{formatCurrency(impact.regularFutureValue)}</Text> in regular —{' '}
-                  a <Text style={styles.insightLoss}>{formatCurrency(impact.impact)}</Text> gap from the{' '}
-                  {(expenseRatioDelta * 100).toFixed(2)}%/yr fee delta. Both assume a{' '}
-                  {(DEFAULT_BASE_RETURN * 100).toFixed(0)}% base return.
-                </Text>
-              </View>
-
-              {/* Portfolio split — replaces the standalone PlanBreakdownCard */}
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Your portfolio</Text>
-                <Text style={styles.insightBody}>
-                  {!hasAnyFunds ? (
-                    <>
-                      No funds detected yet — the numbers above are illustrative on{' '}
-                      <Text style={styles.insightStrong}>{formatCurrency(corpusForImpact)}</Text>.
-                      Adjust the inputs to see how the fee delta compounds.
-                    </>
-                  ) : allDirect ? (
-                    <>
-                      <Text style={styles.insightStrong}>
-                        All {breakdown.direct.length} of your detected funds are direct plans.
-                      </Text>{' '}
-                      No commission drag from the regular-vs-direct gap.
-                      {breakdown.weightedExpenseRatio != null
-                        ? ` Weighted expense ratio: ${breakdown.weightedExpenseRatio.toFixed(2)}%.`
-                        : ''}
-                    </>
-                  ) : hasRegular ? (
-                    <>
-                      <Text style={styles.insightStrong}>
-                        {breakdown.regular.length} of your {breakdown.direct.length + breakdown.regular.length + breakdown.unknown.length} funds
-                      </Text>
-                      {' '}
-                      ({formatCurrency(breakdown.regularValue)} of {formatCurrency(breakdown.totalValue)},{' '}
-                      <Text style={styles.insightStrong}>{regularSharePct.toFixed(0)}%</Text>) are in regular plans.
-                      {breakdown.weightedExpenseRatio != null
-                        ? ` Weighted expense ratio across the portfolio: ${breakdown.weightedExpenseRatio.toFixed(2)}%.`
-                        : ''}
-                    </>
-                  ) : (
-                    <>
-                      Plan type couldn&apos;t be detected for{' '}
-                      <Text style={styles.insightStrong}>{breakdown.unknown.length} fund(s)</Text>{' '}
-                      — the numbers above are illustrative.
-                    </>
-                  )}
-                </Text>
-              </View>
-
-              {/* What to do — folded the old infoCard into a normal prose card */}
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>What to do</Text>
-                <Text style={styles.insightBody}>
-                  {hasRegular ? (
-                    <>
-                      <Text style={styles.insightStrong}>If you&apos;re paying for advice</Text>, the regular-plan
-                      fee is a fair trade.{' '}
-                      <Text style={styles.insightStrong}>If you&apos;re not</Text> — and the lowest-cost option
-                      is what you want — your platform or advisor can help you switch the regular-plan funds
-                      to direct.
-                    </>
-                  ) : allDirect ? (
-                    <>
-                      You&apos;re already on the lower-cost side. Nothing to action — keep an eye on the
-                      expense ratios when you add new funds.
-                    </>
-                  ) : (
-                    <>
-                      Adjust the inputs above to see how a regular-vs-direct fee gap compounds.
-                      When you import funds, we&apos;ll detect plan type from the scheme name and tailor this advice.
-                    </>
-                  )}
-                </Text>
-              </View>
-
-              {/* Regular-plan funds list — kept compact, only when present */}
-              {hasRegular ? (
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Your regular-plan funds</Text>
-                  {breakdown.regular.map((fund, idx) => (
-                    <View key={fund.id}>
-                      {idx > 0 ? <View style={styles.rowDivider} /> : null}
-                      <View style={styles.row}>
-                        <Text style={styles.rowLabel} numberOfLines={2}>{fund.schemeName}</Text>
-                        <Text style={styles.rowValue}>{formatCurrency(fund.currentValue)}</Text>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-
-              <Text style={styles.disclaimer}>
-                Estimates use a fixed {(DEFAULT_BASE_RETURN * 100).toFixed(0)}% p.a. base return for both plans;
-                the difference comes only from the expense ratio gap. Past performance is not indicative of future returns.
-                We don&apos;t advise switching — your platform or advisor is the right place for that.
-              </Text>
-
-              <PortfolioDisclaimer />
+              <NoFundsState tokens={tokens} />
+              <IllustrativeContent
+                horizon={horizon}
+                onHorizonChange={setHorizon}
+                sipStr={sipStr}
+                onSipChange={setSipStr}
+                illustrativeCorpus={illustrativeCorpus}
+                monthlySip={monthlySip}
+                years={years}
+                impact={illustrativeImpact}
+                tokens={tokens}
+              />
             </>
+          ) : personalized ? (
+            /* ----- Personalized (regular detected) ----- */
+            <PersonalizedContent
+              horizon={horizon}
+              onHorizonChange={setHorizon}
+              wGapPct={wGapPct}
+              sipStr={sipStr}
+              onSipChange={setSipStr}
+              totalDrag={totalDrag}
+              fundDrags={fundDrags}
+              allFunds={allFunds}
+              breakdown={breakdown}
+              regularMissingEr={regularMissingEr}
+              years={years}
+              tokens={tokens}
+            />
+          ) : (
+            /* ----- Illustrative (all-direct or only unknowns) ----- */
+            <IllustrativeContent
+              horizon={horizon}
+              onHorizonChange={setHorizon}
+              sipStr={sipStr}
+              onSipChange={setSipStr}
+              illustrativeCorpus={illustrativeCorpus}
+              monthlySip={monthlySip}
+              years={years}
+              impact={illustrativeImpact}
+              allDirect={allDirect}
+              breakdown={breakdown}
+              tokens={tokens}
+            />
           )}
+
+          <PortfolioDisclaimer />
         </ScrollView>
       </KeyboardAvoidingView>
     </ClearLensScreen>
@@ -410,174 +873,443 @@ export function ClearLensDirectVsRegularScreen() {
 }
 
 // ---------------------------------------------------------------------------
+// PersonalizedContent
+// ---------------------------------------------------------------------------
+
+function PersonalizedContent({
+  horizon,
+  onHorizonChange,
+  wGapPct,
+  sipStr,
+  onSipChange,
+  totalDrag,
+  fundDrags,
+  allFunds,
+  breakdown,
+  regularMissingEr,
+  years,
+  tokens,
+}: {
+  horizon: HorizonKey;
+  onHorizonChange: (h: HorizonKey) => void;
+  wGapPct: number | null;
+  sipStr: string;
+  onSipChange: (s: string) => void;
+  totalDrag: number;
+  fundDrags: FundDragResult[];
+  allFunds: DvrFund[];
+  breakdown: ReturnType<typeof buildPlanBreakdown>;
+  regularMissingEr: DvrFund[];
+  years: number;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  const totalRegularFV = fundDrags.reduce((s, d) => s + d.regularFutureValue, 0);
+  const totalDirectFV = fundDrags.reduce((s, d) => s + d.directFutureValue, 0);
+  const regularCount = breakdown.regular.length;
+  const totalCount =
+    breakdown.direct.length + breakdown.regular.length + breakdown.unknown.length;
+  const regularShare = breakdown.totalValue > 0
+    ? (breakdown.regularValue / breakdown.totalValue) * 100
+    : 0;
+
+  const heroLabel = `Cost drag on your regular-plan holdings · ${horizon}`;
+  const heroSubtitle = wGapPct != null
+    ? `Your ${regularCount} regular-plan fund${regularCount !== 1 ? 's' : ''} carry expense ratios ~${wGapPct.toFixed(2)}%/yr above their direct versions. On ${inrCompact(breakdown.regularValue)} held over ${years} years, that compounds to this.`
+    : `Your ${regularCount} regular-plan fund${regularCount !== 1 ? 's' : ''} carry higher expense ratios than their direct versions. On ${inrCompact(breakdown.regularValue)} held over ${years} years, that compounds to this.`;
+
+  return (
+    <>
+      <InputsCard
+        personalized
+        horizon={horizon}
+        onHorizonChange={onHorizonChange}
+        weightedGapPct={wGapPct}
+        sipStr={sipStr}
+        onSipChange={onSipChange}
+        tokens={tokens}
+      />
+
+      <ToolResultHero
+        label={heroLabel}
+        value={inrCompact(totalDrag)}
+        subtitle={heroSubtitle}
+        chip={<StatusChip tone="mint" onDark>Detected from your funds</StatusChip>}
+      />
+
+      {/* What that looks like */}
+      <ClearLensCard style={{ gap: 14 }}>
+        <CardHeader
+          title="What that looks like"
+          sub={`Your ${inrCompact(breakdown.regularValue)} of regular holdings, two ways, over ${horizon}.`}
+          tokens={tokens}
+        />
+        <CompareTwoBar
+          directFV={totalDirectFV}
+          regularFV={totalRegularFV}
+          tokens={tokens}
+        />
+        <RevealSection label="See the assumptions">
+          <View style={{ gap: 12 }}>
+            <AssumptionRow label="Base return (both plans)" value="10% p.a." isFirst tokens={tokens} />
+            <AssumptionRow label="Horizon" value={`${years} years`} tokens={tokens} />
+            <AssumptionRow label="Regular-plan holdings" value={inrCompact(breakdown.regularValue)} tokens={tokens} />
+            {wGapPct != null && (
+              <AssumptionRow label="Value-weighted fee gap" value={`${wGapPct.toFixed(2)}%/yr`} tokens={tokens} />
+            )}
+            {/* Per-fund ER sub-table */}
+            {fundDrags.length > 0 && (
+              <View style={{ gap: 4 }}>
+                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.textTertiary, marginTop: 4 }}>
+                  Per fund · regular → direct ER
+                </Text>
+                {fundDrags.map((d, i) => (
+                  <AssumptionRow
+                    key={d.fund.id}
+                    label={shortSchemeName(d.fund.schemeName)}
+                    value={`${d.regularEr.toFixed(2)}% → ${d.directEr.toFixed(2)}%  ·  +${(d.deltaDecimal * 100).toFixed(2)}%${d.directErSource === 'category-constant' ? ' (est.)' : ''}`}
+                    isFirst={i === 0}
+                    tokens={tokens}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+        </RevealSection>
+      </ClearLensCard>
+
+      {/* What this means */}
+      <ClearLensCard style={{ gap: 10 }}>
+        <CardHeader title="What this means" tokens={tokens} />
+        <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+          Regular plans carry a distributor commission baked into their expense ratio; direct plans
+          {"don't"}. The figure above is each regular fund{"'s"}{' '}
+          <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>own</Text>{' '}
+          expense-ratio gap vs its direct version, compounded over {years} years on what you
+          actually hold — not a generic estimate.
+        </Text>
+      </ClearLensCard>
+
+      {/* Your portfolio */}
+      <ClearLensCard style={{ padding: 0, gap: 0 }}>
+        <View style={{ padding: ClearLensSpacing.md, paddingBottom: 10, gap: 8 }}>
+          <CardHeader title="Your portfolio" tokens={tokens} />
+          <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+            <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>
+              {regularCount} of your {totalCount} fund{totalCount !== 1 ? 's' : ''}
+            </Text>{' '}
+            are in regular plans — {inrCompact(breakdown.regularValue)} of{' '}
+            {inrCompact(breakdown.totalValue)} ({regularShare.toFixed(0)}%). Here{"'s"} the
+            detected cost of each.
+          </Text>
+        </View>
+
+        {/* Per-fund rows */}
+        <View style={{ borderTopWidth: 1, borderTopColor: cl.borderLight }}>
+          {fundDrags.map((d, i) => {
+            const fund = allFunds.find((f) => f.id === d.fund.id);
+            return (
+              <PerFundRow
+                key={d.fund.id}
+                name={fund ? displayName(fund) : shortSchemeName(d.fund.schemeName)}
+                value={d.fund.currentValue}
+                regularEr={d.regularEr}
+                directEr={d.directEr}
+                drag={d.drag}
+                horizon={horizon}
+                isLast={i === fundDrags.length - 1}
+                tokens={tokens}
+              />
+            );
+          })}
+          {regularMissingEr.length > 0 && (
+            <View style={{ paddingHorizontal: ClearLensSpacing.md, paddingVertical: 12, borderTopWidth: 1, borderTopColor: cl.borderLight }}>
+              <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 18 }}>
+                {regularMissingEr.length} regular-plan fund{regularMissingEr.length !== 1 ? 's' : ''} excluded — expense ratio not yet available. Their drag is not included in the total above.
+              </Text>
+            </View>
+          )}
+          {breakdown.unknown.length > 0 && (
+            <View style={{ paddingHorizontal: ClearLensSpacing.md, paddingVertical: 12, borderTopWidth: 1, borderTopColor: cl.borderLight }}>
+              <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 18 }}>
+                {breakdown.unknown.length} fund{breakdown.unknown.length !== 1 ? 's' : ''} excluded — plan type not detected from scheme name.
+              </Text>
+            </View>
+          )}
+        </View>
+      </ClearLensCard>
+
+      <DisclaimerText personalized tokens={tokens} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// IllustrativeContent
+// ---------------------------------------------------------------------------
+
+function IllustrativeContent({
+  horizon,
+  onHorizonChange,
+  sipStr,
+  onSipChange,
+  illustrativeCorpus,
+  monthlySip,
+  years,
+  impact,
+  allDirect = false,
+  breakdown,
+  tokens,
+}: {
+  horizon: HorizonKey;
+  onHorizonChange: (h: HorizonKey) => void;
+  sipStr: string;
+  onSipChange: (s: string) => void;
+  illustrativeCorpus: number;
+  monthlySip: number;
+  years: number;
+  impact: ReturnType<typeof computeCostImpact>;
+  allDirect?: boolean;
+  breakdown?: ReturnType<typeof buildPlanBreakdown>;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+
+  const heroLabel = `Illustrative cost drag over ${horizon}`;
+  const heroSubtitle = allDirect && breakdown
+    ? `Your funds are all direct plans, so none of this gap applies to your holdings — the figure is illustrative on ${inrCompact(illustrativeCorpus)} at a typical 0.70%/yr difference.`
+    : `Illustrative on ${inrCompact(illustrativeCorpus)}${monthlySip > 0 ? ` + ${inrCompact(monthlySip)}/mo SIP` : ''} at a typical 0.70%/yr fee difference over ${years} years.`;
+
+  return (
+    <>
+      <InputsCard
+        personalized={false}
+        horizon={horizon}
+        onHorizonChange={onHorizonChange}
+        weightedGapPct={null}
+        sipStr={sipStr}
+        onSipChange={onSipChange}
+        tokens={tokens}
+      />
+
+      <ToolResultHero
+        label={heroLabel}
+        value={inrCompact(impact.impact)}
+        subtitle={heroSubtitle}
+        chip={<StatusChip tone="mint" onDark>{allDirect ? 'All direct — no drag' : 'Illustrative'}</StatusChip>}
+      />
+
+      {/* What that looks like */}
+      <ClearLensCard style={{ gap: 14 }}>
+        <CardHeader
+          title="What that looks like"
+          sub={`Same SIP, two return streams over ${horizon}.`}
+          tokens={tokens}
+        />
+        <CompareTwoBar
+          directFV={impact.directFutureValue}
+          regularFV={impact.regularFutureValue}
+          tokens={tokens}
+        />
+        <RevealSection label="See the assumptions">
+          <AssumptionRow label="Base return (both plans)" value="10% p.a." isFirst tokens={tokens} />
+          <AssumptionRow label="Fee difference (typical)" value="0.70%/yr" tokens={tokens} />
+          <AssumptionRow label="Horizon" value={`${years} years`} tokens={tokens} />
+          <AssumptionRow label="Illustrative corpus" value={inrCompact(illustrativeCorpus)} tokens={tokens} />
+          {monthlySip > 0 && (
+            <AssumptionRow label="Monthly SIP" value={formatCurrency(monthlySip)} tokens={tokens} />
+          )}
+          <AssumptionRow label="Direct plans grow to" value={inrCompact(impact.directFutureValue)} tokens={tokens} />
+          <AssumptionRow label="Regular plans grow to" value={inrCompact(impact.regularFutureValue)} tokens={tokens} />
+        </RevealSection>
+      </ClearLensCard>
+
+      {/* What this means */}
+      <ClearLensCard style={{ gap: 10 }}>
+        <CardHeader title="What this means" tokens={tokens} />
+        <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+          {allDirect ? (
+            <>
+              All of your detected funds are direct plans, so there{"'s"} no regular-vs-direct
+              commission gap on your holdings. The figure above shows what a typical{' '}
+              <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>
+                0.70%/yr
+              </Text>{' '}
+              difference would compound to, for reference.
+            </>
+          ) : (
+            <>
+              Regular plans carry a distributor commission baked into their expense ratio;
+              direct plans {"don't"}. The figure above is illustrative — once you import your
+              portfolio, this tool will compute the drag from your{"  funds'"} own expense ratios.
+            </>
+          )}
+        </Text>
+      </ClearLensCard>
+
+      {/* Your portfolio — simplified */}
+      {breakdown && (
+        <ClearLensCard style={{ gap: 10 }}>
+          <CardHeader title="Your portfolio" tokens={tokens} />
+          <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+            {allDirect ? (
+              <>
+                <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>
+                  All {breakdown.direct.length} detected fund{breakdown.direct.length !== 1 ? 's' : ''} are direct plans.
+                </Text>{' '}
+                {breakdown.weightedExpenseRatio != null
+                  ? `Weighted expense ratio: ${breakdown.weightedExpenseRatio.toFixed(2)}%.`
+                  : ''}
+              </>
+            ) : breakdown.unknown.length > 0 ? (
+              <>
+                Plan type {"couldn't"} be detected for{' '}
+                <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>
+                  {breakdown.unknown.length} fund{breakdown.unknown.length !== 1 ? 's' : ''}
+                </Text>{' '}
+                — the numbers above are illustrative.
+              </>
+            ) : (
+              'No funds detected yet — the numbers above are illustrative.'
+            )}
+          </Text>
+        </ClearLensCard>
+      )}
+
+      <DisclaimerText tokens={tokens} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared atoms
+// ---------------------------------------------------------------------------
+
+function CardHeader({
+  title,
+  sub,
+  tokens,
+}: {
+  title: string;
+  sub?: string;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View style={{ gap: 3 }}>
+      <Text style={{ ...ClearLensTypography.h3, color: cl.navy }}>{title}</Text>
+      {sub ? (
+        <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, lineHeight: 18 }}>
+          {sub}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PerFundRow({
+  name,
+  value,
+  regularEr,
+  directEr,
+  drag,
+  horizon,
+  isLast,
+  tokens,
+}: {
+  name: string;
+  value: number;
+  regularEr: number;
+  directEr: number;
+  drag: number;
+  horizon: HorizonKey;
+  isLast: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        paddingHorizontal: ClearLensSpacing.md,
+        paddingVertical: 12,
+        borderBottomWidth: isLast ? 0 : 1,
+        borderBottomColor: cl.borderLight,
+      }}
+    >
+      {/* Left: name + badge + ER info */}
+      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Text
+            style={{ fontSize: 14, fontFamily: ClearLensFonts.semiBold, color: cl.navy, flexShrink: 1 }}
+            numberOfLines={1}
+          >
+            {name}
+          </Text>
+          <RegularBadge tokens={tokens} />
+        </View>
+        <Text style={{ fontSize: 12, fontFamily: ClearLensFonts.regular, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}>
+          {inrCompact(value)} · ER {regularEr.toFixed(2)}%{' '}
+          <Text style={{ color: cl.textSecondary }}>vs {directEr.toFixed(2)}% direct</Text>
+        </Text>
+      </View>
+
+      {/* Right: rupee drag */}
+      <View style={{ alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+        <Text style={{ fontSize: 14, fontFamily: ClearLensFonts.bold, color: cl.warning, fontVariant: ['tabular-nums'] }}>
+          −{inrCompact(drag)}
+        </Text>
+        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.regular, color: cl.textTertiary }}>
+          over {horizon}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function DisclaimerText({
+  personalized = false,
+  tokens,
+}: {
+  personalized?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <Text
+      style={{
+        fontSize: 11,
+        fontFamily: ClearLensFonts.medium,
+        color: cl.textTertiary,
+        textAlign: 'center',
+        paddingHorizontal: ClearLensSpacing.sm,
+        lineHeight: 17,
+        marginTop: ClearLensSpacing.xs,
+      }}
+    >
+      {personalized
+        ? 'Estimates use a fixed 10% p.a. base return for both plans; the difference comes only from the expense-ratio gap, detected from your funds\' scheme names and AMFI expense ratios. Past performance is not indicative of future returns. FolioLens does not recommend funds or plans.'
+        : 'Estimates use a fixed 10% p.a. base return for both plans; the difference comes only from the expense ratio gap. Past performance is not indicative of future returns. FolioLens does not recommend funds or plans.'}
+    </Text>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function Separator() {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  return <View style={styles.separator} />;
-}
-
-function parseRupees(str: string): number {
+function parseSip(str: string): number {
   const n = parseFloat(str.replace(/,/g, ''));
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-function parsePct(str: string): number {
-  const n = parseFloat(str);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(5, n)) / 100;
-}
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-function makeStyles(tokens: ClearLensTokens) {
-  const cl = tokens.colors;
-  return StyleSheet.create({
-    flex: { flex: 1 },
-    scrollContent: {
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.xxl,
-      gap: ClearLensSpacing.sm,
-    },
-    center: {
-      flex: 1,
-      alignItems: 'center',
-      justifyContent: 'center',
-      paddingHorizontal: ClearLensSpacing.xl,
-      paddingVertical: ClearLensSpacing.lg,
-      gap: ClearLensSpacing.sm,
-    },
-    helperText: { ...ClearLensTypography.body, color: cl.textTertiary },
-    titleBlock: {
-      gap: 4,
-      paddingHorizontal: ClearLensSpacing.xs,
-      paddingVertical: ClearLensSpacing.sm,
-    },
-    eyebrow: {
-      ...ClearLensTypography.label,
-      color: cl.emerald,
-      textTransform: 'uppercase',
-    },
-    title: { ...ClearLensTypography.h1, color: cl.navy },
-    subtitle: { ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 },
-
-    emptyTitle: { ...ClearLensTypography.h2, color: cl.navy, textAlign: 'center' },
-
-    card: {
-      backgroundColor: cl.surface,
-      borderRadius: ClearLensRadii.lg,
-      borderWidth: 1,
-      borderColor: cl.border,
-      ...ClearLensShadow,
-      paddingVertical: ClearLensSpacing.xs,
-      overflow: 'hidden',
-    },
-    cardTitle: {
-      ...ClearLensTypography.h3,
-      color: cl.navy,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.xs,
-    },
-    insightBody: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.sm,
-      lineHeight: 22,
-    },
-    insightStrong: {
-      color: cl.navy,
-      fontFamily: ClearLensFonts.semiBold,
-    },
-    insightLoss: {
-      color: cl.negative,
-      fontFamily: ClearLensFonts.semiBold,
-    },
-
-    inputRow: {
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: ClearLensSpacing.sm + 2,
-      gap: 8,
-    },
-    inputLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textTertiary,
-      letterSpacing: 0.4,
-    },
-    inputHint: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-    },
-    textInput: {
-      fontFamily: ClearLensFonts.regular,
-      fontSize: 15,
-      color: cl.textPrimary,
-      paddingVertical: 4,
-    },
-    separator: {
-      height: 1,
-      backgroundColor: cl.borderLight,
-      marginHorizontal: ClearLensSpacing.md,
-    },
-
-    banner: {
-      backgroundColor: cl.heroSurface,
-      borderRadius: ClearLensRadii.lg,
-      padding: ClearLensSpacing.md,
-      gap: 4,
-    },
-    bannerLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textOnDarkMuted,
-      textTransform: 'uppercase',
-    },
-    bannerValue: {
-      ...ClearLensTypography.h1,
-      color: cl.textOnDark,
-    },
-    bannerSubtitle: {
-      ...ClearLensTypography.bodySmall,
-      color: cl.textOnDarkMuted,
-    },
-
-    row: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: 12,
-      gap: ClearLensSpacing.sm,
-    },
-    rowLabel: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-      flex: 1,
-    },
-    rowValue: {
-      fontFamily: ClearLensFonts.semiBold,
-      fontSize: 14,
-      color: cl.navy,
-    },
-    rowDivider: {
-      height: 1,
-      backgroundColor: cl.borderLight,
-      marginHorizontal: ClearLensSpacing.md,
-    },
-
-    disclaimer: {
-      ...ClearLensTypography.caption,
-      color: cl.textTertiary,
-      textAlign: 'center',
-      paddingHorizontal: ClearLensSpacing.sm,
-      lineHeight: 17,
-      marginTop: ClearLensSpacing.xs,
-    },
-  });
-}
+// Shared scroll content padding
+const scrollStyle = {
+  paddingHorizontal: ClearLensSpacing.md,
+  paddingTop: ClearLensSpacing.xs,
+  paddingBottom: ClearLensSpacing.xxl,
+  gap: ClearLensSpacing.sm,
+} as const;
