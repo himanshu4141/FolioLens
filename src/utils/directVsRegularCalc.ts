@@ -131,6 +131,93 @@ export interface PlanBreakdown {
   weightedExpenseRatio: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Per-fund drag computation (personalized path)
+// ---------------------------------------------------------------------------
+
+/**
+ * How the direct-plan counterpart ER was obtained for a given regular fund.
+ * Surfaced in the "See the assumptions" reveal so users can see data provenance.
+ */
+export type DirectErSource = 'sibling-lookup' | 'category-constant' | 'flat-fallback';
+
+/** Input for a single regular fund's drag computation. */
+export interface FundDragInput {
+  fund: FundPlanRow;
+  /** Estimated direct-plan expense ratio for the same fund, in % (e.g. 0.68). */
+  directEr: number;
+  directErSource: DirectErSource;
+}
+
+/** Per-fund drag result returned by `computeFundDrags`. */
+export interface FundDragResult {
+  fund: FundPlanRow;
+  /** The fund's own expense ratio (%). Mirrors fund.expenseRatio for convenience. */
+  regularEr: number;
+  directEr: number;
+  /** (regularEr - directEr) / 100, clamped to [0, ∞). */
+  deltaDecimal: number;
+  directErSource: DirectErSource;
+  /** Future value the fund would reach in a direct plan over `years`. */
+  directFutureValue: number;
+  /** Future value the fund reaches in the regular plan over `years`. */
+  regularFutureValue: number;
+  /** directFutureValue − regularFutureValue (rupee cost of the fee gap). */
+  drag: number;
+}
+
+/**
+ * Compute the rupee drag for each regular-plan fund from its own ER delta,
+ * on a holdings-only basis (SIP = 0 — the honest personal number for what
+ * the user already holds). Base return is fixed at 10% p.a. for consistency.
+ *
+ * Funds with `expenseRatio == null` should be excluded by the caller; this
+ * function falls back safely (deltaDecimal = 0) if ER is missing.
+ */
+export function computeFundDrags(
+  inputs: FundDragInput[],
+  years: number,
+): FundDragResult[] {
+  return inputs.map(({ fund, directEr, directErSource }) => {
+    const regularEr = fund.expenseRatio ?? directEr;
+    const deltaDecimal = Math.max(0, (regularEr - directEr) / 100);
+    const result = computeCostImpact({
+      currentCorpus: fund.currentValue,
+      monthlySip: 0,
+      years,
+      directAnnualReturn: 0.10,
+      expenseRatioDelta: deltaDecimal,
+    });
+    return {
+      fund,
+      regularEr,
+      directEr,
+      deltaDecimal,
+      directErSource,
+      directFutureValue: result.directFutureValue,
+      regularFutureValue: result.regularFutureValue,
+      drag: result.impact,
+    };
+  });
+}
+
+/**
+ * Value-weighted average fee gap (in %) across computed drag results.
+ * Returns null when there are no results with positive currentValue.
+ */
+export function weightedFeeGapPct(drags: FundDragResult[]): number | null {
+  const items = drags.filter((d) => d.fund.currentValue > 0);
+  if (items.length === 0) return null;
+  const totalValue = items.reduce((s, d) => s + d.fund.currentValue, 0);
+  if (totalValue === 0) return null;
+  return (
+    items.reduce((s, d) => s + d.deltaDecimal * 100 * d.fund.currentValue, 0) /
+    totalValue
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 export function buildPlanBreakdown(funds: FundPlanRow[]): PlanBreakdown {
   const direct: FundPlanRow[] = [];
   const regular: FundPlanRow[] = [];
