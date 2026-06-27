@@ -1,5 +1,10 @@
 # Compare Funds — Quality & Performance Review (2026-06-14)
 
+> **STATUS — ✅ COMPLETE (2026-06-27).** All planned items shipped and verified:
+> CD-OD (OpenFolio), C1 (#238), C6 (#240, fallback-label fix #244), C2 (#241), C3 (#242),
+> C4 (#243); C5 subsumed by C6. The dev backfill deadlock that blocked the C1 family sync was
+> fixed separately in #239. See the Status note under §7 for the per-item breakdown.
+
 Triggered by hands-on testing of the Compare tool with **three Large & Mid Cap Direct plans**.
 Reported symptoms: (1) some names show "Direct", some don't; (2) same-category funds flagged as
 different categories; (3) the chart renders but some numbers are missing; (4) a few seconds of
@@ -302,15 +307,20 @@ expose) + **C1** (sync) + **C6** (picker); pairs with **C2**.
 
 ## 7. Plan (prioritised)
 
-| ID | Title | Repo | Addresses | Effort | Risk | Priority |
-|---|---|---|---|---|---|---|
-| CD-OD | Expose `family_id` + clean `family_name` + structured `plan_type`/`option_type` on `/v1/metadata` | **OD** | §6.5, #1, A, B | S–M | Low | **Must** (foundation) |
-| C1 | Sync family identity into `scheme_master`; display synced name + plan chip; retire `shortSchemeName` | FL | #1, A | S–M | Low | **Must** |
-| C6 | **Family-first search & select (two-level picker + global plan toggle)** | FL | §6.5, B, "fewer options/less loading" | M–L | Med | **Must** |
-| C2 | Compare perf: gate hydration + month-end compute + stable as-reported | FL | #4, C, D | M | Med | **Must** |
-| C3 | Category data hardening + tolerant cross-category banner | OD+FL | #2 | S–M | Low | **Should** |
-| C4 | Risk-card as-reported completeness + honest missing-field labels | FL | #3 | S–M | Low | **Should** |
-| ~~C5~~ | ~~Picker: de-dupe / label plan twins~~ → **subsumed by C6** | — | B | — | — | folded into C6 |
+| ID | Title | Repo | Addresses | Priority | Status |
+|---|---|---|---|---|---|
+| CD-OD | Expose `family_id` + clean `family_name` + structured `plan_type`/`option_type` on `/v1/metadata` | **OD** | §6.5, #1, A, B | **Must** (foundation) | ✅ Shipped (OpenFolio) — verified live: dev `of_family_id`/`family_name` 100% |
+| C1 | Sync family identity into `scheme_master`; display synced name + plan chip; retire `shortSchemeName` | FL | #1, A | **Must** | ✅ Shipped — **#238** |
+| C6 | **Family-first search & select (two-level picker + global plan toggle)** | FL | §6.5, B, "fewer options/less loading" | **Must** | ✅ Shipped — **#240** (inverted fallback-chip label fixed in **#244**) |
+| C2 | Compare perf: gate hydration + month-end compute + stable as-reported | FL | #4, C, D | **Must** | ✅ Shipped — **#241** |
+| C3 | Category data hardening + tolerant cross-category banner | OD+FL | #2 | **Should** | ✅ Shipped — **#242** (35 dev schemes corrected) |
+| C4 | Risk-card as-reported completeness + honest missing-field labels | FL | #3 | **Should** | ✅ Shipped — **#243** (per-period provenance, "Too new"/"Not disclosed" labels) |
+| ~~C5~~ | ~~Picker: de-dupe / label plan twins~~ → **subsumed by C6** | — | B | folded into C6 | ✅ Subsumed by **#240** (family grouping de-dupes twins by construction) |
+
+> **Status (2026-06-27): ✅ All items shipped and verified.** Every item landed in dependency
+> order (CD-OD → C1 → C6 → C2 → C4 → C3) plus the C6 fallback-label fix (#244). All four reported
+> symptoms are resolved; gates green in CI; the dev backfill that blocked the C1 sync was
+> separately unblocked (#239). No open Compare bugs remain.
 
 **Identity is synced from OpenFolio, never derived in FolioLens.** Dependency order:
 **CD-OD** (upstream exposes family_id/name/plan-option — it already has the normaliser + family
@@ -471,3 +481,15 @@ the synced `of_family_id`). Then **C2** (perf) compounds the win — one canonic
 C1 (`scheme_master` columns + re-sync), C3 (category data); the rest is client + edge. Get the
 family-picker empty/loading/zero-result states right — that's where "too much loading" is felt
 today.
+
+---
+
+### Outcome (2026-06-27)
+
+Executed exactly in the recommended order. CD-OD (OpenFolio) → C1 (#238) → C6 (#240) → C2 (#241)
+→ C4 (#243) → C3 (#242), with C5 subsumed by C6. One follow-up fix corrected an inverted
+fallback-chip label in C6's plan resolution (#244). A pre-existing universe-backfill deadlock that
+silently blocked the C1 family sync from reaching dev was found and fixed during verification
+(#239), then the dev re-sync was driven to completion (`of_family_id`/`family_name` 100%). Final
+verification confirmed all four reported symptoms resolved, all gates green in CI, and no open
+Compare bugs. **Plan complete.**
