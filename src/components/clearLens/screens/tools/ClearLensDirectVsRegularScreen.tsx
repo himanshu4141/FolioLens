@@ -1039,7 +1039,7 @@ function PersonalizedContent({
           <CardHeader title="Your portfolio" tokens={tokens} />
           <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
             <Text style={{ color: cl.navy, fontFamily: ClearLensFonts.semiBold }}>
-              {regularCount} of your {totalCount} fund{totalCount !== 1 ? 's' : ''}
+              {breakdown.regular.length} of your {totalCount} fund{totalCount !== 1 ? 's' : ''}
             </Text>{' '}
             are in regular plans — {inrCompact(breakdown.regularValue)} of{' '}
             {inrCompact(breakdown.totalValue)} ({regularShare.toFixed(0)}%). Here{"'s"} the
