@@ -147,6 +147,12 @@ function laterDate(a: string, b: string): string {
   return a > b ? a : b;
 }
 
+function subtractDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split('T')[0];
+}
+
 export function computeInvestmentVsBenchmarkTimeline(
   navRows: RawNavRow[],
   txRows: RawTxRow[],
@@ -308,7 +314,13 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   }
 
   const windowStart = getWindowStartDate(window);
-  const navStartDate = windowStart ? laterDate(firstTxDate, windowStart) : firstTxDate;
+  // Pull NAV data 7 days before the visible window so `getLatestAt` can
+  // always find the most-recent trading-day NAV even when the window
+  // boundary falls on a weekend or public holiday. Without this buffer,
+  // a Sunday startDate produces a null NAV lookup → mark-to-cost for
+  // that first point. 7 days covers any national holiday run.
+  const navFetchStart = windowStart ? subtractDays(windowStart, 7) : null;
+  const navStartDate = navFetchStart ? laterDate(firstTxDate, navFetchStart) : firstTxDate;
 
   // Window-bounded SQL fetches. An earlier iteration of this hook routed
   // through a shared cache layer and pulled *all* history, then filtered
@@ -401,11 +413,16 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
           // bootstrap first ran on a fresh install). A gap between startDate and
           // the earliest available row triggers "mark to cost" for that period,
           // producing a visible step-jump when real NAV values first appear.
-          // 14 days is generous enough for weekends + holidays but small enough
-          // to catch a multi-month bootstrap lag on the 1Y window.
+          //
+          // The caller already extends startDate 7 days before the visible window
+          // so `getLatestAt` has a floor NAV for non-trading-day boundaries. That
+          // means a normal 2-day weekend gap appears as a 2-day miss here — well
+          // within the 3-day tolerance. A holiday week (e.g. Christmas–New Year)
+          // can produce a 9+-day gap that exceeds the threshold, triggering a
+          // one-time Supabase fetch whose write-back fills the gap permanently.
           const earliestDate = cached[0].nav_date; // sorted ASC — guaranteed by readBySchemeCodes
           const gapMs = new Date(earliestDate).getTime() - new Date(startDate).getTime();
-          if (gapMs <= 14 * 24 * 60 * 60 * 1000) return cached;
+          if (gapMs <= 3 * 24 * 60 * 60 * 1000) return cached;
         }
       }
     } catch (err) {
