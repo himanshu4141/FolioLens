@@ -395,7 +395,18 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
       // gets the full picture and the write-back populates SQLite for next time.
       if (cached.length > 0) {
         const coveredSchemes = new Set(cached.map((r) => r.scheme_code));
-        if (schemeCodes.every((code) => coveredSchemes.has(code))) return cached;
+        if (schemeCodes.every((code) => coveredSchemes.has(code))) {
+          // Also verify the data covers the requested start date. SQLite may have
+          // rows for all schemes but only from a more recent date (e.g. the day
+          // bootstrap first ran on a fresh install). A gap between startDate and
+          // the earliest available row triggers "mark to cost" for that period,
+          // producing a visible step-jump when real NAV values first appear.
+          // 14 days is generous enough for weekends + holidays but small enough
+          // to catch a multi-month bootstrap lag on the 1Y window.
+          const earliestDate = cached[0].nav_date; // sorted ASC — guaranteed by readBySchemeCodes
+          const gapMs = new Date(earliestDate).getTime() - new Date(startDate).getTime();
+          if (gapMs <= 14 * 24 * 60 * 60 * 1000) return cached;
+        }
       }
     } catch (err) {
       console.warn('[timeline] sqlite nav read failed', err);
