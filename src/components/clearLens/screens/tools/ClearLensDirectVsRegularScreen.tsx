@@ -228,7 +228,7 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
 
   const metaByCode = new Map<
     number,
-    { familyName: string | null; sebiCategory: string | null; schemeCategory: string | null }
+    { familyName: string | null; sebiCategory: string | null; schemeCategory: string | null; optionType: string | null }
   >();
   for (let i = 0; i < regularFunds.length; i++) {
     const sm = schemeMasters[i];
@@ -237,10 +237,12 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
       familyName: sm?.family_name ?? null,
       sebiCategory: sm?.sebi_category ?? null,
       schemeCategory: sm?.scheme_category ?? null,
+      optionType: sm?.option_type ?? null,
     });
   }
 
-  // Batch-fetch direct-plan siblings by family_name.
+  // Batch-fetch direct-plan siblings by family_name, including option_type for
+  // stable matching (Growth↔Growth, IDCW↔IDCW) and expense_ratio.
   const familyNames = [
     ...new Set(
       regularFunds
@@ -249,21 +251,36 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
     ),
   ];
 
-  const directErByFamily = new Map<string, number>();
+  // family_name → list of { er, optionType } for all direct variants.
+  const directSiblingsByFamily = new Map<string, { er: number; optionType: string | null }[]>();
   if (familyNames.length > 0) {
     const { data: siblings } = await schemeMasterRepo
       .from()
-      .select('family_name, expense_ratio')
+      .select('family_name, expense_ratio, option_type')
       .in('family_name', familyNames)
       .eq('plan_type', 'direct')
       .not('expense_ratio', 'is', null);
     for (const row of siblings ?? []) {
       const fn = row.family_name as string | null;
       const er = row.expense_ratio as number | null;
-      if (fn && er != null && !directErByFamily.has(fn)) {
-        directErByFamily.set(fn, er);
+      if (fn && er != null) {
+        const entry = { er, optionType: (row.option_type as string | null) ?? null };
+        const list = directSiblingsByFamily.get(fn);
+        if (list) { list.push(entry); } else { directSiblingsByFamily.set(fn, [entry]); }
       }
     }
+  }
+
+  // Pick the best-matched direct sibling: prefer same option_type, then lowest ER.
+  function pickDirectEr(familyName: string | null, regularOptionType: string | null): number | null {
+    if (!familyName) return null;
+    const siblings = directSiblingsByFamily.get(familyName);
+    if (!siblings?.length) return null;
+    const sameOption = regularOptionType
+      ? siblings.filter((s) => s.optionType?.toLowerCase() === regularOptionType.toLowerCase())
+      : [];
+    const pool = sameOption.length > 0 ? sameOption : siblings;
+    return pool.reduce((best, s) => s.er < best.er ? s : best).er;
   }
 
   // Enrich each fund.
@@ -273,13 +290,15 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
     const familyName = meta?.familyName ?? null;
     const sebiCategory = meta?.sebiCategory ?? null;
     const schemeCategory = meta?.schemeCategory ?? null;
+    const optionType = meta?.optionType ?? null;
 
     let directEr: number | null = null;
     let directErSource: DirectErSource | null = null;
 
     if (f.planType === 'regular' && f.expenseRatio != null) {
-      if (familyName && directErByFamily.has(familyName)) {
-        directEr = directErByFamily.get(familyName)!;
+      const siblingEr = pickDirectEr(familyName, optionType);
+      if (siblingEr != null) {
+        directEr = siblingEr;
         directErSource = 'sibling-lookup';
       } else {
         const commPct = categoryCommission(sebiCategory, schemeCategory);
@@ -791,6 +810,8 @@ export function ClearLensDirectVsRegularScreen() {
   // ---------------------------------------------------------------------------
 
   const personalized = hasRegular && fundDrags.length > 0;
+  // Regular funds exist but every one is missing TER — personalization is blocked.
+  const terBlocked = hasRegular && fundDrags.length === 0;
 
   return (
     <ClearLensScreen>
@@ -844,6 +865,20 @@ export function ClearLensDirectVsRegularScreen() {
               breakdown={breakdown}
               regularMissingEr={regularMissingEr}
               years={years}
+              tokens={tokens}
+            />
+          ) : terBlocked ? (
+            /* ----- TER blocked (regular funds found but all missing expense_ratio) ----- */
+            <TerBlockedContent
+              regularCount={breakdown.regular.length}
+              horizon={horizon}
+              onHorizonChange={setHorizon}
+              sipStr={sipStr}
+              onSipChange={setSipStr}
+              illustrativeCorpus={illustrativeCorpus}
+              monthlySip={monthlySip}
+              years={years}
+              impact={illustrativeImpact}
               tokens={tokens}
             />
           ) : (
@@ -904,7 +939,10 @@ function PersonalizedContent({
   const cl = tokens.colors;
   const totalRegularFV = fundDrags.reduce((s, d) => s + d.regularFutureValue, 0);
   const totalDirectFV = fundDrags.reduce((s, d) => s + d.directFutureValue, 0);
-  const regularCount = breakdown.regular.length;
+  // Use the modeled subset (funds that have both TER + direct ER), not all regular.
+  const modeledCount = fundDrags.length;
+  const modeledValue = fundDrags.reduce((s, d) => s + d.fund.currentValue, 0);
+  const excludedCount = regularMissingEr.length;
   const totalCount =
     breakdown.direct.length + breakdown.regular.length + breakdown.unknown.length;
   const regularShare = breakdown.totalValue > 0
@@ -913,8 +951,8 @@ function PersonalizedContent({
 
   const heroLabel = `Cost drag on your regular-plan holdings · ${horizon}`;
   const heroSubtitle = wGapPct != null
-    ? `Your ${regularCount} regular-plan fund${regularCount !== 1 ? 's' : ''} carry expense ratios ~${wGapPct.toFixed(2)}%/yr above their direct versions. On ${inrCompact(breakdown.regularValue)} held over ${years} years, that compounds to this.`
-    : `Your ${regularCount} regular-plan fund${regularCount !== 1 ? 's' : ''} carry higher expense ratios than their direct versions. On ${inrCompact(breakdown.regularValue)} held over ${years} years, that compounds to this.`;
+    ? `Your ${modeledCount} regular-plan fund${modeledCount !== 1 ? 's' : ''} carry expense ratios ~${wGapPct.toFixed(2)}%/yr above their direct versions. On ${inrCompact(modeledValue)} held over ${years} years, that compounds to this.`
+    : `Your ${modeledCount} regular-plan fund${modeledCount !== 1 ? 's' : ''} carry higher expense ratios than their direct versions. On ${inrCompact(modeledValue)} held over ${years} years, that compounds to this.`;
 
   return (
     <>
@@ -951,7 +989,14 @@ function PersonalizedContent({
           <View style={{ gap: 12 }}>
             <AssumptionRow label="Base return (both plans)" value="10% p.a." isFirst tokens={tokens} />
             <AssumptionRow label="Horizon" value={`${years} years`} tokens={tokens} />
-            <AssumptionRow label="Regular-plan holdings" value={inrCompact(breakdown.regularValue)} tokens={tokens} />
+            <AssumptionRow label="Modelled regular holdings" value={inrCompact(modeledValue)} tokens={tokens} />
+            {excludedCount > 0 && (
+              <AssumptionRow
+                label={`Excluded (TER unavailable)`}
+                value={`${excludedCount} fund${excludedCount !== 1 ? 's' : ''}`}
+                tokens={tokens}
+              />
+            )}
             {wGapPct != null && (
               <AssumptionRow label="Value-weighted fee gap" value={`${wGapPct.toFixed(2)}%/yr`} tokens={tokens} />
             )}
@@ -1044,6 +1089,69 @@ function PersonalizedContent({
 
 // ---------------------------------------------------------------------------
 // IllustrativeContent
+// ---------------------------------------------------------------------------
+// TerBlockedContent — regular funds detected but all missing expense_ratio
+// ---------------------------------------------------------------------------
+
+function TerBlockedContent({
+  regularCount,
+  horizon,
+  onHorizonChange,
+  sipStr,
+  onSipChange,
+  illustrativeCorpus,
+  monthlySip,
+  years,
+  impact,
+  tokens,
+}: {
+  regularCount: number;
+  horizon: HorizonKey;
+  onHorizonChange: (h: HorizonKey) => void;
+  sipStr: string;
+  onSipChange: (s: string) => void;
+  illustrativeCorpus: number;
+  monthlySip: number;
+  years: number;
+  impact: ReturnType<typeof computeCostImpact>;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <>
+      <InputsCard
+        personalized={false}
+        horizon={horizon}
+        onHorizonChange={onHorizonChange}
+        weightedGapPct={null}
+        sipStr={sipStr}
+        onSipChange={onSipChange}
+        tokens={tokens}
+      />
+
+      <ToolResultHero
+        label={`Illustrative cost drag over ${horizon}`}
+        value={inrCompact(impact.impact)}
+        subtitle={`We detected ${regularCount} regular-plan fund${regularCount !== 1 ? 's' : ''} in your portfolio, but their expense ratios weren't available in our database yet. The figure above is illustrative at a typical 0.70%/yr gap.`}
+        chip={<StatusChip tone="amber" onDark>TER not yet available</StatusChip>}
+      />
+
+      <ClearLensCard style={{ gap: 10 }}>
+        <CardHeader title="What this means" tokens={tokens} />
+        <Text style={{ ...ClearLensTypography.body, color: cl.textSecondary, lineHeight: 22 }}>
+          We identified {regularCount} regular-plan fund{regularCount !== 1 ? 's' : ''} from your
+          scheme names, but the expense ratios for {regularCount !== 1 ? 'these funds' : 'this fund'}{' '}
+          weren{"'t"} found in our scheme database. This usually means the fund was recently listed
+          or the metadata sync hasn{"'t"} run yet. Once the TER data is available, this screen will
+          compute the drag from your actual expense-ratio gap.
+        </Text>
+      </ClearLensCard>
+
+      <DisclaimerText tokens={tokens} />
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 function IllustrativeContent({

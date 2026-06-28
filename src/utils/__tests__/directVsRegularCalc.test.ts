@@ -190,3 +190,107 @@ describe('buildPlanBreakdown', () => {
     expect(result.directValue).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeFundDrags & weightedFeeGapPct
+// ---------------------------------------------------------------------------
+
+import {
+  computeFundDrags,
+  weightedFeeGapPct,
+  type FundDragInput,
+} from '../directVsRegularCalc';
+
+describe('computeFundDrags', () => {
+  function dragInput(id: string, value: number, regularEr: number, directEr: number): FundDragInput {
+    return {
+      fund: { id, schemeName: `${id} - Regular Plan - Growth`, currentValue: value, expenseRatio: regularEr },
+      directEr,
+      directErSource: 'sibling-lookup',
+    };
+  }
+
+  it('returns a drag result for each input fund', () => {
+    const results = computeFundDrags([dragInput('a', 5_00_000, 1.5, 0.5)], 10);
+    expect(results).toHaveLength(1);
+  });
+
+  it('drag is positive when regularEr > directEr', () => {
+    const [r] = computeFundDrags([dragInput('a', 5_00_000, 1.5, 0.5)], 10);
+    expect(r.drag).toBeGreaterThan(0);
+    expect(r.regularFutureValue).toBeLessThan(r.directFutureValue);
+  });
+
+  it('drag is zero when regularEr === directEr', () => {
+    const [r] = computeFundDrags([dragInput('a', 5_00_000, 1.0, 1.0)], 10);
+    expect(r.drag).toBeCloseTo(0, 2);
+    expect(r.deltaDecimal).toBeCloseTo(0, 6);
+  });
+
+  it('clamps deltaDecimal to 0 when directEr > regularEr', () => {
+    const [r] = computeFundDrags([dragInput('a', 5_00_000, 0.3, 0.8)], 10);
+    expect(r.deltaDecimal).toBe(0);
+    expect(r.drag).toBeCloseTo(0, 2);
+  });
+
+  it('uses fund.expenseRatio as regularEr when present', () => {
+    const input: FundDragInput = {
+      fund: { id: 'x', schemeName: 'X - Regular Plan', currentValue: 1_00_000, expenseRatio: 2.0 },
+      directEr: 0.5,
+      directErSource: 'category-constant',
+    };
+    const [r] = computeFundDrags([input], 10);
+    expect(r.regularEr).toBe(2.0);
+    expect(r.deltaDecimal).toBeCloseTo(0.015, 6);
+  });
+
+  it('falls back to directEr as regularEr when fund.expenseRatio is null', () => {
+    const input: FundDragInput = {
+      fund: { id: 'x', schemeName: 'X - Regular Plan', currentValue: 1_00_000, expenseRatio: null },
+      directEr: 0.7,
+      directErSource: 'flat-fallback',
+    };
+    const [r] = computeFundDrags([input], 10);
+    expect(r.regularEr).toBe(0.7);
+    expect(r.drag).toBeCloseTo(0, 2);
+  });
+
+  it('handles an empty input array', () => {
+    expect(computeFundDrags([], 10)).toEqual([]);
+  });
+});
+
+describe('weightedFeeGapPct', () => {
+  it('returns null for an empty array', () => {
+    expect(weightedFeeGapPct([])).toBeNull();
+  });
+
+  it('returns null when all funds have zero currentValue', () => {
+    const drags = computeFundDrags(
+      [{ fund: { id: 'a', schemeName: 'A', currentValue: 0, expenseRatio: 1.5 }, directEr: 0.5, directErSource: 'sibling-lookup' }],
+      10,
+    );
+    expect(weightedFeeGapPct(drags)).toBeNull();
+  });
+
+  it('returns the fee gap for a single fund', () => {
+    const drags = computeFundDrags(
+      [{ fund: { id: 'a', schemeName: 'A', currentValue: 1_00_000, expenseRatio: 1.5 }, directEr: 0.5, directErSource: 'sibling-lookup' }],
+      10,
+    );
+    // gap = 1.5 - 0.5 = 1.0%
+    expect(weightedFeeGapPct(drags)).toBeCloseTo(1.0, 6);
+  });
+
+  it('returns a value-weighted average across multiple funds', () => {
+    const drags = computeFundDrags(
+      [
+        { fund: { id: 'a', schemeName: 'A', currentValue: 80_000, expenseRatio: 1.5 }, directEr: 0.5, directErSource: 'sibling-lookup' },
+        { fund: { id: 'b', schemeName: 'B', currentValue: 20_000, expenseRatio: 1.0 }, directEr: 0.5, directErSource: 'sibling-lookup' },
+      ],
+      10,
+    );
+    // weighted gap = (1.0×80K + 0.5×20K) / 100K = 0.9%
+    expect(weightedFeeGapPct(drags)).toBeCloseTo(0.9, 6);
+  });
+});
