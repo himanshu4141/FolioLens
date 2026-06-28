@@ -1,8 +1,11 @@
 import {
   buildPlanBreakdown,
   computeCostImpact,
+  computeFundDrags,
   detectPlanType,
   projectFutureValue,
+  weightedFeeGapPct,
+  type FundDragInput,
   type FundPlanRow,
 } from '../directVsRegularCalc';
 
@@ -194,12 +197,6 @@ describe('buildPlanBreakdown', () => {
 // ---------------------------------------------------------------------------
 // computeFundDrags & weightedFeeGapPct
 // ---------------------------------------------------------------------------
-
-import {
-  computeFundDrags,
-  weightedFeeGapPct,
-  type FundDragInput,
-} from '../directVsRegularCalc';
 
 describe('computeFundDrags', () => {
   function dragInput(id: string, value: number, regularEr: number, directEr: number): FundDragInput {

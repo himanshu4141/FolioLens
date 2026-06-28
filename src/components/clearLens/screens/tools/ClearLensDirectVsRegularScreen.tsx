@@ -875,9 +875,6 @@ export function ClearLensDirectVsRegularScreen() {
               onHorizonChange={setHorizon}
               sipStr={sipStr}
               onSipChange={setSipStr}
-              illustrativeCorpus={illustrativeCorpus}
-              monthlySip={monthlySip}
-              years={years}
               impact={illustrativeImpact}
               tokens={tokens}
             />
@@ -1099,9 +1096,6 @@ function TerBlockedContent({
   onHorizonChange,
   sipStr,
   onSipChange,
-  illustrativeCorpus,
-  monthlySip,
-  years,
   impact,
   tokens,
 }: {
@@ -1110,9 +1104,6 @@ function TerBlockedContent({
   onHorizonChange: (h: HorizonKey) => void;
   sipStr: string;
   onSipChange: (s: string) => void;
-  illustrativeCorpus: number;
-  monthlySip: number;
-  years: number;
   impact: ReturnType<typeof computeCostImpact>;
   tokens: ClearLensTokens;
 }) {
