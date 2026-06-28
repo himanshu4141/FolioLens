@@ -1,24 +1,18 @@
 import { useMemo, type ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import {
-  ClearLensFonts,
-  ClearLensRadii,
+  ClearLensSpacing,
+  ClearLensTypography,
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 
 /**
- * Dark "heroSurface" answer card used by every Clear Lens tool.
+ * Dark "heroSurface" answer card used by Clear Lens tool screens.
  *
- * Renders:
- *   header row  — label (caps/muted) + optional chip (right-aligned)
- *   value       — 36 px ExtraBold white, tabular-nums
- *   subtitle    — 13 px muted
- *   children    — optional slot for extra content inside the hero
- *
- * The radial emerald glow is approximated with an absolutely-positioned
- * circle (RN has no native radial-gradient; the soft bleed reads fine on
- * the dark surface). The card clips it via overflow:hidden.
+ * Built on ClearLensCard so radius (18), shadow, and border treatment
+ * match the established hero pattern used across the app (PortfolioHero etc.).
  */
 export function ToolResultHero({
   label,
@@ -37,10 +31,7 @@ export function ToolResultHero({
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
   return (
-    <View style={styles.hero}>
-      {/* Approximate radial glow — clipped by overflow:hidden on parent */}
-      <View style={styles.glow} pointerEvents="none" />
-
+    <ClearLensCard style={styles.hero}>
       <View style={styles.header}>
         <Text style={styles.label} numberOfLines={2}>
           {label}
@@ -53,7 +44,7 @@ export function ToolResultHero({
       {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
 
       {children ?? null}
-    </View>
+    </ClearLensCard>
   );
 }
 
@@ -62,54 +53,28 @@ function makeStyles(tokens: ClearLensTokens) {
   return StyleSheet.create({
     hero: {
       backgroundColor: cl.heroSurface,
-      borderRadius: ClearLensRadii.xl,
-      padding: 18,
-      gap: 10,
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 24 },
-      shadowOpacity: 0.22,
-      shadowRadius: 60,
-      elevation: 8,
-      overflow: 'hidden',
-    },
-    glow: {
-      position: 'absolute',
-      right: -40,
-      bottom: -50,
-      width: 160,
-      height: 160,
-      borderRadius: 80,
-      backgroundColor: 'rgba(16,185,129,0.18)',
+      borderColor: cl.heroSurface,
+      padding: ClearLensSpacing.lg,
+      gap: ClearLensSpacing.sm,
     },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       gap: 12,
-      zIndex: 1,
     },
     label: {
       flex: 1,
-      fontSize: 11,
-      fontFamily: ClearLensFonts.bold,
-      letterSpacing: 1,
-      textTransform: 'uppercase',
-      color: cl.textOnDarkMuted,
+      ...ClearLensTypography.label,
+      color: cl.mint,
     },
     value: {
-      fontFamily: ClearLensFonts.extraBold,
-      fontSize: 36,
-      lineHeight: 42,
+      ...ClearLensTypography.hero,
       color: cl.textOnDark,
-      fontVariant: ['tabular-nums'],
-      zIndex: 1,
     },
     subtitle: {
-      fontSize: 13,
-      fontFamily: ClearLensFonts.medium,
-      lineHeight: 20,
+      ...ClearLensTypography.bodySmall,
       color: cl.textOnDarkMuted,
-      zIndex: 1,
     },
   });
 }
