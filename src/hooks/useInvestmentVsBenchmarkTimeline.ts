@@ -147,6 +147,12 @@ function laterDate(a: string, b: string): string {
   return a > b ? a : b;
 }
 
+function subtractDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split('T')[0];
+}
+
 export function computeInvestmentVsBenchmarkTimeline(
   navRows: RawNavRow[],
   txRows: RawTxRow[],
@@ -308,7 +314,13 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   }
 
   const windowStart = getWindowStartDate(window);
-  const navStartDate = windowStart ? laterDate(firstTxDate, windowStart) : firstTxDate;
+  // Pull NAV data 7 days before the visible window so `getLatestAt` can
+  // always find the most-recent trading-day NAV even when the window
+  // boundary falls on a weekend or public holiday. Without this buffer,
+  // a Sunday startDate produces a null NAV lookup → mark-to-cost for
+  // that first point. 7 days covers any national holiday run.
+  const navFetchStart = windowStart ? subtractDays(windowStart, 7) : null;
+  const navStartDate = navFetchStart ? laterDate(firstTxDate, navFetchStart) : firstTxDate;
 
   // Window-bounded SQL fetches. An earlier iteration of this hook routed
   // through a shared cache layer and pulled *all* history, then filtered
@@ -354,7 +366,13 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
   if (SQLITE_AVAILABLE) {
     try {
       const cached = await txRepo.readByFundIds(fundIds);
-      if (cached.length > 0) return cached;
+      // Only use SQLite if every requested fund has at least one transaction row.
+      // A partial hit means a recently-added fund hasn't been bootstrapped yet —
+      // fall through to Supabase so the computation uses the complete set.
+      if (cached.length > 0) {
+        const coveredFunds = new Set(cached.map((r) => r.fund_id));
+        if (fundIds.every((id) => coveredFunds.has(id))) return cached;
+      }
     } catch (err) {
       console.warn('[timeline] sqlite tx read failed', err);
     }
@@ -383,7 +401,30 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
   if (SQLITE_AVAILABLE) {
     try {
       const cached = await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: startDate });
-      if (cached.length > 0) return cached;
+      // Only use SQLite if every requested scheme has at least one row.
+      // A partial hit (rows for some schemes but not others) means a recently-
+      // added fund has no local NAV history yet — falling through to Supabase
+      // gets the full picture and the write-back populates SQLite for next time.
+      if (cached.length > 0) {
+        const coveredSchemes = new Set(cached.map((r) => r.scheme_code));
+        if (schemeCodes.every((code) => coveredSchemes.has(code))) {
+          // Also verify the data covers the requested start date. SQLite may have
+          // rows for all schemes but only from a more recent date (e.g. the day
+          // bootstrap first ran on a fresh install). A gap between startDate and
+          // the earliest available row triggers "mark to cost" for that period,
+          // producing a visible step-jump when real NAV values first appear.
+          //
+          // The caller already extends startDate 7 days before the visible window
+          // so `getLatestAt` has a floor NAV for non-trading-day boundaries. That
+          // means a normal 2-day weekend gap appears as a 2-day miss here — well
+          // within the 3-day tolerance. A holiday week (e.g. Christmas–New Year)
+          // can produce a 9+-day gap that exceeds the threshold, triggering a
+          // one-time Supabase fetch whose write-back fills the gap permanently.
+          const earliestDate = cached[0].nav_date; // sorted ASC — guaranteed by readBySchemeCodes
+          const gapMs = new Date(earliestDate).getTime() - new Date(startDate).getTime();
+          if (gapMs <= 3 * 24 * 60 * 60 * 1000) return cached;
+        }
+      }
     } catch (err) {
       console.warn('[timeline] sqlite nav read failed', err);
     }
