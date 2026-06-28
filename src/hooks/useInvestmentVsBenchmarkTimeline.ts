@@ -354,7 +354,13 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
   if (SQLITE_AVAILABLE) {
     try {
       const cached = await txRepo.readByFundIds(fundIds);
-      if (cached.length > 0) return cached;
+      // Only use SQLite if every requested fund has at least one transaction row.
+      // A partial hit means a recently-added fund hasn't been bootstrapped yet —
+      // fall through to Supabase so the computation uses the complete set.
+      if (cached.length > 0) {
+        const coveredFunds = new Set(cached.map((r) => r.fund_id));
+        if (fundIds.every((id) => coveredFunds.has(id))) return cached;
+      }
     } catch (err) {
       console.warn('[timeline] sqlite tx read failed', err);
     }
@@ -383,7 +389,14 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
   if (SQLITE_AVAILABLE) {
     try {
       const cached = await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: startDate });
-      if (cached.length > 0) return cached;
+      // Only use SQLite if every requested scheme has at least one row.
+      // A partial hit (rows for some schemes but not others) means a recently-
+      // added fund has no local NAV history yet — falling through to Supabase
+      // gets the full picture and the write-back populates SQLite for next time.
+      if (cached.length > 0) {
+        const coveredSchemes = new Set(cached.map((r) => r.scheme_code));
+        if (schemeCodes.every((code) => coveredSchemes.has(code))) return cached;
+      }
     } catch (err) {
       console.warn('[timeline] sqlite nav read failed', err);
     }
