@@ -59,24 +59,24 @@ An index-snapshot error produced by that stub is also excluded from the findings
 
 | Order | Finding | Severity | Confidence | Explains |
 |---:|---|---|---|---|
-| 0 | Native Google OAuth mixes implicit and PKCE assumptions and has no deterministic completion owner (finding 12) | **P0 release blocker** | Confirmed architecture; Strong symptom match | First-attempt spinner, restart/retry appears to work |
-| 1 | Hidden tabs/stacks remain mounted while global invalidation and prefetch keep them active | **P0** | Confirmed | Settings/About stalls, intermittent navigation hangs |
-| 2 | Every `useSession()` call creates another auth read and subscription (23 consumers) | **P0** | Confirmed | Mount churn, auth-event rerender storms, delayed query enablement |
-| 3 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | About hangs shortly after opening app; tab-switch contention |
+| 1 | Native SQLite bootstrap/foreground sync is disabled when analytics is off; preview-PR OTA builds omit the key | **P0 diagnostic/fix** | Confirmed | Channel-specific cold fetches and inconsistent performance |
+| 2 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | Most deterministic Settings/About stall; tab-switch contention |
+| 3 | Hidden tabs/stacks remain mounted while broad invalidation keeps them active | **P0** | Confirmed | Intermittent Settings/About stalls and navigation amplification |
 | 4 | Funds and Money Trail render full lists in `ScrollView`; rows recreate screen-wide styles | **P0/P1** | Confirmed | Your Funds jank, delayed fund-card taps, Money Trail scaling failure |
 | 5 | Broad Zustand subscriptions and un-memoized insight derivation fan updates into hidden screens | **P1** | Confirmed | Search/sort/preferences jank, unnecessary app-wide rerenders |
 | 6 | Fund Detail has a staged query waterfall and mounts the heaviest tab first | **P1** | Confirmed | Funds → Fund Detail spinner/stutter and chart pop-in |
-| 7 | Large barrel imports and eager optional modules inflate route evaluation and native assets | **P1/P2** | Confirmed size; Strong runtime impact | First visit to About/Fund Detail and cold launch |
-| 8 | Persisted React Query data duplicates SQLite and can create a large synchronous restore blob | **P2** | Strong | Cold-launch hangs and post-OTA variability |
-| 9 | Existing performance marks miss navigation stalls and collide under concurrent requests | **P1 prerequisite** | Confirmed | Makes the field issue hard to prove or regress-test |
-| 10 | Native SQLite bootstrap/foreground sync is accidentally disabled when analytics is off | **P1** | Confirmed | Dev/channel-specific cold fetches and inconsistent performance |
-| 11 | Expo SDK patch versions are behind the SDK 55 recommended set | **P2** | Confirmed | Possible framework-level fixes are missing; not proven root cause |
+| 7 | Every `useSession()` call creates another auth read and subscription (23 consumers) | **P1** | Confirmed | Mount churn, auth-event rerender storms, delayed query enablement |
+| 8 | Large barrel imports and eager optional modules inflate route evaluation and native assets | **P1/P2** | Confirmed size; Strong runtime impact | First visit to About/Fund Detail and cold launch |
+| 9 | Persisted React Query data duplicates SQLite and can create a large synchronous restore blob | **P2** | Strong | Cold-launch hangs and post-OTA variability |
+| Prerequisite | Existing performance marks miss navigation stalls and collide under concurrent requests | **P1 prerequisite** | Confirmed | Makes the field issue hard to prove or regress-test |
+| 10 | Expo SDK patch versions are behind the SDK 55 recommended set | **P2** | Confirmed | Possible framework-level fixes are missing; not proven root cause |
+| Independent auth track | Native Google OAuth mixes implicit and PKCE assumptions and has no deterministic completion owner (finding 12) | **P0 auth reliability** | Confirmed architecture; Strong symptom match | First-attempt spinner, restart/retry appears to work |
 
 ---
 
 ## 1. Hidden screens keep doing work during navigation — P0
 
-**Status: Confirmed. This is the first issue to fix.**
+**Status: Confirmed. This is an important amplifier, but not the most deterministic first fix.**
 
 Only Wealth Journey sets `freezeOnBlur: true` in `app/(tabs)/_layout.tsx`. Portfolio, Funds,
 and the nested Settings navigator use the default behaviour. The rendered mobile tree confirmed
@@ -131,9 +131,9 @@ it is slow when its transition overlaps sync completion, invalidation, or queued
 
 ---
 
-## 2. `useSession()` creates 23 independent auth subscriptions — P0
+## 2. `useSession()` creates 23 independent auth subscriptions — P1
 
-**Status: Confirmed.**
+**Status: Confirmed. Structural render churn, not the lead explanation for the reported hangs.**
 
 `src/hooks/useSession.ts` is not a shared provider. Every invocation:
 
@@ -171,9 +171,9 @@ Consequences:
 
 ---
 
-## 3. Speculative prefetch duplicates expensive portfolio work — P0
+## 3. Speculative prefetch duplicates expensive portfolio work — P0 lead
 
-**Status: Confirmed. It directly matches the About timing pattern.**
+**Status: Confirmed. It is the most deterministic explanation of the About timing pattern.**
 
 `usePortfolio()` immediately prefetches both other benchmark options after its active query lands
 (`src/hooks/usePortfolio.ts:491-501`). Each prefetch calls the complete `fetchPortfolioData()` path,
@@ -195,6 +195,12 @@ navigating to About immediately after.” It now delays the first alternate-benc
 1.2 seconds (`src/hooks/useInvestmentVsBenchmarkTimeline.ts:491-534`). However, because Portfolio
 stays mounted after navigation, the timeout is not cancelled on blur. It can still fire while About
 is becoming interactive.
+
+Unlike the root invalidation path in finding 1, this timer does not require sync to have changed any
+rows. Portfolio mounts both expensive hooks, so the timer is armed on every Portfolio mount and can
+reliably overlap a quick Portfolio → Settings → About sequence. Global invalidation remains a serious
+intermittent amplifier; focus-gating and cancelling this timer is the smaller, higher-yield first
+change.
 
 There is also a benchmark-key bug: `usePortfolio()` defaults to the legacy `^NSEI`, while all store
 options use TRI symbols. Wealth Journey and Onboarding call `usePortfolio()` without an argument.
@@ -321,6 +327,12 @@ The route does use SQLite read-through and separates two latest NAV rows from fu
 good. The remaining problem is scheduling: there is no transition-aware deferral analogous to
 Wealth Journey's existing `InteractionManager.runAfterInteractions()` chart gate.
 
+There is a compounding link to finding 3. The composition tab calls
+`usePortfolio(defaultBenchmarkSymbol)` to obtain one portfolio-weight value. That second full
+portfolio hook does not merely repeat aggregation: it also re-arms the two alternate-benchmark
+prefetches while Fund Detail is fetching and mounting charts. Replacing this call with a lightweight
+cached weight selector is a contained first-wave fix; it should not wait for the full route split.
+
 ### Required fix
 
 - Prefetch `fund-detail` and bounded/full NAV history from the Funds row's `onPressIn` and reuse the
@@ -366,7 +378,10 @@ The import patterns explain this:
 
 About also eagerly imports `FeedbackSheet`; that component eagerly imports `expo-image-picker`,
 storage, feedback data access, Updates, and a 586-line modal implementation even when the user only
-wants to read the version. This is a plausible contributor to the first About visit.
+wants to read the version. Route-level evaluation is confirmed; its native elapsed-time contribution
+has not yet been measured. Deferring the import until a feedback action is tapped is nevertheless a
+contained first-wave candidate, provided the N1 measurement confirms that first-route evaluation
+is material.
 
 ### Required fix
 
@@ -443,9 +458,9 @@ one another. The three portfolio benchmark fetches all use labels such as `query
 
 ---
 
-## 10. Native data lifecycle is incorrectly coupled to analytics — P1
+## 10. Native data lifecycle is incorrectly coupled to analytics — P0 diagnostic/fix
 
-**Status: Confirmed.**
+**Status: Confirmed in code and confirmed for the preview-PR OTA workflow. Diagnose first.**
 
 `useAnalyticsLifecycle()` returns immediately when `analytics.isEnabled` is false
 (`app/_layout.tsx:147-148`). The same effect contains not only analytics, but also:
@@ -459,11 +474,25 @@ key, none of that data lifecycle runs. Screens then depend more heavily on their
 paths and can remain cold or stale. It also makes performance differ by build-channel configuration,
 which is exactly the kind of variability that turns a reproducible issue into “it hangs a lot.”
 
+The channel check is no longer hypothetical:
+
+- `.github/workflows/main-deploy.yml` and `production-release.yml` pass
+  `EXPO_PUBLIC_POSTHOG_KEY` into `eas update`;
+- `.github/workflows/pr-preview.yml` does not;
+- the PR preview OTA published for this audit therefore builds `analytics.isEnabled === false` and
+  skips bootstrap, foreground sync, auth-driven bootstrap, and sign-out cleanup.
+
+If the reported hangs were observed in the installed preview-PR app, this is a direct
+channel-specific contributor. Production/main still need runtime confirmation, but correctness must
+not depend on whether telemetry is configured.
+
 ### Required fix
 
 - Split the effect into an unconditional auth/data lifecycle and an optional analytics lifecycle.
 - Keep PostHog calls guarded, but never guard cache correctness or sign-out cleanup on telemetry.
 - Add a test with analytics disabled that still bootstraps, foreground-syncs, and clears user data.
+- Before refactoring, record the tested app variant/update ID and whether analytics is enabled. This
+  is a two-minute diagnostic and should be the first investigation step.
 
 ---
 
@@ -594,59 +623,72 @@ the PRs demonstrating first-attempt completion across Android and iOS.
 
 ## Recommended implementation order
 
-### M0A — Repair native Google OAuth completion (release blocker, first)
+The navigation work and Google auth work are separate implementation tracks. Keep both findings in
+this report as requested, but do not make either track block the other.
 
-Make OAuth mode explicit, converge browser/deep-link delivery through one idempotent coordinator,
-add bounded recovery and sanitized stage telemetry, and verify first-attempt login on both native
-platforms. This should ship before performance refactors: users who cannot reliably enter the app
-cannot benefit from navigation improvements.
+### Navigation N0 — Verify channel and decouple data lifecycle from analytics
 
-### M0B — Navigation measurement harness
+Record the app variant/update ID first. The current preview-PR workflow definitely omits the
+PostHog key and therefore disables the native SQLite lifecycle. Split correctness from telemetry in
+a contained change and verify bootstrap/sync with analytics disabled.
+
+### Navigation N1 — Measurement harness (parallel with N0)
 
 Fix span IDs and add route-pair press/commit/usable metrics. Capture a baseline on one mid-range
 Android device and one iPhone release build. This is a prerequisite for credible before/after data,
 not a reason to delay obvious P0 fixes.
 
-### M1 — Stop invisible work
+### Navigation N2 — Cancel deterministic transition contention
+
+First focus-gate/cancel timeline and benchmark prefetch. Remove Fund Detail's second full
+`usePortfolio()` call so opening a fund does not re-arm the prefetch storm. If N1 confirms material
+About route-evaluation time, defer `FeedbackSheet` import/mount until a feedback action is tapped.
+These are contained changes with the closest causal links to the two named transitions.
+
+### Navigation N3 — Stop hidden-screen invalidation work
 
 Ship together:
 
 - freeze all heavy tabs/stacks on blur;
-- focus-gate/cancel timeline and benchmark prefetch;
 - replace global invalidation with granular stale marking and visible-screen refetch;
-- decouple native bootstrap/foreground/sign-out data lifecycle from analytics enablement;
 - remove the `^NSEI` default.
 
-This is the highest-probability fix for Settings/About.
+This removes the intermittent amplifier after N2 addresses the reliable timer path.
 
-### M2 — One session source + narrow store subscriptions
+### Navigation N4 — One session source + narrow store subscriptions
 
-Complete the root session-provider migration if M0A did not move all consumers, replace full
-Zustand subscriptions, and memoize portfolio insights. Do not create a second auth state source.
-This reduces render fan-out before list and screen refactors make the component tree more
-sophisticated.
+Create the root session provider, replace full Zustand subscriptions, and memoize portfolio
+insights. This is P1 structural cleanup for navigation, not a prerequisite for N0–N3. The independent
+auth track should consume this provider when sequencing permits, but must not create a second source.
 
-### M3 — Virtualize Funds and Money Trail
+### Navigation N5 — Virtualize Funds and Money Trail
 
 Use `FlatList`, one style creation per screen, memoized rows, stable callbacks, and large fixtures.
 This directly addresses Your Funds responsiveness and prevents Money Trail from becoming the next
 reported hang.
 
-### M4 — Make Fund Detail transition-first
+### Navigation N6 — Make Fund Detail transition-first
 
 Prefetch from fund rows, render cached hero data immediately, defer charts until after interactions,
 and split tabs. Verify both warm navigation and deep-link cold entry.
 
-### M5 — Split portfolio core from benchmark work
+### Navigation N7 — Split portfolio core from benchmark work
 
 Remove threefold aggregation/XIRR work and switch to targeted benchmark prefetch. This may be folded
-into M1 if the change remains contained, but it deserves separate correctness tests for financial
+into N2 if the change remains contained, but it deserves separate correctness tests for financial
 outputs.
 
-### M6 — Shrink bundle/persisted cache and align SDK patches
+### Navigation N8 — Shrink bundle/persisted cache and align SDK patches
 
 Direct font/icon/chart imports, lazy feedback UI, native persister diet, cache documentation update,
 then Expo SDK patch alignment. Re-export Android/web artifacts and record size deltas.
+
+### Auth A0 — Repair native Google OAuth completion (independent)
+
+Make OAuth mode explicit, converge browser/deep-link delivery through one idempotent coordinator,
+add bounded recovery and sanitized stage telemetry, and verify first-attempt login on both native
+platforms. This remains P0 auth reliability work, but it does not gate N0–N3. Reuse the N4
+SessionProvider if already shipped; otherwise coordinate branch order so only one provider lands.
 
 ---
 
@@ -654,7 +696,30 @@ then Expo SDK patch alignment. Re-export Android/web artifacts and record size d
 
 The prompts below are intentionally scoped so Codex or Claude can execute one milestone per branch.
 
-### Prompt 0 — native Google sign-in reliability
+### Prompt 0 — decouple native data lifecycle from analytics
+
+```text
+Read VISION.md, docs/INFRASTRUCTURE.md, docs/architecture/cache-surfaces.md, and section 10 of
+docs/research/app-navigation-performance-audit-2026-06-30.md.
+
+Implement Navigation N0 only. First record the app variant, EAS update ID, and whether
+analytics.isEnabled for the build used to reproduce the hangs. The current
+.github/workflows/pr-preview.yml omits EXPO_PUBLIC_POSTHOG_KEY while main-deploy.yml and
+production-release.yml supply it; verify this without printing secret values.
+
+Refactor app/_layout.tsx so SQLite bootstrap, auth-driven bootstrap, foreground delta sync,
+sign-out cleanup, cache clearing, and global error-handler installation do not depend on PostHog
+being configured. Keep only analytics.track/identify/reset calls behind the analytics boundary.
+Preserve the existing sign-out -> sign-in serialization and native/web guards.
+
+Add tests with analytics disabled proving that initial bootstrap runs, SIGNED_IN bootstraps,
+SIGNED_OUT clears every user-scoped cache, and foregrounding runs the throttled delta sync. Add a
+channel/config regression check so the PR preview omission cannot silently disable correctness
+again. Run npm run typecheck, npm run lint, and focused root-lifecycle tests. Record before/after
+cold-query behavior for the exact preview update in the PR.
+```
+
+### Prompt A — native Google sign-in reliability (independent track)
 
 ```text
 Read AGENTS.md, VISION.md, docs/process/PLANS.md, docs/architecture/auth-flow.md, finding 2, and
@@ -675,10 +740,11 @@ callback with /(tabs). AuthGate should remain a safety guard, not the only post-
 Correct the claim that maybeCompleteAuthSession resolves Android auth; Expo documents that method as
 web-only. Keep it only where the web popup flow needs it.
 
-Implement the single SessionProvider described in finding 2 as part of this fix and migrate all
-useSession consumers to it. There must be one getSession bootstrap and one onAuthStateChange
-subscription for the app process. The coordinator and AuthGate must consume that same provider;
-do not introduce a second OAuth-only session store.
+Consume the single SessionProvider from Navigation N4 if it has landed. If it has not, implement
+that provider and consumer migration in this branch, then treat N4's auth portion as complete. There
+must be one getSession bootstrap and one onAuthStateChange subscription for the app process. The
+coordinator and AuthGate must consume that same provider; do not introduce a second OAuth-only
+session store.
 
 Add timeouts and try/catch/finally around OAuth URL creation, browser return, session exchange, and
 post-session navigation. Every attempt must end in tabs, an actionable retry/cancel error, or an
@@ -705,7 +771,7 @@ docs/architecture/auth-flow.md and add an Amendments section if implementation d
 Read VISION.md, AGENTS.md, docs/process/PLANS.md, and
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M0B only: a reliable navigation-performance harness for the Expo React Native app.
+Implement Navigation N1 only: a reliable navigation-performance harness for the Expo React Native app.
 Current src/lib/perfMark.ts keys starts only by label, so concurrent portfolio/prefetch spans
 overwrite each other. Change the API so perfStart returns a unique span ID and perfEnd closes that
 ID. Migrate all call sites without changing business behaviour.
@@ -725,15 +791,40 @@ baseline from Android/iOS release builds. Run npm run typecheck, npm run lint, a
 Do not change navigation scheduling or data fetching in this PR.
 ```
 
-### Prompt 2 — stop hidden-screen work and invalidation storms
+### Prompt 2 — cancel deterministic transition contention
 
 ```text
-Read VISION.md, docs/SCREENS.md, docs/architecture/cache-surfaces.md, and sections 1, 3, and 10 of
+Read VISION.md, docs/SCREENS.md, and sections 3, 6, and 7 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M1. Make Portfolio, Funds, Wealth Journey, and Settings stack screens freeze on blur.
-Then focus-gate expensive screen-only queries and every delayed benchmark/timeline prefetch so blur
-cancels queued work. Do not assume freezeOnBlur stops React Query refetches.
+Implement Navigation N2 only. Focus-gate every delayed benchmark/timeline prefetch and cancel queued
+work immediately on blur. Portfolio -> Settings -> About within the 1.2-second window must produce
+no later portfolio/timeline query start. Keep benchmark switching responsive through targeted
+onPressIn/hover/focus prefetch rather than prefetching all alternatives on mount.
+
+Replace Fund Detail composition's second full usePortfolio(defaultBenchmarkSymbol) call with a
+lightweight cached selector/query for the one portfolio-weight value. Prove that Funds -> Fund
+Detail no longer starts another full portfolio aggregation or re-arms two alternate-benchmark
+prefetches.
+
+Use the N1 harness to measure first-visit About route evaluation. If FeedbackSheet and its eager
+dependencies are material, defer module evaluation and mounting until Request a feature or Report
+an issue is tapped; do not claim a win from conditional rendering while retaining an eager import.
+
+Add focused tests for blur cancellation, stable benchmark behavior, cached fund weight, and lazy
+feedback loading if included. Validate Settings -> About and Funds -> Fund Detail in a release-like
+native build. Run typecheck, lint, and focused tests.
+```
+
+### Prompt 3 — stop hidden-screen work and invalidation storms
+
+```text
+Read VISION.md, docs/SCREENS.md, docs/architecture/cache-surfaces.md, and sections 1 and 3 of
+docs/research/app-navigation-performance-audit-2026-06-30.md.
+
+Implement Navigation N3. Make Portfolio, Funds, Wealth Journey, and Settings stack screens freeze
+on blur. Then focus-gate expensive screen-only queries; do not assume freezeOnBlur stops React Query
+observers or refetches.
 
 Replace both queryClient.invalidateQueries() calls in app/_layout.tsx after bootstrap/foreground
 sync with a tested helper that maps SyncResult fields to the minimal dependent query-key prefixes.
@@ -741,31 +832,27 @@ Background sync should mark inactive derived queries stale with refetchType:'non
 route should refetch immediately. Preserve correctness after CAS import and new daily NAV/index
 rows.
 
-Split app/_layout.tsx lifecycle handling so SQLite bootstrap, foreground sync, auth sign-in, and
-sign-out cleanup run even when analytics.isEnabled is false. Only telemetry emission may be gated
-on PostHog availability.
-
 Remove the legacy ^NSEI default from usePortfolio and update no-argument callers to use the stored
 TRI benchmark or BENCHMARK_OPTIONS[0].symbol.
 
 Add tests proving: NAV-only sync does not invalidate Money Trail; transaction sync invalidates all
-transaction-derived summaries; leaving Portfolio cancels alternate-benchmark prefetch; Wealth
-Journey creates no ^NSEI query. Validate Settings -> About and Funds -> Fund Detail in a release-like
-native build. Run typecheck, lint, and focused tests.
+transaction-derived summaries; hidden screens do not refetch; Wealth Journey creates no ^NSEI
+query. Validate Settings -> About and Funds -> Fund Detail in a release-like native build. Run
+typecheck, lint, and focused tests.
 ```
 
-### Prompt 3 — single session provider and Zustand selector audit
+### Prompt 4 — single session provider and Zustand selector audit
 
 ```text
 Read VISION.md and sections 2 and 5 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M2. Replace the current effect-based useSession hook with one SessionProvider mounted at
+Implement Navigation N4. Replace the current effect-based useSession hook with one SessionProvider mounted at
 the root. There must be exactly one authClient.getSession() bootstrap and one
 authClient.onAuthStateChange() subscription for the app process. Preserve AuthGate behaviour,
 magic-link/OAuth flows, sign-out cleanup, and test mocks.
 
-If Prompt 0 has already shipped the provider and migrated consumers, verify those invariants rather
+If Prompt A has already shipped the provider and migrated consumers, verify those invariants rather
 than rebuilding it; scope this branch to any remaining low-level auth reads plus the Zustand and
 derived-state work below.
 
@@ -781,13 +868,13 @@ Zustand updates do not rerender representative Portfolio/Funds consumers. Run ty
 the relevant Jest suites.
 ```
 
-### Prompt 4 — virtualize Your Funds and Money Trail
+### Prompt 5 — virtualize Your Funds and Money Trail
 
 ```text
 Read VISION.md, DESIGN.md, docs/SCREENS.md, and section 4 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M3 without changing visual design or financial calculations. Replace the vertical
+Implement Navigation N5 without changing visual design or financial calculations. Replace the vertical
 ScrollView + map lists in ClearLensFundsScreenMobile, ClearLensFundsScreenDesktop where useful, and
 app/money-trail/index.tsx with virtualized FlatList-based layouts. Preserve headers, filters,
 expanded fund state, transaction navigation, desktop width constraints, pull/scroll behaviour, and
@@ -803,14 +890,14 @@ fund does not rerender every unchanged row. Validate light/dark, mobile/desktop,
 filters, and fund/transaction navigation. Run typecheck, lint, and focused tests.
 ```
 
-### Prompt 5 — Fund Detail transition-first refactor
+### Prompt 6 — Fund Detail transition-first refactor
 
 ```text
 Read VISION.md, DESIGN.md, docs/SCREENS.md, and section 6 of
 docs/research/app-navigation-performance-audit-2026-06-30.md. This is a multi-file refactor, so
 create/update an ExecPlan under docs/plans/ following docs/process/PLANS.md.
 
-Implement M4. The Funds -> Fund Detail transition must render a useful hero immediately from the
+Implement Navigation N6. The Funds -> Fund Detail transition must render a useful hero immediately from the
 already-cached fund card, while full metadata/history/charts load progressively. Prefetch the exact
 fund-detail and fund-nav-history query keys on fund-row onPressIn and start the same prefetch before
 router.push without awaiting it.
@@ -826,14 +913,14 @@ cold deep link, tab switching, and back during in-flight history. Run typecheck,
 tests; document any ExecPlan amendments.
 ```
 
-### Prompt 6 — remove duplicate portfolio/benchmark computation
+### Prompt 7 — remove duplicate portfolio/benchmark computation
 
 ```text
 Read VISION.md, docs/TECH-DISCOVERY.md, and section 3 of
 docs/research/app-navigation-performance-audit-2026-06-30.md. Create an ExecPlan because financial
 calculation correctness and multiple consumers are involved.
 
-Implement M5. Refactor usePortfolio so benchmark-independent work (fund/transaction normalization,
+Implement Navigation N7. Refactor usePortfolio so benchmark-independent work (fund/transaction normalization,
 units, cost basis, realized gains, fund XIRRs, totals, NAV card data) is computed and cached once.
 Create a separate benchmark-specific query/selector that consumes the core result and only loads /
 computes index comparison output. Eliminate eager full fetchPortfolioData calls for all benchmarks.
@@ -843,16 +930,16 @@ Normalize and reversal-filter each fund's transaction stream once and reuse it. 
 existing output to tight numeric tolerances, including switches, redemptions, matured schemes,
 unavailable NAV, portfolio XIRR, and benchmark XIRR. Add regression fixtures for pathological XIRR
 inputs and assert bounded runtime/fallback behaviour. Run all portfolio/xirr tests, typecheck, and
-lint. Record before/after query counts and JS compute timings from the M0B harness.
+lint. Record before/after query counts and JS compute timings from the N1 harness.
 ```
 
-### Prompt 7 — bundle, persistence, and SDK cleanup
+### Prompt 8 — bundle, persistence, and SDK cleanup
 
 ```text
 Read VISION.md, docs/INFRASTRUCTURE.md, docs/architecture/cache-surfaces.md, and sections 7, 8, and
 11 of docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M6 in separate commits: (1) safe bundle/import reductions, (2) native React Query
+Implement Navigation N8 in separate commits: (1) safe bundle/import reductions, (2) native React Query
 persister diet, (3) Expo SDK 55 patch alignment. Do not mix behaviour changes into the import-only
 commit.
 
@@ -893,13 +980,17 @@ tests, and production exports.
 
 ## Final recommendation
 
-Start with M0A because first-attempt sign-in reliability is a release blocker. Then run M0B and M1
-and test the exact reported navigation flows on a release build. The strongest immediate bet is that
-**focus-aware cancellation plus granular invalidation will remove the Settings/About hang**. Finish
-the M2 cleanup not already absorbed by M0A, then M3 before broad beta because those milestones remove
-structural rerender/list costs that scale with how many screens a user visits and how much portfolio
-history they have. Fund Detail should then be refactored around transition responsiveness rather
-than waiting for every chart input.
+For navigation, start with the N0 build-channel check and lifecycle decoupling while N1 establishes
+the measurement harness. The current preview-PR workflow confirms that analytics is off there, so
+this is a real correctness/performance difference, not a theoretical configuration risk. Then ship
+N2: **focus-aware cancellation of deterministic prefetch plus removal of Fund Detail's second
+portfolio hook**. Follow with N3 granular invalidation/focus gating, then N4 and N5 before broad beta.
+The larger Fund Detail and financial-computation refactors follow once the contained fixes are
+measured.
+
+Run Auth A0 as an independent workstream in the same issue list, per the requested scope. It remains
+important reliability work, but it must not gate the navigation sequence. Coordinate it with N4 so
+the repository lands one shared SessionProvider rather than two competing auth state sources.
 
 Treat bundle/cache work as the final layer. It matters for cold launch and first route evaluation,
 but the current code already contains a more direct explanation for the intermittent in-session
