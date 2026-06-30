@@ -2,7 +2,8 @@
 
 **Reported symptom:** taps sometimes appear to hang, especially Settings → About (and some
 other Settings rows), Your Funds feels heavy, and Your Funds → Fund Detail does not transition
-smoothly.
+smoothly. Native Google sign-in also sometimes remains on a sign-in/completion spinner after the
+first attempt; restarting the app and trying again appears to complete immediately.
 
 **Conclusion:** this is not primarily an About-screen problem. The app permits multiple hidden
 screen trees to stay mounted and active, starts speculative portfolio/timeline work in the
@@ -17,6 +18,12 @@ The likely explanation for the user's experience is therefore a **JS-thread sche
 render fan-out problem**, with network/cache latency amplifying it. Adding more spinners will not
 fix the delayed tap response.
 
+The Google sign-in hang is a separate **auth state-machine defect**, not another manifestation of
+the navigation performance problem. The client is configured for Supabase's default implicit OAuth
+flow while the app comments and primary completion path assume PKCE. It also has two competing
+callback owners and no timeout or terminal recovery. Previous fixes addressed individual races but
+did not make the flow explicit or observable.
+
 ---
 
 ## Baseline and scope
@@ -27,7 +34,7 @@ fix the delayed tap response.
 | Commit analysed | `df5f746d907250fa5dfeb9aedede6135cc511ab1` |
 | Commit date | 2026-06-28 |
 | Analysis date | 2026-06-30 |
-| Primary surfaces | Portfolio, Your Funds, Fund Detail, Settings, About, Money Trail, root sync/cache lifecycle |
+| Primary surfaces | Portfolio, Your Funds, Fund Detail, Settings, About, Money Trail, native Google OAuth, root sync/cache lifecycle |
 | Static checks | `npm run typecheck` ✅; `npm run lint` ✅ |
 | Production export | Android Hermes bytecode **3.9 MB**; web JS **3.3 MB**; Android exported assets **17.0 MB** |
 | Rendered smoke test | Expo web, 390×844 and 1280×720, preview fixtures; route/DOM/console inspection |
@@ -52,6 +59,7 @@ An index-snapshot error produced by that stub is also excluded from the findings
 
 | Order | Finding | Severity | Confidence | Explains |
 |---:|---|---|---|---|
+| 0 | Native Google OAuth mixes implicit and PKCE assumptions and has no deterministic completion owner (finding 12) | **P0 release blocker** | Confirmed architecture; Strong symptom match | First-attempt spinner, restart/retry appears to work |
 | 1 | Hidden tabs/stacks remain mounted while global invalidation and prefetch keep them active | **P0** | Confirmed | Settings/About stalls, intermittent navigation hangs |
 | 2 | Every `useSession()` call creates another auth read and subscription (23 consumers) | **P0** | Confirmed | Mount churn, auth-event rerender storms, delayed query enablement |
 | 3 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | About hangs shortly after opening app; tab-switch contention |
@@ -472,9 +480,128 @@ would make regressions hard to attribute.
 
 ---
 
+## 12. Native Google sign-in has no single, explicit completion path — P0 release blocker
+
+**Status: Confirmed architecture defects; Strong match for the first-attempt spinner.**
+
+This is not caused by a slow Google response alone. The app's configured OAuth mode, callback
+parsing, browser lifecycle, and post-auth navigation disagree about who owns completion.
+
+### What the app actually does
+
+1. `app/auth/index.tsx` sets `loadingMode = 'google'`, asks Supabase for an OAuth URL, then awaits
+   `WebBrowser.openAuthSessionAsync()` with no timeout or `try/catch/finally`.
+2. `src/lib/supabase.ts` does **not** set `auth.flowType`. The installed Supabase client defaults to
+   `flowType: 'implicit'`; its own types say PKCE is recommended for mobile. The current root-layout
+   comments and `parseOAuthCode()` branch nevertheless describe the native flow as PKCE.
+3. An implicit success returns `access_token` and `refresh_token` in the URL fragment, not a
+   `?code=`. The direct result handler in `app/auth/index.tsx` only calls `parseOAuthCode()`. It
+   therefore cannot complete the flow it is actually configured to start.
+4. Success instead depends on Expo Router independently seeing the same deep link, mounting
+   `app/auth/callback.tsx`, and recovering the fragment through `Linking.useURL()` or
+   `callbackUrl`. This makes the browser promise and the router two competing observers of one
+   redirect.
+5. The callback calls `setSession()` for implicit tokens (or `exchangeCodeForSession()` if it
+   happens to receive a code), sets local state to `linked`, and deliberately does not navigate.
+   It waits for the separate `AuthGate` `useSession()` subscription to observe the event and call
+   `router.replace('/(tabs)')`.
+
+There is no timeout at the browser, callback, session-establishment, or post-session-navigation
+stage. There is also no recovery that asks `getSession()` whether a session was persisted after a
+watchdog expires. Any missed event or unresolved promise is therefore rendered as an infinite
+spinner.
+
+The Android workaround in `app/_layout.tsx` is based on an incorrect premise. Its comment says
+`maybeCompleteAuthSession()` resolves the pending Android `openAuthSessionAsync()` promise. The
+installed Expo SDK 55 implementation and the [Expo WebBrowser documentation](https://docs.expo.dev/versions/latest/sdk/webbrowser/)
+both define `maybeCompleteAuthSession()` as web-only; it returns “Not supported on this platform”
+on Android and iOS. Android completion is implemented with a race between Chrome Custom Tabs,
+`AppState`, and a `Linking` listener. The call added as the Android fix therefore has no native
+effect.
+
+### Why restart + retry can appear to fix it
+
+The observation is consistent with two paths, and current telemetry cannot distinguish them:
+
+- **Session was persisted but navigation never completed.** Supabase persists the session before
+  the callback expects `AuthGate` to navigate. A new process can restore it via `getSession()`.
+- **The app never consumed the first callback, but browser SSO completed.** Google/Supabase browser
+  cookies and consent survive app restart, so the next OAuth attempt can return immediately even
+  if the app did not persist a session the first time.
+
+Do not use the fast second attempt as proof of either theory. Record a sanitized `getSession()`
+result at cold start and stage completion timings first.
+
+### Regression archaeology
+
+| Change | What it addressed | What remains |
+|---|---|---|
+| [PR #43](https://github.com/himanshu4141/FolioLens/pull/43) | Introduced Google login/account linking | Established the split browser + route callback design |
+| Commit `2eef2ca` | Added `maybeCompleteAuthSession()` for the Android spinner | The API is web-only, so this cannot resolve the native promise |
+| [PR #47](https://github.com/himanshu4141/FolioLens/pull/47) | Corrected the mobile web bridge/hostname path | Did not unify native callback ownership |
+| [PR #52](https://github.com/himanshu4141/FolioLens/pull/52) | Preserved query/hash and added implicit-token callback support | The auth-screen result handler still only handles PKCE codes |
+| [PR #114](https://github.com/himanshu4141/FolioLens/pull/114) | Waited for Expo Router params and prevented double code exchange | Prevented a transient error, but retained indefinite waits |
+| [PR #236](https://github.com/himanshu4141/FolioLens/pull/236) | Removed callback `router.replace()` to avoid competing redirects | Replaced competing navigation with an unbounded dependency on a different auth subscriber |
+
+These fixes are individually reasonable responses to observed races, but the sequence has left the
+flow dependent on implicit SDK defaults and event ordering. There is no native release evidence in
+the PRs demonstrating first-attempt completion across Android and iOS.
+
+### Required fix
+
+1. **Make the protocol explicit.** Configure `flowType: 'pkce'` in the auth client and treat the
+   authorization-code callback as the canonical new flow. Keep fragment-token parsing only as a
+   bounded backward-compatible path during rollout. Supabase documents that PKCE stores a verifier
+   on the initiating device and completes through
+   [`exchangeCodeForSession`](https://supabase.com/docs/guides/auth/sessions/pkce-flow).
+2. **Create one idempotent OAuth completion coordinator.** Both a WebBrowser result and an Expo
+   Router deep link may deliver the URL, but they must call the same function, keyed/deduplicated by
+   a sanitized flow ID. Exactly one owner exchanges the code, confirms the session, and completes
+   navigation. Do not let the auth screen and callback screen independently interpret the redirect.
+3. **Make success terminal and deterministic.** After `setSession()` or
+   `exchangeCodeForSession()` returns a session, update the shared session source and replace the
+   callback with `/(tabs)` through the coordinator. `AuthGate` remains a general access guard, not
+   the only completion mechanism for an in-progress OAuth transaction.
+4. **Add bounded failure handling.** Put timeouts around browser return and session completion;
+   use `try/catch/finally`; always clear the initiating button state; render retry/cancel actions;
+   and on a post-exchange timeout reconcile once with `getSession()` before reporting failure.
+5. **Use the single `SessionProvider` from finding 2.** The callback and `AuthGate` must read the
+   same state source. This removes the current dependency on one of 23 independent subscriptions
+   winning an event race.
+6. **Instrument stages without credentials.** Record `oauth_started`, `browser_returned`,
+   `callback_received`, `session_started`, `session_confirmed`, and `navigation_completed`, with
+   elapsed time, platform, app version/update ID, EAS channel, result type, and callback transport
+   (`code` or `fragment`). Never record the callback URL, authorization code, access/refresh token,
+   email, or provider user ID.
+7. **Correct misleading comments and docs.** Update `docs/architecture/auth-flow.md` and remove the
+   native claim attached to `maybeCompleteAuthSession()`.
+
+### Acceptance criteria
+
+- A clean-install first Google attempt reaches the app on Android and iOS without a second tap or
+  process restart, on production, preview-main, and preview-PR schemes.
+- Every attempt reaches one terminal state within a defined bound: tabs, actionable error, or
+  cancelled. No spinner can remain indefinitely.
+- The same callback delivered through both WebBrowser and Expo Router exchanges at most once.
+- Cancel, browser close, network loss during exchange, background/foreground during consent, and
+  callback replay all have automated tests and a native release-build verification record.
+- After successful login, killing and reopening the app routes through the restored session without
+  presenting or requiring the Google button.
+- Telemetry can identify the last completed stage for a failed attempt without storing auth
+  credentials or PII.
+
+---
+
 ## Recommended implementation order
 
-### M0 — Measurement harness (small, first)
+### M0A — Repair native Google OAuth completion (release blocker, first)
+
+Make OAuth mode explicit, converge browser/deep-link delivery through one idempotent coordinator,
+add bounded recovery and sanitized stage telemetry, and verify first-attempt login on both native
+platforms. This should ship before performance refactors: users who cannot reliably enter the app
+cannot benefit from navigation improvements.
+
+### M0B — Navigation measurement harness
 
 Fix span IDs and add route-pair press/commit/usable metrics. Capture a baseline on one mid-range
 Android device and one iPhone release build. This is a prerequisite for credible before/after data,
@@ -494,9 +621,10 @@ This is the highest-probability fix for Settings/About.
 
 ### M2 — One session source + narrow store subscriptions
 
-Create a root session provider, migrate all call sites, replace full Zustand subscriptions, and
-memoize portfolio insights. This reduces render fan-out before list and screen refactors make the
-component tree more sophisticated.
+Complete the root session-provider migration if M0A did not move all consumers, replace full
+Zustand subscriptions, and memoize portfolio insights. Do not create a second auth state source.
+This reduces render fan-out before list and screen refactors make the component tree more
+sophisticated.
 
 ### M3 — Virtualize Funds and Money Trail
 
@@ -526,13 +654,58 @@ then Expo SDK patch alignment. Re-export Android/web artifacts and record size d
 
 The prompts below are intentionally scoped so Codex or Claude can execute one milestone per branch.
 
+### Prompt 0 — native Google sign-in reliability
+
+```text
+Read AGENTS.md, VISION.md, docs/process/PLANS.md, docs/architecture/auth-flow.md, finding 2, and
+finding 12 of docs/research/app-navigation-performance-audit-2026-06-30.md. Inspect the diffs and
+discussion in PRs #43, #47, #52, #114, and #236 before changing the flow. Create an ExecPlan because
+this touches root navigation, auth persistence, native deep links, and three EAS schemes.
+
+Fix first-attempt native Google login. Do not patch another individual race while retaining the
+current mixed protocol. src/lib/supabase.ts currently omits auth.flowType, so the installed client
+uses implicit flow even though the native code and docs describe PKCE. Configure PKCE explicitly
+and make authorization-code exchange the canonical new flow. Preserve fragment-token handling only
+as a tested compatibility path for callbacks already in flight during rollout.
+
+Create one idempotent OAuth completion coordinator used by both the WebBrowser result and the Expo
+Router callback. Deduplicate duplicate delivery without logging or persisting raw codes/tokens.
+Exactly one path should exchange/set the session, confirm the shared session state, and replace the
+callback with /(tabs). AuthGate should remain a safety guard, not the only post-OAuth navigator.
+Correct the claim that maybeCompleteAuthSession resolves Android auth; Expo documents that method as
+web-only. Keep it only where the web popup flow needs it.
+
+Implement the single SessionProvider described in finding 2 as part of this fix and migrate all
+useSession consumers to it. There must be one getSession bootstrap and one onAuthStateChange
+subscription for the app process. The coordinator and AuthGate must consume that same provider;
+do not introduce a second OAuth-only session store.
+
+Add timeouts and try/catch/finally around OAuth URL creation, browser return, session exchange, and
+post-session navigation. Every attempt must end in tabs, an actionable retry/cancel error, or an
+explicit cancellation. On a post-exchange timeout, call getSession once to reconcile a session that
+may already have persisted. Always clear button loading state.
+
+Add sanitized stage telemetry for oauth_started, browser_returned, callback_received,
+session_started, session_confirmed, and navigation_completed. Include duration, platform, EAS
+channel, app/update version, result type, and code-vs-fragment transport. Never capture callback
+URLs, authorization codes, access/refresh tokens, email, or provider IDs.
+
+Add unit/integration tests for duplicate URL delivery, missing/late router params, callback replay,
+cancel, browser close, timeout before callback, network failure during exchange, a session that was
+persisted before navigation, and cold-start restoration. Verify clean-install first-attempt login,
+background/foreground during consent, and kill/relaunch after success on Android and iOS release
+builds for production, preview-main, and preview-PR schemes. Record the stage timeline and build IDs
+in the ExecPlan. Run npm run typecheck, npm run lint, and focused auth tests. Update
+docs/architecture/auth-flow.md and add an Amendments section if implementation diverges.
+```
+
 ### Prompt 1 — navigation performance instrumentation
 
 ```text
 Read VISION.md, AGENTS.md, docs/process/PLANS.md, and
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
-Implement M0 only: a reliable navigation-performance harness for the Expo React Native app.
+Implement M0B only: a reliable navigation-performance harness for the Expo React Native app.
 Current src/lib/perfMark.ts keys starts only by label, so concurrent portfolio/prefetch spans
 overwrite each other. Change the API so perfStart returns a unique span ID and perfEnd closes that
 ID. Migrate all call sites without changing business behaviour.
@@ -591,6 +764,10 @@ Implement M2. Replace the current effect-based useSession hook with one SessionP
 the root. There must be exactly one authClient.getSession() bootstrap and one
 authClient.onAuthStateChange() subscription for the app process. Preserve AuthGate behaviour,
 magic-link/OAuth flows, sign-out cleanup, and test mocks.
+
+If Prompt 0 has already shipped the provider and migrated consumers, verify those invariants rather
+than rebuilding it; scope this branch to any remaining low-level auth reads plus the Zustand and
+derived-state work below.
 
 Migrate all 23 useSession consumers. Prefer passing userId into lower-level data hooks where this
 removes redundant context reads cleanly.
@@ -666,7 +843,7 @@ Normalize and reversal-filter each fund's transaction stream once and reuse it. 
 existing output to tight numeric tolerances, including switches, redemptions, matured schemes,
 unavailable NAV, portfolio XIRR, and benchmark XIRR. Add regression fixtures for pathological XIRR
 inputs and assert bounded runtime/fallback behaviour. Run all portfolio/xirr tests, typecheck, and
-lint. Record before/after query counts and JS compute timings from the M0 harness.
+lint. Record before/after query counts and JS compute timings from the M0B harness.
 ```
 
 ### Prompt 7 — bundle, persistence, and SDK cleanup
@@ -706,16 +883,23 @@ tests, and production exports.
 - Do not optimize financial math without equivalence fixtures. Performance changes cannot alter
   XIRR, cost basis, switches, or benchmark semantics.
 - Do not use Expo development-server navigation timings as release evidence.
+- Do not add another `maybeCompleteAuthSession()` call for Android; Expo defines it as web-only.
+- Do not rely on Supabase's default OAuth flow or on AuthGate event timing. Set the protocol and
+  completion owner explicitly.
+- Do not log callback URLs, codes, URL fragments, tokens, emails, or provider identities while
+  instrumenting auth.
 
 ---
 
 ## Final recommendation
 
-Start with M0 and M1, then test the exact reported flow on a release build. The strongest immediate
-bet is that **focus-aware cancellation plus granular invalidation will remove the Settings/About
-hang**. M2 and M3 should follow before broad beta because they remove structural rerender/list costs
-that scale with how many screens a user visits and how much portfolio history they have. Fund Detail
-should then be refactored around transition responsiveness rather than waiting for every chart input.
+Start with M0A because first-attempt sign-in reliability is a release blocker. Then run M0B and M1
+and test the exact reported navigation flows on a release build. The strongest immediate bet is that
+**focus-aware cancellation plus granular invalidation will remove the Settings/About hang**. Finish
+the M2 cleanup not already absorbed by M0A, then M3 before broad beta because those milestones remove
+structural rerender/list costs that scale with how many screens a user visits and how much portfolio
+history they have. Fund Detail should then be refactored around transition responsiveness rather
+than waiting for every chart input.
 
 Treat bundle/cache work as the final layer. It matters for cold launch and first route evaluation,
 but the current code already contains a more direct explanation for the intermittent in-session
