@@ -704,7 +704,7 @@ Because the agents may post through the same GitHub account, every comment start
 
 | Queue | Milestone | Status | Implementation PR | Merge SHA | Evidence / amendments |
 |---:|---|---|---|---|---|
-| 1 | N1 | Ready to merge | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | — | Codex + Claude converged at `33fff1c`; checks green; physical smoke due before N2 |
+| 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; physical paired-log smoke due before N2 |
 | 2 | N2 | Pending | — | — | — |
 | 3 | N0 | Pending | — | — | — |
 | 4 | N3 | Pending | — | — | — |
