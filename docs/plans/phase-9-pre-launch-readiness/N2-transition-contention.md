@@ -168,14 +168,15 @@ Validation completed before native evidence:
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
-Preliminary Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.prpreview`, app version/runtime `0.0.4`, and channel `foliolens-pr`. The tested Android OTA was `019f1eef-cd9e-79cf-9d2a-6472c0f4a6cb` at implementation head `40d345b0`. This proved post-blur and Fund Detail behavior but predates removal of focused Portfolio's idle queue and is not the final acceptance record. Per the coordinator/reviewer requirement, final evidence must use Android main-preview/release at the corrected implementation head.
+Final Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The tested Android OTA was `019f1efd-dc42-77b7-b9b0-0de0c66a5236` (group `5adc058d-e794-4b62-a920-fcf58acc8e60`) at implementation head `d88d12713e98a23dbf3e3cf310d564452ad30428`. The About screen independently showed channel `foliolens-main` and OTA prefix `019f1efd-dc4…` after three clean process restarts.
 
 Measured evidence:
 
-- Focus was moved Funds → Portfolio, then Portfolio → Settings → About inside the 1.2-second idle window. Bottom-tab commit/usable was 45/46 ms, Portfolio → Settings was 110/112 ms, and Settings → About was 90/92 ms. No `query:portfolio`, `query:timeline`, `query:timeline:nav`, or `query:timeline:index` started before the four-second post-blur end marker.
-- Funds → Fund Detail committed in 73 ms and was post-interaction usable in 78 ms. The selected fund's one active timeline completed in 187 ms; no `query:portfolio` and no two alternate timeline queries started during the six-second observation window.
-- Selecting Mix & Weight rendered cached portfolio allocation, rank, and total value. No `query:portfolio` started during the 7.6-second observation window.
-- Raw device logs remain local under `/tmp/foliolens-n2-android/`; PR evidence contains only sanitized route names, benchmark symbols, aggregate counts, durations, and update/build identifiers.
+- Funds → Portfolio committed in 51 ms and was post-interaction usable in 60 ms. Leaving focused Portfolio untouched for six seconds produced no `query:portfolio`, `query:timeline`, `query:timeline:nav`, or `query:timeline:index` work, directly covering the reviewer's focused-idle case.
+- Portfolio → Settings and Settings → About presses were 523 ms apart, inside the 1.2-second window. Commit/usable timings were 116/124 ms and 58/66 ms respectively. No portfolio or timeline query started through the five-second post-blur marker.
+- Funds → Fund Detail committed in 191 ms and was post-interaction usable in 205 ms. The selected fund's one active timeline completed in 375 ms; no `query:portfolio` and no alternate timeline sequence started during the six-second observation window.
+- Selecting Mix & Weight rendered cached allocation data and produced no query work during the six-second observation window.
+- Raw device logs and UI dumps remain local under `/tmp/foliolens-n2-android-main/`; PR evidence contains only sanitized route names, benchmark symbols, aggregate counts, durations, and update/build identifiers.
 
 ## Progress
 
@@ -186,5 +187,5 @@ Measured evidence:
 - [x] Implement the cache-only Fund Detail allocation selector.
 - [x] Add focused tests.
 - [x] Run repository validation.
-- [ ] Capture final Android main-preview/release evidence at the corrected implementation SHA.
-- [ ] Publish the implementation PR and attach acceptance evidence.
+- [x] Capture final Android main-preview/release evidence at the corrected implementation SHA.
+- [x] Publish the implementation PR and attach acceptance evidence.
