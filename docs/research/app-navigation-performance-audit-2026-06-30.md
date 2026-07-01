@@ -742,8 +742,8 @@ Because the agents may post through the same GitHub account, every comment start
 | Queue | Milestone | Status | Implementation PR | Merge SHA | Evidence / amendments |
 |---:|---|---|---|---|---|
 | 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS release evidence blocker recorded on PR #250 |
-| 2 | N2 | Ready to merge | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | — | Codex/Claude CONVERGED at docs head `ad40cf33`; code `d88d1271`; 77 suites / 1,805 tests, typecheck, lint, diff check; Android main-preview focused-idle, post-blur, Fund Detail, and cache-only evidence accepted |
-| 3 | N2D | Pending | — | — | Android main-preview logged repeated overlapping SQLite transaction/write-back failures; land one shared connection-level serializer and repair proof |
+| 2 | N2 | Merged | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | `7d3f25ef` | Codex/Claude CONVERGED at docs head `ad40cf33`; code `d88d1271`; 77 suites / 1,805 tests, typecheck, lint, diff check; Android main-preview focused-idle, post-blur, Fund Detail, and cache-only evidence accepted |
+| 3 | N2D | Ready to start | — | — | N2 merge verified on `main`; Android main-preview logged repeated overlapping SQLite transaction/write-back failures; land one shared connection-level serializer and repair proof |
 | 4 | N2T | Pending | — | — | Android main-preview: 3Y timeline 4.830–5.919 s and 12,861 NAV rows for 83 points; consume N2D and isolate compute/input reuse |
 | 5 | N0 | Pending | — | — | — |
 | 6 | N3 | Pending | — | — | — |
