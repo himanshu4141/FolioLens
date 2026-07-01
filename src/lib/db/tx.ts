@@ -8,7 +8,12 @@
  * dedup key Portfolio + Fund Detail XIRR math relies on; the other 5
  * are nullable metadata that Money Trail + Wealth Journey display.
  */
-import { getDb } from '@/src/lib/db/db';
+import {
+  getDb,
+  runSerializedDatabaseTransaction,
+  runSerializedDatabaseWrite,
+  type SerializedDatabaseWriteOptions,
+} from '@/src/lib/db/db';
 
 export interface DbTxRow {
   fund_id: string;
@@ -51,10 +56,12 @@ export async function readByFundIds(fundIds: string[]): Promise<DbTxRow[]> {
   );
 }
 
-export async function bulkInsert(rows: DbTxRow[]): Promise<void> {
+export async function bulkInsert(
+  rows: DbTxRow[],
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<void> {
   if (rows.length === 0) return;
-  const db = await getDb();
-  await db.withTransactionAsync(async () => {
+  await runSerializedDatabaseTransaction(options.operation ?? 'tx_bulk_insert', async (db) => {
     const stmt = await db.prepareAsync(
       `INSERT OR IGNORE INTO tx (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
@@ -76,7 +83,7 @@ export async function bulkInsert(rows: DbTxRow[]): Promise<void> {
     } finally {
       await stmt.finalizeAsync();
     }
-  });
+  }, options);
 }
 
 /**
@@ -130,7 +137,10 @@ export async function getLatestTransactionDate(): Promise<string | null> {
   return row?.max_date ?? null;
 }
 
-export async function clear(): Promise<void> {
-  const db = await getDb();
-  await db.execAsync('DELETE FROM tx');
+export async function clear(options: SerializedDatabaseWriteOptions = {}): Promise<void> {
+  await runSerializedDatabaseWrite(
+    options.operation ?? 'tx_clear',
+    (db) => db.execAsync('DELETE FROM tx'),
+    options,
+  );
 }

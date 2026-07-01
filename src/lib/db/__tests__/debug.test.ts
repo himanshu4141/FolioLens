@@ -37,7 +37,7 @@ const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
 
 beforeEach(async () => {
   __resetAllForTests();
-  __setDbForTests(null);
+  await __setDbForTests(null);
   jest.clearAllMocks();
   // AsyncStorage's auto-mock keeps its in-memory map across tests, so
   // wipe the persister blob explicitly — otherwise an earlier test's

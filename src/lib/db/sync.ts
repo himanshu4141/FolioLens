@@ -32,6 +32,12 @@ import * as txRepo from '@/src/lib/db/tx';
 import * as navRepo from '@/src/lib/db/nav';
 import * as idxRepo from '@/src/lib/db/idx';
 import * as syncStateRepo from '@/src/lib/db/syncState';
+import {
+  captureDatabaseWriteScope,
+  getDb,
+  runSerializedDatabaseLifecycle,
+  type DatabaseWriteScope,
+} from '@/src/lib/db/db';
 
 const NAV_PAGE_SIZE = 1000;
 const IDX_PAGE_SIZE = 1000;
@@ -191,6 +197,8 @@ export function shouldRebuildTxOnDrift(localCount: number, serverCount: number):
  */
 async function reconcileTransactionCount(
   userId: string,
+  writeScope: DatabaseWriteScope,
+  mode: 'bootstrap' | 'delta',
 ): Promise<{ drift: number | null; rebuilt: boolean; serverCount: number | null; localCount: number }> {
   const [localCount, serverCount] = await Promise.all([
     txRepo.count(),
@@ -215,7 +223,10 @@ async function reconcileTransactionCount(
     // first. `INSERT OR IGNORE` makes this a no-op for rows already
     // local, and writes the rows that were missing.
     const fresh = await fetchUserTransactionsRemote(userId, null);
-    await txRepo.bulkInsert(fresh);
+    await txRepo.bulkInsert(fresh, {
+      scope: writeScope,
+      operation: `${mode}_tx_repair`,
+    });
     return { drift, rebuilt: true, serverCount, localCount };
   } catch (err) {
     console.warn('[db/sync] tx rebuild after drift failed', err);
@@ -267,6 +278,7 @@ async function runSync(
   options: { mode: 'bootstrap' | 'delta' },
 ): Promise<SyncResult> {
   const syncSpanId = perfStart(`db:sync:${options.mode}`);
+  const writeScope = captureDatabaseWriteScope();
   const errors: string[] = [];
   let txInserted = 0;
   let navInserted = 0;
@@ -291,10 +303,18 @@ async function runSync(
     const watermark = await txRepo.getWatermark();
     const fresh = await fetchUserTransactionsRemote(userId, watermark);
     const before = await txRepo.count();
-    await txRepo.bulkInsert(fresh);
+    await txRepo.bulkInsert(fresh, {
+      scope: writeScope,
+      operation: `${options.mode}_tx_write`,
+    });
     const after = await txRepo.count();
     txInserted = after - before;
-    await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
+    await syncStateRepo.upsert(
+      `tx:${userId}`,
+      nowIso,
+      (await txRepo.getWatermark()) ?? null,
+      { scope: writeScope, operation: `${options.mode}_tx_sync_state` },
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     errors.push(`tx: ${msg}`);
@@ -309,7 +329,7 @@ async function runSync(
   // both absolute (≥5 rows) and relative (>5%).
   let txRebuiltFromDrift = false;
   try {
-    const reconciliation = await reconcileTransactionCount(userId);
+    const reconciliation = await reconcileTransactionCount(userId, writeScope, options.mode);
     txRebuiltFromDrift = reconciliation.rebuilt;
     // Visibility threshold ≠ rebuild threshold. We rebuild only on
     // meaningful drift (≥5 absolute AND >5% relative — see
@@ -335,7 +355,12 @@ async function runSync(
       // `txInserted` stays as the delta-step's contribution; the
       // separate `txRebuiltFromDrift` flag tells callers a full
       // rebuild happened so they can invalidate React Query / etc.
-      await syncStateRepo.upsert(`tx:${userId}`, nowIso, (await txRepo.getWatermark()) ?? null);
+      await syncStateRepo.upsert(
+        `tx:${userId}`,
+        nowIso,
+        (await txRepo.getWatermark()) ?? null,
+        { scope: writeScope, operation: `${options.mode}_tx_repair_sync_state` },
+      );
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -368,7 +393,10 @@ async function runSync(
         // foreground handler and leaving the user with a spinner that
         // doesn't change any values.
         const before = await navRepo.count();
-        await navRepo.bulkInsert(rows);
+        await navRepo.bulkInsert(rows, {
+          scope: writeScope,
+          operation: `${options.mode}_nav_write`,
+        });
         const after = await navRepo.count();
         navInserted += after - before;
         for (const code of codes) {
@@ -376,6 +404,7 @@ async function runSync(
             `nav:${code}`,
             nowIso,
             (await navRepo.getWatermark(code)) ?? null,
+            { scope: writeScope, operation: `${options.mode}_nav_sync_state` },
           );
         }
       }
@@ -393,13 +422,17 @@ async function runSync(
       const rows = await fetchAllIndexRows(symbol, wm);
       // Net delta, same reasoning as nav above.
       const before = await idxRepo.count();
-      await idxRepo.bulkInsert(rows);
+      await idxRepo.bulkInsert(rows, {
+        scope: writeScope,
+        operation: `${options.mode}_index_write`,
+      });
       const after = await idxRepo.count();
       idxInserted += after - before;
       await syncStateRepo.upsert(
         `idx:${symbol}`,
         nowIso,
         (await idxRepo.getWatermark(symbol)) ?? null,
+        { scope: writeScope, operation: `${options.mode}_index_sync_state` },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -431,7 +464,15 @@ async function runSync(
  * data after this returns.
  */
 export async function clearAll(): Promise<void> {
-  await Promise.all([txRepo.clear(), navRepo.clear(), idxRepo.clear(), syncStateRepo.clear()]);
+  await runSerializedDatabaseLifecycle('database_clear_all', async () => {
+    const db = await getDb();
+    await db.withTransactionAsync(async () => {
+      await db.execAsync('DELETE FROM tx');
+      await db.execAsync('DELETE FROM nav');
+      await db.execAsync('DELETE FROM idx');
+      await db.execAsync('DELETE FROM sync_state');
+    });
+  });
 }
 
 let inFlightBootstrap: Promise<SyncResult> | null = null;

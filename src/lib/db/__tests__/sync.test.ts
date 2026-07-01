@@ -36,7 +36,7 @@ jest.mock('@/src/lib/analytics', () => ({
 }));
 
 // eslint-disable-next-line import/first
-import { bootstrap, didSyncChangeData, shouldRebuildTxOnDrift } from '../sync';
+import { bootstrap, didSyncChangeData, shouldRebuildTxOnDrift, syncDelta } from '../sync';
 // eslint-disable-next-line import/first
 import type { SyncResult } from '../sync';
 // eslint-disable-next-line import/first
@@ -48,7 +48,13 @@ import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 // eslint-disable-next-line import/first
 import * as txRepo from '../tx';
 // eslint-disable-next-line import/first
-import { __setDbForTests } from '../db';
+import * as navRepo from '../nav';
+// eslint-disable-next-line import/first
+import * as idxRepo from '../idx';
+// eslint-disable-next-line import/first
+import { __setDbForTests, getDb } from '../db';
+// eslint-disable-next-line import/first
+import { repairTimelineNavCache } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
 
 const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
   __resetAllForTests: () => void;
@@ -211,9 +217,9 @@ function emptyRepoMocks() {
 }
 
 describe('sync.reconcileTransactionCount — orchestration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     __resetAllForTests();
-    __setDbForTests(null);
+    await __setDbForTests(null);
     jest.clearAllMocks();
   });
 
@@ -379,9 +385,9 @@ describe('didSyncChangeData', () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe('didSyncChangeData — bootstrap integration', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     __resetAllForTests();
-    __setDbForTests(null);
+    await __setDbForTests(null);
     jest.clearAllMocks();
   });
 
@@ -432,5 +438,77 @@ describe('didSyncChangeData — bootstrap integration', () => {
     expect(result.idxInserted).toBe(0);
     expect(result.txRebuiltFromDrift).toBeFalsy();
     expect(didSyncChangeData(result)).toBe(false);
+  });
+});
+
+describe('N2D shared-connection sync overlap', () => {
+  beforeEach(async () => {
+    __resetAllForTests();
+    await __setDbForTests(null);
+    jest.clearAllMocks();
+  });
+
+  it('serializes bootstrap, foreground sync, timeline repair, and index write-back', async () => {
+    (transactionRepo.from as jest.Mock).mockImplementation(() =>
+      makeChainQueue([{ data: [], error: null, count: 0 }]).next(),
+    );
+    (navHistoryRepo.from as jest.Mock).mockImplementation(() =>
+      makeChainQueue([{
+        data: [{ scheme_code: 100, nav_date: '2026-01-01', nav: 10 }],
+        error: null,
+      }]).next(),
+    );
+    (indexHistoryRepo.from as jest.Mock).mockImplementation(() =>
+      makeChainQueue([{
+        data: [{ index_date: '2026-01-01', close_value: 100 }],
+        error: null,
+      }]).next(),
+    );
+
+    const db = await getDb();
+    const originalTransaction = db.withTransactionAsync.bind(db);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    let activeTransactions = 0;
+    let maxActiveTransactions = 0;
+    const sqliteErrors: string[] = [];
+    db.withTransactionAsync = async (task) => {
+      activeTransactions += 1;
+      maxActiveTransactions = Math.max(maxActiveTransactions, activeTransactions);
+      if (activeTransactions > 1) {
+        const message = 'cannot start a transaction within a transaction';
+        sqliteErrors.push(message);
+        activeTransactions -= 1;
+        throw new Error(message);
+      }
+      try {
+        await Promise.resolve();
+        await originalTransaction(task);
+      } finally {
+        activeTransactions -= 1;
+      }
+    };
+
+    const [bootstrapResult, foregroundResult] = await Promise.all([
+      bootstrap('user-1', [100], ['^NSEI']),
+      syncDelta('user-1', [100], ['^NSEI']),
+      repairTimelineNavCache([
+        { scheme_code: 200, nav_date: '2026-01-01', nav: 20 },
+      ]),
+      idxRepo.bulkInsert(
+        [{ index_symbol: '^NIFTY500TRI', index_date: '2026-01-01', close_value: 200 }],
+        { operation: 'portfolio_index_write_back' },
+      ),
+    ]);
+
+    expect(bootstrapResult.errors).toEqual([]);
+    expect(foregroundResult.errors).toEqual([]);
+    expect(maxActiveTransactions).toBe(1);
+    expect(sqliteErrors).toEqual([]);
+    expect(warn.mock.calls.flat().join(' ')).not.toMatch(
+      /cannot start a transaction within a transaction|cannot rollback - no transaction is active/,
+    );
+    expect(await navRepo.count()).toBe(2);
+    expect(await idxRepo.count()).toBe(2);
+    warn.mockRestore();
   });
 });

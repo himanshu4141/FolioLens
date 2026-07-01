@@ -40,6 +40,7 @@ import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import * as navRepo from '@/src/lib/db/nav';
 import * as idxRepo from '@/src/lib/db/idx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import { captureDatabaseWriteScope } from '@/src/lib/db/db';
 
 interface NavRow {
   scheme_code: number;
@@ -119,6 +120,7 @@ export async function fetchPortfolioData(
   benchmarkSymbol: string,
 ): Promise<PortfolioData> {
   const portfolioSpanId = perfStart('query:portfolio');
+  const writeScope = captureDatabaseWriteScope();
 
   // Shared user-funds and user-transactions caches. Other screens (Fund
   // Detail, Money Trail, etc.) read from these same keys, so once one
@@ -195,7 +197,10 @@ export async function fetchPortfolioData(
     navRows = (navRowsRaw ?? []) as NavRow[];
     if (navRows.length > 0 && SQLITE_AVAILABLE) {
       try {
-        await navRepo.bulkInsert(navRows);
+        await navRepo.bulkInsert(navRows, {
+          scope: writeScope,
+          operation: 'portfolio_nav_write_back',
+        });
       } catch (err) {
         console.warn('[usePortfolio] sqlite nav write failed', err);
       }
@@ -282,6 +287,7 @@ export async function fetchPortfolioData(
               index_date: r.index_date,
               close_value: r.close_value,
             })),
+            { scope: writeScope, operation: 'portfolio_index_write_back' },
           );
         } catch (err) {
           console.warn('[usePortfolio] sqlite idx write failed', err);

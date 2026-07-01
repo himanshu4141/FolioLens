@@ -2,7 +2,12 @@
  * Repo for the `idx` table — the local copy of `index_history` rows.
  * Append-only; PK is `(index_symbol, index_date)`.
  */
-import { getDb } from '@/src/lib/db/db';
+import {
+  getDb,
+  runSerializedDatabaseTransaction,
+  runSerializedDatabaseWrite,
+  type SerializedDatabaseWriteOptions,
+} from '@/src/lib/db/db';
 
 export interface DbIdxRow {
   index_symbol: string;
@@ -27,10 +32,12 @@ export async function readBySymbol(
   );
 }
 
-export async function bulkInsert(rows: DbIdxRow[]): Promise<void> {
+export async function bulkInsert(
+  rows: DbIdxRow[],
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<void> {
   if (rows.length === 0) return;
-  const db = await getDb();
-  await db.withTransactionAsync(async () => {
+  await runSerializedDatabaseTransaction(options.operation ?? 'idx_bulk_insert', async (db) => {
     const stmt = await db.prepareAsync(
       `INSERT OR IGNORE INTO idx (${COLUMNS}) VALUES (?, ?, ?)`,
     );
@@ -41,7 +48,7 @@ export async function bulkInsert(rows: DbIdxRow[]): Promise<void> {
     } finally {
       await stmt.finalizeAsync();
     }
-  });
+  }, options);
 }
 
 export async function getWatermark(symbol: string): Promise<string | null> {
@@ -74,7 +81,10 @@ export async function countBySymbol(symbol: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-export async function clear(): Promise<void> {
-  const db = await getDb();
-  await db.execAsync('DELETE FROM idx');
+export async function clear(options: SerializedDatabaseWriteOptions = {}): Promise<void> {
+  await runSerializedDatabaseWrite(
+    options.operation ?? 'idx_clear',
+    (db) => db.execAsync('DELETE FROM idx'),
+    options,
+  );
 }
