@@ -59,8 +59,8 @@ An index-snapshot error produced by that stub is also excluded from the findings
 
 | Order | Finding | Severity | Confidence | Explains |
 |---:|---|---|---|---|
-| 1 | Native SQLite bootstrap/foreground sync is disabled when analytics is off; preview-PR OTA builds omit the key | **P0 diagnostic/fix** | Confirmed | Channel-specific cold fetches and inconsistent performance |
-| 2 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | Most deterministic Settings/About stall; tab-switch contention |
+| 1 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | Cross-channel lead for Settings/About stalls; tab-switch contention |
+| 2 | Native SQLite bootstrap/foreground sync is disabled when analytics is off; preview-PR OTA builds omit the key | **P0 correctness / preview amplifier** | Confirmed | Preview-only cold fetches and inconsistent performance |
 | 3 | Hidden tabs/stacks remain mounted while broad invalidation keeps them active | **P0** | Confirmed | Intermittent Settings/About stalls and navigation amplification |
 | 4 | Funds and Money Trail render full lists in `ScrollView`; rows recreate screen-wide styles | **P0/P1** | Confirmed | Your Funds jank, delayed fund-card taps, Money Trail scaling failure |
 | 5 | Broad Zustand subscriptions and un-memoized insight derivation fan updates into hidden screens | **P1** | Confirmed | Search/sort/preferences jank, unnecessary app-wide rerenders |
@@ -460,7 +460,7 @@ one another. The three portfolio benchmark fetches all use labels such as `query
 
 ## 10. Native data lifecycle is incorrectly coupled to analytics — P0 diagnostic/fix
 
-**Status: Confirmed in code and confirmed for the preview-PR OTA workflow. Diagnose first.**
+**Status: Confirmed preview amplifier and correctness bug; not the cross-channel root cause.**
 
 `useAnalyticsLifecycle()` returns immediately when `analytics.isEnabled` is false
 (`app/_layout.tsx:147-148`). The same effect contains not only analytics, but also:
@@ -482,10 +482,10 @@ The channel check is no longer hypothetical:
 - the PR preview OTA published for this audit therefore builds `analytics.isEnabled === false` and
   skips bootstrap, foreground sync, auth-driven bootstrap, and sign-out cleanup.
 
-If the reported hangs were observed in the installed preview-PR app, N0 is a direct
-channel-specific contributor and may explain much of the felt difference. If they were observed on
-main or production, N0 remains a correctness bug but is not the lead explanation; N2 prefetch
-cancellation is the first performance fix. Correctness must never depend on telemetry configuration.
+The reported hangs were observed on both main and preview builds. Main supplies the PostHog key, so
+this early return cannot explain the common symptom. N0 is a preview-only amplifier and a serious
+cache/sign-out correctness bug; N2 prefetch cancellation is the cross-channel lead performance fix.
+Correctness must never depend on telemetry configuration.
 
 ### Required fix
 
@@ -630,11 +630,12 @@ the PRs demonstrating first-attempt completion across Android and iOS.
 The navigation work and Google auth work are separate implementation tracks. Keep both findings in
 this report as requested, but do not make either track block the other.
 
-### Navigation N0 — Verify channel and decouple data lifecycle from analytics
+### Navigation N0 — Decouple data lifecycle from analytics (parallel correctness fix)
 
 Record the app variant/update ID first. The current preview-PR workflow definitely omits the
 PostHog key and therefore disables the native SQLite lifecycle. Split correctness from telemetry in
-a contained change and verify bootstrap/sync with analytics disabled.
+a contained change and verify bootstrap/sync with analytics disabled. This removes preview-specific
+confounding but is not expected to remove the hang seen on main.
 
 ### Navigation N1 — Measurement harness (parallel with N0)
 
@@ -985,13 +986,12 @@ tests, and production exports.
 
 ## Final recommendation
 
-For navigation, start with the N0 build-channel check and lifecycle decoupling while N1 establishes
-the measurement harness. The current preview-PR workflow confirms that analytics is off there, so
-this is a real correctness/performance difference, not a theoretical configuration risk. Then ship
-N2: **focus-aware cancellation of deterministic prefetch plus removal of Fund Detail's second
-portfolio hook**. Follow with N3 granular invalidation/focus gating, then N4 and N5 before broad beta.
-The larger Fund Detail and financial-computation refactors follow once the contained fixes are
-measured.
+Because the hangs occur on both main and preview, start the cross-channel performance path with N1
+measurement and N2: **focus-aware cancellation of deterministic prefetch plus removal of Fund
+Detail's second portfolio hook**. Run N0 lifecycle decoupling in parallel as a correctness fix and
+to remove the preview-only amplifier; it is not the shared root cause. Follow with N3 granular
+invalidation/focus gating, then N4 and N5 before broad beta. The larger Fund Detail and
+financial-computation refactors follow once the contained fixes are measured.
 
 Run Auth A0 as an independent workstream in the same issue list, per the requested scope. It remains
 important reliability work, but it must not gate the navigation sequence. Coordinate it with N4 so
