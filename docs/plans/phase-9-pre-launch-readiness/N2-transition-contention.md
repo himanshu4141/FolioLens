@@ -147,6 +147,7 @@ Native evidence will use the connected Pixel 8a running the main-preview Android
 - 2026-07-01: Use a read-only QueryCache subscription for Fund Detail allocation. This cannot fetch and cannot replace the existing Portfolio query's options.
 - 2026-07-01: Exclude FeedbackSheet deferral because Android first-visit About measurements of 59-84 ms do not demonstrate material route-evaluation cost.
 - 2026-07-01: Use Android main-preview as native acceptance evidence; iOS publishing/signing is unavailable and the blocker is recorded on PR #250.
+- 2026-07-01: Mark PR #252 `[cache-shape-stable]`. N2 retains the existing Portfolio and investment-timeline query keys and serialized payloads; it changes only when prefetches run and reads an existing Portfolio result without adding a persisted cache entry. Bumping `__BUSTER__` would discard valid user caches.
 
 ## Amendments
 
