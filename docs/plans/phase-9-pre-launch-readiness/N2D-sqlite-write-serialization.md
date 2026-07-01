@@ -164,6 +164,22 @@ Validation completed before native evidence:
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
+Final Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The Android OTA was `019f1ffb-2073-7241-941f-c77c691b4df6` (group `8e02462d-f6cd-44a7-850b-81f92d9d5249`) at implementation SHA `715ec3c36a5269c6136224ff426ea171a1d6e525`. The About screen independently displayed `foliolens-main` and OTA prefix `019f1ffb-207…` after clean process restarts.
+
+The stress sequence unlocked the native cache diagnostics, reset the local cache, immediately opened Portfolio and changed benchmarks, backgrounded/foregrounded the app to start delta sync, and then selected the 3Y timeline while bootstrap and read-through work remained active. It exercised `database_clear_all`, bootstrap and delta transaction/NAV/index writes, Portfolio NAV/index write-back, timeline NAV repair, and sync-state updates on the same connection.
+
+Measured evidence:
+
+- The queue absorbed real contention: the longest observed queue wait was 41,084 ms and the longest write was the 38,164 ms cold bootstrap NAV transaction. Portfolio/index and delta work waited rather than starting a nested transaction.
+- Timeline NAV repair completed successfully from retained rows under the cold overlap. Recorded repair writes included 24,031 ms, 8,158 ms, and 8,289 ms; the deliberately cold run covered up to 34,299 fetched NAV rows. Every recorded repair/write status was `ok`; no `error` or `stale` status appeared.
+- Foreground delta sync completed in 13,436 ms while sharing the queue. The deliberately empty-cache bootstrap completed in 123,653 ms after the queued stress work. These are correctness-stress timings, not claimed performance improvements.
+- Sanitized logs contain zero `cannot start a transaction within a transaction`, zero `cannot rollback - no transaction is active`, and zero SQLite write-failure matches.
+- Automated repair evidence remains the deterministic locality proof: an injected first transaction failure is followed by a successful retry using the same fetched rows, and a later identical timeline call makes no second NAV network request. A separate test proves a second repair failure rejects the timeline query.
+
+The very long cold write/repair times are a confirmed limitation, not an N2D regression or hidden success claim. N2D establishes ordering and durable repair. N2T immediately follows and owns reducing the repeated input/valuation volume that made this stress run expensive.
+
+Raw device logs and UI dumps remain local under `/tmp/foliolens-n2d-android-main/`; PR evidence contains only bounded operation names, row counts, durations, status values, device/build identity, and error counts.
+
 ## Progress
 
 - [x] Read AGENTS.md, VISION.md, docs/TECH-DISCOVERY.md, docs/architecture/cache-surfaces.md, docs/process/PLANS.md, the current control report, and PR #250 conversation.
@@ -174,5 +190,5 @@ Validation completed before native evidence:
 - [x] Make timeline NAV repair awaited and retriable.
 - [x] Add focused concurrency and repair tests.
 - [x] Run repository validation.
-- [ ] Capture Android main-preview evidence at the implementation SHA.
-- [ ] Publish the implementation PR and attach acceptance evidence.
+- [x] Capture Android main-preview evidence at the implementation SHA.
+- [x] Publish the implementation PR and attach acceptance evidence.
