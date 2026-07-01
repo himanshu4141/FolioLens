@@ -167,6 +167,15 @@ Validation completed before native evidence:
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
+Android physical acceptance completed on a Pixel 8a running Android 16 with package `com.foliolens.app.prpreview`, app version/runtime `0.0.4`, and channel `foliolens-pr`. The tested Android OTA was `019f1eef-cd9e-79cf-9d2a-6472c0f4a6cb`. EAS built it from GitHub's PR merge commit `4366c279`, whose second parent is implementation head `40d345b0`; the About screen confirmed the `019f1eef-cd9…` prefix before capture. The shared PR stream had briefly been overwritten by another PR, so the N2 EAS job was rerun and the installed app restarted three times before verification.
+
+Measured evidence:
+
+- Focus was moved Funds → Portfolio, then Portfolio → Settings → About inside the 1.2-second idle window. Bottom-tab commit/usable was 45/46 ms, Portfolio → Settings was 110/112 ms, and Settings → About was 90/92 ms. No `query:portfolio`, `query:timeline`, `query:timeline:nav`, or `query:timeline:index` started before the four-second post-blur end marker.
+- Funds → Fund Detail committed in 73 ms and was post-interaction usable in 78 ms. The selected fund's one active timeline completed in 187 ms; no `query:portfolio` and no two alternate timeline queries started during the six-second observation window.
+- Selecting Mix & Weight rendered cached portfolio allocation, rank, and total value. No `query:portfolio` started during the 7.6-second observation window.
+- Raw device logs remain local under `/tmp/foliolens-n2-android/`; PR evidence contains only sanitized route names, benchmark symbols, aggregate counts, durations, and update/build identifiers.
+
 ## Progress
 
 - [x] Read AGENTS.md, VISION.md, docs/SCREENS.md, docs/process/PLANS.md, the current control report, and PR #250 conversation.
@@ -176,5 +185,5 @@ Validation completed before native evidence:
 - [x] Implement the cache-only Fund Detail allocation selector.
 - [x] Add focused tests.
 - [x] Run repository validation.
-- [ ] Capture Android main-preview evidence at the implementation SHA.
+- [x] Capture Android release-like PR-preview evidence at the implementation SHA.
 - [ ] Publish the implementation PR and attach acceptance evidence.
