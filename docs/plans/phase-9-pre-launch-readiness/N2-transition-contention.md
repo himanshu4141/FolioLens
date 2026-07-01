@@ -31,17 +31,17 @@ The post-N1 Android main-preview evidence recorded on PR #250 measured first-vis
 - Speculative prefetch means work started before the user selects the corresponding benchmark.
 - Targeted prefetch means warming exactly one benchmark because its pill received press, pointer-hover, or keyboard-focus intent.
 - Cache-only selector means a read-only subscription to React Query's existing cache that cannot initiate a fetch when the entry is missing or stale.
-- Blur cancellation means clearing queued timers and preventing another queued item from being scheduled after Portfolio loses focus.
+- No-intent behavior means leaving Portfolio focused without pressing, hovering, or keyboard-focusing another benchmark starts no alternate benchmark work at any later time.
 
 ## Scope
 
 - Remove `usePortfolio`'s eager loop over all alternate benchmarks.
 - Add reusable targeted Portfolio and timeline prefetch functions.
 - Extend benchmark pills with press-in, hover, and focus intent handlers and warm the exact portfolio/timeline combination.
-- Focus-gate the Portfolio active-timeline prime and the delayed timeline alternate queue.
+- Focus-gate the Portfolio active-timeline prime and remove the delayed alternate-timeline queue entirely.
 - Cancel delayed timeline timers on blur and prevent completion of an in-flight item from scheduling another item after blur.
 - Replace Fund Detail's second `usePortfolio` call with a cache-only allocation selector.
-- Add focused tests for cancellation, targeted benchmark behavior, and the cache-only Fund Detail selector.
+- Add focused tests for no-intent behavior, targeted benchmark behavior, and the cache-only Fund Detail selector.
 - Use N1 measurements and Android release-like evidence to validate Settings to About and Funds to Fund Detail.
 
 ## Out of Scope
@@ -57,7 +57,7 @@ The post-N1 Android main-preview evidence recorded on PR #250 measured first-vis
 
 Create small exported prefetch helpers beside the existing query fetchers so screens and tests use the same query keys, stale times, and query functions as the active hooks. The active Portfolio screen will call both helpers when a non-active benchmark pill receives intent. This keeps the selected benchmark responsive without warming all alternatives on mount.
 
-Read focus state inside Portfolio variants and the investment timeline hook. The screen's active timeline prime runs only while focused. Portfolio's timeline idle queue starts only while focused, its cleanup clears the current timer on blur, and its completion callback checks a cancellation flag before scheduling the next benchmark. Fund Detail does not arm the idle alternate queue; its benchmark pills use targeted press-in prefetch only.
+Read focus state inside Portfolio variants. The screen's active-key timeline prime runs only while focused. Delete the alternate-timeline effect and its queue so neither Portfolio nor Fund Detail can start unselected benchmark work from mount or elapsed time. Both screens use targeted benchmark intent handlers only.
 
 Add a read-only `QueryCache` subscription for the active Portfolio key that selects the target fund's percentage and rank from existing `fundCards` and `summary`. It does not mount a query observer or provide a query function, so a missing cache entry produces no card instead of a full portfolio aggregation. Fund Detail will use this selector and remove its `usePortfolio` call.
 
@@ -73,19 +73,19 @@ Add a read-only `QueryCache` subscription for the active Portfolio key that sele
 
 ### Milestone 1: Focus-safe and targeted benchmark work
 
-Remove eager alternate Portfolio prefetch, add exact-key prefetch helpers, wire benchmark intent handlers, and focus-gate the timeline prime and idle queue.
+Remove eager alternate Portfolio/timeline prefetch, add exact-key prefetch helpers, wire benchmark intent handlers, and focus-gate only the active-key timeline prime.
 
 Run:
 
     npm test -- --runInBand src/hooks/__tests__/usePortfolio.test.ts src/hooks/__tests__/useInvestmentVsBenchmarkTimeline.test.ts
     npm run typecheck
 
-Expected outcome: leaving Portfolio clears all queued timeline work, while a benchmark pill starts only that benchmark's Portfolio and timeline prefetch.
+Expected outcome: leaving Portfolio idle starts no alternate work, while a benchmark pill starts only that benchmark's Portfolio and timeline prefetch.
 
 Acceptance criteria:
 
-- Portfolio to Settings to About before 1.2 seconds produces no later Portfolio or timeline query start.
-- Blur clears the pending timer and an already-running prefetch cannot schedule the next alternate.
+- Portfolio to Settings to About produces no later alternate Portfolio or timeline query start.
+- A focused Portfolio left idle beyond the former 1.2-second boundary starts no alternate timeline.
 - Mounting Portfolio does not fetch every alternate Portfolio benchmark.
 - Press, hover, or focus on one benchmark pill warms exactly that benchmark.
 
@@ -128,7 +128,7 @@ Acceptance criteria:
 
 ## Validation
 
-Automated tests isolate timer scheduling with fake timers, cancellation during an active operation, and mocked QueryClient calls. Benchmark intent tests assert the selected symbol is the only alternate warmed. Cache-selector tests verify percentage/rank equivalence and empty-result behavior; static inspection verifies the hook uses only `getQueryData` plus `QueryCache.subscribe`, with no query function or fetch call.
+Automated tests retain fake timers beyond the former 1.2-second boundary and prove that creating the targeted handler without invoking it starts no work. A single invocation must warm exactly the selected symbol, and a blurred/disabled handler must do nothing. Cache-selector tests verify percentage/rank equivalence and empty-result behavior; static inspection verifies the hook uses only `getQueryData` plus `QueryCache.subscribe`, with no query function or fetch call.
 
 Native evidence will use the connected Pixel 8a running the main-preview Android package. For Portfolio to Settings to About, clear logs, open Portfolio, navigate through About within 1.2 seconds, then observe at least another two seconds for delayed `query:portfolio` or `query:timeline` starts. For Funds to Fund Detail, capture N1 navigation metrics and assert no second `query:portfolio` starts and no two-alternate benchmark sequence is armed. Record the update ID, Git SHA, device/OS, cache state, timing, and limitations.
 
@@ -136,19 +136,20 @@ Native evidence will use the connected Pixel 8a running the main-preview Android
 
 - A second React Query observer on the Portfolio key could replace shared fetch options. Avoid an observer entirely; subscribe to QueryCache and read `getQueryData` only.
 - Hover and focus can both fire for one pointer action. React Query deduplication and stale-time checks make repeated exact-key prefetch calls safe.
-- Focus state can change while one prefetch is already executing. N2 does not abort active financial computation, but cleanup prevents any remaining queued work from starting; query cancellation with abortable data sources belongs to a later milestone if measurements require it.
+- Focus state can change after a targeted prefetch starts. N2 prevents new intent work once blurred but does not abort a fetch already chosen by the user; AbortSignal-aware cancellation belongs to a later milestone if measurements require it.
 - Direct Fund Detail entry may lack cached allocation. Hide the nonessential Portfolio Weight card rather than delaying the primary route.
 - Desktop and mobile Portfolio variants can drift. Both use the same exported prefetch helpers and shared benchmark card contract.
 
 ## Decision Log
 
 - 2026-07-01: Branch N2 from `origin/main` at `53e57f58`, after the coordinator marked N2 Ready to start.
-- 2026-07-01: Keep the timeline idle prefetch queue but gate it by focus and cancel queued work on blur; replace Portfolio's immediate all-alternative loop with interaction-targeted prefetch.
+- 2026-07-01: Initial implementation retained a focus-gated timeline idle queue while replacing Portfolio's immediate all-alternative loop.
 - 2026-07-01: Use a read-only QueryCache subscription for Fund Detail allocation. This cannot fetch and cannot replace the existing Portfolio query's options.
 - 2026-07-01: Exclude FeedbackSheet deferral because Android first-visit About measurements of 59-84 ms do not demonstrate material route-evaluation cost.
 - 2026-07-01: Use Android main-preview as native acceptance evidence; iOS publishing/signing is unavailable and the blocker is recorded on PR #250.
 - 2026-07-01: Mark PR #252 `[cache-shape-stable]`. N2 retains the existing Portfolio and investment-timeline query keys and serialized payloads; it changes only when prefetches run and reads an existing Portfolio result without adding a persisted cache entry. Bumping `__BUSTER__` would discard valid user caches.
-- 2026-07-01: Keep the cancellable idle queue only for focused Portfolio. Fund Detail already exposes benchmark pills, so its two alternate timeline calculations are removed from mount-time work and replaced entirely by targeted press-in prefetch.
+- 2026-07-01: First review removed Fund Detail from the idle queue after physical evidence showed two unselected timeline calculations.
+- 2026-07-01: Independent Codex and Claude review then clarified the prompt requires targeted prefetch instead of all automatic alternate work even while Portfolio remains focused. Delete the queue mechanism and make targeted intent the only alternate-benchmark entry point.
 
 ## Amendments
 
@@ -156,7 +157,7 @@ The implementation follows the planned scope with one safety refinement: the ini
 
 FeedbackSheet remains eagerly imported because the N1 Android measurements showed healthy first-visit About usability at 59-84 ms. N2 therefore makes no unsupported bundle-evaluation claim.
 
-The first physical Fund Detail trace confirmed the cache-only selector removed `query:portfolio`, but also showed the route's existing idle timeline queue calculating two unselected benchmarks. N2 now disables that idle queue for Fund Detail while preserving targeted benchmark-pill prefetch; the final physical trace must show neither a full Portfolio aggregation nor two alternate timeline starts.
+The first physical Fund Detail trace confirmed the cache-only selector removed `query:portfolio`, but also showed the route's existing idle timeline queue calculating two unselected benchmarks. A second implementation disabled that queue for Fund Detail, but independent review correctly found focused Portfolio still ran the same speculative work. The final implementation removes the queue and its opt-in parameter entirely. The replacement helper has no timer or mount effect and can run only when a press/hover/focus handler invokes it.
 
 Validation completed before native evidence:
 
@@ -167,7 +168,7 @@ Validation completed before native evidence:
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
-Android physical acceptance completed on a Pixel 8a running Android 16 with package `com.foliolens.app.prpreview`, app version/runtime `0.0.4`, and channel `foliolens-pr`. The tested Android OTA was `019f1eef-cd9e-79cf-9d2a-6472c0f4a6cb`. EAS built it from GitHub's PR merge commit `4366c279`, whose second parent is implementation head `40d345b0`; the About screen confirmed the `019f1eef-cd9…` prefix before capture. The shared PR stream had briefly been overwritten by another PR, so the N2 EAS job was rerun and the installed app restarted three times before verification.
+Preliminary Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.prpreview`, app version/runtime `0.0.4`, and channel `foliolens-pr`. The tested Android OTA was `019f1eef-cd9e-79cf-9d2a-6472c0f4a6cb` at implementation head `40d345b0`. This proved post-blur and Fund Detail behavior but predates removal of focused Portfolio's idle queue and is not the final acceptance record. Per the coordinator/reviewer requirement, final evidence must use Android main-preview/release at the corrected implementation head.
 
 Measured evidence:
 
@@ -185,5 +186,5 @@ Measured evidence:
 - [x] Implement the cache-only Fund Detail allocation selector.
 - [x] Add focused tests.
 - [x] Run repository validation.
-- [x] Capture Android release-like PR-preview evidence at the implementation SHA.
+- [ ] Capture final Android main-preview/release evidence at the corrected implementation SHA.
 - [ ] Publish the implementation PR and attach acceptance evidence.

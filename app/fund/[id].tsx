@@ -194,7 +194,6 @@ function PerformanceTab({
     userId,
     selectedSymbol,
     window,
-    false,
   );
   // Track crosshair position so the return summary below the chart stays in sync.
   // null = no active crosshair (show end-of-period values).

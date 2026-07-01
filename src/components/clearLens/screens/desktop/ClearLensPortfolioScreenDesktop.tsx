@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
@@ -31,6 +31,7 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import { createTargetedBenchmarkPrefetch } from '@/src/lib/targetedBenchmarkPrefetch';
 
 export function ClearLensPortfolioScreenDesktop() {
   const tokens = useClearLensTokens();
@@ -55,17 +56,25 @@ export function ClearLensPortfolioScreenDesktop() {
     () => fundCards.map((fund) => ({ id: fund.id, schemeCode: fund.schemeCode })),
     [fundCards],
   );
-  const handleBenchmarkPrefetch = useCallback((symbol: string) => {
-    if (!isFocused || !userId || fundRefs.length === 0) return;
-    void prefetchPortfolioBenchmark(queryClient, userId, symbol);
-    void prefetchInvestmentVsBenchmarkTimeline(
-      queryClient,
-      fundRefs,
-      userId,
-      symbol,
-      portfolioChartWindow,
-    );
-  }, [fundRefs, isFocused, portfolioChartWindow, queryClient, userId]);
+  const handleBenchmarkPrefetch = useMemo(
+    () => createTargetedBenchmarkPrefetch({
+      enabled: isFocused && !!userId && fundRefs.length > 0,
+      prefetchPortfolio: (symbol) => {
+        if (userId) void prefetchPortfolioBenchmark(queryClient, userId, symbol);
+      },
+      prefetchTimeline: (symbol) => {
+        if (!userId) return;
+        void prefetchInvestmentVsBenchmarkTimeline(
+          queryClient,
+          fundRefs,
+          userId,
+          symbol,
+          portfolioChartWindow,
+        );
+      },
+    }),
+    [fundRefs, isFocused, portfolioChartWindow, queryClient, userId],
+  );
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
 
@@ -132,7 +141,6 @@ export function ClearLensPortfolioScreenDesktop() {
               funds={fundRefs}
               userId={userId}
               benchmarkSymbol={defaultBenchmarkSymbol}
-              idlePrefetchEnabled={isFocused}
             />
 
             <MoversRow fundCards={fundCards} />

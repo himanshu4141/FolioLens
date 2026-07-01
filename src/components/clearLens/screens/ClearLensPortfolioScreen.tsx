@@ -67,6 +67,7 @@ import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
+import { createTargetedBenchmarkPrefetch } from '@/src/lib/targetedBenchmarkPrefetch';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensPortfolioScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensPortfolioScreenDesktop';
 
@@ -422,12 +423,10 @@ export function InvestmentVsBenchmarkChart({
   funds,
   userId,
   benchmarkSymbol,
-  idlePrefetchEnabled,
 }: {
   funds: FundRef[];
   userId: string | undefined;
   benchmarkSymbol: string;
-  idlePrefetchEnabled: boolean;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -442,7 +441,6 @@ export function InvestmentVsBenchmarkChart({
     userId,
     benchmarkSymbol,
     window,
-    idlePrefetchEnabled,
   );
   const benchmarkLabel = BENCHMARK_OPTIONS.find((option) => option.symbol === benchmarkSymbol)?.label ?? benchmarkSymbol;
   const xAxisLabels = useMemo(() => buildJourneyXAxisLabels(points, window), [points, window]);
@@ -1024,17 +1022,25 @@ function ClearLensPortfolioScreenMobile() {
         .map((fund) => ({ id: fund.id as string, schemeCode: fund.scheme_code as number })),
     [userFunds],
   );
-  const handleBenchmarkPrefetch = useCallback((symbol: string) => {
-    if (!isFocused || !userId || fundRefs.length === 0) return;
-    void prefetchPortfolioBenchmark(queryClient, userId, symbol);
-    void prefetchInvestmentVsBenchmarkTimeline(
-      queryClient,
-      fundRefs,
-      userId,
-      symbol,
-      portfolioChartWindow,
-    );
-  }, [fundRefs, isFocused, portfolioChartWindow, queryClient, userId]);
+  const handleBenchmarkPrefetch = useMemo(
+    () => createTargetedBenchmarkPrefetch({
+      enabled: isFocused && !!userId && fundRefs.length > 0,
+      prefetchPortfolio: (symbol) => {
+        if (userId) void prefetchPortfolioBenchmark(queryClient, userId, symbol);
+      },
+      prefetchTimeline: (symbol) => {
+        if (!userId) return;
+        void prefetchInvestmentVsBenchmarkTimeline(
+          queryClient,
+          fundRefs,
+          userId,
+          symbol,
+          portfolioChartWindow,
+        );
+      },
+    }),
+    [fundRefs, isFocused, portfolioChartWindow, queryClient, userId],
+  );
   // Eagerly prime the chart query as soon as portfolio data and fundRefs
   // are both ready, before `InvestmentVsBenchmarkChart` mounts. Without
   // this, the chart fires its own `useQuery` only after the portfolio
@@ -1135,7 +1141,6 @@ function ClearLensPortfolioScreenMobile() {
             funds={fundRefs}
             userId={userId}
             benchmarkSymbol={defaultBenchmarkSymbol}
-            idlePrefetchEnabled={isFocused}
           />
 
           {moneyTrailData ? (
