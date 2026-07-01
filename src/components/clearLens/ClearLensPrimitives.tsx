@@ -1,6 +1,7 @@
 import { ReactNode, useMemo } from 'react';
 import {
   Text,
+  Pressable,
   TouchableOpacity,
   View,
   StyleSheet,
@@ -229,22 +230,34 @@ export function ClearLensPill({
   label,
   active = false,
   onPress,
+  onPressIn,
+  onHoverIn,
+  onFocus,
 }: {
   label: string;
   active?: boolean;
   onPress?: () => void;
+  onPressIn?: () => void;
+  onHoverIn?: () => void;
+  onFocus?: () => void;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   return (
-    <TouchableOpacity
+    <Pressable
       disabled={!onPress}
       onPress={onPress}
-      style={[styles.pill, active && styles.pillActive]}
-      activeOpacity={0.75}
+      onPressIn={onPressIn}
+      onHoverIn={onHoverIn}
+      onFocus={onFocus}
+      style={({ pressed }) => [
+        styles.pill,
+        active && styles.pillActive,
+        pressed && { opacity: 0.75 },
+      ]}
     >
       <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 

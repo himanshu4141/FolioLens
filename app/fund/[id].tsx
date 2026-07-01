@@ -9,11 +9,11 @@ import {
   Linking,
   useWindowDimensions,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart, PieChart } from 'react-native-gifted-charts';
 import Svg, { G, Line as SvgLine, Rect as SvgRect, Text as SvgText } from 'react-native-svg';
-import { useIsRestoring, useQuery } from '@tanstack/react-query';
+import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   useFundDetail,
   useFundNavHistory,
@@ -22,9 +22,12 @@ import {
   type TimeWindow,
 } from '@/src/hooks/useFundDetail';
 import { useFundComposition } from '@/src/hooks/useFundComposition';
-import { usePortfolio } from '@/src/hooks/usePortfolio';
+import { useCachedPortfolioWeight } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
-import { useInvestmentVsBenchmarkTimeline } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
+import {
+  prefetchInvestmentVsBenchmarkTimeline,
+  useInvestmentVsBenchmarkTimeline,
+} from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
@@ -51,7 +54,7 @@ import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
-import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import {
   readBenchmarkName,
   readFundManager,
@@ -141,12 +144,14 @@ function PerformanceTab({
   fundBenchmarkSymbol,
   fundRef,
   userId,
+  prefetchEnabled,
 }: {
   navHistory: { date: string; value: number }[];
   fundBenchmarkIndex: string | null;
   fundBenchmarkSymbol: string | null;
   fundRef?: FundRef;
   userId?: string;
+  prefetchEnabled: boolean;
 }) {
   const { compatible: colors } = useClearLensTokens();
   const tokens = useClearLensTokens();
@@ -173,11 +178,23 @@ function PerformanceTab({
   const [selectedSymbol, setSelectedSymbol] = useState<string>(
     () => benchmarkOptions[0]?.symbol ?? BENCHMARK_OPTIONS[0].symbol,
   );
+  const queryClient = useQueryClient();
+  const handleBenchmarkPrefetch = useCallback((symbol: string) => {
+    if (!prefetchEnabled || !fundRef || !userId || symbol === selectedSymbol) return;
+    void prefetchInvestmentVsBenchmarkTimeline(
+      queryClient,
+      [fundRef],
+      userId,
+      symbol,
+      window,
+    );
+  }, [fundRef, prefetchEnabled, queryClient, selectedSymbol, userId, window]);
   const investmentTimeline = useInvestmentVsBenchmarkTimeline(
     fundRef ? [fundRef] : [],
     userId,
     selectedSymbol,
     window,
+    prefetchEnabled,
   );
   // Track crosshair position so the return summary below the chart stays in sync.
   // null = no active crosshair (show end-of-period values).
@@ -545,6 +562,7 @@ function PerformanceTab({
                 selectedSymbol === opt.symbol && s.benchmarkPillActive,
 
               ]}
+              onPressIn={() => handleBenchmarkPrefetch(opt.symbol)}
               onPress={() => setSelectedSymbol(opt.symbol)}
               activeOpacity={0.75}
             >
@@ -688,6 +706,7 @@ function PerformanceTab({
               selectedSymbol === opt.symbol && s.benchmarkPillActive,
 
             ]}
+            onPressIn={() => handleBenchmarkPrefetch(opt.symbol)}
             onPress={() => setSelectedSymbol(opt.symbol)}
             activeOpacity={0.75}
           >
@@ -1453,29 +1472,21 @@ function ordinalRank(rank: number): string {
 function PortfolioHealthDonut({
   fundId,
   currentValue,
+  userId,
 }: {
   fundId: string;
   currentValue: number | null;
+  userId: string | undefined;
 }) {
   const { compatible: colors } = useClearLensTokens();
   const ds = useMemo(() => makeDonutStyles(colors), [colors]);
-  const { defaultBenchmarkSymbol } = useAppStore();
-  const { data: portfolioData } = usePortfolio(defaultBenchmarkSymbol);
-  const fundCards = portfolioData?.fundCards ?? [];
-  const summary = portfolioData?.summary ?? null;
-  const totalValue = summary?.totalValue ?? 0;
+  const weight = useCachedPortfolioWeight(userId, fundId, currentValue);
 
-  if (!currentValue || currentValue <= 0 || totalValue <= 0) return null;
+  if (!weight) return null;
 
-  const fundPct = (currentValue / totalValue) * 100;
+  const fundPct = weight.percentage;
   const restPct = 100 - fundPct;
-
-  // Rank this fund among all holdings by currentValue (descending)
-  const sorted = [...fundCards]
-    .filter((f) => f.currentValue !== null && f.currentValue > 0)
-    .sort((a, b) => (b.currentValue ?? 0) - (a.currentValue ?? 0));
-  const rank = sorted.findIndex((f) => f.id === fundId) + 1;
-  const rankLabel = rank > 0 ? ordinalRank(rank) : null;
+  const rankLabel = weight.rank !== null ? ordinalRank(weight.rank) : null;
 
   const donutData = [
     { value: fundPct, color: colors.primary },
@@ -1505,7 +1516,7 @@ function PortfolioHealthDonut({
             <Text style={ds.rankLabel}>{rankLabel}</Text>
           )}
           <Text style={ds.totalLabel}>
-            Total: {formatCurrency(totalValue)}
+            Total: {formatCurrency(weight.totalValue)}
           </Text>
         </View>
       </View>
@@ -1900,6 +1911,7 @@ function ClearLensFundDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   useTrackInsightViewed('fund_detail', id ?? null);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const [activeTab, setActiveTab] = useState<ClearLensFundTab>('performance');
   const { data, isLoading, isError } = useFundDetail(id);
   // Full NAV history is fetched in parallel as a background query. The
@@ -2095,6 +2107,7 @@ function ClearLensFundDetailScreen() {
                 fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
                 fundRef={{ id: data.id, schemeCode: data.schemeCode }}
                 userId={userId}
+                prefetchEnabled={isFocused}
               />
               <GrowthConsistencyChart navHistory={navHistory} />
             </>
@@ -2132,7 +2145,11 @@ function ClearLensFundDetailScreen() {
         {activeTab === 'composition' && (
           <>
             <FundCompositionTab schemeCode={data.schemeCode} />
-            <PortfolioHealthDonut fundId={data.id} currentValue={data.currentValue} />
+            <PortfolioHealthDonut
+              fundId={data.id}
+              currentValue={data.currentValue}
+              userId={userId}
+            />
           </>
         )}
 

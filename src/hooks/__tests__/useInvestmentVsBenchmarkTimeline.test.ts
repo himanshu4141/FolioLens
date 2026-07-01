@@ -4,7 +4,12 @@ jest.mock('@/src/hooks/usePerformanceTimeline', () => ({
 }));
 
 // eslint-disable-next-line import/first -- mocks must register before module imports
-import { computeInvestmentVsBenchmarkTimeline } from '../useInvestmentVsBenchmarkTimeline';
+import type { QueryClient } from '@tanstack/react-query';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import {
+  computeInvestmentVsBenchmarkTimeline,
+  prefetchInvestmentVsBenchmarkTimeline,
+} from '../useInvestmentVsBenchmarkTimeline';
 
 const FUND = { id: 'fund-1', schemeCode: 100 };
 
@@ -226,5 +231,31 @@ describe('computeInvestmentVsBenchmarkTimeline', () => {
 
     const allotment = result.points.find((point) => point.date === '2018-04-09');
     expect(allotment?.portfolioValue).toBe(25000);
+  });
+});
+
+describe('N2 targeted timeline prefetch', () => {
+  it('warms only the requested benchmark and window key', async () => {
+    const prefetchQuery = jest.fn().mockResolvedValue(undefined);
+    const queryClient = { prefetchQuery } as unknown as QueryClient;
+
+    await prefetchInvestmentVsBenchmarkTimeline(
+      queryClient,
+      [FUND],
+      'user-1',
+      '^NIFTY100TRI',
+      '3Y',
+    );
+
+    expect(prefetchQuery).toHaveBeenCalledTimes(1);
+    expect(prefetchQuery.mock.calls[0][0]).toMatchObject({
+      queryKey: [
+        'investmentVsBenchmarkTimeline',
+        'user-1',
+        'fund-1',
+        '^NIFTY100TRI',
+        '3Y',
+      ],
+    });
   });
 });

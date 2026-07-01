@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
@@ -17,6 +17,7 @@ import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import * as navRepo from '@/src/lib/db/nav';
 import * as txRepo from '@/src/lib/db/tx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import { startFocusAwarePrefetchQueue } from '@/src/lib/focusAwarePrefetchQueue';
 
 /**
  * React Query key prefixes whose contents this hook's queryFn reads
@@ -468,6 +469,7 @@ export function useInvestmentVsBenchmarkTimeline(
   userId: string | undefined,
   benchmarkSymbol: string,
   window: TimeWindow,
+  prefetchEnabled = true,
 ): InvestmentVsBenchmarkTimeline {
   const fundKey = funds.map((fund) => fund.id).sort().join(',');
   const queryClient = useQueryClient();
@@ -495,43 +497,30 @@ export function useInvestmentVsBenchmarkTimeline(
   // of NAV rows — that's the freeze users see on first paint of
   // Portfolio and when navigating to About immediately after.
   useEffect(() => {
-    if (!data || !userId || funds.length === 0) return;
+    if (!data || !userId || funds.length === 0 || !prefetchEnabled) return;
     // Capture `userId` in a typed local so the inner `runNext` closure
     // sees `string` instead of `string | undefined` — TypeScript's
     // narrowing on the guard above doesn't reach into the nested fn.
     const uid: string = userId;
     const others = BENCHMARK_OPTIONS.filter((option) => option.symbol !== benchmarkSymbol);
-    let cancelled = false;
-    let cursor = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    const queue = startFocusAwarePrefetchQueue({
+      items: others,
+      // The active chart should finish painting before speculative work.
+      initialDelayMs: 1200,
+      // Yield between alternatives so user gestures get an idle window.
+      gapMs: 250,
+      prefetch: (option) =>
+        prefetchInvestmentVsBenchmarkTimeline(
+          queryClient,
+          funds,
+          uid,
+          option.symbol,
+          window,
+        ),
+    });
 
-    function runNext() {
-      if (cancelled || cursor >= others.length) return;
-      const option = others[cursor++];
-      queryClient
-        .prefetchQuery({
-          queryKey: ['investmentVsBenchmarkTimeline', uid, fundKey, option.symbol, window],
-          queryFn: () =>
-            fetchInvestmentVsBenchmarkTimeline(funds, uid, option.symbol, window),
-          staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
-        })
-        .finally(() => {
-          if (cancelled) return;
-          // 250ms gap between prefetches yields enough idle time for
-          // user gestures (tab switches, pan) to feel responsive.
-          timer = setTimeout(runNext, 250);
-        });
-    }
-
-    // First prefetch fires after a 1.2s idle window so the active chart
-    // has finished painting and any tab transition can settle.
-    timer = setTimeout(runNext, 1200);
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient]);
+    return () => queue.cancel();
+  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient, prefetchEnabled]);
 
   return {
     points: data?.points ?? [],
@@ -539,4 +528,19 @@ export function useInvestmentVsBenchmarkTimeline(
     isLoading,
     error: error ? String(error) : null,
   };
+}
+
+export function prefetchInvestmentVsBenchmarkTimeline(
+  queryClient: QueryClient,
+  funds: FundRef[],
+  userId: string,
+  benchmarkSymbol: string,
+  window: TimeWindow,
+): Promise<void> {
+  const fundKey = funds.map((fund) => fund.id).sort().join(',');
+  return queryClient.prefetchQuery({
+    queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
+    queryFn: () => fetchInvestmentVsBenchmarkTimeline(funds, userId, benchmarkSymbol, window),
+    staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
+  });
 }
