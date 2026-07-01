@@ -66,4 +66,24 @@ describe('perfMark', () => {
     expect(mockTrack).toHaveBeenCalledTimes(1);
   });
 
+  it('bounds abandoned spans created by repeated rejected attempts', () => {
+    const abandoned = Array.from({ length: 600 }, () => perfStart('query:retrying'));
+
+    expect(perfEnd(abandoned[0])).toBe(-1);
+    expect(perfEnd(abandoned[99])).toBe(-1);
+    expect(perfEnd(abandoned[100])).toBeGreaterThanOrEqual(0);
+
+    for (const spanId of abandoned) perfCancel(spanId);
+  });
+
+  it('expires an abandoned span before a later completion can misattribute it', () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const abandoned = perfStart('query:retrying');
+    now += 5 * 60 * 1000 + 1;
+
+    expect(perfEnd(abandoned)).toBe(-1);
+    expect(mockTrack).not.toHaveBeenCalled();
+  });
+
 });

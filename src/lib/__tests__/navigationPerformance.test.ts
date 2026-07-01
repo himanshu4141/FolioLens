@@ -178,4 +178,16 @@ describe('navigationPerformance', () => {
     expect(markNavigationRouteCommitted('/settings/about')).toEqual([]);
     expect(mockTrack).not.toHaveBeenCalledWith('navigation_performance', expect.anything());
   });
+
+  it('cancels an unmatched press when a different route commits', () => {
+    expect(startNavigationMeasurement({
+      transition: 'settings_to_about',
+      fromRoute: 'settings',
+      toRoute: 'about',
+    })).not.toBeNull();
+
+    expect(markNavigationRouteCommitted('/funds')).toEqual([]);
+    expect(markNavigationRouteCommitted('/settings/about')).toEqual([]);
+    expect(mockTrack).not.toHaveBeenCalledWith('navigation_performance', expect.anything());
+  });
 });

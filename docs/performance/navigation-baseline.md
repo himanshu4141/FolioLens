@@ -4,12 +4,14 @@ This runbook collects comparable FolioLens navigation timings from release-mode 
 
 ## Metrics
 
-Every instrumented press emits two `navigation_performance` PostHog events and matching `[perf] navigation:` device-log lines:
+Every instrumented press writes two matching `[perf] navigation:` device-log lines. When PostHog is configured, it also emits two `navigation_performance` events:
 
 - `phase=route_commit`: elapsed time from the press handler to the destination route's committed React render.
 - `phase=post_interaction_usable`: elapsed time from the same press until React Native's active navigation interactions have drained.
 
 The payload has only fixed route/transition names, `cache_state`, `sync_in_flight`, `active_query_count`, and aggregate `fund_count`, `transaction_count`, or `nav_row_count` values where available. It never contains a fund name, fund ID, user ID, pathname, transaction, or authentication value.
+
+The current `preview-pr` workflow does not supply `EXPO_PUBLIC_POSTHOG_KEY`, so the PR-preview OTAs emit device logs only. Use an analytics-enabled `preview-main` or production build for PostHog collection until Navigation N0 restores preview telemetry parity. Do not treat the absence of PR-preview PostHog rows as an instrumentation failure.
 
 ## Build and device record
 
@@ -27,6 +29,8 @@ Use the same commit for both platforms and do not compare a development build wi
    - full OTA update ID, or `Embedded (no OTA)`;
    - OTA date.
 4. Also record the Git commit, EAS Android/iOS build IDs, device model, OS version, network type, and whether Low Power/Battery Saver mode is enabled.
+
+The physical release smoke for N1 is owned by `@himanshu4141` and is due by 2026-07-02, before Navigation N2 implementation begins. Attach one Android and one iOS sample showing the paired commit/usable log lines to PR #251 or the `[Execution N1]` evidence on PR #250. If one platform is unavailable by that date, record the concrete device/signing blocker there rather than substituting a development measurement.
 
 ## Capture logs
 

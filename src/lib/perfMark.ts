@@ -22,6 +22,8 @@ import { analytics } from '@/src/lib/analytics';
 
 const APP_BOOT_AT = Date.now();
 let nextSpanId = 0;
+const MAX_ACTIVE_SPANS = 500;
+const SPAN_TTL_MS = 5 * 60 * 1000;
 
 export type PerfSpanId = string & { readonly __perfSpanId: unique symbol };
 
@@ -33,6 +35,12 @@ interface PerfSpan {
 const marks = new Map<PerfSpanId, PerfSpan>();
 
 export function perfStart(label: string): PerfSpanId {
+  cleanupExpiredSpans();
+  while (marks.size >= MAX_ACTIVE_SPANS) {
+    const oldestSpanId = marks.keys().next().value as PerfSpanId | undefined;
+    if (oldestSpanId === undefined) break;
+    marks.delete(oldestSpanId);
+  }
   nextSpanId += 1;
   const spanId = `perf-${nextSpanId}` as PerfSpanId;
   marks.set(spanId, { label, startedAt: Date.now() });
@@ -40,6 +48,7 @@ export function perfStart(label: string): PerfSpanId {
 }
 
 export function perfEnd(spanId: PerfSpanId, extra?: Record<string, unknown>): number {
+  cleanupExpiredSpans();
   const span = marks.get(spanId);
   marks.delete(spanId);
   if (span === undefined) return -1;
@@ -58,6 +67,14 @@ export function perfEnd(spanId: PerfSpanId, extra?: Record<string, unknown>): nu
 /** Drop a span that can no longer complete without emitting a false metric. */
 export function perfCancel(spanId: PerfSpanId): void {
   marks.delete(spanId);
+}
+
+function cleanupExpiredSpans(now = Date.now()): void {
+  for (const [spanId, span] of marks) {
+    if (now - span.startedAt > SPAN_TTL_MS) {
+      marks.delete(spanId);
+    }
+  }
 }
 
 export function perfNow(label: string, extra?: Record<string, unknown>): void {

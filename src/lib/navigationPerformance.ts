@@ -217,8 +217,12 @@ export function markNavigationRouteCommitted(pathname: string): string[] {
   if (route === 'unknown') return [];
 
   const committedIds: string[] = [];
-  for (const navigation of pendingNavigations.values()) {
-    if (navigation.committed || navigation.toRoute !== route) continue;
+  for (const navigation of [...pendingNavigations.values()]) {
+    if (navigation.committed) continue;
+    if (navigation.toRoute !== route) {
+      cancelNavigationMeasurement(navigation.id);
+      continue;
+    }
     navigation.committed = true;
     completeNavigationPhase(navigation, 'route_commit', navigation.commitSpanId);
     committedIds.push(navigation.id);

@@ -140,6 +140,8 @@ Native release evidence must use physical Android and iOS devices where availabl
 - 2026-07-01: Keep PR #250 unmerged and branch N1 directly from `origin/main` at `df5f746d907250fa5dfeb9aedede6135cc511ab1`.
 - 2026-07-01: Track sync activity with a nested counter around both high-level scope derivation and low-level sync. Inferring it only from emitted `db:sync:*` spans would miss the initial fund-roster fetch.
 - 2026-07-01: Mark PR #251 `[cache-shape-stable]`. The perf-span migration touches query-hook files but changes no query key, selected column, scalar/array contract, or serialized payload, so bumping React Query `__BUSTER__` would discard valid caches without cause.
+- 2026-07-01: Bound the generic span store to 500 live entries with a five-minute expiry. Unique IDs removed the old label-based accidental bound, so retries that throw before `perfEnd` otherwise accumulate for the process lifetime.
+- 2026-07-01: Cancel uncommitted navigation attempts when a recognized different route commits. This prevents a failed Settings → About press from being falsely completed by an unrelated About visit within the timeout.
 
 ## Amendments
 
@@ -147,13 +149,14 @@ Implementation stayed inside N1 scope. Two details were sharpened from the initi
 
 - The cache snapshot includes `active_query_count`, matching the control report's requirement in addition to the prompt's warm/cold and row-count fields.
 - Sync-in-flight uses an idempotent counter in `performanceRuntimeState.ts` rather than inferring from timed sync spans, so the signal covers the whole orchestration. This changes no sync order, query, or data behavior.
+- Review convergence added bounded/expiring generic spans and different-target supersession tests. The baseline runbook now states that PR-preview has no PostHog transport until N0 and assigns the physical smoke to `@himanshu4141` by 2026-07-02 before N2.
 
 Validation completed on 2026-07-01:
 
 - `npm run typecheck` — passed with zero errors.
 - `npm run lint` — passed with zero warnings.
-- Focused perf/navigation/sync tests — 36 passed.
-- Full Jest suite — 76 suites and 1,795 tests passed.
+- Focused perf/navigation/sync tests — 39 passed.
+- Full Jest suite — 76 suites and 1,798 tests passed.
 - Android production export — passed, 1,745 modules, 6.2 MB Hermes bundle.
 - iOS production export — passed, 1,732 modules, 6.2 MB Hermes bundle.
 - No Android device or booted iOS Simulator was attached. The managed Expo checkout has no generated Xcode project, so physical release p50/p95 samples are intentionally deferred to the documented EAS-installed-device run rather than replaced with development timings.
