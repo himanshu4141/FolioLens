@@ -627,83 +627,113 @@ the PRs demonstrating first-attempt completion across Android and iOS.
 
 ## Recommended implementation order
 
-The navigation work and Google auth work are separate implementation tracks. Keep both findings in
-this report as requested, but do not make either track block the other.
+Implementation is deliberately sequential: one milestone, one implementation PR, two independent
+reviews, convergence, merge, then the next milestone starts from the updated `main`. The milestone
+IDs preserve the earlier research labels; the **Queue** column is the execution order.
 
-### Navigation N0 — Decouple data lifecycle from analytics (parallel correctness fix)
+| Queue | Milestone | Scope | Why here |
+|---:|---|---|---|
+| 1 | N1 | Navigation measurement harness | Establishes trustworthy before/after evidence |
+| 2 | N2 | Cancel prefetch contention; remove Fund Detail's second portfolio hook; measure/defer FeedbackSheet | Cross-channel lead for both reported transitions |
+| 3 | N0 | Decouple native data lifecycle from analytics; restore preview telemetry parity | Correctness fix and preview-only amplifier removal |
+| 4 | N3 | Freeze/focus-gate hidden screens; granular invalidation; remove `^NSEI` default | Removes the intermittent background-work amplifier |
+| 5 | N4 | Single SessionProvider; narrow Zustand subscriptions; memoize insights | Shared foundation for auth and structural rerender cleanup |
+| 6 | Auth A0 | Deterministic native Google OAuth completion | Reuses the one N4 session source; does not block earlier navigation work |
+| 7 | N5 | Virtualize Funds and Money Trail | Directly addresses list scaling and tap latency |
+| 8 | N6 | Transition-first Fund Detail refactor | Builds on the contained N2 win |
+| 9 | N7 | Split portfolio core from benchmark work | Larger financial-compute change after equivalence evidence exists |
+| 10 | N8 | Bundle, persisted-cache, and SDK cleanup | Final measured optimization layer |
 
-Record the app variant/update ID first. The current preview-PR workflow definitely omits the
-PostHog key and therefore disables the native SQLite lifecycle. Split correctness from telemetry in
-a contained change and verify bootstrap/sync with analytics disabled. This removes preview-specific
-confounding but is not expected to remove the hang seen on main.
+N1 instrumentation is first because the hangs occur on both main and preview. N2 is the first
+behavior change because it is the shared cross-channel cause. N0 follows as a required correctness
+fix and removes preview-only confounding; it is not expected to remove the main-build hang by itself.
 
-### Navigation N1 — Measurement harness (parallel with N0)
+---
 
-Fix span IDs and add route-pair press/commit/usable metrics. Capture a baseline on one mid-range
-Android device and one iPhone release build. This is a prerequisite for credible before/after data,
-not a reason to delay obvious P0 fixes.
+## Execution, review, and merge protocol
 
-### Navigation N2 — Cancel deterministic transition contention
+PR #250 is the control-plane PR and remains open until every implementation milestone is merged.
+Implementation PRs target `main`; they must not merge or cherry-pick the research branch.
 
-First focus-gate/cancel timeline and benchmark prefetch. Remove Fund Detail's second full
-`usePortfolio()` call so opening a fund does not re-arm the prefetch storm. If N1 confirms material
-About route-evaluation time, defer `FeedbackSheet` import/mount until a feedback action is tapped.
-These are contained changes with the closest causal links to the two named transitions.
+### Reading this report before PR #250 merges
 
-### Navigation N3 — Stop hidden-screen invalidation work
+At the start of every implementation and review session:
 
-Ship together:
+```bash
+git fetch origin codex/app-navigation-performance-audit
+git show origin/codex/app-navigation-performance-audit:docs/research/app-navigation-performance-audit-2026-06-30.md
+```
 
-- freeze all heavy tabs/stacks on blur;
-- replace global invalidation with granular stale marking and visible-screen refetch;
-- remove the `^NSEI` default.
+Also read the current PR #250 conversation because later corrections may be newer than the last
+report commit. Do not assume this file exists on `main`, and do not copy it into an implementation
+PR merely to make the prompt path resolve.
 
-This removes the intermittent amplifier after N2 addresses the reliable timer path.
+### Three roles
 
-### Navigation N4 — One session source + narrow store subscriptions
+1. **Execution owner** — implements exactly one queued milestone, validates it, opens the
+   implementation PR, addresses review feedback, merges after convergence, then starts the next
+   milestone from updated `main`.
+2. **Codex reviewer/coordinator** — independently reviews each implementation PR and maintains the
+   tracking table and conclusions on PR #250.
+3. **Claude reviewer** — independently reviews each implementation PR, challenges claims and test
+   evidence, and confirms convergence on the implementation PR.
 
-Create the root session provider, replace full Zustand subscriptions, and memoize portfolio
-insights. This is P1 structural cleanup for navigation, not a prerequisite for N0–N3. The independent
-auth track should consume this provider when sequencing permits, but must not create a second source.
+Because the agents may post through the same GitHub account, every comment starts with a role tag:
+`[Execution N1]`, `[Codex review N1]`, or `[Claude review N1]`.
 
-### Navigation N5 — Virtualize Funds and Money Trail
+### Per-milestone cycle
 
-Use `FlatList`, one style creation per screen, memoized rows, stable callbacks, and large fixtures.
-This directly addresses Your Funds responsiveness and prevents Money Trail from becoming the next
-reported hang.
+1. The execution owner selects the first `Pending` row below and branches from current `main`.
+2. It reads the milestone prompt from this unmerged report, implements only that scope, and runs the
+   repository validation checklist.
+3. It opens a draft implementation PR against `main`, marks it ready when checks and milestone
+   acceptance evidence are present, then comments on PR #250 with the implementation PR link.
+4. Codex and Claude review independently. Actionable findings are inline threads; each reviewer also
+   posts a top-level summary stating approve, changes requested, or blocked on evidence.
+5. The execution owner addresses every actionable thread, replies with commit/test evidence, and
+   requests re-review. It does not dismiss disagreement or self-resolve a reviewer's thread.
+6. Review/fix/re-review repeats until both reviewers explicitly post `CONVERGED`, required checks are
+   green, and no unresolved actionable thread remains.
+7. The execution owner merges using the repository's normal merge method, confirms `main` contains
+   the merge, and comments on PR #250 with the implementation PR, merge SHA, validation results,
+   measured before/after evidence, and any scope amendment.
+8. The Codex coordinator updates the tracking table on this branch. Only then may the execution
+   owner start the next row from the new `main`.
 
-### Navigation N6 — Make Fund Detail transition-first
+### Program tracking
 
-Prefetch from fund rows, render cached hero data immediately, defer charts until after interactions,
-and split tabs. Verify both warm navigation and deep-link cold entry.
+| Queue | Milestone | Status | Implementation PR | Merge SHA | Evidence / amendments |
+|---:|---|---|---|---|---|
+| 1 | N1 | Pending | — | — | — |
+| 2 | N2 | Pending | — | — | — |
+| 3 | N0 | Pending | — | — | — |
+| 4 | N3 | Pending | — | — | — |
+| 5 | N4 | Pending | — | — | — |
+| 6 | Auth A0 | Pending | — | — | — |
+| 7 | N5 | Pending | — | — | — |
+| 8 | N6 | Pending | — | — | — |
+| 9 | N7 | Pending | — | — | — |
+| 10 | N8 | Pending | — | — | — |
 
-### Navigation N7 — Split portfolio core from benchmark work
-
-Remove threefold aggregation/XIRR work and switch to targeted benchmark prefetch. This may be folded
-into N2 if the change remains contained, but it deserves separate correctness tests for financial
-outputs.
-
-### Navigation N8 — Shrink bundle/persisted cache and align SDK patches
-
-Direct font/icon/chart imports, lazy feedback UI, native persister diet, cache documentation update,
-then Expo SDK patch alignment. Re-export Android/web artifacts and record size deltas.
-
-### Auth A0 — Repair native Google OAuth completion (independent)
-
-Make OAuth mode explicit, converge browser/deep-link delivery through one idempotent coordinator,
-add bounded recovery and sanitized stage telemetry, and verify first-attempt login on both native
-platforms. This remains P0 auth reliability work, but it does not gate N0–N3. Reuse the N4
-SessionProvider if already shipped; otherwise coordinate branch order so only one provider lands.
+PR #250 merges last, after this table is complete and the report reflects the measured outcome of
+all implementation PRs.
 
 ---
 
 ## Task prompts
 
-The prompts below are intentionally scoped so Codex or Claude can execute one milestone per branch.
+The prompts below are intentionally scoped to one implementation PR each. Until PR #250 merges,
+every prompt includes this mandatory preamble: fetch and read the report from
+`origin/codex/app-navigation-performance-audit` with `git show`, read the PR #250 discussion, and do
+not merge/cherry-pick the research branch into the implementation branch.
 
 ### Prompt 0 — decouple native data lifecycle from analytics
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, docs/INFRASTRUCTURE.md, docs/architecture/cache-surfaces.md, and section 10 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -728,6 +758,10 @@ root-lifecycle tests. Record before/after cold-query behavior for the exact prev
 ### Prompt A — native Google sign-in reliability (independent track)
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read AGENTS.md, VISION.md, docs/process/PLANS.md, docs/architecture/auth-flow.md, finding 2, and
 finding 12 of docs/research/app-navigation-performance-audit-2026-06-30.md. Inspect the diffs and
 discussion in PRs #43, #47, #52, #114, and #236 before changing the flow. Create an ExecPlan because
@@ -774,6 +808,10 @@ docs/architecture/auth-flow.md and add an Amendments section if implementation d
 ### Prompt 1 — navigation performance instrumentation
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, AGENTS.md, docs/process/PLANS.md, and
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -800,6 +838,10 @@ Do not change navigation scheduling or data fetching in this PR.
 ### Prompt 2 — cancel deterministic transition contention
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, docs/SCREENS.md, and sections 3, 6, and 7 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -825,6 +867,10 @@ native build. Run typecheck, lint, and focused tests.
 ### Prompt 3 — stop hidden-screen work and invalidation storms
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, docs/SCREENS.md, docs/architecture/cache-surfaces.md, and sections 1 and 3 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -850,6 +896,10 @@ typecheck, lint, and focused tests.
 ### Prompt 4 — single session provider and Zustand selector audit
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md and sections 2 and 5 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -877,6 +927,10 @@ the relevant Jest suites.
 ### Prompt 5 — virtualize Your Funds and Money Trail
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, DESIGN.md, docs/SCREENS.md, and section 4 of
 docs/research/app-navigation-performance-audit-2026-06-30.md.
 
@@ -899,6 +953,10 @@ filters, and fund/transaction navigation. Run typecheck, lint, and focused tests
 ### Prompt 6 — Fund Detail transition-first refactor
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, DESIGN.md, docs/SCREENS.md, and section 6 of
 docs/research/app-navigation-performance-audit-2026-06-30.md. This is a multi-file refactor, so
 create/update an ExecPlan under docs/plans/ following docs/process/PLANS.md.
@@ -922,6 +980,10 @@ tests; document any ExecPlan amendments.
 ### Prompt 7 — remove duplicate portfolio/benchmark computation
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, docs/TECH-DISCOVERY.md, and section 3 of
 docs/research/app-navigation-performance-audit-2026-06-30.md. Create an ExecPlan because financial
 calculation correctness and multiple consumers are involved.
@@ -942,6 +1004,10 @@ lint. Record before/after query counts and JS compute timings from the N1 harnes
 ### Prompt 8 — bundle, persistence, and SDK cleanup
 
 ```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
 Read VISION.md, docs/INFRASTRUCTURE.md, docs/architecture/cache-surfaces.md, and sections 7, 8, and
 11 of docs/research/app-navigation-performance-audit-2026-06-30.md.
 
