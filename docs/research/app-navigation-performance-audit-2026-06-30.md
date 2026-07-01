@@ -704,8 +704,8 @@ Because the agents may post through the same GitHub account, every comment start
 
 | Queue | Milestone | Status | Implementation PR | Merge SHA | Evidence / amendments |
 |---:|---|---|---|---|---|
-| 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS smoke or blocker still due before N2 |
-| 2 | N2 | Pending | — | — | — |
+| 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS release evidence blocker recorded on PR #250 |
+| 2 | N2 | Ready to start | — | — | N1 handoff gate cleared; subsequent navigation milestones require Android release/main-preview evidence unless iOS publishing is added |
 | 3 | N0 | Pending | — | — | — |
 | 4 | N3 | Pending | — | — | — |
 | 5 | N4 | Pending | — | — | — |
