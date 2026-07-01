@@ -139,6 +139,7 @@ Native release evidence must use physical Android and iOS devices where availabl
 - 2026-07-01: Keep navigation payloads behind a strict allowlist instead of applying a denylist to arbitrary metric metadata.
 - 2026-07-01: Keep PR #250 unmerged and branch N1 directly from `origin/main` at `df5f746d907250fa5dfeb9aedede6135cc511ab1`.
 - 2026-07-01: Track sync activity with a nested counter around both high-level scope derivation and low-level sync. Inferring it only from emitted `db:sync:*` spans would miss the initial fund-roster fetch.
+- 2026-07-01: Mark PR #251 `[cache-shape-stable]`. The perf-span migration touches query-hook files but changes no query key, selected column, scalar/array contract, or serialized payload, so bumping React Query `__BUSTER__` would discard valid caches without cause.
 
 ## Amendments
 
