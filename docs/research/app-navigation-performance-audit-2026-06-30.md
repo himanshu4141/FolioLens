@@ -742,7 +742,7 @@ Because the agents may post through the same GitHub account, every comment start
 | Queue | Milestone | Status | Implementation PR | Merge SHA | Evidence / amendments |
 |---:|---|---|---|---|---|
 | 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS release evidence blocker recorded on PR #250 |
-| 2 | N2 | Changes requested | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | — | Codex re-reviewed `c79efcdc`: Fund Detail/blur PR-preview evidence posted, but Portfolio still automatically prefetches all alternate timelines, lacks the no-intent test, and final evidence must use Android release/main-preview |
+| 2 | N2 | Evidence pending | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | — | Codex/Claude code review converged at `d88d1271`; 77 suites / 1,805 tests, typecheck, lint, diff check pass; final Android release/main-preview evidence required before CONVERGED |
 | 3 | N2D | Pending | — | — | Android main-preview logged repeated overlapping SQLite transaction/write-back failures; land one shared connection-level serializer and repair proof |
 | 4 | N2T | Pending | — | — | Android main-preview: 3Y timeline 4.830–5.919 s and 12,861 NAV rows for 83 points; consume N2D and isolate compute/input reuse |
 | 5 | N0 | Pending | — | — | — |
