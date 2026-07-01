@@ -115,12 +115,12 @@ interface PickedScheme {
  * (~3,300 NAVs) would truncate without pagination.
  */
 async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
-  perfStart('query:sipCheck:nav');
+  const navSpanId = perfStart('query:sipCheck:nav');
 
   // Try the optimized month-end RPC first
   try {
     const monthEndRows = await navHistoryRepo.monthEndNav(schemeCode);
-    perfEnd('query:sipCheck:nav', {
+    perfEnd(navSpanId, {
       rows: monthEndRows.length,
       scheme_code: schemeCode,
       path: 'rpc:month_end_nav',
@@ -140,7 +140,7 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
       .order('nav_date', { ascending: true })
       .range(from, to),
   );
-  perfEnd('query:sipCheck:nav', {
+  perfEnd(navSpanId, {
     rows: rows.length,
     scheme_code: schemeCode,
     path: 'paginated:nav_history',
@@ -154,11 +154,11 @@ async function fetchNavSeries(schemeCode: number): Promise<NavPoint[]> {
  * this on every scheme change is safe.
  */
 async function ensureNavCached(schemeCode: number): Promise<{ status: string }> {
-  perfStart('query:sipCheck:backfill');
+  const backfillSpanId = perfStart('query:sipCheck:backfill');
   const { data, error } = await functionsClient.invoke<{ status: string }>('fetch-fund-nav', {
     body: { scheme_code: schemeCode },
   });
-  perfEnd('query:sipCheck:backfill', { status: data?.status ?? 'unknown', scheme_code: schemeCode });
+  perfEnd(backfillSpanId, { status: data?.status ?? 'unknown', scheme_code: schemeCode });
   if (error) throw new Error(`fetch-fund-nav failed: ${error.message}`);
   return data ?? { status: 'unknown' };
 }

@@ -48,7 +48,7 @@ export async function fetchPerformanceTimeline(
   fundItems: { id: string; name: string }[],
   indexItems: { symbol: string; name: string }[],
 ): Promise<PerformanceTimelineData> {
-  perfStart('query:performanceTimeline');
+  const timelineSpanId = perfStart('query:performanceTimeline');
   const entries: TimelineEntry[] = [];
 
   if (fundItems.length > 0) {
@@ -127,7 +127,7 @@ export async function fetchPerformanceTimeline(
     }
   }
 
-  perfEnd('query:performanceTimeline', {
+  perfEnd(timelineSpanId, {
     entries: entries.length,
     funds: fundItems.length,
     indexes: indexItems.length,

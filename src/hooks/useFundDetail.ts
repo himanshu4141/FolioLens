@@ -126,7 +126,7 @@ export async function fetchFundDetail(
   userId: string,
   fundId: string,
 ): Promise<FundDetailData | null> {
-  perfStart('query:fundDetail');
+  const fundDetailSpanId = perfStart('query:fundDetail');
 
   // Read fund + transactions from the shared per-user caches that
   // Portfolio also populates. Once Portfolio has loaded, Fund Detail
@@ -147,7 +147,7 @@ export async function fetchFundDetail(
 
   const fund = allFunds.find((f) => f.id === fundId);
   if (!isFundDetailRow(fund)) {
-    perfEnd('query:fundDetail', { found: false });
+    perfEnd(fundDetailSpanId, { found: false });
     return null;
   }
 
@@ -157,7 +157,7 @@ export async function fetchFundDetail(
   // `['scheme-master', code]` cache key) and the two most-recent NAV
   // rows. NAV uses the read-through pattern: try local SQLite, fall
   // through to Supabase and write-back on a cache miss.
-  perfStart('query:fundDetail:extras');
+  const extrasSpanId = perfStart('query:fundDetail:extras');
   const navFromRepo = SQLITE_AVAILABLE
     ? navRepo.readBySchemeCode(fund.scheme_code, { orderDesc: true, limit: 2 }).catch((err) => {
         console.warn('[useFundDetail] sqlite nav read failed; falling back', err);
@@ -196,7 +196,7 @@ export async function fetchFundDetail(
     // fooled into asking Supabase only for rows newer than the latest of
     // these two, never backfilling pre-watermark history.
   }
-  perfEnd('query:fundDetail:extras');
+  perfEnd(extrasSpanId);
 
   // Compute net units and cashflows
   const { historicalCashflows: cashflows, netUnits, investedAmount } =
@@ -218,7 +218,7 @@ export async function fetchFundDetail(
   }));
 
   if (navHistory.length === 0) {
-    perfEnd('query:fundDetail', { found: true, navs: 0, has_current_nav: false });
+    perfEnd(fundDetailSpanId, { found: true, navs: 0, has_current_nav: false });
     // NAV sync hasn't run yet for this scheme — return zeroed data so the UI
     // can show an informative empty state rather than crashing.
     return {
@@ -270,7 +270,7 @@ export async function fetchFundDetail(
   // `['fund-detail-index', symbol]` useQuery (see `app/fund/[id].tsx`)
   // so we don't paginate it here.
 
-  perfEnd('query:fundDetail', {
+  perfEnd(fundDetailSpanId, {
     found: true,
     navs: navHistory.length,
     has_current_nav: true,
@@ -379,7 +379,7 @@ export async function fetchFundNavHistory(
   opts?: FetchNavHistoryOptions,
 ): Promise<NavPoint[]> {
   const sinceDate = opts?.sinceDate;
-  perfStart('query:fundNavHistory');
+  const navHistorySpanId = perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
   let source: 'sqlite' | 'supabase' = 'sqlite';
   if (SQLITE_AVAILABLE) {
@@ -416,7 +416,7 @@ export async function fetchFundNavHistory(
       }
     }
   }
-  perfEnd('query:fundNavHistory', { rows: rows.length, scheme_code: schemeCode, source });
+  perfEnd(navHistorySpanId, { rows: rows.length, scheme_code: schemeCode, source });
   return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
 }
 

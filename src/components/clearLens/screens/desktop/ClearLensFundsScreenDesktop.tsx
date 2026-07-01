@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
@@ -27,6 +28,10 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  getNavigationCacheContext,
+  startNavigationMeasurement,
+} from '@/src/lib/navigationPerformance';
 import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
@@ -53,12 +58,14 @@ export function ClearLensFundsScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const queryClient = useQueryClient();
   const {
     defaultBenchmarkSymbol,
     fundsSortBy: sortBy,
     setFundsSortBy: setSortBy,
     fundsSearchQuery: searchQuery,
     setFundsSearchQuery: setSearchQuery,
+    previewMode,
   } = useAppStore();
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
@@ -144,6 +151,23 @@ export function ClearLensFundsScreenDesktop() {
   );
   const todaysBest = dailySorted[0] ?? null;
   const todaysWorst = dailySorted.length > 1 ? dailySorted[dailySorted.length - 1] : null;
+
+  function openFundDetail(fundId: string) {
+    const targetQueryKey = previewMode
+      ? ['fund-detail', 'preview', fundId]
+      : ['fund-detail', fundId];
+    startNavigationMeasurement({
+      transition: 'fund_detail',
+      fromRoute: 'funds',
+      toRoute: 'fund_detail',
+      context: getNavigationCacheContext(queryClient, {
+        toRoute: 'fund_detail',
+        targetQueryKey,
+        fundCount: fundCards.length,
+      }),
+    });
+    router.push(`/fund/${fundId}`);
+  }
 
   if (isLoading) {
     return (
@@ -277,7 +301,7 @@ export function ClearLensFundsScreenDesktop() {
               fund={fund}
               portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
               benchmarkXirr={benchmarkXirr}
-              onOpen={() => router.push(`/fund/${fund.id}`)}
+              onOpen={() => openFundDetail(fund.id)}
             />
           ))}
           {sortedFunds.length === 0 && (

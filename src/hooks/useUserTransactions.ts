@@ -119,12 +119,12 @@ export async function countUserTransactionsRemote(userId: string): Promise<numbe
 }
 
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
-  perfStart('query:userTransactions');
+  const transactionsSpanId = perfStart('query:userTransactions');
   if (SQLITE_AVAILABLE) {
     try {
       const local = await txRepo.readAll();
       if (local.length > 0) {
-        perfEnd('query:userTransactions', { rows: local.length, source: 'sqlite' });
+        perfEnd(transactionsSpanId, { rows: local.length, source: 'sqlite' });
         return local;
       }
     } catch (err) {
@@ -143,7 +143,7 @@ export async function fetchUserTransactions(userId: string): Promise<UserTransac
       console.warn('[useUserTransactions] sqlite write failed', err);
     }
   }
-  perfEnd('query:userTransactions', { rows: fresh.length, source: 'supabase' });
+  perfEnd(transactionsSpanId, { rows: fresh.length, source: 'supabase' });
   return fresh;
 }
 

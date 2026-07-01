@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Polygon, Polyline } from 'react-native-svg';
 import { AppOverflowMenu } from '@/src/components/AppOverflowMenu';
 import {
@@ -40,6 +41,10 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import {
+  getNavigationCacheContext,
+  startNavigationMeasurement,
+} from '@/src/lib/navigationPerformance';
 import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
@@ -465,6 +470,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
     setFundsSortBy: setSortBy,
     fundsSearchQuery: searchQuery,
     setFundsSearchQuery: setSearchQuery,
+    previewMode,
   } = useAppStore();
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -472,6 +478,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const didAutoExpand = useRef(false);
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
+  const queryClient = useQueryClient();
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
   const { insights } = usePortfolioInsights(fundCards);
@@ -554,6 +561,23 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
     [allocationPctByFundId, valueSortedFunds, tokens.semantic.fundAllocation],
   );
 
+  function openFundDetail(fundId: string) {
+    const targetQueryKey = previewMode
+      ? ['fund-detail', 'preview', fundId]
+      : ['fund-detail', fundId];
+    startNavigationMeasurement({
+      transition: 'fund_detail',
+      fromRoute: 'funds',
+      toRoute: 'fund_detail',
+      context: getNavigationCacheContext(queryClient, {
+        toRoute: 'fund_detail',
+        targetQueryKey,
+        fundCount: fundCards.length,
+      }),
+    });
+    router.push(`/fund/${fundId}`);
+  }
+
   return (
     <ClearLensScreen>
       <ClearLensHeader
@@ -619,7 +643,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
               portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
               expanded={expandedFundId === fund.id}
               onToggle={() => setExpandedFundId((current) => current === fund.id ? null : fund.id)}
-              onOpen={() => router.push(`/fund/${fund.id}`)}
+              onOpen={() => openFundDetail(fund.id)}
               onOpenTransactions={() => router.push(`/money-trail?fundId=${fund.id}`)}
             />
           ))}

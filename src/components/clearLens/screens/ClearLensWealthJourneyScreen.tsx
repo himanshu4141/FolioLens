@@ -651,7 +651,7 @@ export function ClearLensWealthJourneyScreen() {
     queryKey: ['wealth-journey-transactions', userId, sixMonthsAgo],
     enabled: !!userId,
     queryFn: async () => {
-      perfStart('query:wealthJourney:transactions');
+      const transactionsSpanId = perfStart('query:wealthJourney:transactions');
       const all = await queryClient.fetchQuery({
         queryKey: ['user-transactions', userId],
         queryFn: () => fetchUserTransactions(userId!),
@@ -670,7 +670,7 @@ export function ClearLensWealthJourneyScreen() {
           transaction_type: tx.transaction_type,
           fund_id: tx.fund_id,
         }));
-      perfEnd('query:wealthJourney:transactions', {
+      perfEnd(transactionsSpanId, {
         rows: filtered.length,
         since: sixMonthsAgo,
         total_cached: all.length,

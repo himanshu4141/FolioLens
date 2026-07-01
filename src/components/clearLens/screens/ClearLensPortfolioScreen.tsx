@@ -57,6 +57,10 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
+  getNavigationCacheContext,
+  startNavigationMeasurement,
+} from '@/src/lib/navigationPerformance';
+import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
@@ -1022,6 +1026,19 @@ function ClearLensPortfolioScreenMobile() {
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
 
+  function openSettings() {
+    startNavigationMeasurement({
+      transition: 'portfolio_to_settings',
+      fromRoute: 'portfolio',
+      toRoute: 'settings',
+      context: getNavigationCacheContext(queryClient, {
+        toRoute: 'settings',
+        fundCount: fundCards.length,
+      }),
+    });
+    router.push('/(tabs)/settings');
+  }
+
   return (
     <ClearLensScreen>
       <ClearLensHeader
@@ -1034,7 +1051,7 @@ function ClearLensPortfolioScreenMobile() {
         onClose={() => setOverflowOpen(false)}
         onImport={handleImportPress}
         onMoneyTrail={() => router.push('/money-trail')}
-        onSettings={() => router.push('/(tabs)/settings')}
+        onSettings={openSettings}
         onTools={() => router.push('/tools' as never)}
         hasPortfolio={!!summary && fundCards.length > 0}
       />

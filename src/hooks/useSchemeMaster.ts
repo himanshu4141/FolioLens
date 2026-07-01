@@ -51,13 +51,13 @@ const SCHEME_MASTER_COLUMNS =
 export async function fetchSchemeMaster(
   schemeCode: number,
 ): Promise<SchemeMasterDbRow | null> {
-  perfStart('query:schemeMaster');
+  const schemeMasterSpanId = perfStart('query:schemeMaster');
   const { data, error } = await schemeMasterRepo
     .from()
     .select(SCHEME_MASTER_COLUMNS)
     .eq('scheme_code', schemeCode)
     .maybeSingle();
-  perfEnd('query:schemeMaster', { found: !!data, scheme_code: schemeCode });
+  perfEnd(schemeMasterSpanId, { found: !!data, scheme_code: schemeCode });
   if (error) throw error;
   return data as SchemeMasterDbRow | null;
 }

@@ -45,7 +45,7 @@ export async function fetchMoneyTrailData(
   qc: QueryClient,
   userId: string,
 ): Promise<MoneyTrailData> {
-  perfStart('query:moneyTrail');
+  const moneyTrailSpanId = perfStart('query:moneyTrail');
   const [allFunds, allTxs] = await Promise.all([
     qc.fetchQuery({
       queryKey: ['user-funds', userId],
@@ -83,7 +83,7 @@ export async function fetchMoneyTrailData(
   });
 
   const transactions = buildMoneyTrailTransactions(rawRows);
-  perfEnd('query:moneyTrail', {
+  perfEnd(moneyTrailSpanId, {
     txs: allTxs.length,
     funds: allFunds.length,
     transactions: transactions.length,
