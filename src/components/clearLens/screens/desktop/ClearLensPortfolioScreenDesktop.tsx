@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { useIsRestoring } from '@tanstack/react-query';
+import { useIsFocused, useRouter } from 'expo-router';
+import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import {
   AssetAllocationPreview,
   BenchmarkComparisonCard,
@@ -15,7 +15,8 @@ import {
 import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 import { MoneyTrailPreviewCard } from '@/src/components/clearLens/MoneyTrailPreviewCard';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
-import { usePortfolio } from '@/src/hooks/usePortfolio';
+import { prefetchPortfolioBenchmark, usePortfolio } from '@/src/hooks/usePortfolio';
+import { prefetchInvestmentVsBenchmarkTimeline } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
@@ -30,15 +31,18 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
+import { createTargetedBenchmarkPrefetch } from '@/src/lib/targetedBenchmarkPrefetch';
 
 export function ClearLensPortfolioScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
+  const queryClient = useQueryClient();
   const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const userId = session?.user.id;
-  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol } = useAppStore();
+  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore();
 
   const { data, isLoading, isError, refetch } = usePortfolio(defaultBenchmarkSymbol);
   // See mobile variant for the rationale — `useIsRestoring` keeps the
@@ -51,6 +55,25 @@ export function ClearLensPortfolioScreenDesktop() {
   const fundRefs: FundRef[] = useMemo(
     () => fundCards.map((fund) => ({ id: fund.id, schemeCode: fund.schemeCode })),
     [fundCards],
+  );
+  const handleBenchmarkPrefetch = useMemo(
+    () => createTargetedBenchmarkPrefetch({
+      enabled: isFocused && !!userId && fundRefs.length > 0,
+      prefetchPortfolio: (symbol) => {
+        if (userId) void prefetchPortfolioBenchmark(queryClient, userId, symbol);
+      },
+      prefetchTimeline: (symbol) => {
+        if (!userId) return;
+        void prefetchInvestmentVsBenchmarkTimeline(
+          queryClient,
+          fundRefs,
+          userId,
+          symbol,
+          portfolioChartWindow,
+        );
+      },
+    }),
+    [fundRefs, isFocused, portfolioChartWindow, queryClient, userId],
   );
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
@@ -109,6 +132,7 @@ export function ClearLensPortfolioScreenDesktop() {
           marketXirr={summary.marketXirr}
           benchmarkSymbol={defaultBenchmarkSymbol}
           onBenchmarkChange={setDefaultBenchmarkSymbol}
+          onBenchmarkPrefetch={handleBenchmarkPrefetch}
         />
 
         <View style={styles.gridTwoCol}>

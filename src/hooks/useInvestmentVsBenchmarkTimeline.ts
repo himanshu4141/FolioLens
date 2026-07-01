@@ -1,5 +1,4 @@
-import { useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, type QueryClient } from '@tanstack/react-query';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
@@ -10,7 +9,6 @@ import {
   filterReversedTransactionPairs,
   simulateBenchmarkInvestment,
 } from '@/src/utils/xirr';
-import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
@@ -470,7 +468,6 @@ export function useInvestmentVsBenchmarkTimeline(
   window: TimeWindow,
 ): InvestmentVsBenchmarkTimeline {
   const fundKey = funds.map((fund) => fund.id).sort().join(',');
-  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
     enabled: funds.length > 0 && !!userId,
@@ -479,64 +476,25 @@ export function useInvestmentVsBenchmarkTimeline(
     staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
   });
 
-  // Once the active benchmark/window combo is in cache, prefetch the
-  // other benchmarks for the same window in the background. This
-  // covers the common case where the user lands on a fund detail and
-  // then taps a different benchmark pill — the second tap hits a warm
-  // cache. We deliberately do NOT prefetch every (benchmark x window)
-  // combination: that would multiply by ~5 windows and burn server
-  // round-trips for combos most users never look at. Window switching
-  // remains a cold fetch.
-  //
-  // The prefetches are also staggered behind a delay and queued one at
-  // a time. Firing all 2-3 fetches in parallel the instant the active
-  // query resolves stalls the JS thread for hundreds of ms while each
-  // queryFn runs `computeInvestmentVsBenchmarkTimeline` over thousands
-  // of NAV rows — that's the freeze users see on first paint of
-  // Portfolio and when navigating to About immediately after.
-  useEffect(() => {
-    if (!data || !userId || funds.length === 0) return;
-    // Capture `userId` in a typed local so the inner `runNext` closure
-    // sees `string` instead of `string | undefined` — TypeScript's
-    // narrowing on the guard above doesn't reach into the nested fn.
-    const uid: string = userId;
-    const others = BENCHMARK_OPTIONS.filter((option) => option.symbol !== benchmarkSymbol);
-    let cancelled = false;
-    let cursor = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    function runNext() {
-      if (cancelled || cursor >= others.length) return;
-      const option = others[cursor++];
-      queryClient
-        .prefetchQuery({
-          queryKey: ['investmentVsBenchmarkTimeline', uid, fundKey, option.symbol, window],
-          queryFn: () =>
-            fetchInvestmentVsBenchmarkTimeline(funds, uid, option.symbol, window),
-          staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
-        })
-        .finally(() => {
-          if (cancelled) return;
-          // 250ms gap between prefetches yields enough idle time for
-          // user gestures (tab switches, pan) to feel responsive.
-          timer = setTimeout(runNext, 250);
-        });
-    }
-
-    // First prefetch fires after a 1.2s idle window so the active chart
-    // has finished painting and any tab transition can settle.
-    timer = setTimeout(runNext, 1200);
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient]);
-
   return {
     points: data?.points ?? [],
     xAxisLabels: data?.xAxisLabels ?? [],
     isLoading,
     error: error ? String(error) : null,
   };
+}
+
+export function prefetchInvestmentVsBenchmarkTimeline(
+  queryClient: QueryClient,
+  funds: FundRef[],
+  userId: string,
+  benchmarkSymbol: string,
+  window: TimeWindow,
+): Promise<void> {
+  const fundKey = funds.map((fund) => fund.id).sort().join(',');
+  return queryClient.prefetchQuery({
+    queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
+    queryFn: () => fetchInvestmentVsBenchmarkTimeline(funds, userId, benchmarkSymbol, window),
+    staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
+  });
 }

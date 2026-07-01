@@ -12,7 +12,7 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 import { AppOverflowMenu } from '@/src/components/AppOverflowMenu';
 import {
@@ -22,7 +22,11 @@ import {
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
 import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
-import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
+import {
+  prefetchPortfolioBenchmark,
+  usePortfolio,
+  type FundCardData,
+} from '@/src/hooks/usePortfolio';
 import { useUserFunds } from '@/src/hooks/useUserFunds';
 import { syncDeltaForUser } from '@/src/lib/db/sync';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
@@ -30,10 +34,9 @@ import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
   useInvestmentVsBenchmarkTimeline,
-  fetchInvestmentVsBenchmarkTimeline,
+  prefetchInvestmentVsBenchmarkTimeline,
   type InvestmentVsBenchmarkPoint,
 } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
-import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { navStaleness, type TimeWindow } from '@/src/utils/navUtils';
@@ -64,6 +67,7 @@ import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
+import { createTargetedBenchmarkPrefetch } from '@/src/lib/targetedBenchmarkPrefetch';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensPortfolioScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensPortfolioScreenDesktop';
 
@@ -174,11 +178,13 @@ export function BenchmarkComparisonCard({
   marketXirr,
   benchmarkSymbol,
   onBenchmarkChange,
+  onBenchmarkPrefetch,
 }: {
   xirr: number;
   marketXirr: number;
   benchmarkSymbol: string;
   onBenchmarkChange: (symbol: string) => void;
+  onBenchmarkPrefetch?: (symbol: string) => void;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -201,14 +207,23 @@ export function BenchmarkComparisonCard({
         </View>
       )}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
-        {BENCHMARK_OPTIONS.map((option) => (
-          <ClearLensPill
-            key={option.symbol}
-            label={option.label}
-            active={option.symbol === benchmarkSymbol}
-            onPress={() => onBenchmarkChange(option.symbol)}
-          />
-        ))}
+        {BENCHMARK_OPTIONS.map((option) => {
+          const active = option.symbol === benchmarkSymbol;
+          const prefetch = active || !onBenchmarkPrefetch
+            ? undefined
+            : () => onBenchmarkPrefetch(option.symbol);
+          return (
+            <ClearLensPill
+              key={option.symbol}
+              label={option.label}
+              active={active}
+              onPress={() => onBenchmarkChange(option.symbol)}
+              onPressIn={prefetch}
+              onHoverIn={prefetch}
+              onFocus={prefetch}
+            />
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -931,6 +946,7 @@ function ClearLensPortfolioScreenMobile() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const userId = session?.user.id;
@@ -1006,6 +1022,25 @@ function ClearLensPortfolioScreenMobile() {
         .map((fund) => ({ id: fund.id as string, schemeCode: fund.scheme_code as number })),
     [userFunds],
   );
+  const handleBenchmarkPrefetch = useMemo(
+    () => createTargetedBenchmarkPrefetch({
+      enabled: isFocused && !!userId && fundRefs.length > 0,
+      prefetchPortfolio: (symbol) => {
+        if (userId) void prefetchPortfolioBenchmark(queryClient, userId, symbol);
+      },
+      prefetchTimeline: (symbol) => {
+        if (!userId) return;
+        void prefetchInvestmentVsBenchmarkTimeline(
+          queryClient,
+          fundRefs,
+          userId,
+          symbol,
+          portfolioChartWindow,
+        );
+      },
+    }),
+    [fundRefs, isFocused, portfolioChartWindow, queryClient, userId],
+  );
   // Eagerly prime the chart query as soon as portfolio data and fundRefs
   // are both ready, before `InvestmentVsBenchmarkChart` mounts. Without
   // this, the chart fires its own `useQuery` only after the portfolio
@@ -1013,15 +1048,15 @@ function ClearLensPortfolioScreenMobile() {
   // load. The prefetch overlaps with the portfolio render, so on warm
   // SQLite the chart paints in the same frame as the rest of the screen.
   useEffect(() => {
-    if (!data || !userId || fundRefs.length === 0) return;
-    const fundKey = fundRefs.map((f) => f.id).sort().join(',');
-    queryClient.prefetchQuery({
-      queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, defaultBenchmarkSymbol, portfolioChartWindow],
-      queryFn: () =>
-        fetchInvestmentVsBenchmarkTimeline(fundRefs, userId, defaultBenchmarkSymbol, portfolioChartWindow),
-      staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
-    });
-  }, [data, userId, fundRefs, defaultBenchmarkSymbol, portfolioChartWindow, queryClient]);
+    if (!isFocused || !data || !userId || fundRefs.length === 0) return;
+    void prefetchInvestmentVsBenchmarkTimeline(
+      queryClient,
+      fundRefs,
+      userId,
+      defaultBenchmarkSymbol,
+      portfolioChartWindow,
+    );
+  }, [data, userId, fundRefs, defaultBenchmarkSymbol, portfolioChartWindow, queryClient, isFocused]);
 
   const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
@@ -1099,6 +1134,7 @@ function ClearLensPortfolioScreenMobile() {
             marketXirr={summary.marketXirr}
             benchmarkSymbol={defaultBenchmarkSymbol}
             onBenchmarkChange={setDefaultBenchmarkSymbol}
+            onBenchmarkPrefetch={handleBenchmarkPrefetch}
           />
 
           <InvestmentVsBenchmarkChart

@@ -15,7 +15,12 @@ jest.mock('@/src/lib/data/indexHistory', () => ({
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first
-import { fetchPortfolioData } from '../usePortfolio';
+import {
+  fetchPortfolioData,
+  prefetchPortfolioBenchmark,
+  selectCachedPortfolioWeight,
+  type PortfolioData,
+} from '../usePortfolio';
 // eslint-disable-next-line import/first
 import { fundViewRepo } from '@/src/lib/data/userFund';
 // eslint-disable-next-line import/first
@@ -353,5 +358,45 @@ describe('fetchPortfolioData()', () => {
     // Gain = totalValue - totalInvested: totalValue = 150 units * 140 NAV = 21000
     const gain = result.summary!.totalValue - result.summary!.totalInvested;
     expect(gain).toBeCloseTo(21000 - 16000, 0);
+  });
+});
+
+describe('N2 targeted Portfolio behavior', () => {
+  it('prefetches only the benchmark requested by user intent', async () => {
+    const prefetchQuery = jest.fn().mockResolvedValue(undefined);
+    const queryClient = { prefetchQuery } as unknown as QueryClient;
+
+    await prefetchPortfolioBenchmark(queryClient, 'user-1', '^NIFTY500TRI');
+
+    expect(prefetchQuery).toHaveBeenCalledTimes(1);
+    expect(prefetchQuery.mock.calls[0][0]).toMatchObject({
+      queryKey: ['portfolio', 'user-1', '^NIFTY500TRI'],
+    });
+  });
+
+  it('selects portfolio weight and rank from an existing Portfolio result', () => {
+    const portfolio = {
+      fundCards: [
+        { id: 'fund-2', currentValue: 600 },
+        { id: 'fund-1', currentValue: 300 },
+        { id: 'fund-3', currentValue: 100 },
+      ],
+      summary: { totalValue: 1000 },
+    } as unknown as PortfolioData;
+
+    expect(selectCachedPortfolioWeight(portfolio, 'fund-1', 300)).toEqual({
+      percentage: 30,
+      rank: 2,
+      totalValue: 1000,
+    });
+  });
+
+  it('returns no Fund Detail weight when the cached result is incomplete', () => {
+    const portfolio = {
+      fundCards: [],
+      summary: null,
+    } as PortfolioData;
+
+    expect(selectCachedPortfolioWeight(portfolio, 'fund-1', 300)).toBeNull();
   });
 });

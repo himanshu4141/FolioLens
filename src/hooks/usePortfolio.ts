@@ -12,8 +12,13 @@
  *  - vsMarket: portfolio XIRR vs selected benchmark XIRR over same period
  */
 
-import { useEffect } from 'react';
-import { useQuery, useQueryClient, keepPreviousData, type QueryClient } from '@tanstack/react-query';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import {
   xirr,
@@ -25,7 +30,7 @@ import {
 } from '@/src/utils/xirr';
 import { isMaturedScheme } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
-import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { useAppStore } from '@/src/store/appStore';
 import { PREVIEW_FUND_CARDS, PREVIEW_PORTFOLIO_SUMMARY } from '@/src/lib/previewData';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
@@ -85,6 +90,17 @@ export interface PortfolioSummary {
   navUnavailableCount: number; // funds with no NAV data, excluded from totals
 }
 
+export interface PortfolioData {
+  fundCards: FundCardData[];
+  summary: PortfolioSummary | null;
+}
+
+export interface CachedPortfolioWeight {
+  percentage: number;
+  rank: number | null;
+  totalValue: number;
+}
+
 interface PortfolioFundRow {
   id: string;
   scheme_code: number;
@@ -101,7 +117,7 @@ export async function fetchPortfolioData(
   qc: QueryClient,
   userId: string,
   benchmarkSymbol: string,
-) {
+): Promise<PortfolioData> {
   const portfolioSpanId = perfStart('query:portfolio');
 
   // Shared user-funds and user-transactions caches. Other screens (Fund
@@ -463,6 +479,76 @@ export async function fetchPortfolioData(
   return { fundCards, summary };
 }
 
+export function prefetchPortfolioBenchmark(
+  queryClient: QueryClient,
+  userId: string,
+  benchmarkSymbol: string,
+): Promise<void> {
+  return queryClient.prefetchQuery({
+    queryKey: ['portfolio', userId, benchmarkSymbol],
+    queryFn: () => fetchPortfolioData(queryClient, userId, benchmarkSymbol),
+    staleTime: STALE_TIMES.PORTFOLIO,
+  });
+}
+
+export function selectCachedPortfolioWeight(
+  portfolio: PortfolioData,
+  fundId: string,
+  currentValue: number | null,
+): CachedPortfolioWeight | null {
+  const totalValue = portfolio.summary?.totalValue ?? 0;
+  if (!currentValue || currentValue <= 0 || totalValue <= 0) return null;
+
+  const rankedFunds = portfolio.fundCards
+    .filter((fund) => fund.currentValue !== null && fund.currentValue > 0)
+    .sort((a, b) => (b.currentValue ?? 0) - (a.currentValue ?? 0));
+  const rankIndex = rankedFunds.findIndex((fund) => fund.id === fundId);
+
+  return {
+    percentage: (currentValue / totalValue) * 100,
+    rank: rankIndex >= 0 ? rankIndex + 1 : null,
+    totalValue,
+  };
+}
+
+/**
+ * Observe only an already-cached Portfolio result for Fund Detail's weight
+ * card. This subscribes directly to QueryCache instead of mounting a second
+ * query observer, so a deep-linked detail route cannot fetch or replace the
+ * active Portfolio query's fetch options.
+ */
+export function useCachedPortfolioWeight(
+  userId: string | undefined,
+  fundId: string,
+  currentValue: number | null,
+): CachedPortfolioWeight | null {
+  const previewMode = useAppStore((state) => state.previewMode);
+  const benchmarkSymbol = useAppStore((state) => state.defaultBenchmarkSymbol);
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => previewMode
+      ? ['portfolio', 'preview']
+      : ['portfolio', userId, benchmarkSymbol],
+    [benchmarkSymbol, previewMode, userId],
+  );
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  );
+  const getSnapshot = useCallback(
+    () => queryClient.getQueryData<PortfolioData>(queryKey),
+    [queryClient, queryKey],
+  );
+  const portfolio = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  return useMemo(
+    () => portfolio
+      ? selectCachedPortfolioWeight(portfolio, fundId, currentValue)
+      : null,
+    [currentValue, fundId, portfolio],
+  );
+}
+
 export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
   const { session } = useSession();
   const previewMode = useAppStore((s) => s.previewMode);
@@ -479,26 +565,6 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
     staleTime: STALE_TIMES.PORTFOLIO,
     placeholderData: keepPreviousData, // no jarring flash when switching benchmark
   });
-
-  // Once the active benchmark's data is in cache, prefetch the other
-  // benchmarks in the background. The benchmark pill on Portfolio shows
-  // 3 options; without this prefetch, switching to either non-default
-  // option triggers a fresh fetch and the user waits ~hundreds of ms
-  // before chart values update. Prefetching makes pill-switching feel
-  // instant on the second tap, with no impact on initial load (the
-  // effect runs only after `query.data` is populated). Skip in preview
-  // mode — the fixture data is the same shape regardless of benchmark.
-  useEffect(() => {
-    if (!query.data || !userId || previewMode) return;
-    for (const option of BENCHMARK_OPTIONS) {
-      if (option.symbol === benchmarkSymbol) continue;
-      queryClient.prefetchQuery({
-        queryKey: ['portfolio', userId, option.symbol],
-        queryFn: () => fetchPortfolioData(queryClient, userId, option.symbol),
-        staleTime: STALE_TIMES.PORTFOLIO,
-      });
-    }
-  }, [query.data, userId, benchmarkSymbol, queryClient, previewMode]);
 
   return query;
 }
