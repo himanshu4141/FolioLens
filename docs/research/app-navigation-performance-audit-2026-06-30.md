@@ -60,6 +60,7 @@ An index-snapshot error produced by that stub is also excluded from the findings
 | Order | Finding | Severity | Confidence | Explains |
 |---:|---|---|---|---|
 | 1 | Portfolio and timeline prefetches run expensive duplicate work and are not cancelled on blur | **P0** | Confirmed | Cross-channel lead for Settings/About stalls; tab-switch contention |
+| 1a | Investment timeline rereads and recomputes benchmark-independent inputs; overlapping SQLite write-backs fail | **P0** | Confirmed on Android | 3Y timeline controls take 4.8–5.9 s and failed cache repair can repeat the slow path |
 | 2 | Native SQLite bootstrap/foreground sync is disabled when analytics is off; preview-PR OTA builds omit the key | **P0 correctness / preview amplifier** | Confirmed | Preview-only cold fetches and inconsistent performance |
 | 3 | Hidden tabs/stacks remain mounted while broad invalidation keeps them active | **P0** | Confirmed | Intermittent Settings/About stalls and navigation amplification |
 | 4 | Funds and Money Trail render full lists in `ScrollView`; rows recreate screen-wide styles | **P0/P1** | Confirmed | Your Funds jank, delayed fund-card taps, Money Trail scaling failure |
@@ -225,6 +226,37 @@ Those consumers create a fourth portfolio cache variant and then prefetch all th
 - Leaving Portfolio before an idle prefetch starts produces no later timeline/portfolio work.
 - Opening Wealth Journey does not create a `['portfolio', userId, '^NSEI']` query.
 - Switching benchmark remains fast through targeted prefetch or a lightweight benchmark-only query.
+
+### Android follow-up evidence: timeline pipeline and SQLite contention
+
+A user-driven main-preview run on Pixel 8a / Android 16 did not reproduce the original
+state-dependent navigation hang: 15 post-interaction-usable samples ranged from 59–127 ms, with a
+75 ms median. It did reproduce a separate, user-visible timeline delay:
+
+- 3Y changes took 4.830–5.919 seconds end to end;
+- the NAV stage alone took 2.669–3.727 seconds and read 12,861 rows to render 83 chart points;
+- 1Y took 2.211 seconds, 6M took 1.034–1.260 seconds, 3M took 0.963–1.011 seconds, and 1M took
+  0.663 seconds;
+- Android gfxinfo recorded 62 / 2,223 janky frames (2.79%), 47 slow UI-thread frames, and one
+  missed Vsync.
+
+The current query key includes both benchmark and window, so each unseen combination reruns
+transaction reads, NAV reads, portfolio/invested-series construction, and benchmark work. A
+benchmark-only change therefore reloads and reprocesses the same 12,861 NAV rows. The computation
+builds the union of every NAV and transaction date, values every fund on every date, and samples to
+about 90 points only after that work. Benchmark snapshot retrieval was only about 40–70 ms and was
+not the dominant stage.
+
+The same run repeatedly logged `cannot start a transaction within a transaction` followed by
+`cannot rollback - no transaction is active`. `navRepo`, `txRepo`, and `idxRepo` each open
+`withTransactionAsync` directly, while timeline fallback performs an unawaited NAV write-back and
+bootstrap/prefetch can write concurrently. A failed write-back leaves local coverage incomplete,
+so later query combinations can fall through to the same paginated Supabase read again.
+
+This evidence does not prove the original navigation hang. It confirms a second bottleneck that
+can make the app feel generally hung and can amplify navigation contention. N2 remains the next
+small scheduling fix. A separate N2T milestone follows it so transaction serialization and
+timeline reuse can be reviewed and measured without expanding N2 into a financial-data refactor.
 
 ---
 
@@ -635,17 +667,19 @@ IDs preserve the earlier research labels; the **Queue** column is the execution 
 |---:|---|---|---|
 | 1 | N1 | Navigation measurement harness | Establishes trustworthy before/after evidence |
 | 2 | N2 | Cancel prefetch contention; remove Fund Detail's second portfolio hook; measure/defer FeedbackSheet | Cross-channel lead for both reported transitions |
-| 3 | N0 | Decouple native data lifecycle from analytics; restore preview telemetry parity | Correctness fix and preview-only amplifier removal |
-| 4 | N3 | Freeze/focus-gate hidden screens; granular invalidation; remove `^NSEI` default | Removes the intermittent background-work amplifier |
-| 5 | N4 | Single SessionProvider; narrow Zustand subscriptions; memoize insights | Shared foundation for auth and structural rerender cleanup |
-| 6 | Auth A0 | Deterministic native Google OAuth completion | Reuses the one N4 session source; does not block earlier navigation work |
-| 7 | N5 | Virtualize Funds and Money Trail | Directly addresses list scaling and tap latency |
-| 8 | N6 | Transition-first Fund Detail refactor | Builds on the contained N2 win |
-| 9 | N7 | Split portfolio core from benchmark work | Larger financial-compute change after equivalence evidence exists |
-| 10 | N8 | Bundle, persisted-cache, and SDK cleanup | Final measured optimization layer |
+| 3 | N2T | Serialize SQLite writes; repair timeline cache; reuse/downsample timeline inputs | Fixes the measured 4.8–5.9 s control delay and repeated cache-repair failure |
+| 4 | N0 | Decouple native data lifecycle from analytics; restore preview telemetry parity | Correctness fix and preview-only amplifier removal |
+| 5 | N3 | Freeze/focus-gate hidden screens; granular invalidation; remove `^NSEI` default | Removes the intermittent background-work amplifier |
+| 6 | N4 | Single SessionProvider; narrow Zustand subscriptions; memoize insights | Shared foundation for auth and structural rerender cleanup |
+| 7 | Auth A0 | Deterministic native Google OAuth completion | Reuses the one N4 session source; does not block earlier navigation work |
+| 8 | N5 | Virtualize Funds and Money Trail | Directly addresses list scaling and tap latency |
+| 9 | N6 | Transition-first Fund Detail refactor | Builds on the contained N2 win |
+| 10 | N7 | Split portfolio core from benchmark work | Larger financial-compute change after equivalence evidence exists |
+| 11 | N8 | Bundle, persisted-cache, and SDK cleanup | Final measured optimization layer |
 
 N1 instrumentation is first because the hangs occur on both main and preview. N2 is the first
-behavior change because it is the shared cross-channel cause. N0 follows as a required correctness
+behavior change because it is the shared cross-channel cause. N2T then addresses the independently
+measured multi-second timeline path and failed SQLite repair. N0 follows as a required correctness
 fix and removes preview-only confounding; it is not expected to remove the main-build hang by itself.
 
 ---
@@ -706,14 +740,15 @@ Because the agents may post through the same GitHub account, every comment start
 |---:|---|---|---|---|---|
 | 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS release evidence blocker recorded on PR #250 |
 | 2 | N2 | Ready to start | — | — | N1 handoff gate cleared; subsequent navigation milestones require Android release/main-preview evidence unless iOS publishing is added |
-| 3 | N0 | Pending | — | — | — |
-| 4 | N3 | Pending | — | — | — |
-| 5 | N4 | Pending | — | — | — |
-| 6 | Auth A0 | Pending | — | — | — |
-| 7 | N5 | Pending | — | — | — |
-| 8 | N6 | Pending | — | — | — |
-| 9 | N7 | Pending | — | — | — |
-| 10 | N8 | Pending | — | — | — |
+| 3 | N2T | Pending | — | — | Android main-preview follow-up: 3Y timeline 4.830–5.919 s, 12,861 NAV rows for 83 points, repeated overlapping SQLite transaction/write-back failures |
+| 4 | N0 | Pending | — | — | — |
+| 5 | N3 | Pending | — | — | — |
+| 6 | N4 | Pending | — | — | — |
+| 7 | Auth A0 | Pending | — | — | — |
+| 8 | N5 | Pending | — | — | — |
+| 9 | N6 | Pending | — | — | — |
+| 10 | N7 | Pending | — | — | — |
+| 11 | N8 | Pending | — | — | — |
 
 PR #250 merges last, after this table is complete and the report reflects the measured outcome of
 all implementation PRs.
@@ -862,6 +897,50 @@ an issue is tapped; do not claim a win from conditional rendering while retainin
 Add focused tests for blur cancellation, stable benchmark behavior, cached fund weight, and lazy
 feedback loading if included. Validate Settings -> About and Funds -> Fund Detail in a release-like
 native build. Run typecheck, lint, and focused tests.
+```
+
+### Prompt 2T — serialize SQLite writes and optimize the investment timeline
+
+```text
+PR #250 is intentionally unmerged. Fetch origin/codex/app-navigation-performance-audit, read this
+report with git show from that ref, and read the current PR #250 conversation. Do not merge or
+cherry-pick the research branch into this implementation branch.
+
+Read VISION.md, docs/TECH-DISCOVERY.md, docs/architecture/cache-surfaces.md, docs/process/PLANS.md,
+and the Android follow-up subsection in finding 3 of
+docs/research/app-navigation-performance-audit-2026-06-30.md. Create an ExecPlan because this
+changes native cache concurrency and financial timeline computation.
+
+Implement Navigation N2T only. Introduce one tested SQLite write coordinator used by navRepo,
+txRepo, and idxRepo so two bulk writes cannot overlap withTransactionAsync on the shared database.
+Do not hide transaction errors. Make timeline fallback write-back observable and deterministic:
+await or durably queue it, retain enough state to retry a failed repair, and prove that a successful
+repair makes the next identical read local. Preserve existing bootstrap, foreground sync, and
+sign-out ordering.
+
+Split investment-vs-benchmark timeline inputs from benchmark-specific output. Cache the
+window-bounded transactions, NAV rows/lookups, unit/cost histories, invested series, and portfolio
+valuation inputs by user + stable fund set + window, independent of benchmark. A benchmark-only
+change may fetch index history and simulate the benchmark, but must not reread the same transaction
+or NAV rows or rebuild the portfolio/invested series.
+
+Move sampling ahead of the expensive per-fund/per-date valuation loop. Derive a bounded set of
+evaluation dates while preserving visible window boundaries, the terminal point, transaction
+semantics, latest-at-or-before NAV behavior, and the existing chart contract. Do not simply discard
+raw NAV rows before building correct lookups. Add golden fixtures comparing every emitted date and
+value against the pre-change implementation within tight numeric tolerances, including weekends,
+holiday gaps, NFO mark-to-cost, switches, redemptions, reversed pairs, missing NAV/index data, and
+1M/3M/6M/1Y/3Y/All windows.
+
+Add concurrency tests with overlapping bootstrap, foreground sync, and timeline write-back; assert
+no nested-transaction/rollback errors and successful retry/repair after an injected write failure.
+Use the N1 harness on Android main-preview at the implementation SHA. Record cold and warm timings
+for every window and repeated benchmark switches, NAV/transaction/index row counts, input-cache
+hits, emitted point counts, and SQLite errors. Acceptance requires zero SQLite transaction errors,
+no transaction/NAV reread on a benchmark-only switch, warm benchmark-switch p95 below 300 ms, and
+material improvement over the 3Y 4.830–5.919 s baseline without financial-output drift. Run all
+timeline/database focused tests, typecheck, and lint; update the ExecPlan amendments and cache
+inventory if the cached payload contract changes.
 ```
 
 ### Prompt 3 — stop hidden-screen work and invalidation storms
@@ -1054,10 +1133,12 @@ tests, and production exports.
 
 Because the hangs occur on both main and preview, start the cross-channel performance path with N1
 measurement and N2: **focus-aware cancellation of deterministic prefetch plus removal of Fund
-Detail's second portfolio hook**. Run N0 lifecycle decoupling in parallel as a correctness fix and
+Detail's second portfolio hook**. Follow with N2T because Android now demonstrates a separate
+4.8–5.9 second timeline path plus failed SQLite cache repair; serialize writes and reuse bounded
+timeline inputs before broader refactors. Then run N0 lifecycle decoupling as a correctness fix and
 to remove the preview-only amplifier; it is not the shared root cause. Follow with N3 granular
-invalidation/focus gating, then N4 and N5 before broad beta. The larger Fund Detail and
-financial-computation refactors follow once the contained fixes are measured.
+invalidation/focus gating, then N4 and N5 before broad beta. The larger Fund Detail and portfolio
+core refactors follow once the contained fixes are measured.
 
 Run Auth A0 as an independent workstream in the same issue list, per the requested scope. It remains
 important reliability work, but it must not gate the navigation sequence. Coordinate it with N4 so
