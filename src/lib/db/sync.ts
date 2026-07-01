@@ -246,10 +246,11 @@ export async function bootstrap(
   userId: string,
   schemeCodes: number[],
   indexSymbols: string[],
+  writeScope: DatabaseWriteScope = captureDatabaseWriteScope(),
 ): Promise<SyncResult> {
   const finishSyncActivity = beginSyncActivity();
   try {
-    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'bootstrap' });
+    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'bootstrap' }, writeScope);
   } finally {
     finishSyncActivity();
   }
@@ -262,10 +263,11 @@ export async function syncDelta(
   userId: string,
   schemeCodes: number[],
   indexSymbols: string[],
+  writeScope: DatabaseWriteScope = captureDatabaseWriteScope(),
 ): Promise<SyncResult> {
   const finishSyncActivity = beginSyncActivity();
   try {
-    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'delta' });
+    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'delta' }, writeScope);
   } finally {
     finishSyncActivity();
   }
@@ -276,9 +278,9 @@ async function runSync(
   schemeCodes: number[],
   indexSymbols: string[],
   options: { mode: 'bootstrap' | 'delta' },
+  writeScope: DatabaseWriteScope,
 ): Promise<SyncResult> {
   const syncSpanId = perfStart(`db:sync:${options.mode}`);
-  const writeScope = captureDatabaseWriteScope();
   const errors: string[] = [];
   let txInserted = 0;
   let navInserted = 0;
@@ -475,7 +477,11 @@ export async function clearAll(): Promise<void> {
   });
 }
 
-let inFlightBootstrap: Promise<SyncResult> | null = null;
+function userSyncKey(userId: string, writeScope: DatabaseWriteScope): string {
+  return `${userId}:${writeScope.generation}`;
+}
+
+const inFlightBootstraps = new Map<string, Promise<SyncResult>>();
 
 /**
  * High-level entry point for the layout's mount effect. Derives the
@@ -486,29 +492,35 @@ let inFlightBootstrap: Promise<SyncResult> | null = null;
  * Returns the same Promise on repeated calls during a single launch
  * so concurrent screen mounts don't pile up parallel sync runs.
  */
-export async function bootstrapForUser(userId: string): Promise<SyncResult> {
-  if (inFlightBootstrap) return inFlightBootstrap;
+export function bootstrapForUser(userId: string): Promise<SyncResult> {
+  // Capture before roster I/O. If sign-out/reset advances the generation
+  // while fetchUserFunds is pending, every later write from this flow remains
+  // tied to the old scope and rejects before touching the cleared cache.
+  const writeScope = captureDatabaseWriteScope();
+  const key = userSyncKey(userId, writeScope);
+  const existing = inFlightBootstraps.get(key);
+  if (existing) return existing;
   const finishSyncActivity = beginSyncActivity();
-  inFlightBootstrap = (async () => {
-    try {
-      const funds = await fetchUserFunds(userId);
-      const schemeCodes = funds
-        .map((f) => f.scheme_code)
-        .filter((c): c is number => typeof c === 'number');
-      const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
-      return await bootstrap(userId, schemeCodes, indexSymbols);
-    } finally {
-      // Clear the slot so the next launch (or a manual re-run) can
-      // bootstrap again. The on-disk SQLite cache survives — bootstrap
-      // is idempotent and skips populated scopes via watermark.
-      inFlightBootstrap = null;
-      finishSyncActivity();
-    }
+  const work = (async () => {
+    const funds = await fetchUserFunds(userId);
+    const schemeCodes = funds
+      .map((f) => f.scheme_code)
+      .filter((c): c is number => typeof c === 'number');
+    const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
+    return bootstrap(userId, schemeCodes, indexSymbols, writeScope);
   })();
-  return inFlightBootstrap;
+  let promise: Promise<SyncResult>;
+  promise = work.finally(() => {
+    // An older user/generation may finish after a replacement entry starts.
+    // Delete only when this key still points at this exact promise.
+    if (inFlightBootstraps.get(key) === promise) inFlightBootstraps.delete(key);
+    finishSyncActivity();
+  });
+  inFlightBootstraps.set(key, promise);
+  return promise;
 }
 
-let inFlightDelta: Promise<SyncResult> | null = null;
+const inFlightDeltas = new Map<string, Promise<SyncResult>>();
 
 /**
  * Same but uses delta semantics — call on screen focus, foreground,
@@ -518,21 +530,25 @@ let inFlightDelta: Promise<SyncResult> | null = null;
  * 'active' firing in the same tick) share one in-flight sync instead
  * of racing two parallel pulls against Supabase.
  */
-export async function syncDeltaForUser(userId: string): Promise<SyncResult> {
-  if (inFlightDelta) return inFlightDelta;
+export function syncDeltaForUser(userId: string): Promise<SyncResult> {
+  const writeScope = captureDatabaseWriteScope();
+  const key = userSyncKey(userId, writeScope);
+  const existing = inFlightDeltas.get(key);
+  if (existing) return existing;
   const finishSyncActivity = beginSyncActivity();
-  inFlightDelta = (async () => {
-    try {
-      const funds = await fetchUserFunds(userId);
-      const schemeCodes = funds
-        .map((f) => f.scheme_code)
-        .filter((c): c is number => typeof c === 'number');
-      const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
-      return await syncDelta(userId, schemeCodes, indexSymbols);
-    } finally {
-      inFlightDelta = null;
-      finishSyncActivity();
-    }
+  const work = (async () => {
+    const funds = await fetchUserFunds(userId);
+    const schemeCodes = funds
+      .map((f) => f.scheme_code)
+      .filter((c): c is number => typeof c === 'number');
+    const indexSymbols = BENCHMARK_OPTIONS.map((b) => b.symbol);
+    return syncDelta(userId, schemeCodes, indexSymbols, writeScope);
   })();
-  return inFlightDelta;
+  let promise: Promise<SyncResult>;
+  promise = work.finally(() => {
+    if (inFlightDeltas.get(key) === promise) inFlightDeltas.delete(key);
+    finishSyncActivity();
+  });
+  inFlightDeltas.set(key, promise);
+  return promise;
 }

@@ -146,6 +146,7 @@ Native evidence must record device/OS, package/channel, OTA/update ID, implement
 - 2026-07-02: Keep N2T financial/timeline computation changes out of N2D.
 - 2026-07-02: Treat cleanup as a queue lifecycle boundary with scope invalidation; draining alone cannot stop an older remote request from enqueueing after a wipe.
 - 2026-07-02: Retry timeline repair once from retained fetched rows and propagate a second failure.
+- 2026-07-02: Codex review identified that high-level bootstrap/delta captured their scope after the roster request and used global unkeyed single-flight promises. Capture before roster I/O, pass that scope into `runSync`, and use identity-safe maps keyed by user plus generation.
 
 ## Amendments
 
@@ -153,18 +154,21 @@ The implementation follows the planned scope. The lifecycle fence was applied to
 
 The serializer also owns `sync_state` writes and the manual Settings cache reset. Although `sync_state` does not open a transaction itself, an uncoordinated `runAsync` could otherwise execute between another repository's `BEGIN` and `COMMIT` on Expo's non-exclusive connection. Cleanup deletes all four cached tables in one queued transaction.
 
+Independent review found one lifecycle gap in the initial implementation: `bootstrapForUser` and `syncDeltaForUser` fetched the fund roster before `runSync` captured its generation, and their single-flight promises were global. A blocked old-user roster could therefore cross cleanup, capture the new generation, and be reused by a new user. The corrected implementation captures before roster I/O, passes the originating scope through `bootstrap`/`syncDelta` into `runSync`, and keeps separate identity-safe in-flight maps keyed by user plus generation. Blocked-roster race tests cover both high-level paths and prove only the new user's transaction remains after cleanup.
+
 No schema or cached row shape changed. `SCHEMA_VERSION` remains 2 and React Query `__BUSTER__` is unchanged.
 
 Validation completed before native evidence:
 
 - Focused database, timeline, index, Portfolio, and Fund Detail tests passed: 9 suites and 161 tests.
-- Full Jest passed: 78 suites and 1,812 tests.
+- The review-fix regression subset passed: 3 suites and 47 tests.
+- Full Jest passed after the review fix: 78 suites and 1,814 tests.
 - `npm run typecheck` passed with zero errors.
 - `npm run lint` passed with zero warnings.
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
-Final Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The Android OTA was `019f1ffb-2073-7241-941f-c77c691b4df6` (group `8e02462d-f6cd-44a7-850b-81f92d9d5249`) at implementation SHA `715ec3c36a5269c6136224ff426ea171a1d6e525`. The About screen independently displayed `foliolens-main` and OTA prefix `019f1ffb-207…` after clean process restarts.
+Pre-review Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The Android OTA was `019f1ffb-2073-7241-941f-c77c691b4df6` (group `8e02462d-f6cd-44a7-850b-81f92d9d5249`) at initial implementation SHA `715ec3c36a5269c6136224ff426ea171a1d6e525`. The About screen independently displayed `foliolens-main` and OTA prefix `019f1ffb-207…` after clean process restarts. The serializer behavior remains useful supporting evidence, but final acceptance must be recaptured at the corrected lifecycle head.
 
 The stress sequence unlocked the native cache diagnostics, reset the local cache, immediately opened Portfolio and changed benchmarks, backgrounded/foregrounded the app to start delta sync, and then selected the 3Y timeline while bootstrap and read-through work remained active. It exercised `database_clear_all`, bootstrap and delta transaction/NAV/index writes, Portfolio NAV/index write-back, timeline NAV repair, and sync-state updates on the same connection.
 
@@ -190,5 +194,5 @@ Raw device logs and UI dumps remain local under `/tmp/foliolens-n2d-android-main
 - [x] Make timeline NAV repair awaited and retriable.
 - [x] Add focused concurrency and repair tests.
 - [x] Run repository validation.
-- [x] Capture Android main-preview evidence at the implementation SHA.
+- [ ] Capture final Android main-preview evidence at the corrected implementation SHA.
 - [x] Publish the implementation PR and attach acceptance evidence.
