@@ -7,6 +7,18 @@
  *    `fetchPerformanceTimeline` (same source the Compare screen uses).
  *  - Run the simulation purely in `simulatePastSip` (see `pastSipCheck.ts`).
  *  - Build a chart series with `buildPastSipChartSeries`.
+ *
+ * Cohesion changes (Phase 4 — Tools Hub alignment):
+ *  - Both preview + live branches now share a single ToolTitleBlock with
+ *    standardised eyebrow / h1 / subtitle strings.
+ *  - The heroSurface "banner" is re-expressed as ToolResultHero (same
+ *    component used by Direct vs Regular and Goal Summary), with a neutral
+ *    window chip (never a verdict chip — this is a backtest, not pass/fail).
+ *  - Secondary stats (XIRR, lead) moved behind a RevealSection ("See the
+ *    numbers"); the headline rupee comparison + verdict stay visible.
+ *  - All content cards route through ClearLensCard.
+ *  - Chart series colours come from tokens.semantic.chart.* so they stay
+ *    consistent with the Compare screen across themes.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -26,10 +38,21 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
-import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import {
+  ClearLensCard,
+  ClearLensHeader,
+  ClearLensScreen,
+  ClearLensSegmentedControl,
+} from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
+import {
+  RevealSection,
+  StatusChip,
+  ToolResultHero,
+  ToolTitleBlock,
+} from '@/src/components/clearLens/tools/kit';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -60,6 +83,14 @@ import { formatCurrency } from '@/src/utils/formatting';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 import { paginateRangeQuery } from '@/src/utils/supabasePagination';
 import type { NavPoint } from '@/src/utils/navUtils';
+
+// ---------------------------------------------------------------------------
+// Unified title-block strings — used by both the preview and live branches.
+// ---------------------------------------------------------------------------
+const SIP_EYEBROW = 'Past SIP Check';
+const SIP_TITLE = 'How would a past SIP have grown?';
+const SIP_SUBTITLE =
+  'See how a monthly SIP into any fund — yours or any in our catalog — would have grown, compared with a benchmark.';
 
 // String-only key the segmented control accepts (it's generic over T extends
 // string). The actual simulator-bound duration is held separately and can be
@@ -95,6 +126,35 @@ function formatMonthYear(dateStr: string | null): string {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
+/**
+ * Build the neutral window chip label for the ToolResultHero.
+ *  - 1Y / 3Y / 5Y  →  "3Y · 2022–2025"
+ *  - All            →  "2013–2025"
+ *  - Custom         →  "2y 6m · 2023–2025"
+ *  - shortHistory   →  actual span ("20m · 2023–2025")
+ */
+function buildWindowChip(
+  duration: PastSipDuration,
+  startDate: string | null,
+  endDate: string | null,
+): string {
+  const startYear = startDate ? startDate.slice(0, 4) : '';
+  const endYear = endDate ? endDate.slice(0, 4) : '';
+  const yearRange = startYear && endYear ? `${startYear}–${endYear}` : '';
+
+  if (typeof duration === 'object') {
+    const totalMonths = duration.months;
+    const y = Math.floor(totalMonths / 12);
+    const m = totalMonths % 12;
+    const label = y === 0 ? `${m}m` : m === 0 ? `${y}Y` : `${y}Y ${m}m`;
+    return yearRange ? `${label} · ${yearRange}` : label;
+  }
+  if (duration === 'All') {
+    return yearRange || 'All';
+  }
+  return yearRange ? `${duration} · ${yearRange}` : duration;
 }
 
 interface PickedScheme {
@@ -319,14 +379,11 @@ export function ClearLensPastSipCheckScreen() {
       <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.titleBlock}>
-            <Text style={styles.eyebrow}>Past SIP check</Text>
-            <Text style={styles.title}>What if you had SIP&apos;d in this fund?</Text>
-            <Text style={styles.subtitle}>
-              Picks any fund and shows how a monthly SIP would have grown over a
-              chosen window, vs the benchmark.
-            </Text>
-          </View>
+          <ToolTitleBlock
+            eyebrow={SIP_EYEBROW}
+            title={SIP_TITLE}
+            subtitle={SIP_SUBTITLE}
+          />
           <ToolsPreviewSampleCard
             bannerMessage="₹10,000/mo SIP into HDFC Mid-Cap Opportunities over 3 years vs Nifty 500 TRI. Sign up to run it on any fund."
             heroLabel="3-year SIP outcome"
@@ -392,15 +449,13 @@ export function ClearLensPastSipCheckScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.titleBlock}>
-            <Text style={styles.eyebrow}>Past SIP Check</Text>
-            <Text style={styles.title}>What if you&apos;d invested?</Text>
-            <Text style={styles.subtitle}>
-              See how a monthly SIP into any fund — yours or any in our catalog — would have performed compared to a benchmark.
-            </Text>
-          </View>
+          <ToolTitleBlock
+            eyebrow={SIP_EYEBROW}
+            title={SIP_TITLE}
+            subtitle={SIP_SUBTITLE}
+          />
 
-          <View style={styles.card}>
+          <ClearLensCard style={styles.inputsCard}>
             <TouchableOpacity
               style={styles.fundRow}
               onPress={() => setPickerOpen(true)}
@@ -451,20 +506,20 @@ export function ClearLensPastSipCheckScreen() {
                 onChange={setBenchmarkSymbol}
               />
             </View>
-          </View>
+          </ClearLensCard>
 
           {/* Results */}
           {!selectedScheme ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>Pick a fund to see how a SIP would have performed.</Text>
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>Pick a fund to see how a SIP would have performed.</Text>
             </View>
           ) : navBackfillQuery.isFetching || fundNavQuery.isLoading || benchmarkTimelineQuery.isLoading ? (
             <View style={styles.center}>
               <Text style={styles.helperText}>Crunching NAV history…</Text>
             </View>
           ) : navBackfillQuery.isError || fundNavQuery.isError || benchmarkTimelineQuery.isError ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>
                 Couldn&apos;t load NAV history. Pull down to retry.
               </Text>
             </View>
@@ -477,10 +532,11 @@ export function ClearLensPastSipCheckScreen() {
               chartPoints={chartPoints}
               chartWidth={chartWidth}
               duration={duration}
+              monthlyAmount={monthlyAmount}
             />
           ) : fundResult ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>
                 Not enough NAV history for this fund to run a meaningful simulation. Try a shorter
                 duration or pick a different fund.
               </Text>
@@ -491,8 +547,8 @@ export function ClearLensPastSipCheckScreen() {
             // hasn't covered, or funds whose AMFI series is broken upstream.
             // Without this branch the render chain falls through to `null`
             // and the user is left staring at the form with no feedback.
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>
                 No NAV history is available for this fund yet. This usually means the scheme is
                 very new, matured, or hasn&apos;t been picked up by the daily NAV sync. Try a
                 different fund.
@@ -547,6 +603,7 @@ function ResultSection({
   chartPoints,
   chartWidth,
   duration,
+  monthlyAmount,
 }: {
   fundName: string;
   benchmarkLabel: string;
@@ -555,14 +612,16 @@ function ResultSection({
   chartPoints: PastSipChartPoint[];
   chartWidth: number;
   duration: PastSipDuration;
+  monthlyAmount: number;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const cl = tokens.colors;
 
   // Comparison driven by terminal rupee value rather than XIRR — XIRR can move
   // against the rupee delta on edge cases (very short history, partial period)
   // and the user is ultimately reading "would I have ended up with more
-  // money?". XIRR stays in the card as a secondary signal, but the headline
+  // money?". XIRR stays in the reveal as a secondary signal, but the headline
   // comparison reflects rupees.
   const isAhead =
     benchmarkResult &&
@@ -582,51 +641,48 @@ function ResultSection({
       ? Math.abs((fundResult.xirr - benchmarkResult.xirr) * 100)
       : null;
 
+  const sipCount = fundResult.installments.length;
+  const windowChip = buildWindowChip(duration, fundResult.startDate, fundResult.endDate);
+
+  // Plain-text hero subtitle: invested amount + SIP count + optional date range.
+  const dateRangeSuffix = shouldShowWindowInProse(duration)
+    ? ` from ${formatMonthYear(fundResult.startDate)} to ${formatMonthYear(fundResult.endDate)}`
+    : '';
+  const heroSubtitle = `${formatCurrency(fundResult.totalInvested)} invested across ${sipCount} monthly SIPs${dateRangeSuffix}`;
+
   return (
     <>
       {fundResult.shortHistory ? (
         <View style={styles.shortHistoryNotice}>
-          <Ionicons name="information-circle-outline" size={18} color={tokens.colors.warning} />
+          <Ionicons name="information-circle-outline" size={18} color={cl.warning} />
           <Text style={styles.shortHistoryText}>
             Limited NAV history for this fund. Simulation starts from {fundResult.startDate}.
           </Text>
         </View>
       ) : null}
 
-      {/* Hero — leads with the answer. The number that matters most is the
-          terminal value; the supporting line carries the rest of the math
-          (invested, SIP count, window, gain) so the user doesn't have to
-          scan a separate stats card to get the same facts. The window is
-          spelled out explicitly for All / Custom durations — without it,
-          a user looking at the chart can't tell whether "All" means 3 years
-          or 13 years of history. */}
-      <View style={styles.banner}>
-        <Text style={styles.bannerLabel}>Worth today</Text>
-        <Text style={styles.bannerValue}>{formatCurrency(fundResult.currentValue)}</Text>
-        <Text style={styles.bannerSubtitle}>
-          {formatCurrency(fundResult.totalInvested)} invested across{' '}
-          {fundResult.installments.length} monthly SIPs
-          {shouldShowWindowInProse(duration) ? (
-            <Text>
-              {' '}from {formatMonthYear(fundResult.startDate)} to {formatMonthYear(fundResult.endDate)}
-            </Text>
-          ) : null}
-          {' '}·{' '}
-          <Text style={fundResult.gain >= 0 ? styles.bannerGainUp : styles.bannerGainDown}>
-            {fundResult.gain >= 0 ? '+' : ''}
-            {formatCurrency(fundResult.gain)} ({fundResult.gainPct >= 0 ? '+' : ''}
-            {fundResult.gainPct.toFixed(1)}%) gain
-          </Text>
+      {/* Hero — leads with the answer. Neutral window chip; no verdict chip
+          (this is a backtest, not a pass/fail). Fund name and gain rendered as
+          children so the gain can carry its positive/negative colour. */}
+      <ToolResultHero
+        label="Worth today"
+        value={formatCurrency(fundResult.currentValue)}
+        chip={<StatusChip tone="neutral" onDark>{windowChip}</StatusChip>}
+        subtitle={heroSubtitle}
+      >
+        <Text style={[styles.heroGain, fundResult.gain >= 0 ? styles.heroGainUp : styles.heroGainDown]}>
+          {fundResult.gain >= 0 ? '+' : ''}
+          {formatCurrency(fundResult.gain)}{' '}
+          ({fundResult.gainPct >= 0 ? '+' : ''}
+          {fundResult.gainPct.toFixed(1)}%) gain
         </Text>
-        <Text style={styles.bannerFund}>{fundName}</Text>
-      </View>
+        <Text style={styles.heroFund}>{shortSchemeName(fundName)}</Text>
+      </ToolResultHero>
 
-      {/* vs-card — single prose paragraph, brand-faithful (lead with the
-          answer, no label/value grid). Headline sentence pairs both rupee
-          values; conclusion sentence carries the delta and the %p.a.
-          context. */}
+      {/* vs benchmark — headline rupee comparison VISIBLE; XIRR + lead behind
+          RevealSection so the screen reads cleanly at first glance. */}
       {benchmarkResult ? (
-        <View style={styles.card}>
+        <ClearLensCard style={{ gap: 8 }}>
           <Text style={styles.cardTitle}>vs {benchmarkLabel}</Text>
           <Text style={styles.versusBody}>
             <Text style={styles.versusValueFund}>
@@ -655,26 +711,92 @@ function ResultSection({
               {xirrDeltaPp != null ? ` — ${xirrDeltaPp.toFixed(1)}% extra per year.` : '.'}
             </Text>
           ) : null}
-          <Text style={styles.compareNote}>{BENCHMARK_DISCLOSURE}</Text>
-        </View>
+          <RevealSection label="See the numbers">
+            <StatRow
+              label="Fund XIRR"
+              value={Number.isFinite(fundResult.xirr) ? `${(fundResult.xirr * 100).toFixed(1)}%` : '—'}
+              isFirst
+              tokens={tokens}
+            />
+            <StatRow
+              label={`${benchmarkLabel} XIRR`}
+              value={
+                benchmarkResult && Number.isFinite(benchmarkResult.xirr)
+                  ? `${(benchmarkResult.xirr * 100).toFixed(1)}%`
+                  : '—'
+              }
+              tokens={tokens}
+            />
+            {valueDelta != null ? (
+              <StatRow
+                label="Lead over benchmark"
+                value={`${isAhead ? '+' : '−'}${formatCurrency(valueDelta)}`}
+                tokens={tokens}
+              />
+            ) : null}
+            <Text style={styles.compareNote}>{BENCHMARK_DISCLOSURE}</Text>
+          </RevealSection>
+        </ClearLensCard>
       ) : null}
 
       {chartPoints.length > 1 ? (
-        <View style={styles.card}>
+        <ClearLensCard style={{ gap: 10 }}>
           <Text style={styles.cardTitle}>Growth path</Text>
+          <Text style={styles.cardSub}>
+            A ₹{monthlyAmount > 0 ? monthlyAmount.toLocaleString('en-IN') : '10,000'}/mo SIP,
+            valued at each month{"'s"} NAV.
+          </Text>
           <View style={styles.chartLegend}>
-            <LegendDot color={tokens.colors.emerald} label={fundName || 'Fund'} />
-            <LegendDot color={tokens.colors.slate} label={benchmarkLabel} dashed />
-            <LegendDot color={tokens.colors.lavender} label="Invested" dashed />
+            <LegendDot color={tokens.semantic.chart.fund} label={shortSchemeName(fundName)} />
+            <LegendDot color={tokens.semantic.chart.benchmark} label={benchmarkLabel} dashed />
+            <LegendDot color={tokens.semantic.chart.invested} label="Invested" dashed />
           </View>
           <PastSipChart
             points={chartPoints}
             chartWidth={chartWidth - ClearLensSpacing.md * 2}
             tokens={tokens}
           />
-        </View>
+        </ClearLensCard>
       ) : null}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stat row — key/value pair used inside the RevealSection
+// ---------------------------------------------------------------------------
+
+function StatRow({
+  label,
+  value,
+  isFirst = false,
+  tokens,
+}: {
+  label: string;
+  value: string;
+  isFirst?: boolean;
+  tokens: ClearLensTokens;
+}) {
+  const cl = tokens.colors;
+  return (
+    <View
+      style={[
+        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 9 },
+        !isFirst && { borderTopWidth: 1, borderTopColor: cl.borderLight },
+      ]}
+    >
+      <Text style={{ ...ClearLensTypography.bodySmall, color: cl.textSecondary }}>{label}</Text>
+      <Text
+        style={{
+          ...ClearLensTypography.bodySmall,
+          fontFamily: ClearLensFonts.bold,
+          color: cl.navy,
+          fontFeatureSettings: '"tnum" 1', // tabular nums, web-only — no-op on native
+        } as any}
+      >
+        {value}
+      </Text>
+    </View>
   );
 }
 
@@ -872,6 +994,12 @@ function PastSipChart({
 
   const labelEvery = points.length <= 6 ? 1 : Math.ceil(points.length / 5);
 
+  // Use semantic chart tokens so series colours match Compare and stay
+  // correct in both light and dark modes.
+  const chartFund = tokens.semantic.chart.fund;
+  const chartBenchmark = tokens.semantic.chart.benchmark;
+  const chartInvested = tokens.semantic.chart.invested;
+
   return (
     <Svg width={chartWidth} height={chartHeight}>
       {ticks.map((tick) => (
@@ -898,7 +1026,7 @@ function PastSipChart({
 
       <SvgPath
         d={pathFor(points.map((p) => p.invested))}
-        stroke={tokens.colors.lavender}
+        stroke={chartInvested}
         strokeWidth={1.5}
         strokeDasharray="4 3"
         fill="none"
@@ -907,7 +1035,7 @@ function PastSipChart({
 
       <SvgPath
         d={pathFor(points.map((p) => p.benchmarkValue))}
-        stroke={tokens.colors.slate}
+        stroke={chartBenchmark}
         strokeWidth={1.5}
         strokeDasharray="5 3"
         fill="none"
@@ -916,7 +1044,7 @@ function PastSipChart({
 
       <SvgPath
         d={pathFor(points.map((p) => p.fundValue))}
-        stroke={tokens.colors.emerald}
+        stroke={chartFund}
         strokeWidth={2}
         fill="none"
       />
@@ -1010,61 +1138,18 @@ function makeStyles(tokens: ClearLensTokens) {
       ...ClearLensTypography.body,
       color: cl.textTertiary,
     },
-    titleBlock: {
-      gap: 4,
-      paddingHorizontal: ClearLensSpacing.xs,
-      paddingVertical: ClearLensSpacing.sm,
-    },
-    eyebrow: {
-      ...ClearLensTypography.label,
-      color: cl.emerald,
-      textTransform: 'uppercase',
-    },
-    title: {
-      ...ClearLensTypography.h1,
-      color: cl.navy,
-    },
-    subtitle: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-    },
 
-    emptyIcon: {
-      width: 64,
-      height: 64,
-      borderRadius: 32,
-      backgroundColor: cl.surfaceSoft,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginBottom: ClearLensSpacing.xs,
-    },
     emptyTitle: {
       ...ClearLensTypography.h2,
       color: cl.navy,
       textAlign: 'center',
     },
-    emptySubtitle: {
-      ...ClearLensTypography.body,
-      color: cl.textSecondary,
-      textAlign: 'center',
-      lineHeight: 22,
-    },
 
-    card: {
-      backgroundColor: cl.surface,
-      borderRadius: ClearLensRadii.lg,
-      borderWidth: 1,
-      borderColor: cl.border,
-      ...ClearLensShadow,
-      overflow: 'hidden',
-      paddingVertical: ClearLensSpacing.xs,
-    },
-    cardTitle: {
-      ...ClearLensTypography.h3,
-      color: cl.navy,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.xs,
+    // Inputs card — flush padding so fund/amount/duration rows can use
+    // their own horizontal spacing with the separator spanning edge-to-edge.
+    inputsCard: {
+      padding: 0,
+      gap: 0,
     },
 
     fundRow: {
@@ -1105,39 +1190,31 @@ function makeStyles(tokens: ClearLensTokens) {
       marginHorizontal: ClearLensSpacing.md,
     },
 
-    banner: {
-      backgroundColor: cl.heroSurface,
-      borderRadius: ClearLensRadii.lg,
-      padding: ClearLensSpacing.md,
-      gap: 4,
-    },
-    bannerLabel: {
-      ...ClearLensTypography.label,
-      color: cl.textOnDarkMuted,
-      textTransform: 'uppercase',
-    },
-    bannerValue: {
-      ...ClearLensTypography.h1,
-      color: cl.textOnDark,
-    },
-    bannerSubtitle: {
+    // Hero children: gain text (coloured) + fund name (muted)
+    heroGain: {
       ...ClearLensTypography.bodySmall,
-      color: cl.textOnDarkMuted,
-      paddingTop: ClearLensSpacing.xs,
-      lineHeight: 19,
+      fontFamily: ClearLensFonts.semiBold,
     },
-    bannerFund: {
+    heroGainUp: {
+      color: cl.positive,
+    },
+    heroGainDown: {
+      color: cl.negative,
+    },
+    heroFund: {
       ...ClearLensTypography.caption,
       color: cl.textOnDarkMuted,
-      paddingTop: 2,
     },
-    bannerGainUp: {
-      color: cl.positive,
-      fontFamily: ClearLensFonts.semiBold,
+
+    // Card titles / subtitles — shared across vs-card and chart card
+    cardTitle: {
+      ...ClearLensTypography.h3,
+      color: cl.navy,
     },
-    bannerGainDown: {
-      color: cl.negative,
-      fontFamily: ClearLensFonts.semiBold,
+    cardSub: {
+      ...ClearLensTypography.caption,
+      color: cl.textTertiary,
+      marginTop: -2,
     },
 
     shortHistoryNotice: {
@@ -1157,26 +1234,22 @@ function makeStyles(tokens: ClearLensTokens) {
       lineHeight: 18,
     },
 
-    errorBox: {
+    noticeBox: {
       padding: ClearLensSpacing.md,
       borderRadius: ClearLensRadii.md,
       backgroundColor: cl.surfaceSoft,
       borderWidth: 1,
       borderColor: cl.borderLight,
     },
-    errorText: {
+    noticeText: {
       ...ClearLensTypography.bodySmall,
       color: cl.textSecondary,
       lineHeight: 18,
     },
 
-
     versusBody: {
       ...ClearLensTypography.body,
       color: cl.textSecondary,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingTop: ClearLensSpacing.xs,
-      paddingBottom: ClearLensSpacing.xs,
       lineHeight: 22,
     },
     versusValueFund: {
@@ -1189,8 +1262,6 @@ function makeStyles(tokens: ClearLensTokens) {
     },
     versusVerdict: {
       ...ClearLensTypography.body,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingVertical: ClearLensSpacing.xs,
       fontFamily: ClearLensFonts.semiBold,
     },
     versusVerdictUp: {
@@ -1202,15 +1273,14 @@ function makeStyles(tokens: ClearLensTokens) {
     compareNote: {
       ...ClearLensTypography.caption,
       color: cl.textTertiary,
-      paddingHorizontal: ClearLensSpacing.md,
-      paddingBottom: ClearLensSpacing.sm,
       lineHeight: 16,
+      marginTop: ClearLensSpacing.xs,
     },
+
     chartLegend: {
       flexDirection: 'row',
       flexWrap: 'wrap',
       gap: ClearLensSpacing.md,
-      paddingHorizontal: ClearLensSpacing.md,
       paddingBottom: ClearLensSpacing.xs,
     },
     legendItem: {
