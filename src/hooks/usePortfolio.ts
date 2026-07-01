@@ -102,7 +102,7 @@ export async function fetchPortfolioData(
   userId: string,
   benchmarkSymbol: string,
 ) {
-  perfStart('query:portfolio');
+  const portfolioSpanId = perfStart('query:portfolio');
 
   // Shared user-funds and user-transactions caches. Other screens (Fund
   // Detail, Money Trail, etc.) read from these same keys, so once one
@@ -126,7 +126,7 @@ export async function fetchPortfolioData(
   // shared cache for Money Trail / historical views.
   const validFunds = allFunds.filter((f) => f.is_active === true).filter(isPortfolioFundRow);
   if (!validFunds.length) {
-    perfEnd('query:portfolio', { funds: 0, txs: 0, navs: 0, idxs: 0 });
+    perfEnd(portfolioSpanId, { funds: 0, txs: 0, navs: 0, idxs: 0 });
     return { fundCards: [], summary: null };
   }
 
@@ -154,7 +154,7 @@ export async function fetchPortfolioData(
   const navCutoff = new Date();
   navCutoff.setDate(navCutoff.getDate() - 90);
   const navCutoffIso = navCutoff.toISOString().split('T')[0];
-  perfStart('query:portfolio:nav');
+  const navSpanId = perfStart('query:portfolio:nav');
   let navRows: NavRow[] = [];
   let navSource: 'sqlite' | 'supabase' = 'sqlite';
   if (SQLITE_AVAILABLE) {
@@ -185,7 +185,7 @@ export async function fetchPortfolioData(
       }
     }
   }
-  perfEnd('query:portfolio:nav', { rows: navRows.length, source: navSource });
+  perfEnd(navSpanId, { rows: navRows.length, source: navSource });
 
   // Build map: scheme_code → { current, previous } using the two most-recent rows.
   const navByScheme = new Map<number, { current: number; previous: number; date: string }>();
@@ -239,7 +239,7 @@ export async function fetchPortfolioData(
   let benchmarkRows: IndexRow[] = [];
   let benchmarkSource: 'sqlite' | 'snapshot' = 'sqlite';
   if (benchmarkSymbol) {
-    perfStart('query:portfolio:index');
+    const indexSpanId = perfStart('query:portfolio:index');
     if (SQLITE_AVAILABLE) {
       try {
         const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
@@ -272,7 +272,7 @@ export async function fetchPortfolioData(
         }
       }
     }
-    perfEnd('query:portfolio:index', {
+    perfEnd(indexSpanId, {
       rows: benchmarkRows.length,
       symbol: benchmarkSymbol,
       source: benchmarkSource,
@@ -454,7 +454,7 @@ export async function fetchPortfolioData(
     navUnavailableCount,
   };
 
-  perfEnd('query:portfolio', {
+  perfEnd(portfolioSpanId, {
     fund_cards: fundCards.length,
     txs: allTxs.length,
     navs: navRows.length,

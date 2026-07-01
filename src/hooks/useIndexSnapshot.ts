@@ -55,22 +55,22 @@ function snapshotUrlFor(symbol: string): string | null {
 export async function fetchIndexSnapshot(symbol: string): Promise<IndexSnapshot | null> {
   const url = snapshotUrlFor(symbol);
   if (!url) return null;
-  perfStart('query:indexSnapshot');
+  const snapshotSpanId = perfStart('query:indexSnapshot');
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) {
-      perfEnd('query:indexSnapshot', { symbol, ok: false, status: res.status });
+      perfEnd(snapshotSpanId, { symbol, ok: false, status: res.status });
       return null;
     }
     const data = (await res.json()) as IndexSnapshot;
     if (!data || !Array.isArray(data.points)) {
-      perfEnd('query:indexSnapshot', { symbol, ok: false, reason: 'malformed' });
+      perfEnd(snapshotSpanId, { symbol, ok: false, reason: 'malformed' });
       return null;
     }
-    perfEnd('query:indexSnapshot', { symbol, ok: true, points: data.points.length });
+    perfEnd(snapshotSpanId, { symbol, ok: true, points: data.points.length });
     return data;
   } catch (err) {
-    perfEnd('query:indexSnapshot', { symbol, ok: false, reason: 'exception' });
+    perfEnd(snapshotSpanId, { symbol, ok: false, reason: 'exception' });
     console.warn('[useIndexSnapshot] fetch failed; falling back', symbol, err);
     return null;
   }
@@ -85,7 +85,7 @@ async function fallbackFromIndexHistory(
   symbol: string,
   sinceDate: string | null,
 ): Promise<IndexSnapshotPoint[]> {
-  perfStart('query:indexSnapshot:fallback');
+  const fallbackSpanId = perfStart('query:indexSnapshot:fallback');
   const rows: RawHistoryRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     // `.gte()` precedes `.range()` so the paginator's terminal call
@@ -104,7 +104,7 @@ async function fallbackFromIndexHistory(
     rows.push(...page);
     if (page.length < PAGE_SIZE) break;
   }
-  perfEnd('query:indexSnapshot:fallback', { symbol, rows: rows.length });
+  perfEnd(fallbackSpanId, { symbol, rows: rows.length });
   return rows.map((r) => ({ date: r.index_date, value: Number(r.close_value) }));
 }
 

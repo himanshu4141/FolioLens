@@ -141,7 +141,7 @@ async function fetchSchemes(
   schemeCodes: number[],
 ): Promise<SchemeMasterRow[]> {
   if (schemeCodes.length === 0) return [];
-  perfStart('query:compare:schemes');
+  const schemesSpanId = perfStart('query:compare:schemes');
   const rows = await Promise.all(
     schemeCodes.map((code) =>
       qc.fetchQuery({
@@ -154,7 +154,7 @@ async function fetchSchemes(
   const present = rows.filter(
     (r): r is NonNullable<typeof r> => r != null && r.scheme_name != null,
   );
-  perfEnd('query:compare:schemes', { rows: present.length, codes: schemeCodes.length });
+  perfEnd(schemesSpanId, { rows: present.length, codes: schemeCodes.length });
   return present.map((row) => ({
     schemeCode: row.scheme_code,
     schemeName: row.scheme_name as string,
@@ -182,7 +182,7 @@ async function fetchSchemes(
 
 async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<CompositionRow[]> {
   if (schemeCodes.length === 0) return [];
-  perfStart('query:compare:compositions');
+  const compositionsSpanId = perfStart('query:compare:compositions');
   const { data, error } = await fundPortfolioCompositionRepo
     .from()
     .select(
@@ -190,7 +190,7 @@ async function fetchCompositionsForCodes(schemeCodes: number[]): Promise<Composi
     )
     .in('scheme_code', schemeCodes)
     .order('portfolio_date', { ascending: false });
-  perfEnd('query:compare:compositions', { rows: data?.length ?? 0, codes: schemeCodes.length });
+  perfEnd(compositionsSpanId, { rows: data?.length ?? 0, codes: schemeCodes.length });
   if (error) throw new Error(`fetchCompositions: ${error.message}`);
   // Pick the best row per scheme_code by explicit source precedence
   // (official > amfi > category_fallback > category_rules), tie-broken by
@@ -265,7 +265,7 @@ async function fetchNavHistoryForCompare(
 ): Promise<Map<number, NavPoint[]>> {
   const out = new Map<number, NavPoint[]>();
   if (schemeCodes.length === 0) return out;
-  perfStart('query:compare:navHistory');
+  const navHistorySpanId = perfStart('query:compare:navHistory');
   const entries = await Promise.all(
     schemeCodes.map(async (code) => {
       const rows = await qc.fetchQuery({
@@ -281,7 +281,7 @@ async function fetchNavHistoryForCompare(
     out.set(code, rows);
     totalRows += rows.length;
   }
-  perfEnd('query:compare:navHistory', { rows: totalRows, codes: schemeCodes.length });
+  perfEnd(navHistorySpanId, { rows: totalRows, codes: schemeCodes.length });
   return out;
 }
 
@@ -2098,7 +2098,7 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-snapshot', code],
         queryFn: async () => {
-          perfStart(`hydrate:snapshot:${code}`);
+          const snapshotSpanId = perfStart(`hydrate:snapshot:${code}`);
           // ── Gate: skip edge-function round-trip when scheme_master is populated
           // and a fresh official composition row already exists. Mirrors the
           // 7-day meta + current-month comp freshness checks inside fetch-fund-snapshot.
@@ -2125,7 +2125,7 @@ export function ClearLensCompareFundsScreen() {
               smRes.data?.aum_cr != null;
             const compFresh = !compRes.error && (compRes.data?.length ?? 0) > 0;
             if (smFresh && compFresh) {
-              perfEnd(`hydrate:snapshot:${code}`, { skipped: true, reason: 'cache_hit' });
+              perfEnd(snapshotSpanId, { skipped: true, reason: 'cache_hit' });
               return { status: 'cache_hit' };
             }
           } catch (gateErr) {
@@ -2140,7 +2140,7 @@ export function ClearLensCompareFundsScreen() {
           queryClient.invalidateQueries({ queryKey: ['scheme-master', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:schemes'] });
           queryClient.invalidateQueries({ queryKey: ['compare:compositions'] });
-          perfEnd(`hydrate:snapshot:${code}`, { skipped: false });
+          perfEnd(snapshotSpanId, { skipped: false });
           return data;
         },
         staleTime: 5 * 60 * 1000,
@@ -2148,7 +2148,7 @@ export function ClearLensCompareFundsScreen() {
       {
         queryKey: ['compare:hydrate-nav', code],
         queryFn: async () => {
-          perfStart(`hydrate:nav:${code}`);
+          const navSpanId = perfStart(`hydrate:nav:${code}`);
           // ── Gate: skip edge-function round-trip when SQLite series is fresh ──
           // (native only — web has no SQLite). Matches fetch-fund-nav's own
           // FRESH_NAV_DAYS=3 short-circuit, saving 1–3s of cold-invoke latency
@@ -2160,7 +2160,7 @@ export function ClearLensCompareFundsScreen() {
                 const ageDays =
                   (Date.now() - new Date(watermark).getTime()) / (24 * 60 * 60 * 1000);
                 if (ageDays <= COMPARE_NAV_FRESH_DAYS) {
-                  perfEnd(`hydrate:nav:${code}`, { skipped: true, watermark, ageDays });
+                  perfEnd(navSpanId, { skipped: true, watermark, ageDays });
                   return { status: 'cache_hit', last_nav_date: watermark };
                 }
               }
@@ -2186,7 +2186,7 @@ export function ClearLensCompareFundsScreen() {
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history', code] });
           queryClient.invalidateQueries({ queryKey: ['fund-nav-history-compare', code] });
           queryClient.invalidateQueries({ queryKey: ['compare:navhistory'] });
-          perfEnd(`hydrate:nav:${code}`, { skipped: false });
+          perfEnd(navSpanId, { skipped: false });
           return data;
         },
         staleTime: 5 * 60 * 1000,

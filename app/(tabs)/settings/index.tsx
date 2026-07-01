@@ -9,8 +9,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import {
+  getNavigationCacheContext,
+  startNavigationMeasurement,
+} from '@/src/lib/navigationPerformance';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,
@@ -83,6 +87,7 @@ export default function SettingsScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeHubStyles(tokens), [tokens]);
   const cl = tokens.colors;
+  const queryClient = useQueryClient();
 
   const { data: latestNavRow } = useQuery({
     queryKey: ['latest-nav-date'],
@@ -99,6 +104,16 @@ export default function SettingsScreen() {
   });
 
   const navBadge = navStatusBadge(latestNavRow, cl);
+
+  function openAbout() {
+    startNavigationMeasurement({
+      transition: 'settings_to_about',
+      fromRoute: 'settings',
+      toRoute: 'about',
+      context: getNavigationCacheContext(queryClient, { toRoute: 'about' }),
+    });
+    router.push('/settings/about');
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -149,7 +164,7 @@ export default function SettingsScreen() {
               icon="information-circle-outline"
               title="About & support"
               subtitle="Version, updates and sign out"
-              onPress={() => router.push('/settings/about')}
+              onPress={openAbout}
               styles={styles}
               cl={cl}
               isLast

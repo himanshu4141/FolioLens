@@ -6,7 +6,8 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useSegments } from 'expo-router';
+import { usePathname, useRouter, useSegments } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useSession } from '@/src/hooks/useSession';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
@@ -21,6 +22,12 @@ import {
 } from '@/src/constants/clearLensTheme';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { SidebarWidth } from './desktopBreakpoints';
+import {
+  getNavigationCacheContext,
+  normalizeNavigationRoute,
+  startNavigationMeasurement,
+  type NavigationRouteName,
+} from '@/src/lib/navigationPerformance';
 
 type NavItem = {
   key: string;
@@ -28,6 +35,7 @@ type NavItem = {
   icon: keyof typeof Ionicons.glyphMap;
   href: string;
   match: (segments: string[]) => boolean;
+  routeName: NavigationRouteName;
 };
 
 const NAV_ITEMS: NavItem[] = [
@@ -37,6 +45,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: 'pie-chart-outline',
     href: '/(tabs)',
     match: (segments) => segments[0] === '(tabs)' && (segments[1] === 'index' || segments[1] === undefined),
+    routeName: 'portfolio',
   },
   {
     key: 'funds',
@@ -44,6 +53,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: 'list-outline',
     href: '/(tabs)/funds',
     match: (segments) => segments[0] === '(tabs)' && segments[1] === 'funds',
+    routeName: 'funds',
   },
   {
     key: 'wealth',
@@ -51,6 +61,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: 'calculator-outline',
     href: '/(tabs)/wealth-journey',
     match: (segments) => segments[0] === '(tabs)' && segments[1] === 'wealth-journey',
+    routeName: 'wealth_journey',
   },
 ];
 
@@ -63,6 +74,8 @@ const QUICK_ACTIONS: { key: 'import' | 'trail' | 'tools'; icon: keyof typeof Ion
 export function DesktopSidebar() {
   const router = useRouter();
   const segments = useSegments();
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
   const { session } = useSession();
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
@@ -84,6 +97,26 @@ export function DesktopSidebar() {
     if (key === 'tools') return router.push('/tools' as never);
   }
 
+  function openTab(item: NavItem) {
+    startNavigationMeasurement({
+      transition: 'bottom_tab',
+      fromRoute: normalizeNavigationRoute(pathname),
+      toRoute: item.routeName,
+      context: getNavigationCacheContext(queryClient, { toRoute: item.routeName }),
+    });
+    router.push(item.href as never);
+  }
+
+  function openSettings() {
+    startNavigationMeasurement({
+      transition: 'portfolio_to_settings',
+      fromRoute: normalizeNavigationRoute(pathname),
+      toRoute: 'settings',
+      context: getNavigationCacheContext(queryClient, { toRoute: 'settings' }),
+    });
+    router.push('/(tabs)/settings');
+  }
+
   return (
     <View style={styles.sidebar}>
       <View style={styles.brandBlock}>
@@ -98,7 +131,7 @@ export function DesktopSidebar() {
             <TouchableOpacity
               key={item.key}
               style={[styles.navItem, active && styles.navItemActive]}
-              onPress={() => router.push(item.href as never)}
+              onPress={() => openTab(item)}
               activeOpacity={0.78}
             >
               <Ionicons
@@ -161,7 +194,7 @@ export function DesktopSidebar() {
           Settings → About & support. Keeps one entry point per action. */}
       <TouchableOpacity
         style={styles.accountRow}
-        onPress={() => router.push('/(tabs)/settings')}
+        onPress={openSettings}
         activeOpacity={0.8}
         accessibilityRole="link"
         accessibilityLabel="Open settings"

@@ -6,6 +6,7 @@
 
 | Plan | Branch | What it covers |
 |---|---|---|
+| `phase-9-pre-launch-readiness/N1-navigation-performance-instrumentation.md` | `codex/n1-navigation-performance-instrumentation` | Navigation N1 — concurrency-safe performance spans plus privacy-safe native timings for Portfolio → Settings, Settings → About, Funds → Fund Detail, and bottom-tab switches; includes the Android/iOS release baseline runbook. |
 | `phase-3-clear-lens-design-mode/M2-money-trail.md` | `feature/money-trail` | Money Trail transaction history on Clear Lens; portfolio preview, entry points, transaction browsing, detail, filters, sorting, CSV export, and calculation alignment |
 | `phase-3-clear-lens-design-mode/M3-dark-mode.md` | `claude/add-dark-theme-selection-hZil0` (PR #97) | Clear Lens dark scheme; Settings appearance picker (light / dark / system); Classic mode retired; live-token migration; theme-aware app icons (iOS dark/tinted, Android monochrome) and web favicon swap |
 | `phase-6-cas-onboarding/00-onboarding-redesign.md` | `docs/cas-onboarding-execplans` (PR #88) | Phase 6 overview — friendly 4-step CAS onboarding wizard, theme + desktop reality |

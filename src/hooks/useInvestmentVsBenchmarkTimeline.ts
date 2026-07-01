@@ -302,14 +302,14 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   benchmarkSymbol: string,
   window: TimeWindow,
 ): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
-  perfStart('query:timeline');
+  const timelineSpanId = perfStart('query:timeline');
   const fundIds = funds.map((fund) => fund.id);
   const schemeCodes = funds.map((fund) => fund.schemeCode);
 
   const txRows = await fetchAllTransactions(userId, fundIds);
   const firstTxDate = txRows[0]?.transaction_date;
   if (!firstTxDate) {
-    perfEnd('query:timeline', { points: 0, reason: 'no_txs' });
+    perfEnd(timelineSpanId, { points: 0, reason: 'no_txs' });
     return { points: [], xAxisLabels: [] };
   }
 
@@ -328,15 +328,15 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   // 12k+ NAV rows + a long-history TRI index. The bounded SELECTs trim
   // both round-trip count and payload size: on the "1Y" window a 10-fund
   // portfolio touches < 3 NAV pages instead of ~13.
-  perfStart('query:timeline:nav');
-  perfStart('query:timeline:index');
+  const navSpanId = perfStart('query:timeline:nav');
+  const indexSpanId = perfStart('query:timeline:index');
   const [navRows, idxRows] = await Promise.all([
     fetchAllNavRows(schemeCodes, navStartDate).then((rows) => {
-      perfEnd('query:timeline:nav', { rows: rows.length, since: navStartDate });
+      perfEnd(navSpanId, { rows: rows.length, since: navStartDate });
       return rows;
     }),
     fetchAllIndexRows(benchmarkSymbol, firstTxDate).then((rows) => {
-      perfEnd('query:timeline:index', {
+      perfEnd(indexSpanId, {
         rows: rows.length,
         symbol: benchmarkSymbol,
         since: firstTxDate,
@@ -352,7 +352,7 @@ export async function fetchInvestmentVsBenchmarkTimeline(
     funds,
     window,
   );
-  perfEnd('query:timeline', {
+  perfEnd(timelineSpanId, {
     points: result.points.length,
     nav_rows: navRows.length,
     idx_rows: idxRows.length,

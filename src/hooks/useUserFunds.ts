@@ -40,12 +40,12 @@ const FUND_COLUMNS =
   'id, user_id, scheme_code, scheme_name, scheme_category, benchmark_index, benchmark_index_symbol, isin, expense_ratio, aum_cr, min_sip_amount, fund_meta_synced_at, is_active, scheme_active';
 
 export async function fetchUserFunds(userId: string): Promise<UserFundRow[]> {
-  perfStart('query:userFunds');
+  const fundsSpanId = perfStart('query:userFunds');
   const { data, error } = await fundViewRepo
     .from()
     .select(FUND_COLUMNS)
     .eq('user_id', userId);
-  perfEnd('query:userFunds', { rows: data?.length ?? 0 });
+  perfEnd(fundsSpanId, { rows: data?.length ?? 0 });
   if (error) throw error;
   return (data ?? []) as UserFundRow[];
 }

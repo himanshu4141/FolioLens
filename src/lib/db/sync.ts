@@ -24,6 +24,7 @@ import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
+import { beginSyncActivity } from '@/src/lib/performanceRuntimeState';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
 import { countUserTransactionsRemote, fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
@@ -235,7 +236,12 @@ export async function bootstrap(
   schemeCodes: number[],
   indexSymbols: string[],
 ): Promise<SyncResult> {
-  return runSync(userId, schemeCodes, indexSymbols, { mode: 'bootstrap' });
+  const finishSyncActivity = beginSyncActivity();
+  try {
+    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'bootstrap' });
+  } finally {
+    finishSyncActivity();
+  }
 }
 
 /**
@@ -246,7 +252,12 @@ export async function syncDelta(
   schemeCodes: number[],
   indexSymbols: string[],
 ): Promise<SyncResult> {
-  return runSync(userId, schemeCodes, indexSymbols, { mode: 'delta' });
+  const finishSyncActivity = beginSyncActivity();
+  try {
+    return await runSync(userId, schemeCodes, indexSymbols, { mode: 'delta' });
+  } finally {
+    finishSyncActivity();
+  }
 }
 
 async function runSync(
@@ -255,7 +266,7 @@ async function runSync(
   indexSymbols: string[],
   options: { mode: 'bootstrap' | 'delta' },
 ): Promise<SyncResult> {
-  perfStart(`db:sync:${options.mode}`);
+  const syncSpanId = perfStart(`db:sync:${options.mode}`);
   const errors: string[] = [];
   let txInserted = 0;
   let navInserted = 0;
@@ -398,7 +409,7 @@ async function runSync(
   }
 
   const result: SyncResult = { txInserted, navInserted, idxInserted, errors, txRebuiltFromDrift };
-  perfEnd(`db:sync:${options.mode}`, {
+  perfEnd(syncSpanId, {
     tx_inserted: txInserted,
     nav_inserted: navInserted,
     idx_inserted: idxInserted,
@@ -436,6 +447,7 @@ let inFlightBootstrap: Promise<SyncResult> | null = null;
  */
 export async function bootstrapForUser(userId: string): Promise<SyncResult> {
   if (inFlightBootstrap) return inFlightBootstrap;
+  const finishSyncActivity = beginSyncActivity();
   inFlightBootstrap = (async () => {
     try {
       const funds = await fetchUserFunds(userId);
@@ -449,6 +461,7 @@ export async function bootstrapForUser(userId: string): Promise<SyncResult> {
       // bootstrap again. The on-disk SQLite cache survives — bootstrap
       // is idempotent and skips populated scopes via watermark.
       inFlightBootstrap = null;
+      finishSyncActivity();
     }
   })();
   return inFlightBootstrap;
@@ -466,6 +479,7 @@ let inFlightDelta: Promise<SyncResult> | null = null;
  */
 export async function syncDeltaForUser(userId: string): Promise<SyncResult> {
   if (inFlightDelta) return inFlightDelta;
+  const finishSyncActivity = beginSyncActivity();
   inFlightDelta = (async () => {
     try {
       const funds = await fetchUserFunds(userId);
@@ -476,6 +490,7 @@ export async function syncDeltaForUser(userId: string): Promise<SyncResult> {
       return await syncDelta(userId, schemeCodes, indexSymbols);
     } finally {
       inFlightDelta = null;
+      finishSyncActivity();
     }
   })();
   return inFlightDelta;

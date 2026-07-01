@@ -1,10 +1,17 @@
 import { StyleSheet, View } from 'react-native';
-import { Tabs } from 'expo-router';
+import { Tabs, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { ClearLensFonts } from '@/src/constants/clearLensTheme';
 import { DesktopSidebar, useResponsiveLayout } from '@/src/components/responsive';
+import {
+  getNavigationCacheContext,
+  normalizeNavigationRoute,
+  startNavigationMeasurement,
+  type NavigationRouteName,
+} from '@/src/lib/navigationPerformance';
 
 /**
  * Renders the same `<Tabs>` navigator in both layouts. On desktop the bottom
@@ -18,6 +25,17 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const { layout } = useResponsiveLayout();
   const isDesktop = layout === 'desktop';
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+
+  function measureTabPress(toRoute: NavigationRouteName) {
+    startNavigationMeasurement({
+      transition: 'bottom_tab',
+      fromRoute: normalizeNavigationRoute(pathname),
+      toRoute,
+      context: getNavigationCacheContext(queryClient, { toRoute }),
+    });
+  }
 
   return (
     <View style={[styles.shell, isDesktop && styles.shellDesktop, { backgroundColor: cl.background }]}>
@@ -77,6 +95,7 @@ export default function TabLayout() {
         >
           <Tabs.Screen
             name="index"
+            listeners={{ tabPress: () => measureTabPress('portfolio') }}
             options={{
               title: 'Portfolio',
               tabBarIcon: ({ color, size }) => (
@@ -86,6 +105,7 @@ export default function TabLayout() {
           />
           <Tabs.Screen
             name="funds"
+            listeners={{ tabPress: () => measureTabPress('funds') }}
             options={{
               title: 'Funds',
               tabBarIcon: ({ color, size }) => (
@@ -95,6 +115,7 @@ export default function TabLayout() {
           />
           <Tabs.Screen
             name="wealth-journey"
+            listeners={{ tabPress: () => measureTabPress('wealth_journey') }}
             options={{
               title: 'Wealth Journey',
               freezeOnBlur: true,

@@ -36,6 +36,7 @@ import { featureFlags } from '@/src/lib/featureFlags';
 import { parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
+import { NavigationPerformanceObserver } from '@/src/components/NavigationPerformanceObserver';
 import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
@@ -433,6 +434,7 @@ function ThemedAppShell() {
         rare preference change.
       */}
       <AuthGate key={resolvedScheme}>
+        <NavigationPerformanceObserver />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: clearLens.colors.background } }}>
           <Stack.Screen name="auth" />
           <Stack.Screen name="(tabs)" />
