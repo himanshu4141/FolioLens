@@ -168,4 +168,4 @@ Validation completed on 2026-07-01:
 - [x] Add the native release baseline runbook and README note.
 - [x] Run validation and record results.
 - [x] Add Amendments for the active-query and sync-state implementation details.
-- [ ] Publish the draft N1 PR and attach acceptance evidence.
+- [x] Publish draft implementation PR #251 and attach acceptance evidence.
