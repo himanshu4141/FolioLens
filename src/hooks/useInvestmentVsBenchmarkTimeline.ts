@@ -469,7 +469,7 @@ export function useInvestmentVsBenchmarkTimeline(
   userId: string | undefined,
   benchmarkSymbol: string,
   window: TimeWindow,
-  prefetchEnabled = true,
+  idlePrefetchEnabled = true,
 ): InvestmentVsBenchmarkTimeline {
   const fundKey = funds.map((fund) => fund.id).sort().join(',');
   const queryClient = useQueryClient();
@@ -497,7 +497,7 @@ export function useInvestmentVsBenchmarkTimeline(
   // of NAV rows — that's the freeze users see on first paint of
   // Portfolio and when navigating to About immediately after.
   useEffect(() => {
-    if (!data || !userId || funds.length === 0 || !prefetchEnabled) return;
+    if (!data || !userId || funds.length === 0 || !idlePrefetchEnabled) return;
     // Capture `userId` in a typed local so the inner `runNext` closure
     // sees `string` instead of `string | undefined` — TypeScript's
     // narrowing on the guard above doesn't reach into the nested fn.
@@ -520,7 +520,7 @@ export function useInvestmentVsBenchmarkTimeline(
     });
 
     return () => queue.cancel();
-  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient, prefetchEnabled]);
+  }, [data, userId, funds, fundKey, benchmarkSymbol, window, queryClient, idlePrefetchEnabled]);
 
   return {
     points: data?.points ?? [],

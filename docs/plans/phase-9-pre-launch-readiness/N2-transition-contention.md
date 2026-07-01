@@ -57,7 +57,7 @@ The post-N1 Android main-preview evidence recorded on PR #250 measured first-vis
 
 Create small exported prefetch helpers beside the existing query fetchers so screens and tests use the same query keys, stale times, and query functions as the active hooks. The active Portfolio screen will call both helpers when a non-active benchmark pill receives intent. This keeps the selected benchmark responsive without warming all alternatives on mount.
 
-Read focus state inside Portfolio variants and the investment timeline hook. The screen's active timeline prime runs only while focused. The timeline idle queue starts only while focused, its cleanup clears the current timer on blur, and its completion callback checks a cancellation flag before scheduling the next benchmark.
+Read focus state inside Portfolio variants and the investment timeline hook. The screen's active timeline prime runs only while focused. Portfolio's timeline idle queue starts only while focused, its cleanup clears the current timer on blur, and its completion callback checks a cancellation flag before scheduling the next benchmark. Fund Detail does not arm the idle alternate queue; its benchmark pills use targeted press-in prefetch only.
 
 Add a read-only `QueryCache` subscription for the active Portfolio key that selects the target fund's percentage and rank from existing `fundCards` and `summary`. It does not mount a query observer or provide a query function, so a missing cache entry produces no card instead of a full portfolio aggregation. Fund Detail will use this selector and remove its `usePortfolio` call.
 
@@ -148,12 +148,15 @@ Native evidence will use the connected Pixel 8a running the main-preview Android
 - 2026-07-01: Exclude FeedbackSheet deferral because Android first-visit About measurements of 59-84 ms do not demonstrate material route-evaluation cost.
 - 2026-07-01: Use Android main-preview as native acceptance evidence; iOS publishing/signing is unavailable and the blocker is recorded on PR #250.
 - 2026-07-01: Mark PR #252 `[cache-shape-stable]`. N2 retains the existing Portfolio and investment-timeline query keys and serialized payloads; it changes only when prefetches run and reads an existing Portfolio result without adding a persisted cache entry. Bumping `__BUSTER__` would discard valid user caches.
+- 2026-07-01: Keep the cancellable idle queue only for focused Portfolio. Fund Detail already exposes benchmark pills, so its two alternate timeline calculations are removed from mount-time work and replaced entirely by targeted press-in prefetch.
 
 ## Amendments
 
 The implementation follows the planned scope with one safety refinement: the initial design proposed a disabled React Query observer for Fund Detail. Review of React Query's shared-key behavior showed that even a disabled observer unnecessarily participates in query option management. The final implementation uses `useSyncExternalStore` over `QueryCache.subscribe` and reads the existing result with `getQueryData`, so it has no fetch path and cannot replace the active Portfolio query function.
 
 FeedbackSheet remains eagerly imported because the N1 Android measurements showed healthy first-visit About usability at 59-84 ms. N2 therefore makes no unsupported bundle-evaluation claim.
+
+The first physical Fund Detail trace confirmed the cache-only selector removed `query:portfolio`, but also showed the route's existing idle timeline queue calculating two unselected benchmarks. N2 now disables that idle queue for Fund Detail while preserving targeted benchmark-pill prefetch; the final physical trace must show neither a full Portfolio aggregation nor two alternate timeline starts.
 
 Validation completed before native evidence:
 

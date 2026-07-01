@@ -132,7 +132,7 @@ export function ClearLensPortfolioScreenDesktop() {
               funds={fundRefs}
               userId={userId}
               benchmarkSymbol={defaultBenchmarkSymbol}
-              prefetchEnabled={isFocused}
+              idlePrefetchEnabled={isFocused}
             />
 
             <MoversRow fundCards={fundCards} />

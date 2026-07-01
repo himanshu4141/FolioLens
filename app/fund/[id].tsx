@@ -144,14 +144,14 @@ function PerformanceTab({
   fundBenchmarkSymbol,
   fundRef,
   userId,
-  prefetchEnabled,
+  isFocused,
 }: {
   navHistory: { date: string; value: number }[];
   fundBenchmarkIndex: string | null;
   fundBenchmarkSymbol: string | null;
   fundRef?: FundRef;
   userId?: string;
-  prefetchEnabled: boolean;
+  isFocused: boolean;
 }) {
   const { compatible: colors } = useClearLensTokens();
   const tokens = useClearLensTokens();
@@ -180,7 +180,7 @@ function PerformanceTab({
   );
   const queryClient = useQueryClient();
   const handleBenchmarkPrefetch = useCallback((symbol: string) => {
-    if (!prefetchEnabled || !fundRef || !userId || symbol === selectedSymbol) return;
+    if (!isFocused || !fundRef || !userId || symbol === selectedSymbol) return;
     void prefetchInvestmentVsBenchmarkTimeline(
       queryClient,
       [fundRef],
@@ -188,13 +188,13 @@ function PerformanceTab({
       symbol,
       window,
     );
-  }, [fundRef, prefetchEnabled, queryClient, selectedSymbol, userId, window]);
+  }, [fundRef, isFocused, queryClient, selectedSymbol, userId, window]);
   const investmentTimeline = useInvestmentVsBenchmarkTimeline(
     fundRef ? [fundRef] : [],
     userId,
     selectedSymbol,
     window,
-    prefetchEnabled,
+    false,
   );
   // Track crosshair position so the return summary below the chart stays in sync.
   // null = no active crosshair (show end-of-period values).
@@ -2107,7 +2107,7 @@ function ClearLensFundDetailScreen() {
                 fundBenchmarkSymbol={data.benchmarkSymbol ?? null}
                 fundRef={{ id: data.id, schemeCode: data.schemeCode }}
                 userId={userId}
-                prefetchEnabled={isFocused}
+                isFocused={isFocused}
               />
               <GrowthConsistencyChart navHistory={navHistory} />
             </>

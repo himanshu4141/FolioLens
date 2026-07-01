@@ -422,12 +422,12 @@ export function InvestmentVsBenchmarkChart({
   funds,
   userId,
   benchmarkSymbol,
-  prefetchEnabled,
+  idlePrefetchEnabled,
 }: {
   funds: FundRef[];
   userId: string | undefined;
   benchmarkSymbol: string;
-  prefetchEnabled: boolean;
+  idlePrefetchEnabled: boolean;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -442,7 +442,7 @@ export function InvestmentVsBenchmarkChart({
     userId,
     benchmarkSymbol,
     window,
-    prefetchEnabled,
+    idlePrefetchEnabled,
   );
   const benchmarkLabel = BENCHMARK_OPTIONS.find((option) => option.symbol === benchmarkSymbol)?.label ?? benchmarkSymbol;
   const xAxisLabels = useMemo(() => buildJourneyXAxisLabels(points, window), [points, window]);
@@ -1135,7 +1135,7 @@ function ClearLensPortfolioScreenMobile() {
             funds={fundRefs}
             userId={userId}
             benchmarkSymbol={defaultBenchmarkSymbol}
-            prefetchEnabled={isFocused}
+            idlePrefetchEnabled={isFocused}
           />
 
           {moneyTrailData ? (
