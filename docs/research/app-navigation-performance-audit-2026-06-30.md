@@ -482,9 +482,10 @@ The channel check is no longer hypothetical:
 - the PR preview OTA published for this audit therefore builds `analytics.isEnabled === false` and
   skips bootstrap, foreground sync, auth-driven bootstrap, and sign-out cleanup.
 
-If the reported hangs were observed in the installed preview-PR app, this is a direct
-channel-specific contributor. Production/main still need runtime confirmation, but correctness must
-not depend on whether telemetry is configured.
+If the reported hangs were observed in the installed preview-PR app, N0 is a direct
+channel-specific contributor and may explain much of the felt difference. If they were observed on
+main or production, N0 remains a correctness bug but is not the lead explanation; N2 prefetch
+cancellation is the first performance fix. Correctness must never depend on telemetry configuration.
 
 ### Required fix
 
@@ -493,6 +494,9 @@ not depend on whether telemetry is configured.
 - Add a test with analytics disabled that still bootstraps, foreground-syncs, and clears user data.
 - Before refactoring, record the tested app variant/update ID and whether analytics is enabled. This
   is a two-minute diagnostic and should be the first investigation step.
+- Add the PostHog key/host wiring to `pr-preview.yml` so preview builds can emit N1 performance
+  metrics comparable with main/production. This is observability parity, not a substitute for
+  decoupling cache correctness from analytics.
 
 ---
 
@@ -714,9 +718,10 @@ Preserve the existing sign-out -> sign-in serialization and native/web guards.
 
 Add tests with analytics disabled proving that initial bootstrap runs, SIGNED_IN bootstraps,
 SIGNED_OUT clears every user-scoped cache, and foregrounding runs the throttled delta sync. Add a
-channel/config regression check so the PR preview omission cannot silently disable correctness
-again. Run npm run typecheck, npm run lint, and focused root-lifecycle tests. Record before/after
-cold-query behavior for the exact preview update in the PR.
+channel/config regression check so a missing analytics key cannot silently disable correctness
+again. Add the PostHog key/host wiring to pr-preview.yml so N1 telemetry is comparable across preview,
+main, and production; do not expose secret values. Run npm run typecheck, npm run lint, and focused
+root-lifecycle tests. Record before/after cold-query behavior for the exact preview update in the PR.
 ```
 
 ### Prompt A — native Google sign-in reliability (independent track)
