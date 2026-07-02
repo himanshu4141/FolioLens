@@ -734,8 +734,10 @@ Because the agents may post through the same GitHub account, every comment start
 7. The execution owner merges using the repository's normal merge method, confirms `main` contains
    the merge, and comments on PR #250 with the implementation PR, merge SHA, validation results,
    measured before/after evidence, and any scope amendment.
-8. The Codex coordinator updates the tracking table on this branch. Only then may the execution
-   owner start the next row from the new `main`.
+8. The Codex coordinator updates the tracking table asynchronously after verifying the merge. This
+   bookkeeping is not an execution gate: the execution owner may immediately fetch `origin/main`,
+   verify the prior merge is present, and start the first `Pending` row. If the merged PR has a known
+   unresolved blocker, correct or revert it before starting unrelated work.
 
 ### Program tracking
 
@@ -745,7 +747,7 @@ Because the agents may post through the same GitHub account, every comment start
 | 2 | N2 | Merged | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | `7d3f25ef` | Codex/Claude CONVERGED at docs head `ad40cf33`; code `d88d1271`; 77 suites / 1,805 tests, typecheck, lint, diff check; Android main-preview focused-idle, post-blur, Fund Detail, and cache-only evidence accepted |
 | 3 | N2D | Merged | [#253](https://github.com/himanshu4141/FolioLens/pull/253) | `38d669b7` | Codex/Claude CONVERGED at docs head `6049fb6b` / code `86d176dd`; lifecycle race fixed; 78 suites / 1,814 tests, typecheck, lint, diff check; corrected-head Android main-preview serialization/repair evidence accepted |
 | 4 | N2T | Merged | [#254](https://github.com/himanshu4141/FolioLens/pull/254) | `74cf1d89` | Codex/Claude CONVERGED at docs head `6b2c682d` / measured code `d6a6c50b`; 78 suites / 1,822 tests, typecheck, lint, diff check; corrected-head Android main-preview benchmark-switch p95 82 ms, 3Y 36/36 ms versus 4.830–5.919 s baseline, full input/index/valuation cache hits, and zero SQLite transaction errors |
-| 5 | N0 | Ready to start | — | — | N2T merge verified on `main`; decouple native data lifecycle from analytics and restore preview telemetry parity without treating this preview-only amplifier as the cross-channel root cause |
+| 5 | N0 | Merged | [#255](https://github.com/himanshu4141/FolioLens/pull/255) | `30390544` | Codex/Claude CONVERGED at docs head `da539097` / measured code `8433596b`; 81 suites / 1,833 tests, typecheck, lint, diff check; exact-SHA Android preview-pr proved PostHog parity plus cold bootstrap and foreground delta lifecycle with zero relevant SQLite/auth errors; one `persister:restore_failed` retained for the later persistence milestone |
 | 6 | N3 | Pending | — | — | — |
 | 7 | N4 | Pending | — | — | — |
 | 8 | Auth A0 | Pending | — | — | — |
