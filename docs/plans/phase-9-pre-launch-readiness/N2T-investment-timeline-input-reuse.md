@@ -182,6 +182,24 @@ Validation before physical Android evidence:
 - Android export passed: 1,747 modules and a 6.3 MB Hermes bundle;
 - `git diff --check` passed.
 
+Physical Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98ad0eb95`:
+
+- Pixel 8a, Android 16; `com.foliolens.app.mainpreview`, channel `foliolens-main`, runtime/app `0.0.4`;
+- Android main-preview OTA `019f2233-058f-774c-bfc7-d310fa931633` (About showed `019f2233-058…`);
+- before measurement, the support-only local-cache reset confirmed 566 local/server transactions, then rebuilt 566 transaction, 51,902 NAV, and 22,325 index rows with `error_count: 0`; this deliberately invalidated timeline outputs and prepared inputs;
+- interaction sequence: select one benchmark to build each window's prepared input, then select two different benchmarks for the same window. The reset also invalidated index snapshots, so the first Nifty 50/Nifty 100 switches at 3M were treated as one-time index warm-up; the repeated-switch acceptance set begins after all three canonical snapshots are fresh.
+
+| Window | Cold total | tx / NAV / index rows | Points / evaluation dates | Warm totals | Warm cache result |
+|---|---:|---:|---:|---:|---|
+| 1M | 1,404 ms | 566 / 445 / 2,059 | 21 / 21 | 20, 50 ms | input + index hit; 21 valuation hits, 0 misses |
+| 3M | 2,298 ms | 566 / 1,137 / 2,059 | 60 / 60 | 417, 465 ms setup | input hit; one-time invalidated index-snapshot refetch |
+| 6M | 3,963 ms | 566 / 2,219 / 2,059 | 61 / 61 | 29, 35 ms | input + index hit; 61 valuation hits, 0 misses |
+| 1Y | 6,233 ms | 566 / 4,443 / 2,059 | 83 / 83 | 36, 36 ms | input + index hit; 83 valuation hits, 0 misses |
+| 3Y | 15,240 ms | 566 / 12,879 / 2,059 | 84 / 84 | 31, 21 ms | input + index hit; 84 valuation hits, 0 misses |
+| All | 6,034 ms | 566 / 34,299 / 2,059 | 91 / 91 | 38, 38 ms | input + index hit; 91 valuation hits, 0 misses |
+
+The steady-state repeated-switch set was `20, 50, 29, 35, 36, 36, 31, 21, 38, 38` ms: p95 50 ms, below the 300 ms target. The 3Y benchmark-only interaction improved from the 4.830–5.919 second baseline to 21–31 ms (more than 99% lower). Every warm row reported `input_cache_hit: true`, `index_cache_hit: true`, and zero valuation-cache misses. The cold numbers are reported separately: they include preparation of the window-specific input after a full local-cache rebuild, and show that SQLite NAV read/repair remains the dominant first-request cost, especially for 3Y. Logcat contained zero nested-transaction, invalid-rollback, `SQLITE_BUSY`, or `SQLITE_LOCKED` errors.
+
 ## Progress
 
 - [x] Read AGENTS.md, VISION.md, docs/TECH-DISCOVERY.md, docs/architecture/cache-surfaces.md, docs/process/PLANS.md, the updated control report, and later PR #250 comments.
@@ -192,5 +210,5 @@ Validation before physical Android evidence:
 - [x] Implement benchmark-independent prepared input and bounded valuation.
 - [x] Update invalidation and cache inventory.
 - [x] Run focused, full, static, and Android export validation.
-- [ ] Capture Android main-preview acceptance evidence.
-- [ ] Open the implementation PR and enter independent review.
+- [x] Capture Android main-preview acceptance evidence.
+- [x] Open the implementation PR and enter independent review.
