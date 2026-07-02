@@ -5,7 +5,6 @@ import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
 import { filterToWindow, type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import {
-  buildBenchmarkLookup,
   filterReversedTransactionPairs,
   simulateBenchmarkInvestmentFromNormalizedTransactions,
 } from '@/src/utils/xirr';
@@ -150,8 +149,19 @@ function getInvestedAt(history: { date: string; investedValue: number }[], targe
   return Math.max(0, getLatestAt(history, targetDate)?.investedValue ?? 0);
 }
 
-function getBenchmarkUnitsAt(history: { date: string; units: number }[], targetDate: string): number {
-  return Math.max(0, getLatestAt(history, targetDate)?.units ?? 0);
+function monotonicLatestNumber<T extends { date: string }>(
+  history: T[],
+  readValue: (row: T) => number,
+): (targetDate: string) => number | null {
+  let index = -1;
+  let latest: number | null = null;
+  return (targetDate: string) => {
+    while (index + 1 < history.length && history[index + 1].date <= targetDate) {
+      index += 1;
+      latest = readValue(history[index]);
+    }
+    return latest;
+  };
 }
 
 function sampleDates(dates: string[], maxPoints = 90): string[] {
@@ -357,16 +367,16 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     };
   }
 
-  const benchmarkValueAt = buildBenchmarkLookup(
-    idxRows.map((row) => ({ date: row.index_date, value: row.close_value })),
-  );
+  const benchmarkRows = idxRows
+    .map((row) => ({ date: row.index_date, value: row.close_value }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   // Benchmark sim is shared with the portfolio's headline marketXirr — both
   // call simulateBenchmarkInvestment so the chart line and the alpha % can't
   // disagree on terminal value for the same inputs.
   const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestmentFromNormalizedTransactions(
     inputs.transactions,
-    benchmarkValueAt,
+    monotonicLatestNumber(benchmarkRows, (row) => row.value),
   );
 
   // The pre-N2T implementation valued every fund on every candidate date and
@@ -374,12 +384,28 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
   // invested/benchmark guards identify the same valid date set without the
   // per-fund NAV loop. Sampling that set first bounds valuation to the chart
   // budget while the complete NAV histories remain available for lookup.
-  const validDates = inputs.candidateDates.filter((date) => {
-    const investedValue = getInvestedAt(inputs.investedHistory, date);
+  const investedValueAt = monotonicLatestNumber(
+    inputs.investedHistory,
+    (row) => Math.max(0, row.investedValue),
+  );
+  const benchmarkValueAt = monotonicLatestNumber(benchmarkRows, (row) => row.value);
+  const benchmarkUnitsAt = monotonicLatestNumber(
+    benchmarkUnitHistory,
+    (row) => Math.max(0, row.units),
+  );
+  const benchmarkCloseByDate = new Map<string, number>();
+  const benchmarkUnitsByDate = new Map<string, number>();
+  const validDates: string[] = [];
+  for (const date of inputs.candidateDates) {
+    const investedValue = investedValueAt(date) ?? 0;
     const benchmarkClose = benchmarkValueAt(date);
-    const simulatedBenchmarkUnits = getBenchmarkUnitsAt(benchmarkUnitHistory, date);
-    return investedValue > 0 && benchmarkClose !== null && simulatedBenchmarkUnits > 0;
-  });
+    const simulatedBenchmarkUnits = benchmarkUnitsAt(date) ?? 0;
+    if (investedValue > 0 && benchmarkClose !== null && simulatedBenchmarkUnits > 0) {
+      validDates.push(date);
+      benchmarkCloseByDate.set(date, benchmarkClose);
+      benchmarkUnitsByDate.set(date, simulatedBenchmarkUnits);
+    }
+  }
 
   const filteredDates = filterToWindow(
     validDates.map((date) => ({ date, value: 1 })),
@@ -406,8 +432,8 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     if (cacheHit) valuationCacheHits += 1;
     else valuationCacheMisses += 1;
 
-    const benchmarkClose = benchmarkValueAt(date);
-    const simulatedBenchmarkUnits = getBenchmarkUnitsAt(benchmarkUnitHistory, date);
+    const benchmarkClose = benchmarkCloseByDate.get(date) ?? null;
+    const simulatedBenchmarkUnits = benchmarkUnitsByDate.get(date) ?? 0;
 
     if (
       valuation.hasPortfolioValue &&
