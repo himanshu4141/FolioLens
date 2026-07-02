@@ -155,6 +155,7 @@ Native evidence must record device/OS, package/channel, OTA/update ID, implement
 - 2026-07-02: Reuse the canonical persisted `['index-snapshot', symbol]` query for benchmark output. The first physical run showed that input reuse alone could still spend 2.443 seconds refetching an unchanged index snapshot for each window; sharing the existing payload removes that repeated work without changing its contract.
 - 2026-07-02: Add a benchmark simulator entry point for already normalized transactions. The prepared input has already removed reversal pairs; repeating that pairing pass on every benchmark produced 333–343 ms warm samples even with 1–2 ms index-cache reads.
 - 2026-07-02: Evaluate sorted benchmark, invested, and simulated-unit histories with monotonic pointers. Corrected-head warm samples after normalization reuse were still 337–435 ms because the benchmark path repeatedly binary-searched data whose dates are already ordered.
+- 2026-07-02: Avoid copying/sorting already ordered index rows and avoid thousands of temporary window objects/maps. The first monotonic build improved the All-window path but remained 370–408 ms; only 91 output positions are needed.
 
 ## Amendments
 
@@ -167,6 +168,8 @@ The first physical Android attempt at `b5b926b` exposed an acceptance gap before
 A second pre-evidence run at `41ce027` confirmed index reuse at 1–2 ms but measured 333–343 ms total warm computation. The remaining duplicate was transaction normalization inside `simulateBenchmarkInvestment`, even though the prepared input already held a reversal-filtered series. The timeline now calls a normalized-input simulator that preserves the public simulator's financial behavior without rerunning the pairing pass. Unit coverage proves the normalized path is output-identical.
 
 The first `c12a518` samples remained 337–435 ms with cached input and index data. The benchmark layer was still invoking binary latest-at-or-before lookup for each sorted transaction and candidate date. It now sorts index rows once, advances monotonic pointers across index/invested/benchmark-unit histories, and stores the selected date values for direct evaluation lookup. Golden fixtures continue to compare every output date and value to the frozen pre-N2T implementation.
+
+The initial monotonic candidate `d29a236` measured 370–408 ms for the All window. Its remaining overhead came from copying and sorting 2,059 already ordered index rows, materializing a temporary object per candidate for window filtering, and filling date maps before retaining only 91 positions. The final path verifies order without copying, keeps parallel primitive arrays, derives the legacy window offset directly, and samples integer positions before valuation.
 
 The frozen legacy oracle and deterministic fixtures cover weekend and holiday lookups, an NFO subscription before its first NAV, switches, redemptions, a failed-payment reversal pair, a fund with no NAV rows, delayed index coverage, and 1M/3M/6M/1Y/3Y/All. Every emitted date and invested/portfolio/benchmark value matches within 10 decimal digits. A 400-date fixture proves only the at-most-91 sampled dates enter the portfolio valuation cache and the terminal point is retained.
 

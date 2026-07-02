@@ -2,7 +2,7 @@ import { useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tans
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
-import { filterToWindow, type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
+import { type NavPoint, type TimeWindow } from '@/src/utils/navUtils';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import {
   filterReversedTransactionPairs,
@@ -149,14 +149,15 @@ function getInvestedAt(history: { date: string; investedValue: number }[], targe
   return Math.max(0, getLatestAt(history, targetDate)?.investedValue ?? 0);
 }
 
-function monotonicLatestNumber<T extends { date: string }>(
+function monotonicLatestNumber<T>(
   history: T[],
+  readDate: (row: T) => string,
   readValue: (row: T) => number,
 ): (targetDate: string) => number | null {
   let index = -1;
   let latest: number | null = null;
   return (targetDate: string) => {
-    while (index + 1 < history.length && history[index + 1].date <= targetDate) {
+    while (index + 1 < history.length && readDate(history[index + 1]) <= targetDate) {
       index += 1;
       latest = readValue(history[index]);
     }
@@ -164,12 +165,13 @@ function monotonicLatestNumber<T extends { date: string }>(
   };
 }
 
-function sampleDates(dates: string[], maxPoints = 90): string[] {
-  if (dates.length <= maxPoints) return dates;
-  const step = Math.ceil(dates.length / maxPoints);
-  const sampled = dates.filter((_, index) => index % step === 0);
-  const last = dates[dates.length - 1];
-  if (sampled[sampled.length - 1] !== last) sampled.push(last);
+function sampleIndexes(length: number, maxPoints = 90): number[] {
+  if (length <= 0) return [];
+  if (length <= maxPoints) return Array.from({ length }, (_, index) => index);
+  const step = Math.ceil(length / maxPoints);
+  const sampled: number[] = [];
+  for (let index = 0; index < length; index += step) sampled.push(index);
+  if (sampled[sampled.length - 1] !== length - 1) sampled.push(length - 1);
   return sampled;
 }
 
@@ -367,16 +369,22 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     };
   }
 
-  const benchmarkRows = idxRows
-    .map((row) => ({ date: row.index_date, value: row.close_value }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const benchmarkRows = idxRows.every((row, index) => (
+    index === 0 || idxRows[index - 1].index_date <= row.index_date
+  ))
+    ? idxRows
+    : [...idxRows].sort((a, b) => a.index_date.localeCompare(b.index_date));
 
   // Benchmark sim is shared with the portfolio's headline marketXirr — both
   // call simulateBenchmarkInvestment so the chart line and the alpha % can't
   // disagree on terminal value for the same inputs.
   const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestmentFromNormalizedTransactions(
     inputs.transactions,
-    monotonicLatestNumber(benchmarkRows, (row) => row.value),
+    monotonicLatestNumber(
+      benchmarkRows,
+      (row) => row.index_date,
+      (row) => row.close_value,
+    ),
   );
 
   // The pre-N2T implementation valued every fund on every candidate date and
@@ -386,33 +394,40 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
   // budget while the complete NAV histories remain available for lookup.
   const investedValueAt = monotonicLatestNumber(
     inputs.investedHistory,
+    (row) => row.date,
     (row) => Math.max(0, row.investedValue),
   );
-  const benchmarkValueAt = monotonicLatestNumber(benchmarkRows, (row) => row.value);
+  const benchmarkValueAt = monotonicLatestNumber(
+    benchmarkRows,
+    (row) => row.index_date,
+    (row) => row.close_value,
+  );
   const benchmarkUnitsAt = monotonicLatestNumber(
     benchmarkUnitHistory,
+    (row) => row.date,
     (row) => Math.max(0, row.units),
   );
-  const benchmarkCloseByDate = new Map<string, number>();
-  const benchmarkUnitsByDate = new Map<string, number>();
   const validDates: string[] = [];
+  const validBenchmarkCloses: number[] = [];
+  const validBenchmarkUnits: number[] = [];
   for (const date of inputs.candidateDates) {
     const investedValue = investedValueAt(date) ?? 0;
     const benchmarkClose = benchmarkValueAt(date);
     const simulatedBenchmarkUnits = benchmarkUnitsAt(date) ?? 0;
     if (investedValue > 0 && benchmarkClose !== null && simulatedBenchmarkUnits > 0) {
       validDates.push(date);
-      benchmarkCloseByDate.set(date, benchmarkClose);
-      benchmarkUnitsByDate.set(date, simulatedBenchmarkUnits);
+      validBenchmarkCloses.push(benchmarkClose);
+      validBenchmarkUnits.push(simulatedBenchmarkUnits);
     }
   }
 
-  const filteredDates = filterToWindow(
-    validDates.map((date) => ({ date, value: 1 })),
-    inputs.window,
-  );
-  const firstDate = filteredDates[0]?.date;
-  if (!firstDate) {
+  const windowStart = getWindowStartDate(inputs.window);
+  const firstVisibleIndex = windowStart === null
+    ? 0
+    : validDates.findIndex((date) => date >= windowStart);
+  const windowOffset = firstVisibleIndex >= 0 ? firstVisibleIndex : 0;
+  const windowLength = validDates.length - windowOffset;
+  if (windowLength <= 0) {
     return {
       points: [],
       xAxisLabels: [],
@@ -422,18 +437,20 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     };
   }
 
-  const evaluationDates = sampleDates(validDates.filter((date) => date >= firstDate));
+  const evaluationIndexes = sampleIndexes(windowLength)
+    .map((index) => index + windowOffset);
   const points: InvestmentVsBenchmarkPoint[] = [];
   let valuationCacheHits = 0;
   let valuationCacheMisses = 0;
 
-  for (const date of evaluationDates) {
+  for (const evaluationIndex of evaluationIndexes) {
+    const date = validDates[evaluationIndex];
     const { valuation, cacheHit } = getTimelineValuation(inputs, date);
     if (cacheHit) valuationCacheHits += 1;
     else valuationCacheMisses += 1;
 
-    const benchmarkClose = benchmarkCloseByDate.get(date) ?? null;
-    const simulatedBenchmarkUnits = benchmarkUnitsByDate.get(date) ?? 0;
+    const benchmarkClose = validBenchmarkCloses[evaluationIndex] ?? null;
+    const simulatedBenchmarkUnits = validBenchmarkUnits[evaluationIndex] ?? 0;
 
     if (
       valuation.hasPortfolioValue &&
@@ -454,7 +471,7 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
   return {
     points,
     xAxisLabels: buildXAxisLabels(points.map((point) => point.date)),
-    evaluationDateCount: evaluationDates.length,
+    evaluationDateCount: evaluationIndexes.length,
     valuationCacheHits,
     valuationCacheMisses,
   };
