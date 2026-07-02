@@ -6,7 +6,10 @@ import { PERSIST_MAX_AGE_MS } from '@/src/lib/queryClient';
 import { useAppStore } from '@/src/store/appStore';
 import { findPreviewCompositionByCode } from '@/src/lib/previewData';
 
-export function useFundComposition(schemeCode: number | null) {
+export function useFundComposition(
+  schemeCode: number | null,
+  options: { enabled?: boolean } = {},
+) {
   const previewMode = useAppStore((s) => s.previewMode);
   const { data, isLoading } = useQuery({
     queryKey: previewMode
@@ -19,7 +22,7 @@ export function useFundComposition(schemeCode: number | null) {
       }
       return fetchCompositions([schemeCode!]);
     },
-    enabled: schemeCode !== null,
+    enabled: (options.enabled ?? true) && schemeCode !== null,
     staleTime: STALE_TIMES.PORTFOLIO_COMPOSITION,
     gcTime: PERSIST_MAX_AGE_MS,
   });

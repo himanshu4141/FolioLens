@@ -66,7 +66,7 @@ function createHarness(initialSession: AppLifecycleSession | null = USER_SESSION
     didSyncChangeData: jest.fn((result) => result.changed),
     clearLocalDb: jest.fn(async () => {}),
     clearQueryClient: jest.fn(),
-    invalidateQueries: jest.fn(async () => {}),
+    invalidateQueries: jest.fn(async (_result: SyncResult) => {}),
     removePersistedClient: jest.fn(async () => {}),
     resetUserScopedState: jest.fn(),
     clearOnboardingDraft: jest.fn(async () => {}),
@@ -110,6 +110,17 @@ describe('startAppLifecycle with analytics disabled', () => {
     stop();
     expect(harness.unsubscribeAuth).toHaveBeenCalledTimes(1);
     expect(harness.unsubscribeAppState).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes a changed bootstrap result to granular invalidation', async () => {
+    const harness = createHarness();
+    const result = { changed: true };
+    jest.mocked(harness.dependencies.bootstrapForUser).mockResolvedValue(result);
+
+    startAppLifecycle(harness.dependencies);
+    await settlePromises();
+
+    expect(harness.dependencies.invalidateQueries).toHaveBeenCalledWith(result);
   });
 
   it('bootstraps on SIGNED_IN without analytics', async () => {
@@ -159,6 +170,20 @@ describe('startAppLifecycle with analytics disabled', () => {
 
     expect(harness.dependencies.syncDeltaForUser).toHaveBeenCalledTimes(1);
     expect(harness.analytics.track).not.toHaveBeenCalled();
+  });
+
+  it('passes a changed foreground result to granular invalidation', async () => {
+    const harness = createHarness();
+    const result = { changed: true };
+    jest.mocked(harness.dependencies.syncDeltaForUser).mockResolvedValue(result);
+    startAppLifecycle(harness.dependencies);
+    await settlePromises();
+
+    harness.setCurrentTime(200_000);
+    harness.emitAppState('active');
+    await settlePromises();
+
+    expect(harness.dependencies.invalidateQueries).toHaveBeenCalledWith(result);
   });
 
   it('waits for sign-out SQLite cleanup before a subsequent sign-in bootstrap', async () => {

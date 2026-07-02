@@ -316,7 +316,10 @@ export async function fetchFundDetail(
   };
 }
 
-export function useFundDetail(fundId: string) {
+export function useFundDetail(
+  fundId: string,
+  options: { enabled?: boolean } = {},
+) {
   const { session } = useSession();
   const userId = session?.user.id;
   const previewMode = useAppStore((s) => s.previewMode);
@@ -328,7 +331,7 @@ export function useFundDetail(fundId: string) {
     // Preview mode swaps the Supabase fetch for an in-memory fixture so
     // the Fund Detail screen paints immediately instead of sitting on a
     // spinner waiting for queries that can't resolve (no real session).
-    enabled: !!fundId && (previewMode || !!userId),
+    enabled: (options.enabled ?? true) && !!fundId && (previewMode || !!userId),
     queryFn: () =>
       previewMode
         ? Promise.resolve(buildPreviewFundDetail(fundId))
@@ -491,13 +494,16 @@ export async function appendNavTailIfStale(
   return { topped_up: true, rows_appended: tailRows.length };
 }
 
-export function useFundNavHistory(schemeCode: number | null | undefined) {
+export function useFundNavHistory(
+  schemeCode: number | null | undefined,
+  options: { enabled?: boolean } = {},
+) {
   const previewMode = useAppStore((s) => s.previewMode);
   return useQuery({
     queryKey: previewMode
       ? ['fund-nav-history', 'preview', schemeCode]
       : ['fund-nav-history', schemeCode],
-    enabled: schemeCode != null,
+    enabled: (options.enabled ?? true) && schemeCode != null,
     queryFn: () => {
       if (previewMode && schemeCode != null) {
         // 36-month synthetic series — enough for the Fund Detail

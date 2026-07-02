@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import Svg, { Circle } from 'react-native-svg';
 import {
   ClearLensCard,
@@ -324,24 +324,28 @@ export function ClearLensPortfolioInsightsScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { defaultBenchmarkSymbol } = useAppStore();
-  const { data, isLoading: portfolioLoading } = usePortfolio(defaultBenchmarkSymbol);
+  const { data, isLoading: portfolioLoading } = usePortfolio(defaultBenchmarkSymbol, {
+    enabled: isFocused,
+  });
   const fundCards = data?.fundCards ?? [];
   const { insights, isLoading, isStale, isSyncing, triggerSync, hasNoData } =
-    usePortfolioInsights(fundCards);
+    usePortfolioInsights(fundCards, { enabled: isFocused });
   const didAutoTrigger = useRef(false);
   const shouldBootstrapInsights = fundCards.length > 0 && !insights && !isLoading;
 
   useEffect(() => {
     if (
       !didAutoTrigger.current &&
+      isFocused &&
       (hasNoData || isStale || shouldBootstrapInsights) &&
       !isSyncing
     ) {
       didAutoTrigger.current = true;
       triggerSync();
     }
-  }, [hasNoData, isStale, isSyncing, shouldBootstrapInsights, triggerSync]);
+  }, [hasNoData, isFocused, isStale, isSyncing, shouldBootstrapInsights, triggerSync]);
 
   const disclosure = insights ? `AMFI disclosure: ${formatDisclosureDate(insights.dataAsOf)}` : 'AMFI disclosure';
 

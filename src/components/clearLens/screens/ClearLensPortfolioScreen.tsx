@@ -423,10 +423,12 @@ export function InvestmentVsBenchmarkChart({
   funds,
   userId,
   benchmarkSymbol,
+  enabled = true,
 }: {
   funds: FundRef[];
   userId: string | undefined;
   benchmarkSymbol: string;
+  enabled?: boolean;
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
@@ -441,6 +443,7 @@ export function InvestmentVsBenchmarkChart({
     userId,
     benchmarkSymbol,
     window,
+    { enabled },
   );
   const benchmarkLabel = BENCHMARK_OPTIONS.find((option) => option.symbol === benchmarkSymbol)?.label ?? benchmarkSymbol;
   const xAxisLabels = useMemo(() => buildJourneyXAxisLabels(points, window), [points, window]);
@@ -956,7 +959,10 @@ function ClearLensPortfolioScreenMobile() {
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const queryClient = useQueryClient();
-  const { data, isLoading, isError, refetch, isRefetching } = usePortfolio(defaultBenchmarkSymbol);
+  const { data, isLoading, isError, refetch, isRefetching } = usePortfolio(
+    defaultBenchmarkSymbol,
+    { enabled: isFocused },
+  );
   // The RefreshControl spinner is normally driven by `isRefetching`, but
   // the SQLite sync runs *before* the React Query refetch — during that
   // window `isRefetching` is false and the spinner would snap closed
@@ -1014,7 +1020,7 @@ function ClearLensPortfolioScreenMobile() {
   // portfolio values invisible on the chart. `useUserFunds` returns the
   // full roster; `is_active=false` covers CAS-imported "never owned"
   // (zero-balance, zero-txn) rows that should stay excluded.
-  const { data: userFunds } = useUserFunds();
+  const { data: userFunds } = useUserFunds({ enabled: isFocused });
   const fundRefs: FundRef[] = useMemo(
     () =>
       (userFunds ?? [])
@@ -1058,8 +1064,13 @@ function ClearLensPortfolioScreenMobile() {
     );
   }, [data, userId, fundRefs, defaultBenchmarkSymbol, portfolioChartWindow, queryClient, isFocused]);
 
-  const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
-  const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
+  const { insights, isLoading: insightsLoading } = usePortfolioInsights(
+    fundCards,
+    { enabled: isFocused },
+  );
+  const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail({
+    enabled: isFocused,
+  });
 
   function openSettings() {
     startNavigationMeasurement({
@@ -1141,6 +1152,7 @@ function ClearLensPortfolioScreenMobile() {
             funds={fundRefs}
             userId={userId}
             benchmarkSymbol={defaultBenchmarkSymbol}
+            enabled={isFocused}
           />
 
           {moneyTrailData ? (

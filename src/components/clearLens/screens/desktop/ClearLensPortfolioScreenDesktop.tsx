@@ -44,7 +44,9 @@ export function ClearLensPortfolioScreenDesktop() {
   const userId = session?.user.id;
   const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore();
 
-  const { data, isLoading, isError, refetch } = usePortfolio(defaultBenchmarkSymbol);
+  const { data, isLoading, isError, refetch } = usePortfolio(defaultBenchmarkSymbol, {
+    enabled: isFocused,
+  });
   // See mobile variant for the rationale — `useIsRestoring` keeps the
   // empty-state branch from flashing during the persister rehydration
   // window.
@@ -75,8 +77,12 @@ export function ClearLensPortfolioScreenDesktop() {
     }),
     [fundRefs, isFocused, portfolioChartWindow, queryClient, userId],
   );
-  const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards);
-  const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail();
+  const { insights, isLoading: insightsLoading } = usePortfolioInsights(fundCards, {
+    enabled: isFocused,
+  });
+  const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail({
+    enabled: isFocused,
+  });
 
   if (showFirstLoad) {
     return (
@@ -141,6 +147,7 @@ export function ClearLensPortfolioScreenDesktop() {
               funds={fundRefs}
               userId={userId}
               benchmarkSymbol={defaultBenchmarkSymbol}
+              enabled={isFocused}
             />
 
             <MoversRow fundCards={fundCards} />

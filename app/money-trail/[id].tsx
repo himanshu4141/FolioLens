@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsRestoring } from '@tanstack/react-query';
 import {
@@ -119,10 +119,11 @@ export default function MoneyTrailDetailScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const { data, isLoading } = useMoneyTrail();
+  const { data, isLoading } = useMoneyTrail({ enabled: isFocused });
   // See `app/money-trail/index.tsx` for why this is needed — same
   // flash-of-empty-state on cold launch while the persister rehydrates.
   const isRestoring = useIsRestoring();

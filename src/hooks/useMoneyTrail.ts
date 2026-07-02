@@ -97,7 +97,7 @@ export async function fetchMoneyTrailData(
   };
 }
 
-export function useMoneyTrail() {
+export function useMoneyTrail(options: { enabled?: boolean } = {}) {
   const { session } = useSession();
   const previewMode = useAppStore((s) => s.previewMode);
   const userId = session?.user.id;
@@ -105,7 +105,7 @@ export function useMoneyTrail() {
 
   return useQuery({
     queryKey: previewMode ? ['money-trail', 'preview'] : ['money-trail', userId],
-    enabled: previewMode || !!userId,
+    enabled: (options.enabled ?? true) && (previewMode || !!userId),
     queryFn: () =>
       previewMode ? Promise.resolve(PREVIEW_MONEY_TRAIL) : fetchMoneyTrailData(qc, userId!),
     staleTime: STALE_TIMES.MONEY_TRAIL,

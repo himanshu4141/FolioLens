@@ -555,7 +555,10 @@ export function useCachedPortfolioWeight(
   );
 }
 
-export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
+export function usePortfolio(
+  benchmarkSymbol: string,
+  options: { enabled?: boolean } = {},
+) {
   const { session } = useSession();
   const previewMode = useAppStore((s) => s.previewMode);
   const userId = session?.user.id;
@@ -563,7 +566,7 @@ export function usePortfolio(benchmarkSymbol: string = '^NSEI') {
 
   const query = useQuery({
     queryKey: previewMode ? ['portfolio', 'preview'] : ['portfolio', userId, benchmarkSymbol],
-    enabled: previewMode || !!userId,
+    enabled: (options.enabled ?? true) && (previewMode || !!userId),
     queryFn: () =>
       previewMode
         ? Promise.resolve({ fundCards: PREVIEW_FUND_CARDS, summary: PREVIEW_PORTFOLIO_SUMMARY })

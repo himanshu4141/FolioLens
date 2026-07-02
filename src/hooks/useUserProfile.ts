@@ -55,11 +55,14 @@ export function userProfileQueryKey(userId: string | undefined) {
   return ['user-profile', userId] as const;
 }
 
-export function useUserProfile(userId: string | undefined) {
+export function useUserProfile(
+  userId: string | undefined,
+  options: { enabled?: boolean } = {},
+) {
   return useQuery<UserProfile | null>({
     queryKey: userProfileQueryKey(userId),
     queryFn: () => fetchUserProfile(userId!),
-    enabled: !!userId,
+    enabled: (options.enabled ?? true) && !!userId,
     // Always refetch on mount. The wizard's IdentityStep upserts
     // user_profile and invalidates this key, but if a screen was opened in
     // a different navigation stack the cached value can outlive the upsert.

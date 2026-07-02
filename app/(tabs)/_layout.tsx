@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { Tabs, usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,6 +44,7 @@ export default function TabLayout() {
       </View>
       <View style={styles.contentSlot}>
         <Tabs
+          detachInactiveScreens={Platform.OS === 'web' ? undefined : true}
           screenOptions={{
             tabBarActiveTintColor: cl.emerald,
             tabBarInactiveTintColor: cl.textTertiary,
@@ -98,6 +99,7 @@ export default function TabLayout() {
             listeners={{ tabPress: () => measureTabPress('portfolio') }}
             options={{
               title: 'Portfolio',
+              freezeOnBlur: true,
               tabBarIcon: ({ color, size }) => (
                 <Ionicons name="pie-chart-outline" size={size} color={color} />
               ),
@@ -108,6 +110,7 @@ export default function TabLayout() {
             listeners={{ tabPress: () => measureTabPress('funds') }}
             options={{
               title: 'Funds',
+              freezeOnBlur: true,
               tabBarIcon: ({ color, size }) => (
                 <Ionicons name="list-outline" size={size} color={color} />
               ),
@@ -130,6 +133,7 @@ export default function TabLayout() {
             options={{
               tabBarButton: () => null,
               tabBarItemStyle: { display: 'none' },
+              freezeOnBlur: true,
             }}
           />
         </Tabs>

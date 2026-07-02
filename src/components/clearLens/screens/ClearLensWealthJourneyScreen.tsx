@@ -594,7 +594,12 @@ export function ClearLensWealthJourneyScreen() {
   const [sipDraft, setSipDraft] = useState('');
   const [chartsReady, setChartsReady] = useState(false);
 
-  const { wealthJourney, updateWealthJourney, returnAssumptions } = useAppStore();
+  const {
+    wealthJourney,
+    updateWealthJourney,
+    returnAssumptions,
+    defaultBenchmarkSymbol,
+  } = useAppStore();
 
   useEffect(() => {
     if (!isFocused) {
@@ -618,7 +623,10 @@ export function ClearLensWealthJourneyScreen() {
     };
   }, [isFocused]);
 
-  const { data: portfolioData, isLoading: portfolioLoading } = usePortfolio();
+  const { data: portfolioData, isLoading: portfolioLoading } = usePortfolio(
+    defaultBenchmarkSymbol,
+    { enabled: isFocused },
+  );
   const summary = portfolioData?.summary ?? null;
   const currentCorpus = summary?.totalValue ?? 0;
   const returnProfile = useMemo(
@@ -649,7 +657,7 @@ export function ClearLensWealthJourneyScreen() {
   // payload is already in memory after Portfolio has loaded.
   const { data: transactions } = useQuery({
     queryKey: ['wealth-journey-transactions', userId, sixMonthsAgo],
-    enabled: !!userId,
+    enabled: isFocused && !!userId,
     queryFn: async () => {
       const transactionsSpanId = perfStart('query:wealthJourney:transactions');
       const all = await queryClient.fetchQuery({

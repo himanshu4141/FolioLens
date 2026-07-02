@@ -119,9 +119,9 @@ export interface SyncResult {
 /**
  * Pure predicate: returns true when a SyncResult indicates that SQLite
  * data actually changed — new rows were inserted or the tx table was
- * rebuilt from drift. The layout uses this to decide whether to call
- * `queryClient.invalidateQueries()` so screens recompute against the
- * fresh rows.
+ * rebuilt from drift. The layout uses this to decide whether to map the
+ * changed input families to granular React Query prefixes so screens
+ * recompute against the fresh rows.
  *
  * Extracted here so the cold-start bootstrap path and the AppState
  * foreground-sync path share identical logic with no duplication.
@@ -391,9 +391,8 @@ async function runSync(
         // row is always re-fetched even when nothing new is upstream.
         // `INSERT OR IGNORE` drops it on the SQLite side, but counting
         // `rows.length` here would still flag every sync as "changed",
-        // firing a phantom `queryClient.invalidateQueries()` in the
-        // foreground handler and leaving the user with a spinner that
-        // doesn't change any values.
+        // firing phantom foreground invalidation and leaving the user
+        // with a spinner that doesn't change any values.
         const before = await navRepo.count();
         await navRepo.bulkInsert(rows, {
           scope: writeScope,

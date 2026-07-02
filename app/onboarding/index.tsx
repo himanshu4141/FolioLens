@@ -391,7 +391,7 @@ function OnboardingWizard() {
       // Invalidate the pre-import portfolio caches (typically an empty
       // portfolio for first-time users) so Done's fund preview and the
       // eventual dashboard mount both refetch against the freshly
-      // imported funds. Done's usePortfolio() picks the marking up
+      // imported funds. Done's portfolio query picks the marking up
       // synchronously and starts fetching while the user reads the
       // success copy.
       void queryClient.invalidateQueries();
@@ -495,7 +495,7 @@ function OnboardingWizard() {
     });
 
     // Cache was invalidated right after upload completed and Done's
-    // usePortfolio() will have warmed the cache by the time the user
+    // the Portfolio hook will have warmed the cache by the time the user
     // taps through. The prefetch here is a safety belt for the case
     // where Done was dismissed quickly — its work overlaps the
     // navigation animation so the dashboard renders against a warm
@@ -1419,12 +1419,13 @@ function DoneStep({
   const imported = !!result;
   const autoRefreshReady = !!autoForwardCompletedAt;
   const showAutoRefreshNudge = imported && hasInboxToken && !autoRefreshReady;
+  const defaultBenchmarkSymbol = useAppStore((state) => state.defaultBenchmarkSymbol);
 
   // Fetches against the just-imported funds — the cache was invalidated in
   // runUpload() right before the wizard advanced here, so this returns the
   // fresh portfolio. The same fetch warms the dashboard's cache, so the
   // "See my dashboard" transition reads from memory.
-  const { data: portfolio } = usePortfolio();
+  const { data: portfolio } = usePortfolio(defaultBenchmarkSymbol);
   const previewFunds = useMemo(() => {
     if (!portfolio?.fundCards?.length) return [];
     return [...portfolio.fundCards]

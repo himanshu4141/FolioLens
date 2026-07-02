@@ -1,11 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import * as SystemUI from 'expo-system-ui';
 import * as Updates from 'expo-updates';
 import ExpoConstants from 'expo-constants';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, usePathname, useRouter, useSegments } from 'expo-router';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -41,6 +41,7 @@ import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
 import { startAppLifecycle } from '@/src/lib/appLifecycle';
+import { invalidateQueriesForSync, syncVisibleRoute } from '@/src/lib/syncInvalidation';
 import {
   bootstrapForUser,
   clearAll as clearLocalDb,
@@ -123,6 +124,13 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 function useAppLifecycle() {
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
+
   useEffect(() => {
     return startAppLifecycle({
       analytics,
@@ -159,7 +167,11 @@ function useAppLifecycle() {
       didSyncChangeData,
       clearLocalDb,
       clearQueryClient: () => queryClient.clear(),
-      invalidateQueries: () => queryClient.invalidateQueries(),
+      invalidateQueries: (result) => invalidateQueriesForSync(
+        queryClient,
+        result,
+        syncVisibleRoute(pathnameRef.current),
+      ),
       removePersistedClient: () => persister.removeClient(),
       resetUserScopedState: () => useAppStore.getState().resetUserScopedState(),
       clearOnboardingDraft,
