@@ -50,6 +50,11 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
           EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_DEV }}
           EXPO_PUBLIC_APP_BASE_URL: ${{ secrets.EXPO_PUBLIC_APP_BASE_URL_DEV }}
+          # Keep PR-preview telemetry comparable with main and production.
+          # The value remains in GitHub Secrets and is only present while
+          # Metro builds the OTA bundle.
+          EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          EXPO_PUBLIC_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           APP_VARIANT: preview-pr
           EAS_UPDATE_CHANNEL: foliolens-pr
           EAS_UPDATE_MESSAGE: PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}

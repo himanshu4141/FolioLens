@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { AppState, type AppStateStatus, Platform } from 'react-native';
+import { useEffect } from 'react';
+import { AppState, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import * as SystemUI from 'expo-system-ui';
@@ -40,6 +40,7 @@ import { NavigationPerformanceObserver } from '@/src/components/NavigationPerfor
 import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
+import { startAppLifecycle } from '@/src/lib/appLifecycle';
 import {
   bootstrapForUser,
   clearAll as clearLocalDb,
@@ -121,223 +122,58 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Threshold for the `app_returned` event. Anything shorter than this is a
-// brief OS interruption (notification, control centre) we don't count as
-// a "return" — only resumes after at least 5 minutes of background time.
-const APP_RETURNED_THRESHOLD_MS = 5 * 60 * 1000;
-
-// Throttle for the foreground delta sync. Lower than the analytics
-// threshold above on purpose: a user who uploaded a CAS on web and
-// switched to mobile within a minute should still see the new portfolio
-// value when the app comes back to foreground. The throttle just stops
-// a tap-back-from-control-centre from spamming Supabase every few
-// seconds.
-const FOREGROUND_SYNC_MIN_INTERVAL_MS = 30 * 1000;
-
-function useAnalyticsLifecycle() {
-  // Tracks the last time the app was in foreground; used to compute the
-  // gap before emitting `app_returned`. Initialised on mount.
-  const lastActiveAtRef = useRef<number>(Date.now());
-  // Tracks the last successful foreground delta sync attempt. Separate
-  // from `lastActiveAtRef` because we want to gate sync on time-since-
-  // last-sync, not time-since-last-foreground (so two quick app switches
-  // don't both trigger Supabase pulls).
-  const lastForegroundSyncAtRef = useRef<number>(0);
-  const sentAppStartedRef = useRef(false);
-
+function useAppLifecycle() {
   useEffect(() => {
-    if (!analytics.isEnabled) return;
-
-    installGlobalErrorHandlers();
-
-    if (!sentAppStartedRef.current) {
-      sentAppStartedRef.current = true;
-      analytics.track('app_started', {
-        app_version: ExpoConstants.expoConfig?.version ?? null,
-        eas_update_id: Updates.updateId ?? null,
-        eas_update_created_at: Updates.createdAt?.toISOString() ?? null,
-        is_embedded_launch: Updates.isEmbeddedLaunch,
+    return startAppLifecycle({
+      analytics,
+      appStartedMetadata: {
+        appVersion: ExpoConstants.expoConfig?.version ?? null,
+        easUpdateId: Updates.updateId ?? null,
+        easUpdateCreatedAt: Updates.createdAt?.toISOString() ?? null,
+        isEmbeddedLaunch: Updates.isEmbeddedLaunch,
         platform: Platform.OS,
-      });
-    }
-
-    const identify = (session: Awaited<ReturnType<typeof authClient.getSession>>['data']['session']) => {
-      if (session?.user) {
-        analytics.identify(session.user.id, {
-          email_domain: session.user.email?.split('@')[1] ?? null,
+      },
+      isSqliteSupported: Platform.OS !== 'web',
+      now: Date.now,
+      installGlobalErrorHandlers,
+      getSession: async () => {
+        const { data: { session } } = await authClient.getSession();
+        return session;
+      },
+      subscribeToAuth: (handler) => {
+        const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
+          handler(event, session);
         });
-      } else {
-        analytics.reset();
-      }
-    };
-
-    // SQLite read cache is native-only — web falls through to the
-    // React Query persister + Supabase fallback path. Gating here
-    // (rather than letting the throw-on-web stub in `db.web.ts`
-    // bubble up) keeps the console clean and avoids firing a useless
-    // network round-trip during web bootstrap.
-    const sqliteSupported = Platform.OS !== 'web';
-
-    // **The sign-out → sign-in race.** SIGNED_OUT kicks off
-    // `clearLocalDb()` fire-and-forget. If Supabase's SDK then auto-
-    // refreshes the session and fires SIGNED_IN before that clear
-    // finishes (which happens at least 8 times in 5 days for the
-    // reporting user per the May 2026 PostHog export — Supabase emits
-    // SIGNED_OUT silently on background token-refresh failures, without
-    // going through our 401 handler), `bootstrapForUser` interleaves
-    // with the in-flight clear. Bootstrap reads a partial SQLite,
-    // fetches a delta against whatever watermark the partial state
-    // produced, and the clear later wipes some of what bootstrap just
-    // wrote. Net result: an arbitrary subset of transactions stuck in
-    // SQLite with no way for delta sync to recover.
-    //
-    // This module-level promise serialises the two halves: any
-    // bootstrap (from `getSession` or SIGNED_IN) awaits the pending
-    // clear before reading SQLite. Once the clear is done, subsequent
-    // awaits are no-ops (`Promise.resolve(resolvedPromise)`).
-    let pendingSignOutCleanup: Promise<void> | null = null;
-
-    const runBootstrap = (userId: string) => {
-      void (async () => {
+        return () => subscription.unsubscribe();
+      },
+      subscribeToAppState: (handler) => {
+        const subscription = AppState.addEventListener('change', (state) => {
+          if (state === 'active' || state === 'background' || state === 'inactive') {
+            handler(state);
+          }
+        });
+        return () => subscription.remove();
+      },
+      bootstrapForUser,
+      syncDeltaForUser,
+      didSyncChangeData,
+      clearLocalDb,
+      clearQueryClient: () => queryClient.clear(),
+      invalidateQueries: () => queryClient.invalidateQueries(),
+      removePersistedClient: () => persister.removeClient(),
+      resetUserScopedState: () => useAppStore.getState().resetUserScopedState(),
+      clearOnboardingDraft,
+      getLocalTransactionCount: async () => {
+        if (Platform.OS === 'web') return null;
         try {
-          // Wait for any in-flight SIGNED_OUT cleanup to finish before
-          // reading SQLite. See `pendingSignOutCleanup` above. If the
-          // gate actually held us up, emit an event so we can see the
-          // race firing in the field — the close-the-race fix would
-          // otherwise be invisible.
-          if (pendingSignOutCleanup) {
-            analytics.track('db_sync_awaiting_signout_cleanup');
-            await pendingSignOutCleanup;
-          }
-          let preCount: number | null = null;
-          if (Platform.OS !== 'web') {
-            try {
-              const txRepo = await import('@/src/lib/db/tx');
-              preCount = await txRepo.count();
-            } catch {
-              // Best-effort diagnostic — don't block bootstrap on it.
-            }
-          }
-          analytics.track('db_sync_bootstrap_started', {
-            local_tx_count_before: preCount,
-          });
-          const result = await bootstrapForUser(userId);
-          if (didSyncChangeData(result)) {
-            void queryClient.invalidateQueries();
-          }
-        } catch (err) {
-          console.warn('[db/sync] bootstrap failed', err);
+          const txRepo = await import('@/src/lib/db/tx');
+          return await txRepo.count();
+        } catch {
+          return null;
         }
-      })();
-    };
-
-    authClient.getSession().then(({ data: { session } }) => {
-      identify(session);
-      if (sqliteSupported && session?.user.id) {
-        runBootstrap(session.user.id);
-      }
+      },
+      warn: (message, error) => console.warn(message, error),
     });
-    const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
-      identify(session);
-      if (sqliteSupported && event === 'SIGNED_IN' && session?.user.id) {
-        // If a SIGNED_OUT fired recently, `pendingSignOutCleanup` is
-        // set and `runBootstrap` will await it before touching SQLite.
-        // Track the cascade so we can see how often it happens in
-        // the field — this is the failure pattern the gate fixes.
-        if (pendingSignOutCleanup) {
-          analytics.track('auth_signin_after_recent_signout');
-        }
-        runBootstrap(session.user.id);
-      }
-      if (event === 'SIGNED_OUT') {
-        // Sign-out is a single audited operation: every cache or piece
-        // of state that's tied to the previous user must be dropped
-        // before the next sign-in could possibly read it. New caches
-        // get added here. See `docs/architecture/cache-surfaces.md`.
-        //
-        // Supabase's own session token is wiped by `authClient.signOut()`
-        // before this event fires (the SDK calls `storage.removeItem`
-        // on its session key as part of the sign-out mutation).
-        queryClient.clear();
-        void persister.removeClient();
-        // Reset the in-memory Zustand store fields that aren't in
-        // `partialize` — they survive sign-out → sign-in within the same
-        // app process and would otherwise leak user A's preview / dialog
-        // / feature-flag state into user B's session. Persisted user
-        // preferences (theme, default benchmark, etc.) are deliberately
-        // kept.
-        useAppStore.getState().resetUserScopedState();
-        // The onboarding draft holds PII (PAN, DOB, email) for users
-        // mid-import; never let it cross sign-in boundaries.
-        void clearOnboardingDraft().catch((err) => {
-          console.warn('[onboarding] clearOnboardingDraft failed', err);
-        });
-        if (sqliteSupported) {
-          // Wipe the SQLite read cache too — PII (transactions) must
-          // not survive a sign-out. Bind the promise to
-          // `pendingSignOutCleanup` so any subsequent SIGNED_IN
-          // bootstrap can await it before reading SQLite — see the
-          // top-of-effect comment on `pendingSignOutCleanup` for the
-          // race this closes.
-          analytics.track('db_clear_local_db_started');
-          pendingSignOutCleanup = clearLocalDb()
-            .then(() => {
-              analytics.track('db_clear_local_db_completed');
-            })
-            .catch((err) => {
-              console.warn('[db/sync] clearAll failed', err);
-              analytics.track('db_clear_local_db_failed', {
-                error: err instanceof Error ? err.message : String(err),
-              });
-            });
-        }
-      }
-    });
-
-    const onAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
-        const idleMs = Date.now() - lastActiveAtRef.current;
-        lastActiveAtRef.current = Date.now();
-        if (idleMs >= APP_RETURNED_THRESHOLD_MS) {
-          analytics.track('app_returned', {
-            previous_session_age_hours: Number((idleMs / 1000 / 60 / 60).toFixed(2)),
-          });
-        }
-
-        // Pull any server-side changes (e.g. a CAS uploaded from web on
-        // another device) into the local SQLite cache, then invalidate
-        // React Query so screens recompute against the fresh rows. The
-        // single-flight guard inside `syncDeltaForUser` plus the
-        // foreground-sync throttle below keep this cheap.
-        if (sqliteSupported) {
-          const sinceLastSync = Date.now() - lastForegroundSyncAtRef.current;
-          if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
-            lastForegroundSyncAtRef.current = Date.now();
-            void authClient.getSession().then(({ data: { session } }) => {
-              const uid = session?.user.id;
-              if (!uid) return;
-              syncDeltaForUser(uid)
-                .then((result) => {
-                  if (didSyncChangeData(result)) {
-                    void queryClient.invalidateQueries();
-                  }
-                })
-                .catch((err) => {
-                  console.warn('[db/sync] foreground delta failed', err);
-                });
-            });
-          }
-        }
-      } else if (nextState === 'background' || nextState === 'inactive') {
-        lastActiveAtRef.current = Date.now();
-      }
-    };
-    const appStateSub = AppState.addEventListener('change', onAppStateChange);
-
-    return () => {
-      subscription.unsubscribe();
-      appStateSub.remove();
-    };
   }, []);
 }
 
@@ -350,7 +186,7 @@ export default function RootLayout() {
     Inter_800ExtraBold,
   });
 
-  useAnalyticsLifecycle();
+  useAppLifecycle();
 
   useEffect(() => {
     // Web: Supabase handles the hash fragment natively via detectSessionInUrl

@@ -580,7 +580,9 @@ All secrets are stored in **GitHub Actions repository secrets**.
 | `VERCEL_TOKEN` | `production-release.yml` | Personal access token from Vercel → Account → Tokens |
 | `VERCEL_ORG_ID` | `production-release.yml` | `team_HeMWH6xlqe2BOC0NpT85uZPV` |
 | `VERCEL_PROJECT_ID_PROD` | `production-release.yml` | `prj_mjY4K0rYmgNhoGMyJ5oC9xMLcTAi` |
-| `POSTHOG_PROJECT_KEY` | `sync-amfi-portfolios.yml` | Same `phc_...` token as the client SDKs and Edge Function runtime use. Optional; the workflow no-ops the PostHog step if unset. |
+| `POSTHOG_PROJECT_KEY` | `pr-preview.yml`, `main-deploy.yml`, `production-release.yml`, `sync-amfi-portfolios.yml` | Same client project token across native OTA channels and server-side sync. OTA workflows pass it only at bundle time; no secret value is committed. Optional server-side sync telemetry no-ops if unset, while app data lifecycle correctness remains independent of this key. |
+
+`POSTHOG_HOST` is a GitHub Actions repository variable, not a secret. Every native OTA workflow passes it as `EXPO_PUBLIC_POSTHOG_HOST`; the checked-in fallback remains the SDK's US host, while this repository's configured value selects the project's EU ingest endpoint.
 
 
 On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the following are set per project:
