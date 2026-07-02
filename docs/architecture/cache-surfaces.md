@@ -79,8 +79,10 @@ When adding a new cache, walk this list and note in the inline comment which cla
 - **Lifetime:** Persistent on-device. Wiped on sign-out via `clearAll()` (`clearLocalDb` in app/_layout).
 - **Version bump:** bump `SCHEMA_VERSION` and add migration to the schema-init code path. Today the upgrade is `ALTER TABLE … ADD COLUMN`; old rows have NULL for new columns. **Audit #15 (Phase 4)** notes a mid-migration crash leaves orphan rows.
 - **Sync watermark:** `syncDeltaForUser(uid)` uses `MAX(updated_at)` per table to fetch only new rows from Supabase. Append-only semantics mean `INSERT OR IGNORE` is safe.
-- **Sign-out cleanup:** `clearLocalDb()` drops + recreates the DB file (PII in `tx`).
-- **Bug class watchlist:** B (schema migration crash recovery — Phase 4), G (concurrent SQLite writes — append-only mostly safe).
+- **Write ownership:** one FIFO serializer in [`db.ts`](../../src/lib/db/db.ts) owns every write on the singleton connection. `tx`, `nav`, `idx`, `sync_state`, and cleanup writes must enter through that boundary; per-repository locks are invalid because all repositories share the same connection. Rejected entries propagate to their caller while the recovered queue tail continues. Privacy-safe `db:write_queue_wait` and `db:write` marks expose operation, queue depth, attempt, status, and duration.
+- **Repair + cleanup ordering:** remote read-through flows capture a database-write scope before fetching. Sign-out/manual reset advances the scope generation and queues one wipe, so old queued or late-arriving writes reject before touching the reset cache. Timeline NAV fallback awaits its repair, retries once from the rows already fetched, and reports a final failure instead of silently leaving an incomplete cache.
+- **Sign-out cleanup:** `clearLocalDb()` deletes every cached table row in one serialized transaction (PII in `tx`) before a later sign-in bootstrap may begin.
+- **Bug class watchlist:** B (schema migration crash recovery — Phase 4), G (shared-connection write overlap resolved by N2D serializer; keep every new write on the shared boundary), D (write-scope invalidation prevents old-user work landing after cleanup), F (timeline repair is awaited/retried and final failure remains observable).
 
 ### 7. CDN snapshot for index history
 

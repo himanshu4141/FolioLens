@@ -22,8 +22,8 @@ import * as idxRepo from '@/src/lib/db/idx';
 import * as syncStateRepo from '@/src/lib/db/syncState';
 import { __setDbForTests, dropAndRecreate } from '@/src/lib/db/db';
 
-beforeEach(() => {
-  __setDbForTests(null);
+beforeEach(async () => {
+  await __setDbForTests(null);
 });
 
 // Tx fixture helper — the 5 PK columns drive every assertion in this file,

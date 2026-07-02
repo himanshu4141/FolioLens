@@ -2,7 +2,12 @@
  * Repo for the `nav` table — the local copy of `nav_history` rows.
  * Append-only; PK is `(scheme_code, nav_date)`.
  */
-import { getDb } from '@/src/lib/db/db';
+import {
+  getDb,
+  runSerializedDatabaseTransaction,
+  runSerializedDatabaseWrite,
+  type SerializedDatabaseWriteOptions,
+} from '@/src/lib/db/db';
 
 export interface DbNavRow {
   scheme_code: number;
@@ -38,10 +43,12 @@ export async function readBySchemeCode(
   return readBySchemeCodes([schemeCode], options);
 }
 
-export async function bulkInsert(rows: DbNavRow[]): Promise<void> {
+export async function bulkInsert(
+  rows: DbNavRow[],
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<void> {
   if (rows.length === 0) return;
-  const db = await getDb();
-  await db.withTransactionAsync(async () => {
+  await runSerializedDatabaseTransaction(options.operation ?? 'nav_bulk_insert', async (db) => {
     const stmt = await db.prepareAsync(
       `INSERT OR IGNORE INTO nav (${COLUMNS}) VALUES (?, ?, ?)`,
     );
@@ -52,7 +59,7 @@ export async function bulkInsert(rows: DbNavRow[]): Promise<void> {
     } finally {
       await stmt.finalizeAsync();
     }
-  });
+  }, options);
 }
 
 /**
@@ -93,7 +100,10 @@ export async function countBySchemeCode(schemeCode: number): Promise<number> {
   return row?.n ?? 0;
 }
 
-export async function clear(): Promise<void> {
-  const db = await getDb();
-  await db.execAsync('DELETE FROM nav');
+export async function clear(options: SerializedDatabaseWriteOptions = {}): Promise<void> {
+  await runSerializedDatabaseWrite(
+    options.operation ?? 'nav_clear',
+    (db) => db.execAsync('DELETE FROM nav'),
+    options,
+  );
 }
