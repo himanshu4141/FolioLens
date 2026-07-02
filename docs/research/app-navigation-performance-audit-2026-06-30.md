@@ -744,8 +744,8 @@ Because the agents may post through the same GitHub account, every comment start
 | 1 | N1 | Merged | [#251](https://github.com/himanshu4141/FolioLens/pull/251) | `53e57f58` | 39 focused + 1,798 full tests; Android/iOS exports; Android main-preview physical paired-log smoke at merge SHA posted on PR #250; iOS release evidence blocker recorded on PR #250 |
 | 2 | N2 | Merged | [#252](https://github.com/himanshu4141/FolioLens/pull/252) | `7d3f25ef` | Codex/Claude CONVERGED at docs head `ad40cf33`; code `d88d1271`; 77 suites / 1,805 tests, typecheck, lint, diff check; Android main-preview focused-idle, post-blur, Fund Detail, and cache-only evidence accepted |
 | 3 | N2D | Merged | [#253](https://github.com/himanshu4141/FolioLens/pull/253) | `38d669b7` | Codex/Claude CONVERGED at docs head `6049fb6b` / code `86d176dd`; lifecycle race fixed; 78 suites / 1,814 tests, typecheck, lint, diff check; corrected-head Android main-preview serialization/repair evidence accepted |
-| 4 | N2T | Ready to start | — | — | N2D merge verified on `main`; Android baseline: 3Y timeline 4.830–5.919 s and 12,861 NAV rows for 83 points; isolate benchmark-independent input reuse and bounded valuation with equivalence fixtures |
-| 5 | N0 | Pending | — | — | — |
+| 4 | N2T | Merged | [#254](https://github.com/himanshu4141/FolioLens/pull/254) | `74cf1d89` | Codex/Claude CONVERGED at docs head `6b2c682d` / measured code `d6a6c50b`; 78 suites / 1,822 tests, typecheck, lint, diff check; corrected-head Android main-preview benchmark-switch p95 82 ms, 3Y 36/36 ms versus 4.830–5.919 s baseline, full input/index/valuation cache hits, and zero SQLite transaction errors |
+| 5 | N0 | Ready to start | — | — | N2T merge verified on `main`; decouple native data lifecycle from analytics and restore preview telemetry parity without treating this preview-only amplifier as the cross-channel root cause |
 | 6 | N3 | Pending | — | — | — |
 | 7 | N4 | Pending | — | — | — |
 | 8 | Auth A0 | Pending | — | — | — |
