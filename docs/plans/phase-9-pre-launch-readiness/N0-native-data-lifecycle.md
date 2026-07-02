@@ -144,7 +144,15 @@ The implementation follows the planned controller split. The existing root lifec
 
 No cache key, payload, persistence allowlist, SQLite schema, or Zustand shape changed, so neither React Query `__BUSTER__`, SQLite `SCHEMA_VERSION`, nor the Zustand version requires a bump.
 
-Pre-native validation passed with 3 focused suites / 11 tests, full Jest 81 suites / 1,833 tests, typecheck, zero-warning lint, diff check, and an Android preview-pr export of 1,748 modules / 6.3 MB Hermes. Native preview-pr acceptance remains pending at the implementation SHA.
+Pre-native validation passed with 3 focused suites / 11 tests, full Jest 81 suites / 1,833 tests, typecheck, zero-warning lint, diff check, and an Android preview-pr export of 1,748 modules / 6.3 MB Hermes.
+
+Final Android preview-pr evidence used implementation `8433596be61bef61e12a7bfe91a0c6eb650705e9` on a Pixel 8a / Android 16, package `com.foliolens.app.prpreview`, channel `foliolens-pr`, runtime/app `0.0.4`. The PR workflow produced Android OTA `019f23ef-e7d8-7dd1-9f2c-f1f78f5ccd84` in group `ad434d49-a2c9-4c96-adae-074f71484642`. Its job log showed `EXPO_PUBLIC_POSTHOG_KEY: ***` and `EXPO_PUBLIC_POSTHOG_HOST: https://eu.i.posthog.com`; this is sufficient to establish `analytics.isEnabled === true` because the native facade constructs its client exactly when the key is present. After three process restarts, About displayed `019f23ef-e7d…`.
+
+On the authenticated cold launch, Android displayed the activity in 416 ms. The app read 566 timeline transactions in 64 ms, 13,605 timeline NAV rows in 123 ms, built timeline inputs in 2,039 ms, read Portfolio NAV from SQLite in 80 ms and index rows from SQLite in 34 ms, and completed the Portfolio query in 2,962 ms. More importantly for N0, the log then recorded `bootstrap_tx_write`, `bootstrap_tx_sync_state`, `bootstrap_nav_write`, and per-scheme bootstrap sync-state operations. The pre-fix preview-pr control could not produce any root-lifecycle bootstrap operation: the same channel omitted the key, `analytics.isEnabled` was false, and the old root effect returned before `getSession`, auth subscription, and `bootstrapForUser`.
+
+Backgrounding and foregrounding the exact update produced `delta_tx_write`, `delta_nav_write`, and `delta_index_write` plus their sync-state operations. Recorded delta writes were 3–12 ms with zero queue wait in the captured sequence. Across OTA application, cold launch, and foreground evidence there were zero nested-transaction, invalid-rollback, `SQLITE_BUSY`, `SQLITE_LOCKED`, write-error-status, bootstrap-failed, foreground-delta-failed, clear-failed, or auth-session-missing matches. The device screen timeout was restored to 60 seconds after capture.
+
+One separate signal remains visible: the first cold launch logged `persister:restore_failed` at 141 ms. N0 does not change the React Query persister, and native SQLite lifecycle still ran correctly. This is retained as evidence for the later persistence/cache milestone rather than misreported as an N0 regression or silently omitted.
 
 ## Progress
 
@@ -156,5 +164,5 @@ Pre-native validation passed with 3 focused suites / 11 tests, full Jest 81 suit
 - [x] Add preview-pr telemetry wiring and channel regression coverage.
 - [x] Update documentation.
 - [x] Run focused, full, static, and Android export validation.
-- [ ] Capture Android preview-pr acceptance evidence at the implementation SHA.
-- [ ] Push and open the draft implementation PR.
+- [x] Capture Android preview-pr acceptance evidence at the implementation SHA.
+- [x] Push and open draft implementation PR #255.
