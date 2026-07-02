@@ -147,6 +147,7 @@ Automated validation completed on 2026-07-03:
 - `npm run lint`: zero warnings;
 - Android Expo export: completed successfully with a Hermes bundle;
 - `git diff --check`: clean.
+- cache contract: query keys and serialized payloads are unchanged; the PR carries the repository-required `[cache-shape-stable]` assertion and keeps React Query buster `v8`.
 
 ## Risks And Mitigations
 
