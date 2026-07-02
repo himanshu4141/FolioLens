@@ -152,12 +152,15 @@ Native evidence must record device/OS, package/channel, OTA/update ID, implement
 - 2026-07-02: Reuse N2D SQLite reads/repair unchanged and treat Android as the only native acceptance platform.
 - 2026-07-02: Keep all historical transactions needed to establish opening unit/cost and benchmark-unit state inside the window-specific prepared entry; only NAV reads are date-bounded because dropping pre-window transactions would change redemption and simulated-benchmark semantics.
 - 2026-07-02: Use the existing positive invested-value and benchmark-unit guards to identify the legacy-valid date set before per-fund valuation. Golden fixtures confirm this selects the same emitted dates as the pre-N2T loop.
+- 2026-07-02: Reuse the canonical persisted `['index-snapshot', symbol]` query for benchmark output. The first physical run showed that input reuse alone could still spend 2.443 seconds refetching an unchanged index snapshot for each window; sharing the existing payload removes that repeated work without changing its contract.
 
 ## Amendments
 
 The implementation follows the planned benchmark-independent split. One wording clarification is material: the prepared entry is window-specific and its NAV query is window-bounded, but it retains every historical transaction required to establish opening units, average-cost basis, invested value, and simulated benchmark units. Truncating transactions at the visible boundary would change redemptions and benchmark values, so the cache key provides window isolation without discarding financially required opening history.
 
 The new `investmentTimelineInputs` entry is in-memory only and contains the complete fetched NAV lookup rows plus sorted histories and a memoized date valuation map. The existing persisted `investmentVsBenchmarkTimeline` tuple and payload remain unchanged. Manual data sync invalidates both entries; the existing sign-out `queryClient.clear()` removes the user-scoped input. No `__BUSTER__` or SQLite `SCHEMA_VERSION` bump is required.
+
+The first physical Android attempt at `b5b926b` exposed an acceptance gap before evidence was posted: a benchmark-only input-cache hit still fetched and parsed the same full index snapshot, taking 2.443 seconds. The corrected implementation consumes the existing persisted `['index-snapshot', symbol]` cache. A real cached snapshot is reused across every window; `null` retains the established paginated fallback. This is an implementation correction, not a new cache shape.
 
 The frozen legacy oracle and deterministic fixtures cover weekend and holiday lookups, an NFO subscription before its first NAV, switches, redemptions, a failed-payment reversal pair, a fund with no NAV rows, delayed index coverage, and 1M/3M/6M/1Y/3Y/All. Every emitted date and invested/portfolio/benchmark value matches within 10 decimal digits. A 400-date fixture proves only the at-most-91 sampled dates enter the portfolio valuation cache and the terminal point is retained.
 

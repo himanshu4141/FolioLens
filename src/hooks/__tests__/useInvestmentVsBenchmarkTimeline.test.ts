@@ -10,6 +10,7 @@ jest.mock('@/src/lib/data/navHistory', () => ({
 }));
 jest.mock('@/src/hooks/useIndexSnapshot', () => ({
   fetchIndexHistory: jest.fn(),
+  fetchIndexSnapshot: jest.fn(),
 }));
 
 // eslint-disable-next-line import/first -- mocks must register before module imports
@@ -27,7 +28,7 @@ import {
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 // eslint-disable-next-line import/first -- mocks must register before module imports
-import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
+import { fetchIndexHistory, fetchIndexSnapshot } from '@/src/hooks/useIndexSnapshot';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import { __setDbForTests, getDb } from '@/src/lib/db/db';
 // eslint-disable-next-line import/first -- mocks must register before module imports
@@ -412,6 +413,14 @@ describe('N2D timeline NAV cache repair', () => {
       { date: '2025-01-01', value: 100 },
       { date: '2025-02-01', value: 120 },
     ]);
+    (fetchIndexSnapshot as jest.Mock).mockImplementation((symbol: string) => Promise.resolve({
+      symbol,
+      generated_at: '2026-07-02T00:00:00Z',
+      points: [
+        { date: '2025-01-01', value: 100 },
+        { date: '2025-02-01', value: 120 },
+      ],
+    }));
     (navHistoryRepo.from as jest.Mock).mockImplementation(() => {
       const chain: any = {
         select: jest.fn().mockReturnThis(),
@@ -439,7 +448,7 @@ describe('N2D timeline NAV cache repair', () => {
       }) => {
         const key = JSON.stringify(queryKey);
         if (cache.has(key)) return cache.get(key);
-        inputBuilds += 1;
+        if (queryKey[0] === 'investmentTimelineInputs') inputBuilds += 1;
         const value = await queryFn();
         cache.set(key, value);
         return value;
@@ -472,7 +481,8 @@ describe('N2D timeline NAV cache repair', () => {
     expect(inputBuilds).toBe(1);
     expect(txRead).toHaveBeenCalledTimes(1);
     expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
-    expect(fetchIndexHistory).toHaveBeenCalledTimes(2);
+    expect(fetchIndexSnapshot).toHaveBeenCalledTimes(2);
+    expect(fetchIndexHistory).not.toHaveBeenCalled();
     expect(prepared.valuationByDate.size).toBe(valuationsAfterFirst);
     expect(valuationsAfterFirst).toBeGreaterThan(0);
 

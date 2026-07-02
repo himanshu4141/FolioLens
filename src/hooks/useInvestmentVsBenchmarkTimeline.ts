@@ -11,7 +11,11 @@ import {
 } from '@/src/utils/xirr';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
-import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
+import {
+  fetchIndexHistory,
+  fetchIndexSnapshot,
+  type IndexSnapshot,
+} from '@/src/hooks/useIndexSnapshot';
 import * as navRepo from '@/src/lib/db/nav';
 import * as txRepo from '@/src/lib/db/tx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
@@ -527,7 +531,11 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   }
 
   const indexSpanId = perfStart('query:timeline:index');
-  const idxRows = await fetchAllIndexRows(benchmarkSymbol, inputs.firstTransactionDate);
+  const { rows: idxRows, cacheHit: indexCacheHit } = await fetchAllIndexRows(
+    benchmarkSymbol,
+    inputs.firstTransactionDate,
+    inputQueryClient,
+  );
   perfEnd(indexSpanId, {
     rows: idxRows.length,
     symbol: benchmarkSymbol,
@@ -544,6 +552,7 @@ export async function fetchInvestmentVsBenchmarkTimeline(
     tx_rows: inputs.transactions.length,
     nav_rows: inputs.navRows.length,
     idx_rows: idxRows.length,
+    index_cache_hit: indexCacheHit,
     candidate_dates: inputs.candidateDates.length,
     evaluation_dates: result.evaluationDateCount,
     valuation_cache_hits: result.valuationCacheHits,
@@ -681,13 +690,44 @@ async function fetchAllNavRows(
   return rows;
 }
 
-async function fetchAllIndexRows(benchmarkSymbol: string, startDate: string): Promise<RawIdxRow[]> {
-  if (!benchmarkSymbol) return [];
-  // Read-through Phase 9 M5: CDN-served daily snapshot first, paginated
-  // `index_history` SELECT on fallback. The snapshot is the full
-  // history; `fetchIndexHistory` filters to `>= startDate` in JS.
+async function fetchAllIndexRows(
+  benchmarkSymbol: string,
+  startDate: string,
+  indexQueryClient?: QueryClient,
+): Promise<{ rows: RawIdxRow[]; cacheHit: boolean }> {
+  if (!benchmarkSymbol) return { rows: [], cacheHit: false };
+
+  // Reuse the canonical persisted index-snapshot entry across timeline
+  // windows. Before N2T, every unseen benchmark+window fetched and parsed the
+  // same full snapshot again, which left a nominal input-cache hit spending
+  // seconds in benchmark I/O. The cached payload is the existing
+  // `IndexSnapshot` shape owned by useIndexSnapshot — no new persisted shape.
+  if (indexQueryClient) {
+    const key = ['index-snapshot', benchmarkSymbol] as const;
+    const state = indexQueryClient.getQueryState<IndexSnapshot | null>(key);
+    const cacheHit = state?.data != null &&
+      Date.now() - state.dataUpdatedAt < STALE_TIMES.INDEX_HISTORY;
+    const snapshot = await indexQueryClient.fetchQuery({
+      queryKey: key,
+      queryFn: () => fetchIndexSnapshot(benchmarkSymbol),
+      staleTime: STALE_TIMES.INDEX_HISTORY,
+    });
+    if (snapshot) {
+      return {
+        rows: snapshot.points
+          .filter((point) => point.date >= startDate)
+          .map((point) => ({ index_date: point.date, close_value: point.value })),
+        cacheHit,
+      };
+    }
+  }
+
+  // Snapshot failure retains the existing paginated fallback behavior.
   const points = await fetchIndexHistory(benchmarkSymbol, startDate);
-  return points.map((p) => ({ index_date: p.date, close_value: p.value }));
+  return {
+    rows: points.map((point) => ({ index_date: point.date, close_value: point.value })),
+    cacheHit: false,
+  };
 }
 
 export function useInvestmentVsBenchmarkTimeline(
