@@ -7,7 +7,7 @@ import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import {
   buildBenchmarkLookup,
   filterReversedTransactionPairs,
-  simulateBenchmarkInvestment,
+  simulateBenchmarkInvestmentFromNormalizedTransactions,
 } from '@/src/utils/xirr';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
@@ -364,7 +364,7 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
   // Benchmark sim is shared with the portfolio's headline marketXirr — both
   // call simulateBenchmarkInvestment so the chart line and the alpha % can't
   // disagree on terminal value for the same inputs.
-  const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestment(
+  const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestmentFromNormalizedTransactions(
     inputs.transactions,
     benchmarkValueAt,
   );

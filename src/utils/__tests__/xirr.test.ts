@@ -6,6 +6,7 @@ import {
   filterReversedTransactionPairs,
   buildBenchmarkLookup,
   simulateBenchmarkInvestment,
+  simulateBenchmarkInvestmentFromNormalizedTransactions,
   computeBenchmarkXirr,
   type Cashflow,
   type Transaction,
@@ -721,6 +722,19 @@ describe('simulateBenchmarkInvestment()', () => {
     // Only the third (real) purchase should affect units: 600/120
     expect(sim.finalUnits).toBeCloseTo(600 / 120, 5);
     expect(sim.benchmarkFlows).toHaveLength(1);
+  });
+
+  it('reuses an already normalized transaction series without changing output', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2025-02-01', transaction_type: 'purchase', units: 100, amount: 25000 },
+      { transaction_date: '2025-02-01', transaction_type: 'redemption', units: 0, amount: 25000 },
+      { transaction_date: '2025-03-01', transaction_type: 'purchase', units: 50, amount: 600 },
+    ];
+    const normalized = filterReversedTransactionPairs(txs);
+
+    expect(simulateBenchmarkInvestmentFromNormalizedTransactions(normalized, lookup)).toEqual(
+      simulateBenchmarkInvestment(txs, lookup),
+    );
   });
 
   it('produces a finite XIRR when fed into xirr() with a terminal inflow', () => {
