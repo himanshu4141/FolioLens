@@ -1,4 +1,4 @@
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
 import { transactionRepo } from '@/src/lib/data/transaction';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { buildXAxisLabels } from '@/src/hooks/usePerformanceTimeline';
@@ -38,8 +38,9 @@ import {
  *   `queryClient.invalidateQueries()` (full nuke) when SQLite delta
  *   detects new rows — covers CAS imports + cron-pushed NAV ticks.
  * - `app/(tabs)/settings/data-sync.tsx` manual refresh explicitly
- *   invalidates `'investmentVsBenchmarkTimeline'` along with the
- *   other derived caches.
+ *   invalidates both `'investmentVsBenchmarkTimeline'` and the N2T
+ *   `INVESTMENT_TIMELINE_INPUT_QUERY_KEY` along with the other derived
+ *   caches.
  *
  * The constant is here for future contributors adding new write paths
  * (e.g. an in-app manual transaction entry UI). Import it and pass
@@ -52,6 +53,8 @@ export const INVESTMENT_VS_BENCHMARK_INPUT_KEYS = [
   'fund-nav-history',
   'index-snapshot',
 ] as const;
+
+export const INVESTMENT_TIMELINE_INPUT_QUERY_KEY = 'investmentTimelineInputs';
 
 export interface InvestmentVsBenchmarkPoint {
   date: string;
@@ -67,15 +70,43 @@ export interface InvestmentVsBenchmarkTimeline {
   error: string | null;
 }
 
-interface RawNavRow { scheme_code: number; nav_date: string; nav: number }
-interface RawTxRow {
+export interface RawNavRow { scheme_code: number; nav_date: string; nav: number }
+export interface RawTxRow {
   fund_id: string;
   transaction_date: string;
   transaction_type: string;
   units: number;
   amount: number;
 }
-interface RawIdxRow { index_date: string; close_value: number }
+export interface RawIdxRow { index_date: string; close_value: number }
+
+interface TimelineValuation {
+  investedValue: number;
+  portfolioValue: number;
+  hasPortfolioValue: boolean;
+}
+
+export interface InvestmentTimelineInputs {
+  funds: FundRef[];
+  window: TimeWindow;
+  firstTransactionDate: string | null;
+  transactions: RawTxRow[];
+  navRows: RawNavRow[];
+  navHistoryByScheme: Map<number, NavPoint[]>;
+  unitHistory: Map<string, { date: string; units: number }[]>;
+  costHistory: Map<string, { date: string; cost: number }[]>;
+  investedHistory: { date: string; investedValue: number }[];
+  candidateDates: string[];
+  valuationByDate: Map<string, TimelineValuation>;
+}
+
+interface ComputedTimelineResult {
+  points: InvestmentVsBenchmarkPoint[];
+  xAxisLabels: string[];
+  evaluationDateCount: number;
+  valuationCacheHits: number;
+  valuationCacheMisses: number;
+}
 
 const PAGE_SIZE = 1000;
 
@@ -119,13 +150,37 @@ function getBenchmarkUnitsAt(history: { date: string; units: number }[], targetD
   return Math.max(0, getLatestAt(history, targetDate)?.units ?? 0);
 }
 
-function samplePoints(points: InvestmentVsBenchmarkPoint[], maxPoints = 90): InvestmentVsBenchmarkPoint[] {
-  if (points.length <= maxPoints) return points;
-  const step = Math.ceil(points.length / maxPoints);
-  const sampled = points.filter((_, index) => index % step === 0);
-  const last = points[points.length - 1];
-  if (sampled[sampled.length - 1]?.date !== last.date) sampled.push(last);
+function sampleDates(dates: string[], maxPoints = 90): string[] {
+  if (dates.length <= maxPoints) return dates;
+  const step = Math.ceil(dates.length / maxPoints);
+  const sampled = dates.filter((_, index) => index % step === 0);
+  const last = dates[dates.length - 1];
+  if (sampled[sampled.length - 1] !== last) sampled.push(last);
   return sampled;
+}
+
+function timelineOutputFundKey(funds: FundRef[]): string {
+  return funds.map((fund) => fund.id).sort().join(',');
+}
+
+export function stableInvestmentTimelineFundKey(funds: FundRef[]): string {
+  return funds
+    .map((fund) => `${fund.id}:${fund.schemeCode}`)
+    .sort()
+    .join(',');
+}
+
+export function investmentTimelineInputQueryKey(
+  funds: FundRef[],
+  userId: string,
+  window: TimeWindow,
+): QueryKey {
+  return [
+    INVESTMENT_TIMELINE_INPUT_QUERY_KEY,
+    userId,
+    stableInvestmentTimelineFundKey(funds),
+    window,
+  ];
 }
 
 function getWindowStartDate(window: TimeWindow): string | null {
@@ -156,19 +211,17 @@ function subtractDays(dateStr: string, days: number): string {
   return d.toISOString().split('T')[0];
 }
 
-export function computeInvestmentVsBenchmarkTimeline(
+export function buildInvestmentTimelineInputs(
   navRows: RawNavRow[],
   txRows: RawTxRow[],
-  idxRows: RawIdxRow[],
   funds: FundRef[],
   window: TimeWindow,
-): { points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] } {
-  if (funds.length === 0 || navRows.length === 0 || txRows.length === 0 || idxRows.length === 0) {
-    return { points: [], xAxisLabels: [] };
-  }
-
+): InvestmentTimelineInputs {
+  const stableFunds = [...funds].sort((a, b) => {
+    const idOrder = a.id.localeCompare(b.id);
+    return idOrder !== 0 ? idOrder : a.schemeCode - b.schemeCode;
+  });
   const fundIds = new Set(funds.map((fund) => fund.id));
-
   const navHistoryByScheme = new Map<number, NavPoint[]>();
   const allDates = new Set<string>();
   for (const row of navRows) {
@@ -184,22 +237,9 @@ export function computeInvestmentVsBenchmarkTimeline(
     );
   }
 
-  const benchmarkValueAt = buildBenchmarkLookup(
-    idxRows.map((row) => ({ date: row.index_date, value: row.close_value })),
-  );
-
   const sortedTransactions = filterReversedTransactionPairs(txRows)
     .filter((tx) => fundIds.has(tx.fund_id))
     .sort((a, b) => a.transaction_date.localeCompare(b.transaction_date));
-
-  // Benchmark sim is shared with the portfolio's headline marketXirr — both
-  // call simulateBenchmarkInvestment so the chart line and the alpha % can't
-  // disagree on terminal value for the same inputs.
-  const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestment(
-    sortedTransactions,
-    benchmarkValueAt,
-  );
-
   const unitHistory = new Map<string, { date: string; units: number }[]>();
   const costHistory = new Map<string, { date: string; cost: number }[]>();
   const investedHistory: { date: string; investedValue: number }[] = [];
@@ -207,7 +247,7 @@ export function computeInvestmentVsBenchmarkTimeline(
   const fundCost = new Map<string, number>();
   let totalInvested = 0;
 
-  for (const fund of funds) {
+  for (const fund of stableFunds) {
     unitHistory.set(fund.id, []);
     costHistory.set(fund.id, []);
     fundUnits.set(fund.id, 0);
@@ -241,80 +281,187 @@ export function computeInvestmentVsBenchmarkTimeline(
     allDates.add(date);
   }
 
-  const rawPoints: InvestmentVsBenchmarkPoint[] = [];
-  for (const date of [...allDates].sort()) {
-    let portfolioValue = 0;
-    let hasPortfolioValue = false;
+  return {
+    funds: stableFunds,
+    window,
+    firstTransactionDate: txRows[0]?.transaction_date ?? null,
+    transactions: sortedTransactions,
+    navRows,
+    navHistoryByScheme,
+    unitHistory,
+    costHistory,
+    investedHistory,
+    candidateDates: [...allDates].sort(),
+    valuationByDate: new Map<string, TimelineValuation>(),
+  };
+}
 
-    for (const fund of funds) {
-      const units = getUnitsAt(unitHistory.get(fund.id) ?? [], date);
-      if (units <= 0) continue;
-      const navPoint = getLatestAt(navHistoryByScheme.get(fund.schemeCode) ?? [], date);
-      if (navPoint) {
-        portfolioValue += units * navPoint.value;
-        hasPortfolioValue = true;
-        continue;
-      }
-      // No NAV on/before this date — typical for NFO close-ended funds in the
-      // gap between subscription and allotment. Mark to cost so the early
-      // commitment still shows on the chart instead of dropping the point.
-      const costBasis = getCostAt(costHistory.get(fund.id) ?? [], date);
-      if (costBasis > 0) {
-        portfolioValue += costBasis;
-        hasPortfolioValue = true;
-      }
+function getTimelineValuation(
+  inputs: InvestmentTimelineInputs,
+  date: string,
+): { valuation: TimelineValuation; cacheHit: boolean } {
+  const cached = inputs.valuationByDate.get(date);
+  if (cached) return { valuation: cached, cacheHit: true };
+
+  let portfolioValue = 0;
+  let hasPortfolioValue = false;
+
+  for (const fund of inputs.funds) {
+    const units = getUnitsAt(inputs.unitHistory.get(fund.id) ?? [], date);
+    if (units <= 0) continue;
+    const navPoint = getLatestAt(inputs.navHistoryByScheme.get(fund.schemeCode) ?? [], date);
+    if (navPoint) {
+      portfolioValue += units * navPoint.value;
+      hasPortfolioValue = true;
+      continue;
     }
+    // No NAV on/before this date — typical for NFO close-ended funds in the
+    // gap between subscription and allotment. Mark to cost so the early
+    // commitment still shows on the chart instead of dropping the point.
+    const costBasis = getCostAt(inputs.costHistory.get(fund.id) ?? [], date);
+    if (costBasis > 0) {
+      portfolioValue += costBasis;
+      hasPortfolioValue = true;
+    }
+  }
+
+  const valuation = {
+    investedValue: getInvestedAt(inputs.investedHistory, date),
+    portfolioValue,
+    hasPortfolioValue,
+  };
+  inputs.valuationByDate.set(date, valuation);
+  return { valuation, cacheHit: false };
+}
+
+export function computeInvestmentVsBenchmarkTimelineFromInputs(
+  inputs: InvestmentTimelineInputs,
+  idxRows: RawIdxRow[],
+): ComputedTimelineResult {
+  if (
+    inputs.funds.length === 0 ||
+    inputs.navRows.length === 0 ||
+    inputs.transactions.length === 0 ||
+    idxRows.length === 0
+  ) {
+    return {
+      points: [],
+      xAxisLabels: [],
+      evaluationDateCount: 0,
+      valuationCacheHits: 0,
+      valuationCacheMisses: 0,
+    };
+  }
+
+  const benchmarkValueAt = buildBenchmarkLookup(
+    idxRows.map((row) => ({ date: row.index_date, value: row.close_value })),
+  );
+
+  // Benchmark sim is shared with the portfolio's headline marketXirr — both
+  // call simulateBenchmarkInvestment so the chart line and the alpha % can't
+  // disagree on terminal value for the same inputs.
+  const { unitsHistory: benchmarkUnitHistory } = simulateBenchmarkInvestment(
+    inputs.transactions,
+    benchmarkValueAt,
+  );
+
+  // The pre-N2T implementation valued every fund on every candidate date and
+  // only then sampled. All values involved are positive, so the inexpensive
+  // invested/benchmark guards identify the same valid date set without the
+  // per-fund NAV loop. Sampling that set first bounds valuation to the chart
+  // budget while the complete NAV histories remain available for lookup.
+  const validDates = inputs.candidateDates.filter((date) => {
+    const investedValue = getInvestedAt(inputs.investedHistory, date);
+    const benchmarkClose = benchmarkValueAt(date);
+    const simulatedBenchmarkUnits = getBenchmarkUnitsAt(benchmarkUnitHistory, date);
+    return investedValue > 0 && benchmarkClose !== null && simulatedBenchmarkUnits > 0;
+  });
+
+  const filteredDates = filterToWindow(
+    validDates.map((date) => ({ date, value: 1 })),
+    inputs.window,
+  );
+  const firstDate = filteredDates[0]?.date;
+  if (!firstDate) {
+    return {
+      points: [],
+      xAxisLabels: [],
+      evaluationDateCount: 0,
+      valuationCacheHits: 0,
+      valuationCacheMisses: 0,
+    };
+  }
+
+  const evaluationDates = sampleDates(validDates.filter((date) => date >= firstDate));
+  const points: InvestmentVsBenchmarkPoint[] = [];
+  let valuationCacheHits = 0;
+  let valuationCacheMisses = 0;
+
+  for (const date of evaluationDates) {
+    const { valuation, cacheHit } = getTimelineValuation(inputs, date);
+    if (cacheHit) valuationCacheHits += 1;
+    else valuationCacheMisses += 1;
 
     const benchmarkClose = benchmarkValueAt(date);
     const simulatedBenchmarkUnits = getBenchmarkUnitsAt(benchmarkUnitHistory, date);
-    const investedValue = getInvestedAt(investedHistory, date);
 
     if (
-      hasPortfolioValue &&
-      portfolioValue > 0 &&
-      investedValue > 0 &&
+      valuation.hasPortfolioValue &&
+      valuation.portfolioValue > 0 &&
+      valuation.investedValue > 0 &&
       benchmarkClose !== null &&
       simulatedBenchmarkUnits > 0
     ) {
-      rawPoints.push({
+      points.push({
         date,
-        investedValue,
-        portfolioValue,
+        investedValue: valuation.investedValue,
+        portfolioValue: valuation.portfolioValue,
         benchmarkValue: simulatedBenchmarkUnits * benchmarkClose,
       });
     }
   }
 
-  const filteredPoints = filterToWindow(
-    rawPoints.map((point) => ({ date: point.date, value: point.portfolioValue })),
-    window,
-  );
-  const firstDate = filteredPoints[0]?.date;
-  if (!firstDate) return { points: [], xAxisLabels: [] };
-
-  const sampled = samplePoints(rawPoints.filter((point) => point.date >= firstDate));
   return {
-    points: sampled,
-    xAxisLabels: buildXAxisLabels(sampled.map((point) => point.date)),
+    points,
+    xAxisLabels: buildXAxisLabels(points.map((point) => point.date)),
+    evaluationDateCount: evaluationDates.length,
+    valuationCacheHits,
+    valuationCacheMisses,
   };
 }
 
-export async function fetchInvestmentVsBenchmarkTimeline(
+export function computeInvestmentVsBenchmarkTimeline(
+  navRows: RawNavRow[],
+  txRows: RawTxRow[],
+  idxRows: RawIdxRow[],
+  funds: FundRef[],
+  window: TimeWindow,
+): { points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] } {
+  const result = computeInvestmentVsBenchmarkTimelineFromInputs(
+    buildInvestmentTimelineInputs(navRows, txRows, funds, window),
+    idxRows,
+  );
+  return { points: result.points, xAxisLabels: result.xAxisLabels };
+}
+
+export async function fetchInvestmentTimelineInputs(
   funds: FundRef[],
   userId: string,
-  benchmarkSymbol: string,
   window: TimeWindow,
-): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
-  const timelineSpanId = perfStart('query:timeline');
+): Promise<InvestmentTimelineInputs> {
+  const inputSpanId = perfStart('query:timeline:inputs');
   const writeScope = captureDatabaseWriteScope();
   const fundIds = funds.map((fund) => fund.id);
   const schemeCodes = funds.map((fund) => fund.schemeCode);
 
+  const txSpanId = perfStart('query:timeline:transactions');
   const txRows = await fetchAllTransactions(userId, fundIds);
+  perfEnd(txSpanId, { rows: txRows.length });
   const firstTxDate = txRows[0]?.transaction_date;
   if (!firstTxDate) {
-    perfEnd(timelineSpanId, { points: 0, reason: 'no_txs' });
-    return { points: [], xAxisLabels: [] };
+    const empty = buildInvestmentTimelineInputs([], txRows, funds, window);
+    perfEnd(inputSpanId, { tx_rows: txRows.length, nav_rows: 0, reason: 'no_txs' });
+    return empty;
   }
 
   const windowStart = getWindowStartDate(window);
@@ -333,37 +480,78 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   // both round-trip count and payload size: on the "1Y" window a 10-fund
   // portfolio touches < 3 NAV pages instead of ~13.
   const navSpanId = perfStart('query:timeline:nav');
-  const indexSpanId = perfStart('query:timeline:index');
-  const [navRows, idxRows] = await Promise.all([
-    fetchAllNavRows(schemeCodes, navStartDate, writeScope).then((rows) => {
-      perfEnd(navSpanId, { rows: rows.length, since: navStartDate });
-      return rows;
-    }),
-    fetchAllIndexRows(benchmarkSymbol, firstTxDate).then((rows) => {
-      perfEnd(indexSpanId, {
-        rows: rows.length,
-        symbol: benchmarkSymbol,
-        since: firstTxDate,
-      });
-      return rows;
-    }),
-  ]);
+  const navRows = await fetchAllNavRows(schemeCodes, navStartDate, writeScope);
+  perfEnd(navSpanId, { rows: navRows.length, since: navStartDate });
 
-  const result = computeInvestmentVsBenchmarkTimeline(
-    navRows,
-    txRows,
-    idxRows,
-    funds,
+  const inputs = buildInvestmentTimelineInputs(navRows, txRows, funds, window);
+  perfEnd(inputSpanId, {
+    tx_rows: txRows.length,
+    nav_rows: navRows.length,
+    candidate_dates: inputs.candidateDates.length,
     window,
+  });
+  return inputs;
+}
+
+export async function fetchInvestmentVsBenchmarkTimeline(
+  funds: FundRef[],
+  userId: string,
+  benchmarkSymbol: string,
+  window: TimeWindow,
+  inputQueryClient?: QueryClient,
+): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
+  const timelineSpanId = perfStart('query:timeline');
+  const inputKey = investmentTimelineInputQueryKey(funds, userId, window);
+  const inputState = inputQueryClient?.getQueryState<InvestmentTimelineInputs>(inputKey);
+  const inputCacheHit = inputState?.data !== undefined &&
+    Date.now() - inputState.dataUpdatedAt < STALE_TIMES.INVESTMENT_VS_BENCHMARK;
+  const inputs = inputQueryClient
+    ? await inputQueryClient.fetchQuery({
+      queryKey: inputKey,
+      queryFn: () => fetchInvestmentTimelineInputs(funds, userId, window),
+      staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
+    })
+    : await fetchInvestmentTimelineInputs(funds, userId, window);
+
+  if (!inputs.firstTransactionDate) {
+    perfEnd(timelineSpanId, {
+      points: 0,
+      reason: 'no_txs',
+      input_cache_hit: inputCacheHit,
+      tx_rows: inputs.transactions.length,
+      nav_rows: inputs.navRows.length,
+      window,
+      symbol: benchmarkSymbol,
+    });
+    return { points: [], xAxisLabels: [] };
+  }
+
+  const indexSpanId = perfStart('query:timeline:index');
+  const idxRows = await fetchAllIndexRows(benchmarkSymbol, inputs.firstTransactionDate);
+  perfEnd(indexSpanId, {
+    rows: idxRows.length,
+    symbol: benchmarkSymbol,
+    since: inputs.firstTransactionDate,
+  });
+
+  const result = computeInvestmentVsBenchmarkTimelineFromInputs(
+    inputs,
+    idxRows,
   );
   perfEnd(timelineSpanId, {
     points: result.points.length,
-    nav_rows: navRows.length,
+    input_cache_hit: inputCacheHit,
+    tx_rows: inputs.transactions.length,
+    nav_rows: inputs.navRows.length,
     idx_rows: idxRows.length,
+    candidate_dates: inputs.candidateDates.length,
+    evaluation_dates: result.evaluationDateCount,
+    valuation_cache_hits: result.valuationCacheHits,
+    valuation_cache_misses: result.valuationCacheMisses,
     window,
     symbol: benchmarkSymbol,
   });
-  return result;
+  return { points: result.points, xAxisLabels: result.xAxisLabels };
 }
 
 async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<RawTxRow[]> {
@@ -508,12 +696,13 @@ export function useInvestmentVsBenchmarkTimeline(
   benchmarkSymbol: string,
   window: TimeWindow,
 ): InvestmentVsBenchmarkTimeline {
-  const fundKey = funds.map((fund) => fund.id).sort().join(',');
+  const queryClient = useQueryClient();
+  const fundKey = timelineOutputFundKey(funds);
   const { data, isLoading, error } = useQuery({
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
     enabled: funds.length > 0 && !!userId,
     queryFn: () =>
-      fetchInvestmentVsBenchmarkTimeline(funds, userId!, benchmarkSymbol, window),
+      fetchInvestmentVsBenchmarkTimeline(funds, userId!, benchmarkSymbol, window, queryClient),
     staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
   });
 
@@ -532,10 +721,16 @@ export function prefetchInvestmentVsBenchmarkTimeline(
   benchmarkSymbol: string,
   window: TimeWindow,
 ): Promise<void> {
-  const fundKey = funds.map((fund) => fund.id).sort().join(',');
+  const fundKey = timelineOutputFundKey(funds);
   return queryClient.prefetchQuery({
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
-    queryFn: () => fetchInvestmentVsBenchmarkTimeline(funds, userId, benchmarkSymbol, window),
+    queryFn: () => fetchInvestmentVsBenchmarkTimeline(
+      funds,
+      userId,
+      benchmarkSymbol,
+      window,
+      queryClient,
+    ),
     staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
   });
 }

@@ -16,9 +16,13 @@ jest.mock('@/src/hooks/useIndexSnapshot', () => ({
 import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import {
+  buildInvestmentTimelineInputs,
   computeInvestmentVsBenchmarkTimeline,
+  computeInvestmentVsBenchmarkTimelineFromInputs,
   fetchInvestmentVsBenchmarkTimeline,
+  investmentTimelineInputQueryKey,
   prefetchInvestmentVsBenchmarkTimeline,
+  stableInvestmentTimelineFundKey,
 } from '../useInvestmentVsBenchmarkTimeline';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
@@ -30,6 +34,13 @@ import { __setDbForTests, getDb } from '@/src/lib/db/db';
 import * as txRepo from '@/src/lib/db/tx';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import * as navRepo from '@/src/lib/db/nav';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import {
+  computeLegacyInvestmentTimeline,
+  INVESTMENT_TIMELINE_GOLDEN_FIXTURES,
+} from './fixtures/investmentTimelineLegacy';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import type { TimeWindow } from '@/src/utils/navUtils';
 
 const FUND = { id: 'fund-1', schemeCode: 100 };
 
@@ -254,6 +265,100 @@ describe('computeInvestmentVsBenchmarkTimeline', () => {
   });
 });
 
+describe('N2T pre-change financial equivalence', () => {
+  const windows: TimeWindow[] = ['1M', '3M', '6M', '1Y', '3Y', 'All'];
+
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-06-30T12:00:00Z'));
+  });
+
+  afterAll(() => {
+    jest.useRealTimers();
+  });
+
+  it.each(INVESTMENT_TIMELINE_GOLDEN_FIXTURES)(
+    'matches every legacy date and value for $name across all windows',
+    (fixture) => {
+      for (const window of windows) {
+        const legacy = computeLegacyInvestmentTimeline(
+          fixture.navRows,
+          fixture.txRows,
+          fixture.idxRows,
+          fixture.funds,
+          window,
+        );
+        const next = computeInvestmentVsBenchmarkTimeline(
+          fixture.navRows,
+          fixture.txRows,
+          fixture.idxRows,
+          fixture.funds,
+          window,
+        );
+
+        expect(next.points.map((point) => point.date)).toEqual(
+          legacy.points.map((point) => point.date),
+        );
+        expect(next.xAxisLabels).toEqual(legacy.xAxisLabels);
+        expect(next.points).toHaveLength(legacy.points.length);
+        next.points.forEach((point, index) => {
+          const expected = legacy.points[index];
+          expect(point.investedValue).toBeCloseTo(expected.investedValue, 10);
+          expect(point.portfolioValue).toBeCloseTo(expected.portfolioValue, 10);
+          expect(point.benchmarkValue).toBeCloseTo(expected.benchmarkValue, 10);
+        });
+      }
+    },
+  );
+
+  it('samples before portfolio valuation and retains the terminal date', () => {
+    const navRows = Array.from({ length: 400 }, (_, index) => {
+      const date = new Date('2025-01-01T00:00:00Z');
+      date.setUTCDate(date.getUTCDate() + index);
+      return { scheme_code: 100, nav_date: date.toISOString().slice(0, 10), nav: 10 + index / 100 };
+    });
+    const txRows = [{
+      fund_id: 'fund-1',
+      transaction_date: '2025-01-01',
+      transaction_type: 'purchase',
+      units: 100,
+      amount: 1000,
+    }];
+    const idxRows = navRows.map((row, index) => ({
+      index_date: row.nav_date,
+      close_value: 100 + index,
+    }));
+    const inputs = buildInvestmentTimelineInputs(navRows, txRows, [FUND], 'All');
+
+    const result = computeInvestmentVsBenchmarkTimelineFromInputs(inputs, idxRows);
+
+    expect(inputs.candidateDates).toHaveLength(400);
+    expect(result.evaluationDateCount).toBeLessThanOrEqual(91);
+    expect(inputs.valuationByDate.size).toBe(result.evaluationDateCount);
+    expect(result.points.at(-1)?.date).toBe(navRows.at(-1)?.nav_date);
+  });
+});
+
+describe('N2T prepared input cache', () => {
+  it('keys the same fund set deterministically and includes scheme identity', () => {
+    const funds = [
+      { id: 'fund-b', schemeCode: 200 },
+      { id: 'fund-a', schemeCode: 100 },
+    ];
+
+    expect(stableInvestmentTimelineFundKey(funds)).toBe('fund-a:100,fund-b:200');
+    expect(stableInvestmentTimelineFundKey([...funds].reverse())).toBe(
+      stableInvestmentTimelineFundKey(funds),
+    );
+    expect(investmentTimelineInputQueryKey(funds, 'user-1', '3Y')).toEqual([
+      'investmentTimelineInputs',
+      'user-1',
+      'fund-a:100,fund-b:200',
+      '3Y',
+    ]);
+  });
+});
+
 describe('N2 targeted timeline prefetch', () => {
   it('warms only the requested benchmark and window key', async () => {
     const prefetchQuery = jest.fn().mockResolvedValue(undefined);
@@ -317,6 +422,61 @@ describe('N2D timeline NAV cache repair', () => {
       };
       return chain;
     });
+  });
+
+  it('reuses prepared transaction, NAV, history, and valuation input across benchmarks', async () => {
+    const cache = new Map<string, unknown>();
+    let inputBuilds = 0;
+    const inputQueryClient = {
+      getQueryData: jest.fn((key: readonly unknown[]) => cache.get(JSON.stringify(key))),
+      getQueryState: jest.fn((key: readonly unknown[]) => {
+        const data = cache.get(JSON.stringify(key));
+        return data === undefined ? undefined : { data, dataUpdatedAt: Date.now() };
+      }),
+      fetchQuery: jest.fn(async ({ queryKey, queryFn }: {
+        queryKey: readonly unknown[];
+        queryFn: () => Promise<unknown>;
+      }) => {
+        const key = JSON.stringify(queryKey);
+        if (cache.has(key)) return cache.get(key);
+        inputBuilds += 1;
+        const value = await queryFn();
+        cache.set(key, value);
+        return value;
+      }),
+    } as unknown as QueryClient;
+    const txRead = jest.spyOn(txRepo, 'readByFundIds');
+
+    const first = await fetchInvestmentVsBenchmarkTimeline(
+      [FUND],
+      'user-1',
+      '^NSEI',
+      'All',
+      inputQueryClient,
+    );
+    const inputKey = investmentTimelineInputQueryKey([FUND], 'user-1', 'All');
+    const prepared = cache.get(JSON.stringify(inputKey)) as ReturnType<
+      typeof buildInvestmentTimelineInputs
+    >;
+    const valuationsAfterFirst = prepared.valuationByDate.size;
+    const second = await fetchInvestmentVsBenchmarkTimeline(
+      [FUND],
+      'user-1',
+      '^BSESN',
+      'All',
+      inputQueryClient,
+    );
+
+    expect(first.points).toHaveLength(2);
+    expect(second.points).toHaveLength(2);
+    expect(inputBuilds).toBe(1);
+    expect(txRead).toHaveBeenCalledTimes(1);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(fetchIndexHistory).toHaveBeenCalledTimes(2);
+    expect(prepared.valuationByDate.size).toBe(valuationsAfterFirst);
+    expect(valuationsAfterFirst).toBeGreaterThan(0);
+
+    txRead.mockRestore();
   });
 
   it('retries retained rows after a failed write and makes the next identical read local', async () => {

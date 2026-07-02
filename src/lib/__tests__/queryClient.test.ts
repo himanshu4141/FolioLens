@@ -54,6 +54,7 @@ describe('shouldPersistQueryKey()', () => {
   describe('does NOT persist', () => {
     it.each([
       ['user-profile (auth-sensitive)', ['user-profile', 'user-1']],
+      ['prepared investment timeline input (user-scoped Maps)', ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y']],
       ['unknown key', ['some-other-thing', 'foo']],
       ['empty key', []],
       ['non-array key', 'not-an-array'],

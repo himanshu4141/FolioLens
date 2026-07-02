@@ -23,6 +23,7 @@ import * as txRepo from '@/src/lib/db/tx';
 import { bootstrapForUser, clearAll as clearLocalDb } from '@/src/lib/db/sync';
 import { analytics } from '@/src/lib/analytics';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
+import { INVESTMENT_TIMELINE_INPUT_QUERY_KEY } from '@/src/hooks/useInvestmentVsBenchmarkTimeline';
 import { navStatusBadge } from './index';
 import {
   ClearLensFonts,
@@ -193,6 +194,7 @@ export default function DataSyncScreen() {
         queryClient.invalidateQueries({ queryKey: ['fund-nav-history'] }),
         queryClient.invalidateQueries({ queryKey: ['fund-detail-index'] }),
         queryClient.invalidateQueries({ queryKey: ['investmentVsBenchmarkTimeline'] }),
+        queryClient.invalidateQueries({ queryKey: [INVESTMENT_TIMELINE_INPUT_QUERY_KEY] }),
         queryClient.invalidateQueries({ queryKey: ['performance-timeline'] }),
         queryClient.invalidateQueries({ queryKey: ['portfolio-timeline'] }),
         queryClient.invalidateQueries({ queryKey: ['money-trail'] }),
