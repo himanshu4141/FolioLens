@@ -18,7 +18,7 @@ The tab navigator freezes only Wealth Journey today. Root bootstrap and foregrou
 
 ## Assumptions
 
-- Android main-preview is the native acceptance target. iOS remains out of scope because FolioLens has no iOS publishing path.
+- Android PR-preview is the release-like native acceptance target because it carries the exact implementation branch; iOS remains out of scope because FolioLens has no iOS publishing path.
 - React Query cached data remains readable while a query is disabled; focus gating therefore preserves the last rendered state and only suppresses fetches.
 - Returning focus changes disabled queries back to enabled, which refetches stale data under React Query's existing defaults.
 - SyncResult insertion counts are authoritative for which SQLite input family changed.
@@ -108,7 +108,7 @@ Acceptance: config tests lock all required freeze flags and no-argument `usePort
 
 ### 3. Root integration and native evidence
 
-Wire both bootstrap and foreground SyncResults through granular invalidation, run full validation, publish Android main-preview, and capture required navigation sequences.
+Wire both bootstrap and foreground SyncResults through granular invalidation, run full validation, publish Android PR-preview, and capture required navigation sequences.
 
 Expected outcome: Settings → About and Funds → Fund Detail remain responsive; no hidden Portfolio/timeline query starts after blur; visible routes refresh correctly after sync.
 
@@ -149,6 +149,15 @@ Automated validation completed on 2026-07-03:
 - `git diff --check`: clean.
 - cache contract: query keys and serialized payloads are unchanged; the PR carries the repository-required `[cache-shape-stable]` assertion and keeps React Query buster `v8`.
 
+Native Android acceptance completed on 2026-07-03:
+
+- Device/build: Pixel 8a, Android 16 / API 36, `com.foliolens.app.prpreview` version `0.0.4`.
+- Exact artifact: Android PR-preview OTA `019f2537-a8a5-7c3f-806e-715a8bf5cd47`; About displayed prefix `019f2537-a8a…`. The OTA was published from docs-only head `52e62b913eef3535113f7d3a92ef66e61e7a8727` and contains measured implementation `d6b96971378eaa6719a3171f3a2d573a5b8aa811` unchanged.
+- Settings → About: route commit `93 ms`, post-interaction usable `109 ms`, `sync_in_flight:false`. The complete fresh log contained zero `query:portfolio`, `query:timeline`, `query:moneyTrail`, or `query:wealthJourney` completions and zero relevant SQLite/sync errors.
+- Funds → Fund Detail cold target-cache sample: route commit `116 ms`, post-interaction usable `126 ms`, `cache_state:cold`, `sync_in_flight:false`, six active queries, 20 funds, and 566 transactions. Only visible Fund Detail-owned reads followed (`query:fundDetail`, scheme metadata, NAV history, and its one-fund timeline); hidden Portfolio, Money Trail, and Wealth Journey query counts remained zero, with zero relevant SQLite/sync errors.
+- Funds → Fund Detail warm sample: route commit `268 ms`, post-interaction usable `284 ms`, `cache_state:warm`, `sync_in_flight:false`; no Fund Detail, Portfolio, timeline, Money Trail, or Wealth Journey query completed during the sample and zero relevant SQLite/sync errors were present.
+- The intermittent application hang did not reproduce. These samples prove the scoped invariant: leaving the owner screen did not wake hidden expensive queries, while the visible cold Fund Detail route remained allowed to fetch its own data.
+
 ## Risks And Mitigations
 
 - **Under-invalidation:** encode the dependency map in one exported constant, test every input family, and include user-funds for CAS roster correctness.
@@ -184,5 +193,5 @@ The source-level navigation configuration test covers every Settings child that 
 - [x] Remove the legacy `^NSEI` default and update callers.
 - [x] Integrate visible-route invalidation into root lifecycle.
 - [x] Run focused, full, static, and Android export validation.
-- [ ] Capture Android main-preview acceptance evidence.
-- [ ] Push and open draft implementation PR.
+- [x] Capture Android release-like PR-preview acceptance evidence.
+- [x] Push and open draft implementation PR #256.
