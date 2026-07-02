@@ -179,7 +179,7 @@ The frozen legacy oracle and deterministic fixtures cover weekend and holiday lo
 Validation before physical Android evidence:
 
 - focused N2T, N2D serializer/sync, and query-cache checks passed: 4 suites and 80 tests;
-- full Jest passed: 78 suites and 1,820 tests;
+- full Jest passed at the corrected head: 78 suites and 1,822 tests;
 - `npm run typecheck` passed with zero errors;
 - `npm run lint` passed with zero warnings;
 - Android export passed: 1,747 modules and a 6.3 MB Hermes bundle;
@@ -203,6 +203,19 @@ Pre-review Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98
 
 The steady-state repeated-switch set was `20, 50, 29, 35, 36, 36, 31, 21, 38, 38` ms: p95 50 ms, below the 300 ms target. The 3Y benchmark-only interaction improved from the 4.830–5.919 second baseline to 21–31 ms (more than 99% lower). Every warm row reported `input_cache_hit: true`, `index_cache_hit: true`, and zero valuation-cache misses. The cold numbers are reported separately: they include preparation of the window-specific input after a full local-cache rebuild, and show that SQLite NAV read/repair remains the dominant first-request cost, especially for 3Y. Logcat contained zero nested-transaction, invalid-rollback, `SQLITE_BUSY`, or `SQLITE_LOCKED` errors.
 
+Final corrected-head Android evidence used implementation `d6a6c50bdfdc7a2e51a1c69fc993c08ff999de2e`, Android main-preview OTA `019f22af-85ef-73e3-85b4-bd10beca0b26` (group `07d18ff0-dc46-46a7-8789-5f0c5ab60fef`), and the same Pixel 8a / Android 16 / `com.foliolens.app.mainpreview` / `foliolens-main` / runtime `0.0.4` target. EAS reported the exact Git commit and About displayed `019f22af-85e…` after three clean process restarts. The support reset again rebuilt the full local cache before measurement, and the final matrix was:
+
+| Window | Cold total | tx / NAV / index rows | Points / evaluation dates | Benchmark-switch totals | Cache result |
+|---|---:|---:|---:|---:|---|
+| 1M | 1,479 ms | 566 / 445 / 2,059 | 21 / 21 | 59, 37 ms | input + index hit; 21 valuation hits, 0 misses |
+| 3M | 1,627 ms | 566 / 1,137 / 2,059 | 60 / 60 | 82, 54 ms | input + index hit; 60 valuation hits, 0 misses |
+| 6M | 2,967 ms | 566 / 2,219 / 2,059 | 61 / 61 | 40, 35 ms | input + index hit; 61 valuation hits, 0 misses |
+| 1Y | 5,464 ms | 566 / 4,443 / 2,059 | 83 / 83 | 60, 37 ms | input + index hit; 83 valuation hits, 0 misses |
+| 3Y | 17,030 ms | 566 / 12,879 / 2,059 | 84 / 84 | 36, 36 ms | input + index hit; 84 valuation hits, 0 misses |
+| All | 7,473 ms | 566 / 34,299 / 2,059 | 91 / 91 | 401, 524 ms setup | input hit; 91 valuation hits; forced-reset snapshot rewarm |
+
+The forced reset invalidates every React Query entry, including all three six-hour index snapshots. The first two All-window switches therefore deliberately re-established the Nifty 50 and Nifty 500 snapshots and are reported as setup rather than steady-state samples. Once those canonical snapshots were fresh, the repeated benchmark-switch set was `59, 37, 82, 54, 40, 35, 60, 37, 36, 36` ms: p95 82 ms, below the 300 ms target. The corrected 3Y benchmark-only interaction is 36 ms, more than 99% below the 4.830–5.919 second baseline. Every acceptance sample reported `input_cache_hit: true`, `index_cache_hit: true`, full valuation-cache hits, and zero misses. Corrected-head logcat again contained zero nested-transaction, invalid-rollback, `SQLITE_BUSY`, or `SQLITE_LOCKED` errors. Cold input preparation remains dominated by SQLite NAV read/repair and is intentionally reported separately.
+
 ## Progress
 
 - [x] Read AGENTS.md, VISION.md, docs/TECH-DISCOVERY.md, docs/architecture/cache-surfaces.md, docs/process/PLANS.md, the updated control report, and later PR #250 comments.
@@ -213,5 +226,5 @@ The steady-state repeated-switch set was `20, 50, 29, 35, 36, 36, 31, 21, 38, 38
 - [x] Implement benchmark-independent prepared input and bounded valuation.
 - [x] Update invalidation and cache inventory.
 - [x] Run focused, full, static, and Android export validation.
-- [ ] Capture Android main-preview acceptance evidence at the corrected implementation SHA.
+- [x] Capture Android main-preview acceptance evidence at the corrected implementation SHA.
 - [x] Open the implementation PR and enter independent review.
