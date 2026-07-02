@@ -409,11 +409,27 @@ export function simulateBenchmarkInvestment(
   transactions: Transaction[],
   benchmarkValueAt: (date: string) => number | null,
 ): BenchmarkSimulation {
+  return simulateBenchmarkInvestmentFromNormalizedTransactions(
+    filterReversedTransactionPairs(transactions),
+    benchmarkValueAt,
+  );
+}
+
+/**
+ * Benchmark simulation for callers that already own transaction
+ * normalization. N2T prepares and caches one reversal-filtered transaction
+ * series per user/fund-set/window; benchmark changes must reuse it rather
+ * than run the pairing pass again.
+ */
+export function simulateBenchmarkInvestmentFromNormalizedTransactions(
+  transactions: Transaction[],
+  benchmarkValueAt: (date: string) => number | null,
+): BenchmarkSimulation {
   let units = 0;
   const benchmarkFlows: Cashflow[] = [];
   const unitsHistory: { date: string; units: number }[] = [];
 
-  for (const tx of filterReversedTransactionPairs(transactions)) {
+  for (const tx of transactions) {
     const close = benchmarkValueAt(tx.transaction_date);
     if (close == null || close <= 0) continue;
 
