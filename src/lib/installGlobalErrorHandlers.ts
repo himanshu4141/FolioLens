@@ -13,7 +13,7 @@ let installed = false;
  * Idempotent — calling more than once is a no-op.
  */
 export function installGlobalErrorHandlers(): void {
-  if (installed || !analytics.isEnabled) return;
+  if (installed) return;
   installed = true;
 
   if (Platform.OS === 'web') {
