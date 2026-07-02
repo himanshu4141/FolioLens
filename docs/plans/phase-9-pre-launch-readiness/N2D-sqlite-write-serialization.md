@@ -184,6 +184,12 @@ The very long cold write/repair times are a confirmed limitation, not an N2D reg
 
 Raw device logs and UI dumps remain local under `/tmp/foliolens-n2d-android-main/`; PR evidence contains only bounded operation names, row counts, durations, status values, device/build identity, and error counts.
 
+Final corrected-head Android evidence used the same Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The Android OTA was `019f201f-b4bd-76f7-8386-57c7f3a7d5b0` (group `5cfbb5b0-2042-43e5-9797-06294253f4e7`) at review-fix SHA `86d176dd63c3b489787e111a9b6b850fb13018d9`. EAS reported that exact `gitCommitHash`, and the About screen displayed OTA prefix `019f201f-b4b…` after three process restarts.
+
+The corrected-head stress sequence reset the local cache, opened Portfolio during post-reset work, changed benchmarks, backgrounded and foregrounded the app, selected the 3Y timeline, waited for the serialized writes to drain, and then switched away from and back to the identical 3Y selection. It recorded 33 completed serialized writes across transaction, NAV, index, sync-state, and timeline-repair operations. The two timeline repairs completed with `ok` status in 8,833 ms and 9,240 ms; the second waited 8,405 ms behind the first. All other recorded writes completed in at most 13 ms. The repeated identical 3Y read produced no later `db:write` or repair event, consistent with the repaired SQLite cache serving that request locally.
+
+The corrected-head log contains zero nested-transaction matches, zero invalid-rollback matches, zero SQLite write failures, zero `status: 'error'` writes, and zero timeline-retry warnings. The high-level blocked-roster tests provide the deterministic user/generation cleanup-race proof added for review; this physical run confirms that the corrected implementation retains the shared-connection ordering and local-repair behavior on the release Android target. Raw corrected-head artifacts remain local under `/tmp/foliolens-n2d-android-corrected-86d176d/`.
+
 ## Progress
 
 - [x] Read AGENTS.md, VISION.md, docs/TECH-DISCOVERY.md, docs/architecture/cache-surfaces.md, docs/process/PLANS.md, the current control report, and PR #250 conversation.
@@ -194,5 +200,5 @@ Raw device logs and UI dumps remain local under `/tmp/foliolens-n2d-android-main
 - [x] Make timeline NAV repair awaited and retriable.
 - [x] Add focused concurrency and repair tests.
 - [x] Run repository validation.
-- [ ] Capture final Android main-preview evidence at the corrected implementation SHA.
+- [x] Capture final Android main-preview evidence at the corrected implementation SHA.
 - [x] Publish the implementation PR and attach acceptance evidence.
