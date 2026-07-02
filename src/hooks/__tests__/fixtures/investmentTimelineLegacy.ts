@@ -80,6 +80,28 @@ export const INVESTMENT_TIMELINE_GOLDEN_FIXTURES: InvestmentTimelineGoldenFixtur
       { index_date: '2026-06-30', close_value: 182 },
     ],
   },
+  {
+    name: 'ineffective zero-unit investment before first holding',
+    funds: [GOLDEN_FUNDS[0]],
+    navRows: dailyRows(100, '2025-10-01', 240, 10, 0.01),
+    txRows: [
+      {
+        fund_id: 'fund-a',
+        transaction_date: '2025-10-01',
+        transaction_type: 'purchase',
+        units: 0,
+        amount: 1000,
+      },
+      {
+        fund_id: 'fund-a',
+        transaction_date: addUtcDays('2025-10-01', 120),
+        transaction_type: 'purchase',
+        units: 100,
+        amount: 1000,
+      },
+    ],
+    idxRows: dailyIndexRows('2025-10-01', 240, 100, 0.1),
+  },
 ];
 
 /**
@@ -282,6 +304,38 @@ function monthlyRows(
     index += 1;
   }
   return rows;
+}
+
+function addUtcDays(startDate: string, days: number): string {
+  const date = new Date(`${startDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function dailyRows(
+  schemeCode: number,
+  startDate: string,
+  count: number,
+  startingNav: number,
+  dailyIncrement: number,
+): RawNavRow[] {
+  return Array.from({ length: count }, (_, index) => ({
+    scheme_code: schemeCode,
+    nav_date: addUtcDays(startDate, index),
+    nav: startingNav + index * dailyIncrement,
+  }));
+}
+
+function dailyIndexRows(
+  startDate: string,
+  count: number,
+  startingValue: number,
+  dailyIncrement: number,
+): RawIdxRow[] {
+  return Array.from({ length: count }, (_, index) => ({
+    index_date: addUtcDays(startDate, index),
+    close_value: startingValue + index * dailyIncrement,
+  }));
 }
 
 function monthlyIndexRows(

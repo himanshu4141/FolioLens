@@ -156,6 +156,7 @@ Native evidence must record device/OS, package/channel, OTA/update ID, implement
 - 2026-07-02: Add a benchmark simulator entry point for already normalized transactions. The prepared input has already removed reversal pairs; repeating that pairing pass on every benchmark produced 333–343 ms warm samples even with 1–2 ms index-cache reads.
 - 2026-07-02: Evaluate sorted benchmark, invested, and simulated-unit histories with monotonic pointers. Corrected-head warm samples after normalization reuse were still 337–435 ms because the benchmark path repeatedly binary-searched data whose dates are already ordered.
 - 2026-07-02: Avoid copying/sorting already ordered index rows and avoid thousands of temporary window objects/maps. The first monotonic build improved the All-window path but remained 370–408 ms; only 91 output positions are needed.
+- 2026-07-02: Preserve the legacy positive-portfolio guard before sampling with a benchmark-independent monotonic scalar sweep. Cheap invested/benchmark guards alone are insufficient when an ineffective positive-amount, zero-unit transaction precedes the first real holding.
 
 ## Amendments
 
@@ -171,6 +172,8 @@ The first `c12a518` samples remained 337–435 ms with cached input and index da
 
 The initial monotonic candidate `d29a236` measured 370–408 ms for the All window. Its remaining overhead came from copying and sorting 2,059 already ordered index rows, materializing a temporary object per candidate for window filtering, and filling date maps before retaining only 91 positions. The final path verifies order without copying, keeps parallel primitive arrays, derives the legacy window offset directly, and samples integer positions before valuation.
 
+Independent review found a missing legacy pre-sampling guard: invested value and simulated benchmark units can both be positive while portfolio value is still absent, for example after a positive-amount purchase with zero units. The prepared input now records the exact portfolio-valid date set with monotonic unit/NAV/cost cursors. This computes only scalar validity across candidate dates; materialized `TimelineValuation` objects and memoized monetary results remain bounded to sampled dates. A 240-day frozen-oracle fixture with an ineffective investment followed by the first real holding on day 120 reproduces the old drift and passes after the correction.
+
 The frozen legacy oracle and deterministic fixtures cover weekend and holiday lookups, an NFO subscription before its first NAV, switches, redemptions, a failed-payment reversal pair, a fund with no NAV rows, delayed index coverage, and 1M/3M/6M/1Y/3Y/All. Every emitted date and invested/portfolio/benchmark value matches within 10 decimal digits. A 400-date fixture proves only the at-most-91 sampled dates enter the portfolio valuation cache and the terminal point is retained.
 
 Validation before physical Android evidence:
@@ -182,7 +185,7 @@ Validation before physical Android evidence:
 - Android export passed: 1,747 modules and a 6.3 MB Hermes bundle;
 - `git diff --check` passed.
 
-Physical Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98ad0eb95`:
+Pre-review Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98ad0eb95` (superseded by the portfolio-validity correction and retained only as diagnostic history):
 
 - Pixel 8a, Android 16; `com.foliolens.app.mainpreview`, channel `foliolens-main`, runtime/app `0.0.4`;
 - Android main-preview OTA `019f2233-058f-774c-bfc7-d310fa931633` (About showed `019f2233-058…`);
@@ -210,5 +213,5 @@ The steady-state repeated-switch set was `20, 50, 29, 35, 36, 36, 31, 21, 38, 38
 - [x] Implement benchmark-independent prepared input and bounded valuation.
 - [x] Update invalidation and cache inventory.
 - [x] Run focused, full, static, and Android export validation.
-- [x] Capture Android main-preview acceptance evidence.
+- [ ] Capture Android main-preview acceptance evidence at the corrected implementation SHA.
 - [x] Open the implementation PR and enter independent review.

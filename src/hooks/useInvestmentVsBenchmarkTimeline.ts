@@ -100,6 +100,7 @@ export interface InvestmentTimelineInputs {
   costHistory: Map<string, { date: string; cost: number }[]>;
   investedHistory: { date: string; investedValue: number }[];
   candidateDates: string[];
+  portfolioValidDates: Set<string>;
   valuationByDate: Map<string, TimelineValuation>;
 }
 
@@ -173,6 +174,64 @@ function sampleIndexes(length: number, maxPoints = 90): number[] {
   for (let index = 0; index < length; index += step) sampled.push(index);
   if (sampled[sampled.length - 1] !== length - 1) sampled.push(length - 1);
   return sampled;
+}
+
+function buildPortfolioValidDates(
+  funds: FundRef[],
+  candidateDates: string[],
+  navHistoryByScheme: Map<number, NavPoint[]>,
+  unitHistory: Map<string, { date: string; units: number }[]>,
+  costHistory: Map<string, { date: string; cost: number }[]>,
+): Set<string> {
+  const states = funds.map((fund) => ({
+    unitsAt: monotonicLatestNumber(
+      unitHistory.get(fund.id) ?? [],
+      (row) => row.date,
+      (row) => Math.max(0, row.units),
+    ),
+    navAt: monotonicLatestNumber(
+      navHistoryByScheme.get(fund.schemeCode) ?? [],
+      (row) => row.date,
+      (row) => row.value,
+    ),
+    costAt: monotonicLatestNumber(
+      costHistory.get(fund.id) ?? [],
+      (row) => row.date,
+      (row) => Math.max(0, row.cost),
+    ),
+  }));
+  const validDates = new Set<string>();
+
+  // Preserve the legacy pre-sampling portfolio guard without materializing a
+  // valuation for every raw date. These monotonic cursors maintain only the
+  // current scalar contribution for each fund; the expensive chart valuation
+  // objects remain bounded to the sampled evaluation dates below.
+  for (const date of candidateDates) {
+    let portfolioValue = 0;
+    let hasPortfolioValue = false;
+
+    for (const state of states) {
+      const units = state.unitsAt(date) ?? 0;
+      if (units <= 0) continue;
+
+      const nav = state.navAt(date);
+      if (nav !== null) {
+        portfolioValue += units * nav;
+        hasPortfolioValue = true;
+        continue;
+      }
+
+      const cost = state.costAt(date) ?? 0;
+      if (cost > 0) {
+        portfolioValue += cost;
+        hasPortfolioValue = true;
+      }
+    }
+
+    if (hasPortfolioValue && portfolioValue > 0) validDates.add(date);
+  }
+
+  return validDates;
 }
 
 function timelineOutputFundKey(funds: FundRef[]): string {
@@ -297,6 +356,7 @@ export function buildInvestmentTimelineInputs(
     allDates.add(date);
   }
 
+  const candidateDates = [...allDates].sort();
   return {
     funds: stableFunds,
     window,
@@ -307,7 +367,14 @@ export function buildInvestmentTimelineInputs(
     unitHistory,
     costHistory,
     investedHistory,
-    candidateDates: [...allDates].sort(),
+    candidateDates,
+    portfolioValidDates: buildPortfolioValidDates(
+      stableFunds,
+      candidateDates,
+      navHistoryByScheme,
+      unitHistory,
+      costHistory,
+    ),
     valuationByDate: new Map<string, TimelineValuation>(),
   };
 }
@@ -387,11 +454,11 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     ),
   );
 
-  // The pre-N2T implementation valued every fund on every candidate date and
-  // only then sampled. All values involved are positive, so the inexpensive
-  // invested/benchmark guards identify the same valid date set without the
-  // per-fund NAV loop. Sampling that set first bounds valuation to the chart
-  // budget while the complete NAV histories remain available for lookup.
+  // The pre-N2T implementation filtered on positive portfolio, invested, and
+  // benchmark values before sampling. Prepared input retains the exact
+  // portfolio-valid set via a monotonic scalar sweep; combining it with the
+  // inexpensive benchmark guards preserves that sampling contract while the
+  // materialized valuation map remains bounded to the chart budget.
   const investedValueAt = monotonicLatestNumber(
     inputs.investedHistory,
     (row) => row.date,
@@ -414,7 +481,12 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     const investedValue = investedValueAt(date) ?? 0;
     const benchmarkClose = benchmarkValueAt(date);
     const simulatedBenchmarkUnits = benchmarkUnitsAt(date) ?? 0;
-    if (investedValue > 0 && benchmarkClose !== null && simulatedBenchmarkUnits > 0) {
+    if (
+      inputs.portfolioValidDates.has(date) &&
+      investedValue > 0 &&
+      benchmarkClose !== null &&
+      simulatedBenchmarkUnits > 0
+    ) {
       validDates.push(date);
       validBenchmarkCloses.push(benchmarkClose);
       validBenchmarkUnits.push(simulatedBenchmarkUnits);
