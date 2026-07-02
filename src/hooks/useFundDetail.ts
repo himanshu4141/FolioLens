@@ -30,6 +30,7 @@ import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import * as navRepo from '@/src/lib/db/nav';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import { captureDatabaseWriteScope } from '@/src/lib/db/db';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -378,6 +379,7 @@ export async function fetchFundNavHistory(
   schemeCode: number,
   opts?: FetchNavHistoryOptions,
 ): Promise<NavPoint[]> {
+  const writeScope = captureDatabaseWriteScope();
   const sinceDate = opts?.sinceDate;
   const navHistorySpanId = perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
@@ -410,6 +412,7 @@ export async function fetchFundNavHistory(
       try {
         await navRepo.bulkInsert(
           rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
+          { scope: writeScope, operation: 'fund_detail_nav_write_back' },
         );
       } catch (err) {
         console.warn('[fetchFundNavHistory] sqlite write failed', err);
@@ -441,6 +444,7 @@ export async function appendNavTailIfStale(
   hydratedLastNavDate: string,
 ): Promise<{ topped_up: boolean; rows_appended: number }> {
   if (!SQLITE_AVAILABLE) return { topped_up: false, rows_appended: 0 };
+  const writeScope = captureDatabaseWriteScope();
 
   let localMax: string | null = null;
   try {
@@ -477,6 +481,7 @@ export async function appendNavTailIfStale(
   try {
     await navRepo.bulkInsert(
       tailRows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
+      { scope: writeScope, operation: 'fund_detail_nav_tail_write_back' },
     );
   } catch (err) {
     console.warn('[appendNavTailIfStale] tail write failed', err);

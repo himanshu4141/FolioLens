@@ -26,12 +26,64 @@
 export const SCHEMA_VERSION = 2;
 export const DB_NAME = 'foliolens.db';
 
+export interface DatabaseWriteScope {
+  readonly generation: number;
+}
+
+export interface SerializedDatabaseWriteOptions {
+  scope?: DatabaseWriteScope;
+  attempt?: number;
+  operation?: string;
+}
+
+export class StaleDatabaseWriteError extends Error {
+  constructor(operation: string) {
+    super(`SQLite write "${operation}" belongs to an invalidated cache lifecycle`);
+    this.name = 'StaleDatabaseWriteError';
+  }
+}
+
 const NOT_SUPPORTED_ERROR = new Error(
   '[db.web] SQLite read cache is not available on web; fall back to network.',
 );
 
 export function getDb(): Promise<never> {
   return Promise.reject(NOT_SUPPORTED_ERROR);
+}
+
+export function captureDatabaseWriteScope(): DatabaseWriteScope {
+  return { generation: 0 };
+}
+
+export function isStaleDatabaseWriteError(error: unknown): error is StaleDatabaseWriteError {
+  return error instanceof StaleDatabaseWriteError;
+}
+
+export function runSerializedDatabaseWrite<T>(
+  _operation: string,
+  _task: (db: never) => Promise<T>,
+  _options: SerializedDatabaseWriteOptions = {},
+): Promise<T> {
+  return Promise.reject(NOT_SUPPORTED_ERROR);
+}
+
+export function runSerializedDatabaseTransaction<T>(
+  _operation: string,
+  _task: (db: never) => Promise<T>,
+  _options: SerializedDatabaseWriteOptions = {},
+): Promise<T> {
+  return Promise.reject(NOT_SUPPORTED_ERROR);
+}
+
+export function runSerializedDatabaseLifecycle<T>(
+  _operation: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  return task();
+}
+
+export async function waitForSerializedDatabaseWrites(): Promise<void> {
+  // No native write queue exists on web.
 }
 
 export async function dropAndRecreate(): Promise<void> {
@@ -41,6 +93,6 @@ export async function dropAndRecreate(): Promise<void> {
 
 // Test hook kept signature-compatible with `db.ts`. Web tests never
 // exercise SQLite paths so this is a no-op.
-export function __setDbForTests(_promise: unknown): void {
+export async function __setDbForTests(_promise: unknown): Promise<void> {
   // intentionally empty
 }

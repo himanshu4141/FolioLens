@@ -49,9 +49,9 @@ const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
 // hook tests. Each test runs against an empty `tx` / `nav` / `idx`
 // repo, which forces the read-through fetchers to fall through to
 // Supabase (where the existing makeChain fixtures already cover).
-beforeEach(() => {
+beforeEach(async () => {
   __resetAllForTests();
-  __setDbForTests(null);
+  await __setDbForTests(null);
 });
 
 // Stand-in QueryClient that bypasses caching and runs the queryFn —

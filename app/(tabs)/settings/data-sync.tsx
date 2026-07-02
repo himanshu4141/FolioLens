@@ -20,10 +20,7 @@ import { useAppStore } from '@/src/store/appStore';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import * as txRepo from '@/src/lib/db/tx';
-import * as navRepo from '@/src/lib/db/nav';
-import * as idxRepo from '@/src/lib/db/idx';
-import * as syncStateRepo from '@/src/lib/db/syncState';
-import { bootstrapForUser } from '@/src/lib/db/sync';
+import { bootstrapForUser, clearAll as clearLocalDb } from '@/src/lib/db/sync';
 import { analytics } from '@/src/lib/analytics';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { navStatusBadge } from './index';
@@ -145,12 +142,7 @@ export default function DataSyncScreen() {
       // surfaced for the May 2026 drift bug — if a user reports wrong
       // numbers, they (or support) can tap this without needing to
       // sign out.
-      await Promise.all([
-        txRepo.clear(),
-        navRepo.clear(),
-        idxRepo.clear(),
-        syncStateRepo.clear(),
-      ]);
+      await clearLocalDb();
       await bootstrapForUser(userId);
       // Refresh the debug counts + every downstream tx-derived cache.
       await queryClient.invalidateQueries({ queryKey: ['debug-local-tx-count'] });

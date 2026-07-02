@@ -2,14 +2,34 @@ jest.mock('@tanstack/react-query', () => ({ useQuery: jest.fn() }));
 jest.mock('@/src/hooks/usePerformanceTimeline', () => ({
   buildXAxisLabels: (dates: string[]) => dates.map((date) => date.slice(5)),
 }));
+jest.mock('@/src/lib/data/transaction', () => ({
+  transactionRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/lib/data/navHistory', () => ({
+  navHistoryRepo: { from: jest.fn() },
+}));
+jest.mock('@/src/hooks/useIndexSnapshot', () => ({
+  fetchIndexHistory: jest.fn(),
+}));
 
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import {
   computeInvestmentVsBenchmarkTimeline,
+  fetchInvestmentVsBenchmarkTimeline,
   prefetchInvestmentVsBenchmarkTimeline,
 } from '../useInvestmentVsBenchmarkTimeline';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { navHistoryRepo } from '@/src/lib/data/navHistory';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import { __setDbForTests, getDb } from '@/src/lib/db/db';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import * as txRepo from '@/src/lib/db/tx';
+// eslint-disable-next-line import/first -- mocks must register before module imports
+import * as navRepo from '@/src/lib/db/nav';
 
 const FUND = { id: 'fund-1', schemeCode: 100 };
 
@@ -257,5 +277,106 @@ describe('N2 targeted timeline prefetch', () => {
         '3Y',
       ],
     });
+  });
+});
+
+describe('N2D timeline NAV cache repair', () => {
+  const remoteNavRows = [
+    { scheme_code: 100, nav_date: '2025-01-01', nav: 10 },
+    { scheme_code: 100, nav_date: '2025-02-01', nav: 12 },
+  ];
+
+  beforeEach(async () => {
+    await __setDbForTests(null);
+    jest.clearAllMocks();
+    await txRepo.bulkInsert([
+      {
+        fund_id: 'fund-1',
+        transaction_date: '2025-01-01',
+        transaction_type: 'purchase',
+        units: 100,
+        amount: 1000,
+        id: 'tx-1',
+        nav_at_transaction: 10,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2025-01-01T00:00:00Z',
+      },
+    ]);
+    (fetchIndexHistory as jest.Mock).mockResolvedValue([
+      { date: '2025-01-01', value: 100 },
+      { date: '2025-02-01', value: 120 },
+    ]);
+    (navHistoryRepo.from as jest.Mock).mockImplementation(() => {
+      const chain: any = {
+        select: jest.fn().mockReturnThis(),
+        in: jest.fn().mockReturnThis(),
+        gte: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        range: jest.fn().mockResolvedValue({ data: remoteNavRows, error: null }),
+      };
+      return chain;
+    });
+  });
+
+  it('retries retained rows after a failed write and makes the next identical read local', async () => {
+    const db = await getDb();
+    const originalTransaction = db.withTransactionAsync.bind(db);
+    let navWriteAttempt = 0;
+    db.withTransactionAsync = async (task) => {
+      navWriteAttempt += 1;
+      if (navWriteAttempt === 1) throw new Error('injected timeline repair failure');
+      await originalTransaction(task);
+    };
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const first = await fetchInvestmentVsBenchmarkTimeline(
+      [FUND],
+      'user-1',
+      '^NSEI',
+      'All',
+    );
+    const second = await fetchInvestmentVsBenchmarkTimeline(
+      [FUND],
+      'user-1',
+      '^NSEI',
+      'All',
+    );
+
+    expect(first.points).toHaveLength(2);
+    expect(second).toEqual(first);
+    expect(navWriteAttempt).toBe(2);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(await navRepo.readBySchemeCode(100)).toHaveLength(2);
+    expect(warn).toHaveBeenCalledWith(
+      '[timeline] sqlite nav repair retrying',
+      { error: 'injected timeline repair failure' },
+    );
+    expect(warn.mock.calls.flat().join(' ')).not.toMatch(
+      /cannot start a transaction within a transaction|cannot rollback - no transaction is active/,
+    );
+    warn.mockRestore();
+  });
+
+  it('propagates the final repair failure instead of reporting an unrepaired query', async () => {
+    const db = await getDb();
+    let navWriteAttempt = 0;
+    db.withTransactionAsync = async () => {
+      navWriteAttempt += 1;
+      throw new Error(`injected timeline repair failure ${navWriteAttempt}`);
+    };
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(fetchInvestmentVsBenchmarkTimeline(
+      [FUND],
+      'user-1',
+      '^NSEI',
+      'All',
+    )).rejects.toThrow('injected timeline repair failure 2');
+
+    expect(navWriteAttempt).toBe(2);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(await navRepo.readBySchemeCode(100)).toEqual([]);
+    warn.mockRestore();
   });
 });

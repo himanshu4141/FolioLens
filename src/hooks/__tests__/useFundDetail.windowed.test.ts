@@ -68,9 +68,9 @@ function makeNavQueryChain(rows: typeof SAMPLE_ROWS) {
   return { chain, calls };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetAllForTests();
-  __setDbForTests(null); // force SQLite-unavailable so reads fall through to Supabase
+  await __setDbForTests(null); // force empty SQLite so reads fall through to Supabase
 });
 
 afterEach(() => {

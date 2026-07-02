@@ -15,6 +15,11 @@ import { fetchIndexHistory } from '@/src/hooks/useIndexSnapshot';
 import * as navRepo from '@/src/lib/db/nav';
 import * as txRepo from '@/src/lib/db/tx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import {
+  captureDatabaseWriteScope,
+  isStaleDatabaseWriteError,
+  type DatabaseWriteScope,
+} from '@/src/lib/db/db';
 
 /**
  * React Query key prefixes whose contents this hook's queryFn reads
@@ -301,6 +306,7 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   window: TimeWindow,
 ): Promise<{ points: InvestmentVsBenchmarkPoint[]; xAxisLabels: string[] }> {
   const timelineSpanId = perfStart('query:timeline');
+  const writeScope = captureDatabaseWriteScope();
   const fundIds = funds.map((fund) => fund.id);
   const schemeCodes = funds.map((fund) => fund.schemeCode);
 
@@ -329,7 +335,7 @@ export async function fetchInvestmentVsBenchmarkTimeline(
   const navSpanId = perfStart('query:timeline:nav');
   const indexSpanId = perfStart('query:timeline:index');
   const [navRows, idxRows] = await Promise.all([
-    fetchAllNavRows(schemeCodes, navStartDate).then((rows) => {
+    fetchAllNavRows(schemeCodes, navStartDate, writeScope).then((rows) => {
       perfEnd(navSpanId, { rows: rows.length, since: navStartDate });
       return rows;
     }),
@@ -393,7 +399,44 @@ async function fetchAllTransactions(userId: string, fundIds: string[]): Promise<
   return rows;
 }
 
-async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promise<RawNavRow[]> {
+export async function repairTimelineNavCache(
+  rows: RawNavRow[],
+  writeScope: DatabaseWriteScope = captureDatabaseWriteScope(),
+): Promise<void> {
+  const cacheRows = rows.map((row) => ({
+    scheme_code: row.scheme_code,
+    nav_date: row.nav_date,
+    nav: row.nav,
+  }));
+
+  try {
+    await navRepo.bulkInsert(cacheRows, {
+      scope: writeScope,
+      operation: 'timeline_nav_repair',
+      attempt: 1,
+    });
+  } catch (error) {
+    // Cleanup invalidation is intentional cancellation, not a transient
+    // SQLite failure. Retrying the same stale scope cannot be correct.
+    if (isStaleDatabaseWriteError(error)) throw error;
+    console.warn('[timeline] sqlite nav repair retrying', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Retain and reuse the rows fetched by this query. A queue rejection
+    // must not force another paginated network read merely to repair SQLite.
+    await navRepo.bulkInsert(cacheRows, {
+      scope: writeScope,
+      operation: 'timeline_nav_repair_retry',
+      attempt: 2,
+    });
+  }
+}
+
+async function fetchAllNavRows(
+  schemeCodes: number[],
+  startDate: string,
+  writeScope: DatabaseWriteScope,
+): Promise<RawNavRow[]> {
   if (schemeCodes.length === 0) return [];
 
   if (SQLITE_AVAILABLE) {
@@ -444,9 +487,7 @@ async function fetchAllNavRows(schemeCodes: number[], startDate: string): Promis
   }
 
   if (SQLITE_AVAILABLE && rows.length > 0) {
-    navRepo.bulkInsert(rows.map((r) => ({ scheme_code: r.scheme_code, nav_date: r.nav_date, nav: r.nav }))).catch(
-      (err) => console.warn('[timeline] sqlite nav write-back failed', err),
-    );
+    await repairTimelineNavCache(rows, writeScope);
   }
 
   return rows;

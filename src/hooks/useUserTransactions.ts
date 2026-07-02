@@ -24,6 +24,7 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import * as txRepo from '@/src/lib/db/tx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
+import { captureDatabaseWriteScope } from '@/src/lib/db/db';
 
 export interface UserTransactionRow {
   // PK columns Portfolio / Fund Detail / xirr math need.
@@ -120,6 +121,7 @@ export async function countUserTransactionsRemote(userId: string): Promise<numbe
 
 export async function fetchUserTransactions(userId: string): Promise<UserTransactionRow[]> {
   const transactionsSpanId = perfStart('query:userTransactions');
+  const writeScope = captureDatabaseWriteScope();
   if (SQLITE_AVAILABLE) {
     try {
       const local = await txRepo.readAll();
@@ -138,7 +140,10 @@ export async function fetchUserTransactions(userId: string): Promise<UserTransac
   const fresh = await fetchUserTransactionsRemote(userId);
   if (fresh.length > 0 && SQLITE_AVAILABLE) {
     try {
-      await txRepo.bulkInsert(fresh);
+      await txRepo.bulkInsert(fresh, {
+        scope: writeScope,
+        operation: 'transactions_read_through_write_back',
+      });
     } catch (err) {
       console.warn('[useUserTransactions] sqlite write failed', err);
     }

@@ -43,9 +43,9 @@ const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
 // test so rows written in one test don't leak into the next. The
 // fetcher paths fall through to Supabase when SQLite is empty, which
 // matches the cold-start contract the production code relies on.
-beforeEach(() => {
+beforeEach(async () => {
   __resetAllForTests();
-  __setDbForTests(null);
+  await __setDbForTests(null);
 });
 
 // Stand-in QueryClient that just runs the queryFn — the real client would

@@ -21,6 +21,7 @@
  * the source of truth and a re-bootstrap rebuilds it.
  */
 import * as SQLite from 'expo-sqlite';
+import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
 // v2 (2026-05-12): widen `tx` to mirror the 10 columns now returned by
 // `fetchUserTransactions` (PR #142). The v1 schema stored only the 5 PK
@@ -32,6 +33,150 @@ export const SCHEMA_VERSION = 2;
 export const DB_NAME = 'foliolens.db';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
+/**
+ * Token captured by an async flow before it performs remote work that may
+ * later write into SQLite. Cleanup advances the generation synchronously;
+ * an older flow can still finish its network request, but its queued write
+ * rejects before touching the new user's/reset cache.
+ */
+export interface DatabaseWriteScope {
+  readonly generation: number;
+}
+
+export interface SerializedDatabaseWriteOptions {
+  scope?: DatabaseWriteScope;
+  attempt?: number;
+  operation?: string;
+}
+
+export class StaleDatabaseWriteError extends Error {
+  constructor(operation: string) {
+    super(`SQLite write "${operation}" belongs to an invalidated cache lifecycle`);
+    this.name = 'StaleDatabaseWriteError';
+  }
+}
+
+let writeGeneration = 0;
+let writeQueueTail: Promise<void> = Promise.resolve();
+let queuedWriteCount = 0;
+
+export function captureDatabaseWriteScope(): DatabaseWriteScope {
+  return { generation: writeGeneration };
+}
+
+export function isStaleDatabaseWriteError(error: unknown): error is StaleDatabaseWriteError {
+  return error instanceof StaleDatabaseWriteError;
+}
+
+/**
+ * One FIFO for every write using the singleton connection. The stored tail
+ * always recovers so a rejected entry cannot poison later work; callers await
+ * the unrecovered entry promise and therefore still receive the original
+ * error. Queue callbacks contain direct SQLite statements only — they never
+ * call another public queued repository method, avoiding re-entrant waits.
+ */
+function enqueueSerializedDatabaseOperation<T>(
+  operation: string,
+  task: () => Promise<T>,
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<T> {
+  const scope = options.scope ?? captureDatabaseWriteScope();
+  const depthAtEnqueue = ++queuedWriteCount;
+  const waitSpanId = perfStart('db:write_queue_wait');
+
+  const entry = writeQueueTail.then(async () => {
+    queuedWriteCount -= 1;
+    perfEnd(waitSpanId, {
+      operation,
+      queue_depth: depthAtEnqueue,
+      attempt: options.attempt ?? 1,
+    });
+
+    const writeSpanId = perfStart('db:write');
+    if (scope.generation !== writeGeneration) {
+      perfEnd(writeSpanId, {
+        operation,
+        status: 'stale',
+        attempt: options.attempt ?? 1,
+      });
+      throw new StaleDatabaseWriteError(operation);
+    }
+
+    try {
+      const result = await task();
+      perfEnd(writeSpanId, {
+        operation,
+        status: 'ok',
+        attempt: options.attempt ?? 1,
+      });
+      return result;
+    } catch (error) {
+      perfEnd(writeSpanId, {
+        operation,
+        status: 'error',
+        attempt: options.attempt ?? 1,
+      });
+      throw error;
+    }
+  });
+
+  writeQueueTail = entry.then(
+    () => undefined,
+    () => undefined,
+  );
+  return entry;
+}
+
+export function runSerializedDatabaseWrite<T>(
+  operation: string,
+  task: (db: SQLite.SQLiteDatabase) => Promise<T>,
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<T> {
+  return enqueueSerializedDatabaseOperation(
+    operation,
+    async () => task(await getDb()),
+    options,
+  );
+}
+
+export function runSerializedDatabaseTransaction<T>(
+  operation: string,
+  task: (db: SQLite.SQLiteDatabase) => Promise<T>,
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<T> {
+  return runSerializedDatabaseWrite(
+    operation,
+    async (db) => {
+      let result: T | undefined;
+      await db.withTransactionAsync(async () => {
+        result = await task(db);
+      });
+      return result as T;
+    },
+    options,
+  );
+}
+
+/**
+ * Advance the lifecycle before queueing cleanup. Active work finishes first;
+ * queued or later-arriving work holding an older scope rejects without I/O.
+ * Because this function enqueues synchronously before returning, new-scope
+ * writes called afterward are ordered behind the lifecycle operation.
+ */
+export function runSerializedDatabaseLifecycle<T>(
+  operation: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  writeGeneration += 1;
+  return enqueueSerializedDatabaseOperation(operation, task, {
+    scope: captureDatabaseWriteScope(),
+  });
+}
+
+export async function waitForSerializedDatabaseWrites(): Promise<void> {
+  await writeQueueTail;
+}
 
 const DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS tx (
@@ -120,13 +265,15 @@ export function getDb(): Promise<SQLite.SQLiteDatabase> {
  * mismatches what we expect.
  */
 export async function dropAndRecreate(): Promise<void> {
-  const db = await getDb();
-  await dropAllTables(db);
-  for (const stmt of DDL) await db.execAsync(stmt);
-  await db.runAsync(
-    'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
-    ['schema_version', String(SCHEMA_VERSION)],
-  );
+  await runSerializedDatabaseLifecycle('database_drop_and_recreate', async () => {
+    const db = await getDb();
+    await dropAllTables(db);
+    for (const stmt of DDL) await db.execAsync(stmt);
+    await db.runAsync(
+      'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+      ['schema_version', String(SCHEMA_VERSION)],
+    );
+  });
 }
 
 /**
@@ -135,6 +282,10 @@ export async function dropAndRecreate(): Promise<void> {
  * disk. Pass `null` to reset and let the next call to `getDb()` reopen
  * from `DB_NAME`.
  */
-export function __setDbForTests(promise: Promise<SQLite.SQLiteDatabase> | null): void {
-  dbPromise = promise;
+export async function __setDbForTests(
+  promise: Promise<SQLite.SQLiteDatabase> | null,
+): Promise<void> {
+  await runSerializedDatabaseLifecycle('database_test_reset', async () => {
+    dbPromise = promise;
+  });
 }
