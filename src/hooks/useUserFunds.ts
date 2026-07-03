@@ -50,12 +50,12 @@ export async function fetchUserFunds(userId: string): Promise<UserFundRow[]> {
   return (data ?? []) as UserFundRow[];
 }
 
-export function useUserFunds() {
+export function useUserFunds(options: { enabled?: boolean } = {}) {
   const { session } = useSession();
   const userId = session?.user.id;
   return useQuery({
     queryKey: ['user-funds', userId],
-    enabled: !!userId,
+    enabled: (options.enabled ?? true) && !!userId,
     queryFn: () => fetchUserFunds(userId!),
     staleTime: STALE_TIMES.USER_FUNDS,
   });

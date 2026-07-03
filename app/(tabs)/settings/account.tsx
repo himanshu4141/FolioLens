@@ -9,7 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import { authClient } from '@/src/lib/auth';
@@ -40,6 +40,7 @@ function formatDob(iso: string): string {
 
 export default function AccountScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const gatePreview = useImportPreviewGate();
   const goToIdentity = () => {
     if (gatePreview()) return;
@@ -66,7 +67,7 @@ export default function AccountScreen() {
   // user-feedback table as feature requests / bug reports.
   const [correctionField, setCorrectionField] = useState<'pan' | 'dob' | null>(null);
 
-  const { data: profile, isLoading } = useUserProfile(userId);
+  const { data: profile, isLoading } = useUserProfile(userId, { enabled: isFocused });
 
   async function handleLinkGoogle() {
     setLinkError(null);

@@ -194,6 +194,7 @@ function PerformanceTab({
     userId,
     selectedSymbol,
     window,
+    { enabled: isFocused },
   );
   // Track crosshair position so the return summary below the chart stays in sync.
   // null = no active crosshair (show end-of-period values).
@@ -222,6 +223,7 @@ function PerformanceTab({
     // SELECT on miss. Same `{ date, value }[]` shape either way.
     queryKey: ['fund-detail-index', selectedSymbol],
     queryFn: () => fetchIndexHistory(selectedSymbol),
+    enabled: isFocused,
     staleTime: 5 * 60_000,
   });
 
@@ -1610,12 +1612,18 @@ function makeDonutStyles(colors: ClearLensCompatibleTokens) {
 // Fund Composition Tab
 // ---------------------------------------------------------------------------
 
-function FundCompositionTab({ schemeCode }: { schemeCode: number }) {
+function FundCompositionTab({
+  schemeCode,
+  isFocused,
+}: {
+  schemeCode: number;
+  isFocused: boolean;
+}) {
   const { compatible: colors } = useClearLensTokens();
   const tokens = useClearLensTokens();
   const s = useMemo(() => makeStyles(colors), [colors]);
   const cs = useMemo(() => makeCompStyles(colors), [colors]);
-  const { composition, isLoading } = useFundComposition(schemeCode);
+  const { composition, isLoading } = useFundComposition(schemeCode, { enabled: isFocused });
   const compAssetColors = useMemo(
     () => ({
       equity: tokens.semantic.asset.equity,
@@ -1912,12 +1920,12 @@ function ClearLensFundDetailScreen() {
   const router = useRouter();
   const isFocused = useIsFocused();
   const [activeTab, setActiveTab] = useState<ClearLensFundTab>('performance');
-  const { data, isLoading, isError } = useFundDetail(id);
+  const { data, isLoading, isError } = useFundDetail(id, { enabled: isFocused });
   // Full NAV history is fetched in parallel as a background query. The
   // header card / metadata / XIRR render off `data` (small fetch), and
   // the charts gate on `navHistory.length > 1` so they show their own
   // empty/skeleton state until the paginated history arrives.
-  const { data: navHistoryFull } = useFundNavHistory(data?.schemeCode);
+  const { data: navHistoryFull } = useFundNavHistory(data?.schemeCode, { enabled: isFocused });
   const navHistory = navHistoryFull ?? data?.navHistory ?? [];
   // See ClearLensPortfolioScreen for rationale — `useIsRestoring` keeps
   // the "Couldn't load fund data" / spinner branches from racing the
@@ -2143,7 +2151,7 @@ function ClearLensFundDetailScreen() {
 
         {activeTab === 'composition' && (
           <>
-            <FundCompositionTab schemeCode={data.schemeCode} />
+            <FundCompositionTab schemeCode={data.schemeCode} isFocused={isFocused} />
             <PortfolioHealthDonut
               fundId={data.id}
               currentValue={data.currentValue}

@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { ClearLensCard } from '@/src/components/clearLens/ClearLensPrimitives';
 import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
@@ -58,6 +58,7 @@ export function ClearLensFundsScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const queryClient = useQueryClient();
   const {
     defaultBenchmarkSymbol,
@@ -68,10 +69,10 @@ export function ClearLensFundsScreenDesktop() {
     previewMode,
   } = useAppStore();
 
-  const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
+  const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol, { enabled: isFocused });
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
-  const { insights } = usePortfolioInsights(fundCards);
+  const { insights } = usePortfolioInsights(fundCards, { enabled: isFocused });
   const benchmarkXirr = summary?.marketXirr ?? 0;
 
   const allocationPctByFundId = useMemo(() => {

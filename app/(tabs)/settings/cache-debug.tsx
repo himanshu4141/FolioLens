@@ -27,7 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useQuery } from '@tanstack/react-query';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserFunds } from '@/src/hooks/useUserFunds';
 import { useAppStore } from '@/src/store/appStore';
@@ -85,6 +85,7 @@ export default function CacheDebugScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { session } = useSession();
   const userId = session?.user.id ?? null;
   const debugUnlocked = useAppStore((s) => s.debugUnlocked);
@@ -92,11 +93,11 @@ export default function CacheDebugScreen() {
 
   // Pull fund metadata so the per-scheme NAV breakdown can label
   // rows with the scheme name instead of bare scheme codes.
-  const { data: funds } = useUserFunds();
+  const { data: funds } = useUserFunds({ enabled: isFocused });
 
   const snapshotQuery = useQuery({
     queryKey: ['cache-debug-snapshot', userId, funds?.length ?? 0],
-    enabled: debugSupported && debugUnlocked && !!userId,
+    enabled: isFocused && debugSupported && debugUnlocked && !!userId,
     queryFn: () => snapshotCache(userId!, funds ?? []),
     staleTime: 0,
   });
@@ -216,7 +217,7 @@ export default function CacheDebugScreen() {
               <IdxCard snap={snap.idx} styles={styles} />
               <SyncStateCard rows={snap.syncState} styles={styles} />
               <PersisterCard snap={snap.persister} styles={styles} tokens={tokens} />
-              <AsyncStorageCard styles={styles} />
+              <AsyncStorageCard styles={styles} enabled={isFocused} />
               <ZustandCard styles={styles} />
             </>
           )}
@@ -391,12 +392,13 @@ function PersisterCard({
   );
 }
 
-function AsyncStorageCard({ styles }: { styles: Styles }) {
+function AsyncStorageCard({ styles, enabled }: { styles: Styles; enabled: boolean }) {
   // Presence-only — never read these. The Supabase session token and
   // the onboarding draft both contain PII; this card's only job is
   // to confirm whether they exist on device.
   const presence = useQuery({
     queryKey: ['async-storage-presence'],
+    enabled,
     queryFn: async () => {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
       const projectRef = supabaseUrl.match(/https:\/\/([a-z0-9]+)\./)?.[1] ?? '?';

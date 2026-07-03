@@ -76,6 +76,8 @@ interface SelectedFamily {
 
 export interface UniversalFundPickerProps {
   visible: boolean;
+  /** Disable every picker-owned query while its parent route is hidden. */
+  enabled?: boolean;
   /** Currently-selected scheme codes. Used to initialize multi-mode state. */
   selectedCodes: number[];
   /** Selection mode. 'single' auto-closes the sheet on pick. */
@@ -405,6 +407,7 @@ function cycleOverride(
 
 export function UniversalFundPicker({
   visible,
+  enabled = true,
   selectedCodes,
   mode,
   maxFunds,
@@ -488,6 +491,7 @@ export function UniversalFundPicker({
   const syncFromSelectedCodesQuery = useQuery({
     queryKey: ['universal-picker:sync-families', selectedCodes.slice().sort().join(',')],
     enabled:
+      enabled &&
       visible &&
       mode === 'multi' &&
       selectedCodes.length > 0 &&
@@ -541,7 +545,7 @@ export function UniversalFundPicker({
 
   const familyPlansQuery = useQuery({
     queryKey: ['universal-picker:family-plans', pendingFamilyForPlans?.ofFamilyId ?? ''],
-    enabled: !!pendingFamilyForPlans,
+    enabled: enabled && !!pendingFamilyForPlans,
     queryFn: () => fetchFamilyPlans(pendingFamilyForPlans!.ofFamilyId),
     staleTime: 5 * 60_000,
   });
@@ -568,14 +572,14 @@ export function UniversalFundPicker({
 
   const yourFamiliesQuery = useQuery({
     queryKey: ['universal-picker:your-families', userId],
-    enabled: !!userId && visible && mode === 'multi',
+    enabled: enabled && !!userId && visible && mode === 'multi',
     queryFn: () => (userId ? fetchUserHeldFamilies(userId) : Promise.resolve([] as FamilySearchResult[])),
     staleTime: 5 * 60_000,
   });
 
   const yourFundsQuery = useQuery({
     queryKey: ['universal-picker:your-funds', userId],
-    enabled: !!userId && visible && mode === 'single',
+    enabled: enabled && !!userId && visible && mode === 'single',
     queryFn: () => (userId ? fetchUserHeldSchemes(userId) : Promise.resolve([] as SchemeSearchResult[])),
     staleTime: 5 * 60_000,
   });
@@ -586,7 +590,7 @@ export function UniversalFundPicker({
 
   const familySearchQuery = useQuery({
     queryKey: ['universal-picker:family-search', debouncedQuery, page],
-    enabled: visible && mode === 'multi',
+    enabled: enabled && visible && mode === 'multi',
     queryFn: () => searchFamilies({ query: debouncedQuery, offset: page * PAGE_SIZE, limit: PAGE_SIZE }),
     staleTime: 60_000,
     placeholderData: (prev) => prev,
@@ -594,7 +598,7 @@ export function UniversalFundPicker({
 
   const schemeSearchQuery = useQuery({
     queryKey: ['universal-picker:search', debouncedQuery, page],
-    enabled: visible && mode === 'single',
+    enabled: enabled && visible && mode === 'single',
     queryFn: () => searchSchemes({ query: debouncedQuery, offset: page * PAGE_SIZE, limit: PAGE_SIZE }),
     staleTime: 60_000,
     placeholderData: (prev) => prev,

@@ -7,7 +7,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
@@ -84,6 +84,7 @@ function HubRow({ icon, title, subtitle, statusLabel, statusColor, onPress, isLa
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeHubStyles(tokens), [tokens]);
   const cl = tokens.colors;
@@ -101,6 +102,7 @@ export default function SettingsScreen() {
       return data?.nav_date as string | null ?? null;
     },
     staleTime: 10 * 60 * 1000,
+    enabled: isFocused,
   });
 
   const navBadge = navStatusBadge(latestNavRow, cl);

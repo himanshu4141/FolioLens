@@ -21,7 +21,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -660,6 +660,7 @@ function NoFundsState({ tokens }: { tokens: ClearLensTokens }) {
 export function ClearLensDirectVsRegularScreen() {
   useTrackInsightViewed('direct_vs_regular');
   const router = useRouter();
+  const isFocused = useIsFocused();
   const tokens = useClearLensTokens();
   const cl = tokens.colors;
   const { session } = useSession();
@@ -679,7 +680,7 @@ export function ClearLensDirectVsRegularScreen() {
   const fundsQuery = useQuery({
     queryKey: ['dvr-funds', userId],
     queryFn: () => fetchDvrData(userId!, queryClient),
-    enabled: !previewMode && !!userId,
+    enabled: isFocused && !previewMode && !!userId,
     staleTime: 60_000,
   });
 

@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
@@ -86,6 +86,7 @@ async function fetchLastImport(userId: string): Promise<LastImport | null> {
 
 export default function PortfolioImportScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const gatePreview = useImportPreviewGate();
   const { session } = useSession();
   const userId = session?.user.id;
@@ -94,12 +95,14 @@ export default function PortfolioImportScreen() {
   const cl = tokens.colors;
   const [copied, setCopied] = useState(false);
 
-  const { data: profile, isLoading: profileLoading } = useUserProfile(userId);
+  const { data: profile, isLoading: profileLoading } = useUserProfile(userId, {
+    enabled: isFocused,
+  });
 
   const { data: lastImport } = useQuery({
     queryKey: ['last-cas-import', userId],
     queryFn: () => fetchLastImport(userId!),
-    enabled: !!userId,
+    enabled: isFocused && !!userId,
   });
 
   const inboxAddress = useMemo(() => {

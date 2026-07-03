@@ -280,7 +280,10 @@ export function computeInsights(
 // Hook
 // ---------------------------------------------------------------------------
 
-export function usePortfolioInsights(fundCards: FundCardData[]) {
+export function usePortfolioInsights(
+  fundCards: FundCardData[],
+  options: { enabled?: boolean } = {},
+) {
   const queryClient = useQueryClient();
   const previewMode = useAppStore((s) => s.previewMode);
   const schemeCodes = [...new Set(fundCards.map((f) => f.schemeCode))];
@@ -318,7 +321,7 @@ export function usePortfolioInsights(fundCards: FundCardData[]) {
       }
       return rows;
     },
-    enabled: schemeCodes.length > 0,
+    enabled: (options.enabled ?? true) && schemeCodes.length > 0,
     staleTime: STALE_TIMES.PORTFOLIO_COMPOSITION,
     gcTime: PERSIST_MAX_AGE_MS,
   });

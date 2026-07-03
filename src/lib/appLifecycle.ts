@@ -37,7 +37,7 @@ export interface AppLifecycleDependencies<TSyncResult> {
   didSyncChangeData: (result: TSyncResult) => boolean;
   clearLocalDb: () => Promise<void>;
   clearQueryClient: () => void;
-  invalidateQueries: () => Promise<unknown> | unknown;
+  invalidateQueries: (result: TSyncResult) => Promise<unknown> | unknown;
   removePersistedClient: () => Promise<unknown> | unknown;
   resetUserScopedState: () => void;
   clearOnboardingDraft: () => Promise<void>;
@@ -115,7 +115,7 @@ export function startAppLifecycle<TSyncResult>(
 
         const result = await dependencies.bootstrapForUser(userId);
         if (dependencies.didSyncChangeData(result)) {
-          void dependencies.invalidateQueries();
+          void dependencies.invalidateQueries(result);
         }
       } catch (error) {
         dependencies.warn('[db/sync] bootstrap failed', error);
@@ -186,7 +186,7 @@ export function startAppLifecycle<TSyncResult>(
             dependencies.syncDeltaForUser(userId)
               .then((result) => {
                 if (dependencies.didSyncChangeData(result)) {
-                  void dependencies.invalidateQueries();
+                  void dependencies.invalidateQueries(result);
                 }
               })
               .catch((error) => {

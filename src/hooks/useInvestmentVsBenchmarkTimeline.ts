@@ -37,9 +37,9 @@ import {
  * disagrees with Portfolio.
  *
  * Today the existing write paths are well-covered:
- * - `app/_layout.tsx` foreground delta sync calls
- *   `queryClient.invalidateQueries()` (full nuke) when SQLite delta
- *   detects new rows — covers CAS imports + cron-pushed NAV ticks.
+ * - `app/_layout.tsx` maps foreground SQLite changes through
+ *   `src/lib/syncInvalidation.ts`, which marks this input and output
+ *   stale without waking hidden screens.
  * - `app/(tabs)/settings/data-sync.tsx` manual refresh explicitly
  *   invalidates both `'investmentVsBenchmarkTimeline'` and the N2T
  *   `INVESTMENT_TIMELINE_INPUT_QUERY_KEY` along with the other derived
@@ -850,12 +850,13 @@ export function useInvestmentVsBenchmarkTimeline(
   userId: string | undefined,
   benchmarkSymbol: string,
   window: TimeWindow,
+  options: { enabled?: boolean } = {},
 ): InvestmentVsBenchmarkTimeline {
   const queryClient = useQueryClient();
   const fundKey = timelineOutputFundKey(funds);
   const { data, isLoading, error } = useQuery({
     queryKey: ['investmentVsBenchmarkTimeline', userId, fundKey, benchmarkSymbol, window],
-    enabled: funds.length > 0 && !!userId,
+    enabled: (options.enabled ?? true) && funds.length > 0 && !!userId,
     queryFn: () =>
       fetchInvestmentVsBenchmarkTimeline(funds, userId!, benchmarkSymbol, window, queryClient),
     staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,

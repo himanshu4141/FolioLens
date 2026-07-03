@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsRestoring } from '@tanstack/react-query';
 import {
@@ -806,6 +806,7 @@ export default function MoneyTrailScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const isDesktop = useIsDesktop();
   const params = useLocalSearchParams<{ fundId?: string }>();
   const requestedFundId = typeof params.fundId === 'string' ? params.fundId : undefined;
@@ -823,7 +824,7 @@ export default function MoneyTrailScreen() {
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
-  const { data, isLoading, isError, refetch } = useMoneyTrail();
+  const { data, isLoading, isError, refetch } = useMoneyTrail({ enabled: isFocused });
   // `useIsRestoring` is true while the `PersistQueryClientProvider`
   // rehydrates the cache from AsyncStorage. During that window React
   // Query pauses fetching, so `isLoading` is false even though we

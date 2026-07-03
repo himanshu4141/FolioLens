@@ -19,7 +19,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
@@ -2069,6 +2069,7 @@ function BasicsCard({
 export function ClearLensCompareFundsScreen() {
   useTrackInsightViewed('compare_funds');
   const router = useRouter();
+  const isFocused = useIsFocused();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { session } = useSession();
@@ -2097,6 +2098,7 @@ export function ClearLensCompareFundsScreen() {
     queries: selectedCodes.flatMap((code) => [
       {
         queryKey: ['compare:hydrate-snapshot', code],
+        enabled: isFocused,
         queryFn: async () => {
           const snapshotSpanId = perfStart(`hydrate:snapshot:${code}`);
           // ── Gate: skip edge-function round-trip when scheme_master is populated
@@ -2147,6 +2149,7 @@ export function ClearLensCompareFundsScreen() {
       },
       {
         queryKey: ['compare:hydrate-nav', code],
+        enabled: isFocused,
         queryFn: async () => {
           const navSpanId = perfStart(`hydrate:nav:${code}`);
           // ── Gate: skip edge-function round-trip when SQLite series is fresh ──
@@ -2203,19 +2206,19 @@ export function ClearLensCompareFundsScreen() {
 
   const schemesQuery = useQuery({
     queryKey: ['compare:schemes', selectedCodes],
-    enabled: selectedCodes.length > 0,
+    enabled: isFocused && selectedCodes.length > 0,
     queryFn: () => fetchSchemes(queryClient, selectedCodes),
     staleTime: 60 * 1000,
   });
   const compositionsQuery = useQuery({
     queryKey: ['compare:compositions', selectedCodes],
-    enabled: selectedCodes.length > 0,
+    enabled: isFocused && selectedCodes.length > 0,
     queryFn: () => fetchCompositionsForCodes(selectedCodes),
     staleTime: 5 * 60 * 1000,
   });
   const navHistoryQuery = useQuery({
     queryKey: ['compare:navhistory', selectedCodes],
-    enabled: selectedCodes.length > 0,
+    enabled: isFocused && selectedCodes.length > 0,
     queryFn: () => fetchNavHistoryForCompare(queryClient, selectedCodes),
     staleTime: 5 * 60 * 1000,
   });
@@ -2499,6 +2502,7 @@ export function ClearLensCompareFundsScreen() {
 
       <UniversalFundPicker
         visible={pickerOpen}
+        enabled={isFocused}
         selectedCodes={selectedCodes}
         mode="multi"
         maxFunds={MAX_FUNDS}

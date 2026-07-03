@@ -5,10 +5,10 @@
  * `usePortfolio`'s 28k-row computation.
  *
  * Web has no SQLite — returns null there, callers should fall back to
- * `usePortfolio().summary.latestNavDate` if they need the stamp on web.
+ * the Portfolio summary's `latestNavDate` if they need the stamp on web.
  *
- * Invalidated by `queryClient.invalidateQueries()` in the foreground /
- * pull-to-refresh handlers, same as every other read.
+ * Invalidated by the NAV-specific lifecycle prefix on foreground sync and
+ * by the explicit pull-to-refresh handlers.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from '@/src/hooks/useSession';

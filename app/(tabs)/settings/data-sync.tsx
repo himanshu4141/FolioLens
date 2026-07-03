@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { transactionRepo } from '@/src/lib/data/transaction';
@@ -39,6 +39,7 @@ export default function DataSyncScreen() {
   const colors = tokens.colors;
   const queryClient = useQueryClient();
   const router = useRouter();
+  const isFocused = useIsFocused();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
   // `useIsRestoring` returns true while the React Query persister is
@@ -62,6 +63,7 @@ export default function DataSyncScreen() {
       return data?.nav_date as string | null ?? null;
     },
     staleTime: 10 * 60 * 1000,
+    enabled: isFocused,
   });
 
   // Hide the real value behind the same `'—'` placeholder both server-
@@ -101,13 +103,13 @@ export default function DataSyncScreen() {
 
   const { data: localTxCount } = useQuery({
     queryKey: ['debug-local-tx-count'],
-    enabled: localCacheEnabled,
+    enabled: isFocused && localCacheEnabled,
     queryFn: () => txRepo.count().catch(() => null as number | null),
     staleTime: 0,
   });
   const { data: serverTxCount } = useQuery({
     queryKey: ['debug-server-tx-count', userId],
-    enabled: localCacheEnabled && !!userId,
+    enabled: isFocused && localCacheEnabled && !!userId,
     queryFn: async () => {
       const { count, error } = await transactionRepo
         .from()

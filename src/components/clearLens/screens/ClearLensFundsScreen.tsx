@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Polygon, Polyline } from 'react-native-svg';
 import { AppOverflowMenu } from '@/src/components/AppOverflowMenu';
@@ -460,6 +460,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
@@ -477,11 +478,11 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const [expandedFundId, setExpandedFundId] = useState<string | null>(null);
   const didAutoExpand = useRef(false);
 
-  const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol);
+  const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol, { enabled: isFocused });
   const queryClient = useQueryClient();
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
-  const { insights } = usePortfolioInsights(fundCards);
+  const { insights } = usePortfolioInsights(fundCards, { enabled: isFocused });
 
   const allocationPctByFundId = useMemo(() => {
     const map = new Map<string, number>();
