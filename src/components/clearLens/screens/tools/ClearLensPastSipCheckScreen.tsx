@@ -23,7 +23,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
@@ -166,6 +166,7 @@ async function ensureNavCached(schemeCode: number): Promise<{ status: string }> 
 export function ClearLensPastSipCheckScreen() {
   useTrackInsightViewed('past_sip_check');
   const router = useRouter();
+  const isFocused = useIsFocused();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const { width: windowWidth } = useWindowDimensions();
@@ -221,7 +222,7 @@ export function ClearLensPastSipCheckScreen() {
   const userHeldQuery = useQuery({
     queryKey: ['past-sip-check:user-held-seed', userId],
     queryFn: () => (userId ? fetchUserHeldSchemes(userId) : Promise.resolve([] as SchemeSearchResult[])),
-    enabled: !!userId,
+    enabled: isFocused && !!userId,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -244,7 +245,7 @@ export function ClearLensPastSipCheckScreen() {
   // function is a no-op when the cache is fresh.
   const navBackfillQuery = useQuery({
     queryKey: ['past-sip-check:nav-backfill', selectedScheme?.schemeCode],
-    enabled: !!selectedScheme,
+    enabled: isFocused && !!selectedScheme,
     queryFn: () => (selectedScheme ? ensureNavCached(selectedScheme.schemeCode) : Promise.resolve({ status: 'noop' })),
     staleTime: 5 * 60 * 1000,
   });
@@ -253,7 +254,7 @@ export function ClearLensPastSipCheckScreen() {
   // after the backfill completes (queryKey depends on backfill status).
   const fundNavQuery = useQuery({
     queryKey: ['past-sip-check:fund-nav', selectedScheme?.schemeCode, navBackfillQuery.data?.status],
-    enabled: !!selectedScheme && !!navBackfillQuery.data,
+    enabled: isFocused && !!selectedScheme && !!navBackfillQuery.data,
     queryFn: () => (selectedScheme ? fetchNavSeries(selectedScheme.schemeCode) : Promise.resolve([])),
     staleTime: 60_000,
   });
@@ -263,6 +264,7 @@ export function ClearLensPastSipCheckScreen() {
   // already covers our supported indices.
   const benchmarkTimelineQuery = useQuery({
     queryKey: ['past-sip-check:benchmark', benchmarkSymbol],
+    enabled: isFocused,
     queryFn: () =>
       fetchPerformanceTimeline([], [{ symbol: benchmarkSymbol, name: benchmarkLabel }]),
     staleTime: 5 * 60 * 1000,
@@ -511,6 +513,7 @@ export function ClearLensPastSipCheckScreen() {
 
       <UniversalFundPicker
         visible={pickerOpen}
+        enabled={isFocused}
         selectedCodes={selectedScheme ? [selectedScheme.schemeCode] : []}
         mode="single"
         onToggle={(scheme) => {

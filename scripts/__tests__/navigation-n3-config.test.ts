@@ -29,6 +29,9 @@ describe('N3 navigation configuration', () => {
     expect(source('app/(tabs)/settings/_layout.tsx')).toContain(
       'screenOptions={{ headerShown: false, freezeOnBlur: true }}',
     );
+    expect(source('app/tools/_layout.tsx')).toContain(
+      'screenOptions={{ headerShown: false, freezeOnBlur: true }}',
+    );
   });
 
   it('requires an explicit portfolio benchmark and uses the stored TRI choice in Wealth Journey', () => {
@@ -58,6 +61,9 @@ describe('N3 navigation configuration', () => {
       'app/(tabs)/settings/data-sync.tsx',
       'app/(tabs)/settings/portfolio-import.tsx',
       'app/fund/[id].tsx',
+      'src/components/clearLens/screens/tools/ClearLensCompareFundsScreen.tsx',
+      'src/components/clearLens/screens/tools/ClearLensDirectVsRegularScreen.tsx',
+      'src/components/clearLens/screens/tools/ClearLensPastSipCheckScreen.tsx',
     ];
 
     for (const file of files) {

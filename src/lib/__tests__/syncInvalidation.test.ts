@@ -47,6 +47,10 @@ describe('syncInvalidationPrefixes', () => {
       'investmentVsBenchmarkTimeline',
       'portfolioTimeline',
       'performance-timeline',
+      'dvr-funds',
+      'fund-nav-history-compare',
+      'compare:navhistory',
+      'past-sip-check:fund-nav',
     ]));
     expect(prefixes).not.toContain('money-trail');
     expect(prefixes).not.toContain('user-transactions');
@@ -70,6 +74,10 @@ describe('syncInvalidationPrefixes', () => {
       'portfolioTimeline',
       'performance-timeline',
       'wealth-journey-transactions',
+      'dvr-funds',
+      'past-sip-check:user-held-seed',
+      'universal-picker:your-funds',
+      'universal-picker:your-families',
     ]));
   });
 
@@ -97,6 +105,7 @@ describe('syncInvalidationPrefixes', () => {
       'investmentVsBenchmarkTimeline',
       'portfolioTimeline',
       'performance-timeline',
+      'past-sip-check:benchmark',
     ]));
     expect(prefixes).not.toContain('user-transactions');
     expect(prefixes).not.toContain('money-trail');
@@ -109,6 +118,10 @@ describe('syncVisibleRoute', () => {
     ['/money-trail', 'money_trail'],
     ['/money-trail/transaction-1', 'money_trail'],
     ['/portfolio-insights', 'portfolio_insights'],
+    ['/tools', 'tools'],
+    ['/tools/compare-funds', 'tools'],
+    ['/tools/direct-vs-regular', 'tools'],
+    ['/tools/past-sip-check', 'tools'],
     ['/settings/data-sync', 'settings'],
     ['/settings/about', 'about'],
     ['/(tabs)/funds', 'funds'],
@@ -187,6 +200,36 @@ describe('invalidateQueriesForSync', () => {
       queryKey: ['money-trail'],
       type: 'active',
     });
+  });
+
+  it.each([
+    [
+      { ...EMPTY_RESULT, txInserted: 1 },
+      [
+        'dvr-funds',
+        'past-sip-check:user-held-seed',
+        'universal-picker:your-funds',
+        'universal-picker:your-families',
+      ],
+    ],
+    [
+      { ...EMPTY_RESULT, navInserted: 1 },
+      [
+        'dvr-funds',
+        'fund-nav-history-compare',
+        'compare:navhistory',
+        'past-sip-check:fund-nav',
+      ],
+    ],
+    [
+      { ...EMPTY_RESULT, idxInserted: 1 },
+      ['past-sip-check:benchmark'],
+    ],
+  ] as const)('refetches affected active tool prefixes for %j', async (result, expected) => {
+    const { client, refetchQueries } = createClient();
+    await invalidateQueriesForSync(client, result, 'tools');
+
+    expect(refetchQueries.mock.calls.map(([filters]) => filters.queryKey[0])).toEqual(expected);
   });
 
   it.each([

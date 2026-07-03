@@ -134,6 +134,7 @@ Automated evidence must prove:
 - every affected entry is marked stale with `refetchType: 'none'`;
 - About and unknown routes refetch no hidden queries;
 - visible Portfolio/Funds/Wealth/Settings/Fund Detail routes refetch only their affected active prefixes;
+- visible financial-tool routes refetch transaction-, NAV-, and index-derived tool prefixes while hidden tool observers remain disabled;
 - all required freeze flags remain configured;
 - Wealth Journey and onboarding create no legacy `^NSEI` portfolio query.
 
@@ -141,15 +142,15 @@ Native evidence must record device/OS, package/channel, OTA/update ID, implement
 
 Automated validation completed on 2026-07-03:
 
-- focused N3 and lifecycle suites: 3 suites, 37 tests passed;
-- full Jest suite: 83 suites, 1,863 tests passed;
+- focused N3 and lifecycle suites: 3 suites, 44 tests passed;
+- full Jest suite: 83 suites, 1,870 tests passed;
 - `npm run typecheck`: zero errors;
 - `npm run lint`: zero warnings;
 - Android Expo export: completed successfully with a Hermes bundle;
 - `git diff --check`: clean.
 - cache contract: query keys and serialized payloads are unchanged; the PR carries the repository-required `[cache-shape-stable]` assertion and keeps React Query buster `v8`.
 
-Native Android acceptance completed on 2026-07-03:
+Pre-review native Android acceptance completed on 2026-07-03 for the freeze/focus portion:
 
 - Device/build: Pixel 8a, Android 16 / API 36, `com.foliolens.app.prpreview` version `0.0.4`.
 - Exact artifact: Android PR-preview OTA `019f2537-a8a5-7c3f-806e-715a8bf5cd47`; About displayed prefix `019f2537-a8a…`. The OTA was published from docs-only head `52e62b913eef3535113f7d3a92ef66e61e7a8727` and contains measured implementation `d6b96971378eaa6719a3171f3a2d573a5b8aa811` unchanged.
@@ -157,6 +158,7 @@ Native Android acceptance completed on 2026-07-03:
 - Funds → Fund Detail cold target-cache sample: route commit `116 ms`, post-interaction usable `126 ms`, `cache_state:cold`, `sync_in_flight:false`, six active queries, 20 funds, and 566 transactions. Only visible Fund Detail-owned reads followed (`query:fundDetail`, scheme metadata, NAV history, and its one-fund timeline); hidden Portfolio, Money Trail, and Wealth Journey query counts remained zero, with zero relevant SQLite/sync errors.
 - Funds → Fund Detail warm sample: route commit `268 ms`, post-interaction usable `284 ms`, `cache_state:warm`, `sync_in_flight:false`; no Fund Detail, Portfolio, timeline, Money Trail, or Wealth Journey query completed during the sample and zero relevant SQLite/sync errors were present.
 - The intermittent application hang did not reproduce. These samples prove the scoped invariant: leaving the owner screen did not wake hidden expensive queries, while the visible cold Fund Detail route remained allowed to fetch its own data.
+- Review later found that this artifact omitted tool-owned prefixes from granular invalidation. The measurements remain valid evidence for core hidden-screen dormancy, but corrected-head acceptance must additionally exercise a visible financial tool during sync before convergence.
 
 ## Risks And Mitigations
 
@@ -176,12 +178,15 @@ Native Android acceptance completed on 2026-07-03:
 - 2026-07-03: Focus-gate Fund Detail as well as the four named tab families because previously visited detail observers were part of finding 1.
 - 2026-07-03: Focus-gate Fund Detail composition and Settings cache-debug AsyncStorage inspection too; both can remain mounted after navigation and are screen-owned work even though sync does not invalidate them.
 - 2026-07-03: Require an explicit TRI benchmark at every `usePortfolio` call site.
+- 2026-07-03: Accept the reviewers' P1 under-invalidation finding. Inventory tool-owned tx/NAV/index keys, map `/tools/*` to a visible tool route, focus-gate Compare/Direct-vs-Regular/Past-SIP and picker queries, and freeze the Tools stack so stale-only invalidation cannot wake a hidden tool.
 
 ## Amendments
 
 Implementation also focus-gates Money Trail and Portfolio Insights root screens. They are not frozen tab screens, but they can remain mounted in the root stack and own the same expensive transaction, portfolio, and composition queries. This extends the same hidden-work invariant without changing their cache keys, payloads, or user-visible behavior.
 
 The source-level navigation configuration test covers every Settings child that owns a query plus Fund Detail. Behavioral invalidation tests remain provider-independent and assert exact React Query calls, while the existing hook and screen suites cover rendering contracts.
+
+Review amendment: the initial dependency inventory covered the audited hot-path screens but incorrectly assumed financial tools could rely on their own stale times. An already-mounted visible tool does not remount after foreground sync, and a hidden active tool observer could be woken by broad active refetch. The corrected implementation therefore stale-marks `dvr-funds`, Past SIP input/NAV/benchmark keys, Compare NAV keys, and held-fund picker keys; treats every `/tools/*` pathname as the visible tool route; and focus-gates the three financial tool screens plus picker-owned queries. Exact tx/NAV/index tool intersections are locked by unit tests.
 
 ## Progress
 
@@ -193,5 +198,5 @@ The source-level navigation configuration test covers every Settings child that 
 - [x] Remove the legacy `^NSEI` default and update callers.
 - [x] Integrate visible-route invalidation into root lifecycle.
 - [x] Run focused, full, static, and Android export validation.
-- [x] Capture Android release-like PR-preview acceptance evidence.
+- [ ] Capture corrected-head Android PR-preview acceptance, including a visible financial tool refresh after sync.
 - [x] Push and open draft implementation PR #256.

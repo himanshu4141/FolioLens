@@ -3,7 +3,8 @@ import { normalizeNavigationRoute, type NavigationRouteName } from './navigation
 export type SyncVisibleRoute =
   | NavigationRouteName
   | 'money_trail'
-  | 'portfolio_insights';
+  | 'portfolio_insights'
+  | 'tools';
 
 export interface SyncChangeSummary {
   txInserted: number;
@@ -35,6 +36,10 @@ export const SYNC_INVALIDATION_PREFIXES = {
     'portfolioTimeline',
     'performance-timeline',
     'wealth-journey-transactions',
+    'dvr-funds',
+    'past-sip-check:user-held-seed',
+    'universal-picker:your-funds',
+    'universal-picker:your-families',
   ],
   nav: [
     'portfolio',
@@ -45,6 +50,10 @@ export const SYNC_INVALIDATION_PREFIXES = {
     'investmentVsBenchmarkTimeline',
     'portfolioTimeline',
     'performance-timeline',
+    'dvr-funds',
+    'fund-nav-history-compare',
+    'compare:navhistory',
+    'past-sip-check:fund-nav',
   ],
   index: [
     'portfolio',
@@ -53,6 +62,7 @@ export const SYNC_INVALIDATION_PREFIXES = {
     'investmentVsBenchmarkTimeline',
     'portfolioTimeline',
     'performance-timeline',
+    'past-sip-check:benchmark',
   ],
 } as const;
 
@@ -77,6 +87,16 @@ const VISIBLE_ROUTE_PREFIXES: Record<SyncVisibleRoute, readonly string[]> = {
   ],
   money_trail: ['money-trail'],
   portfolio_insights: ['portfolio'],
+  tools: [
+    'dvr-funds',
+    'past-sip-check:user-held-seed',
+    'universal-picker:your-funds',
+    'universal-picker:your-families',
+    'fund-nav-history-compare',
+    'compare:navhistory',
+    'past-sip-check:fund-nav',
+    'past-sip-check:benchmark',
+  ],
   unknown: [],
 };
 
@@ -84,6 +104,7 @@ export function syncVisibleRoute(pathname: string): SyncVisibleRoute {
   const path = pathname.split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/';
   if (path === '/money-trail' || path.startsWith('/money-trail/')) return 'money_trail';
   if (path === '/portfolio-insights') return 'portfolio_insights';
+  if (path === '/tools' || path.startsWith('/tools/')) return 'tools';
   if (
     (path.startsWith('/settings/') || path.startsWith('/(tabs)/settings/')) &&
     path !== '/settings/about' &&
