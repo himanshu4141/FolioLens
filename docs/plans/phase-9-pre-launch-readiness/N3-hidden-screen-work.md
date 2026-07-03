@@ -160,6 +160,15 @@ Pre-review native Android acceptance completed on 2026-07-03 for the freeze/focu
 - The intermittent application hang did not reproduce. These samples prove the scoped invariant: leaving the owner screen did not wake hidden expensive queries, while the visible cold Fund Detail route remained allowed to fetch its own data.
 - Review later found that this artifact omitted tool-owned prefixes from granular invalidation. The measurements remain valid evidence for core hidden-screen dormancy, but corrected-head acceptance must additionally exercise a visible financial tool during sync before convergence.
 
+Corrected-head Android follow-up completed on 2026-07-03:
+
+- Exact artifact: Android PR-preview OTA `019f25d4-06db-7432-b9a7-025e7a0fa1fa`; About displayed prefix `019f25d4-06d…`. The OTA contains corrected implementation `44638de3802a2c63d3d544cc508cbe3bd93a0d67`.
+- Device state after an explicit sign-out/sign-in recovery: local and server transaction counts both `566` (drift `0`); the cache inspector reported React Query buster `v8`, 10 persisted entries, and a last-successful blob of `558.0 KB`.
+- Direct vs Regular was fully rendered before the isolated sample. The app was backgrounded for 35 seconds and foregrounded with that financial tool still visible. Its visible `user-funds` input read completed in `1,042 ms`; no hidden `query:portfolio`, `query:timeline`, `query:moneyTrail`, or `query:wealthJourney` completion appeared.
+- Foreground delta completed in `2,619 ms` with `tx_inserted:0`, `nav_inserted:0`, `idx_inserted:0`, and `error_count:0`. The isolated interval contained zero `SQLITE_FULL`, invalid rollback, `SQLITE_BUSY`, or `SQLITE_LOCKED` errors.
+- Because the server supplied no changed rows, this native sample does **not** claim that the visible tool read was caused by N3's changed-row invalidation helper. Exact transaction-, NAV-, and index-backed visible-tool invalidation remains demonstrated by the 44 focused automated tests. Reviewer acceptance of this zero-change native case remains pending.
+- Outside the isolated interval, opening Portfolio reproducibly caused Android `catalystLocalStorage` writes to fail with `SQLITE_FULL` even with 19 GB device storage free. The last-successful persisted blob remained only 558 KB, which indicates a later dehydrated React Query client exceeds AsyncStorage's approximately 6 MB Android database limit. N3 does not change `src/lib/queryClient.ts`, the persistence allowlist, cache payloads, or buster; this is recorded as a separate pre-existing cache investigation and a plausible cause of PR-preview/main-preview chart divergence. It is not hidden as successful N3 evidence.
+
 ## Risks And Mitigations
 
 - **Under-invalidation:** encode the dependency map in one exported constant, test every input family, and include user-funds for CAS roster correctness.
