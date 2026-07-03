@@ -18,8 +18,11 @@ import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import {
   buildInvestmentTimelineInputs,
+  buildRequiredNavStartByScheme,
   computeInvestmentVsBenchmarkTimeline,
   computeInvestmentVsBenchmarkTimelineFromInputs,
+  evictTimelineSiblingsAfterNavRepair,
+  fetchInvestmentTimelineInputs,
   fetchInvestmentVsBenchmarkTimeline,
   investmentTimelineInputQueryKey,
   prefetchInvestmentVsBenchmarkTimeline,
@@ -341,6 +344,25 @@ describe('N2T pre-change financial equivalence', () => {
 });
 
 describe('N2T prepared input cache', () => {
+  it('requires NAV only for schemes with positive-unit exposure in the window', () => {
+    const funds = [
+      { id: 'closed', schemeCode: 100 },
+      { id: 'carried', schemeCode: 200 },
+      { id: 'new', schemeCode: 300 },
+    ];
+    const txRows = [
+      { fund_id: 'closed', transaction_date: '2020-01-01', transaction_type: 'purchase', units: 10, amount: 100 },
+      { fund_id: 'closed', transaction_date: '2021-01-01', transaction_type: 'redemption', units: 10, amount: 120 },
+      { fund_id: 'carried', transaction_date: '2020-01-01', transaction_type: 'purchase', units: 10, amount: 100 },
+      { fund_id: 'new', transaction_date: '2025-06-01', transaction_type: 'purchase', units: 10, amount: 100 },
+    ];
+
+    expect([...buildRequiredNavStartByScheme(funds, txRows, '2024-01-01')]).toEqual([
+      [200, '2024-01-01'],
+      [300, '2025-06-01'],
+    ]);
+  });
+
   it('keys the same fund set deterministically and includes scheme identity', () => {
     const funds = [
       { id: 'fund-b', schemeCode: 200 },
@@ -453,6 +475,7 @@ describe('N2D timeline NAV cache repair', () => {
         cache.set(key, value);
         return value;
       }),
+      removeQueries: jest.fn(),
     } as unknown as QueryClient;
     const txRead = jest.spyOn(txRepo, 'readByFundIds');
 
@@ -515,7 +538,9 @@ describe('N2D timeline NAV cache repair', () => {
 
     expect(first.points).toHaveLength(2);
     expect(second).toEqual(first);
-    expect(navWriteAttempt).toBe(2);
+    // Two NAV write attempts (first injected failure + retained-row retry),
+    // followed by one authoritative coverage-marker transaction.
+    expect(navWriteAttempt).toBe(3);
     expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
     expect(await navRepo.readBySchemeCode(100)).toHaveLength(2);
     expect(warn).toHaveBeenCalledWith(
@@ -548,5 +573,151 @@ describe('N2D timeline NAV cache repair', () => {
     expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
     expect(await navRepo.readBySchemeCode(100)).toEqual([]);
     warn.mockRestore();
+  });
+});
+
+describe('C1 authoritative NAV coverage', () => {
+  beforeEach(async () => {
+    await __setDbForTests(null);
+    jest.clearAllMocks();
+  });
+
+  it('rejects a mixed recent-only cache, repairs it, and keeps the second read local', async () => {
+    const funds = [
+      { id: 'closed', schemeCode: 100 },
+      { id: 'live', schemeCode: 200 },
+    ];
+    await txRepo.bulkInsert([
+      {
+        fund_id: 'closed', transaction_date: '2018-01-01', transaction_type: 'purchase',
+        units: 100, amount: 1000, id: 'c-buy', nav_at_transaction: 10,
+        folio_number: null, cas_import_id: null, created_at: '2018-01-01T00:00:00Z',
+      },
+      {
+        fund_id: 'live', transaction_date: '2020-01-01', transaction_type: 'purchase',
+        units: 100, amount: 1000, id: 'l-buy', nav_at_transaction: 10,
+        folio_number: null, cas_import_id: null, created_at: '2020-01-01T00:00:00Z',
+      },
+      {
+        fund_id: 'closed', transaction_date: '2021-01-01', transaction_type: 'redemption',
+        units: 100, amount: 2000, id: 'c-sell', nav_at_transaction: 20,
+        folio_number: null, cas_import_id: null, created_at: '2021-01-01T00:00:00Z',
+      },
+    ]);
+    // Signature from the Android incident: one old closed scheme makes the
+    // global earliest row look healthy while the live scheme has only recent NAV.
+    await navRepo.bulkInsert([
+      { scheme_code: 100, nav_date: '2018-01-01', nav: 10 },
+      { scheme_code: 100, nav_date: '2021-01-01', nav: 20 },
+      { scheme_code: 200, nav_date: '2026-01-01', nav: 40 },
+    ]);
+
+    const remoteRows = [
+      { scheme_code: 100, nav_date: '2018-01-01', nav: 10 },
+      { scheme_code: 100, nav_date: '2021-01-01', nav: 20 },
+      { scheme_code: 200, nav_date: '2020-01-01', nav: 10 },
+      { scheme_code: 200, nav_date: '2023-01-01', nav: 30 },
+      { scheme_code: 200, nav_date: '2026-01-01', nav: 40 },
+    ];
+    const order = jest.fn().mockReturnThis();
+    (navHistoryRepo.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      order,
+      range: jest.fn().mockResolvedValue({ data: remoteRows, error: null }),
+    }));
+    const firstInputs = await fetchInvestmentTimelineInputs(funds, 'user-1', 'All');
+    const secondInputs = await fetchInvestmentTimelineInputs(funds, 'user-1', 'All');
+    const first = computeInvestmentVsBenchmarkTimelineFromInputs(firstInputs, [
+      { index_date: '2018-01-01', close_value: 100 },
+      { index_date: '2020-01-01', close_value: 120 },
+      { index_date: '2021-01-01', close_value: 130 },
+      { index_date: '2023-01-01', close_value: 150 },
+      { index_date: '2026-01-01', close_value: 180 },
+    ]);
+    const point2023 = first.points.find((point) => point.date === '2023-01-01');
+
+    expect(point2023?.investedValue).toBe(1000);
+    expect(point2023?.portfolioValue).toBe(3000);
+    expect(point2023?.portfolioValue).not.toBe(point2023?.investedValue);
+    expect(firstInputs.navCacheRepaired).toBe(true);
+    expect(secondInputs.navCacheRepaired).toBe(false);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(order.mock.calls).toEqual([
+      ['nav_date', { ascending: true }],
+      ['scheme_code', { ascending: true }],
+    ]);
+    expect(await navRepo.hasHistoryCoverage(100, '2018-01-01')).toBe(true);
+    expect(await navRepo.hasHistoryCoverage(200, '2020-01-01')).toBe(true);
+  });
+
+  it('treats an authoritative NFO pre-allotment gap as known and does not refetch', async () => {
+    const funds = [
+      { id: 'regular', schemeCode: 100 },
+      { id: 'nfo', schemeCode: 200 },
+    ];
+    const txRows = [
+      { fund_id: 'regular', transaction_date: '2025-01-01', transaction_type: 'purchase', units: 100, amount: 1000 },
+      { fund_id: 'nfo', transaction_date: '2025-01-01', transaction_type: 'purchase', units: 100, amount: 1000 },
+    ];
+    await txRepo.bulkInsert(txRows.map((tx, index) => ({
+      ...tx,
+      id: `tx-${index}`,
+      nav_at_transaction: 10,
+      folio_number: null,
+      cas_import_id: null,
+      created_at: `${tx.transaction_date}T00:00:00Z`,
+    })));
+    const remoteRows = [
+      { scheme_code: 100, nav_date: '2025-01-01', nav: 10 },
+      { scheme_code: 100, nav_date: '2025-02-01', nav: 11 },
+      // NFO has no upstream NAV on the subscription date.
+      { scheme_code: 200, nav_date: '2025-02-01', nav: 10 },
+    ];
+    (navHistoryRepo.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({ data: remoteRows, error: null }),
+    }));
+
+    const firstInputs = await fetchInvestmentTimelineInputs(funds, 'user-1', 'All');
+    const secondInputs = await fetchInvestmentTimelineInputs(funds, 'user-1', 'All');
+    const computed = computeInvestmentVsBenchmarkTimelineFromInputs(firstInputs, [
+      { index_date: '2025-01-01', close_value: 100 },
+      { index_date: '2025-02-01', close_value: 110 },
+    ]);
+
+    expect(firstInputs.navCacheRepaired).toBe(true);
+    expect(secondInputs.navCacheRepaired).toBe(false);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(computed.knownCostFallbacks).toBeGreaterThan(0);
+    expect(computed.unexpectedCostFallbacks).toBe(0);
+  });
+
+  it('evicts stale sibling windows and benchmarks while preserving the rebuilt key', () => {
+    const keys: readonly unknown[][] = [
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100', 'All'],
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', 'All'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^BSESN', 'All'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', '3Y'],
+    ];
+    const removed: readonly unknown[][] = [];
+    const client = {
+      removeQueries: jest.fn(({ predicate }: { predicate: (query: { queryKey: readonly unknown[] }) => boolean }) => {
+        for (const queryKey of keys) if (predicate({ queryKey })) (removed as unknown[][]).push([...queryKey]);
+      }),
+    } as unknown as QueryClient;
+
+    evictTimelineSiblingsAfterNavRepair(client, [FUND], 'user-1', '^NSEI', 'All');
+
+    expect(removed).toEqual([
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^BSESN', 'All'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', '3Y'],
+    ]);
   });
 });

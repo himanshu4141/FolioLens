@@ -66,6 +66,9 @@ async function fetchAllNavRows(
       .select('scheme_code, nav_date, nav')
       .in('scheme_code', schemeCodes)
       .order('nav_date', { ascending: true })
+      // `nav_date` is shared by every scheme. Offset pagination needs a
+      // deterministic tie-breaker or a 1,000-row boundary can omit rows.
+      .order('scheme_code', { ascending: true })
       .range(from, from + NAV_PAGE_SIZE - 1);
     if (sinceDate) q = q.gte('nav_date', sinceDate);
     const { data, error } = await q;
@@ -373,18 +376,31 @@ async function runSync(
   // ── NAV per scheme ────────────────────────────────────────────────
   if (schemeCodes.length > 0) {
     try {
-      // Bucket by watermark — schemes that share a starting point can
-      // be fetched in a single SELECT.
-      const bucketByDate = new Map<string | null, number[]>();
+      // A latest watermark proves only the upper edge of a local series. A
+      // recent-only Portfolio write can create that watermark without any
+      // historical rows, so bootstrap must first establish an authoritative
+      // lower bound. Schemes without an unbounded coverage marker receive one
+      // full fetch; only proven-complete schemes use ordinary delta watermarks.
+      const bucketByDate = new Map<string, {
+        sinceDate: string | null;
+        codes: number[];
+        markFullHistory: boolean;
+      }>();
       for (const code of schemeCodes) {
-        const wm = await navRepo.getWatermark(code);
-        const key = wm;
-        const existing = bucketByDate.get(key) ?? [];
-        existing.push(code);
+        const coverage = await navRepo.getHistoryCoverage(code);
+        const hasFullHistory = coverage.known && coverage.startDate === null;
+        const wm = hasFullHistory ? await navRepo.getWatermark(code) : null;
+        const key = hasFullHistory ? `delta:${wm ?? '<empty>'}` : 'repair:full';
+        const existing = bucketByDate.get(key) ?? {
+          sinceDate: wm,
+          codes: [],
+          markFullHistory: !hasFullHistory,
+        };
+        existing.codes.push(code);
         bucketByDate.set(key, existing);
       }
 
-      for (const [sinceDate, codes] of bucketByDate) {
+      for (const { sinceDate, codes, markFullHistory } of bucketByDate.values()) {
         const rows = await fetchAllNavRows(codes, sinceDate);
         // Count net inserts, not fetched rows. `fetchAllNavRows` uses
         // `.gte(sinceDate)` (inclusive on the watermark), so the boundary
@@ -398,6 +414,15 @@ async function runSync(
           scope: writeScope,
           operation: `${options.mode}_nav_write`,
         });
+        if (markFullHistory) {
+          // Mark even when one requested scheme returned no rows: the
+          // completed unbounded query authoritatively proves that empty/NFO
+          // interval and prevents history consumers from refetching forever.
+          await navRepo.markHistoryCoverage(codes, null, {
+            scope: writeScope,
+            operation: `${options.mode}_nav_full_coverage`,
+          });
+        }
         const after = await navRepo.count();
         navInserted += after - before;
         for (const code of codes) {

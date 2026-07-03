@@ -116,6 +116,8 @@ describe('snapshotCache — nav scope', () => {
       { scheme_code: 100, nav_date: '2024-06-01', nav: 12 },
       { scheme_code: 200, nav_date: '2024-03-01', nav: 20 },
     ]);
+    await navRepo.markHistoryCoverage([100], null);
+    await navRepo.markHistoryCoverage([200], '2024-02-01');
     mockServerCount({ count: 0 });
 
     const snap = await snapshotCache('user-1', FUNDS);
@@ -126,7 +128,11 @@ describe('snapshotCache — nav scope', () => {
     expect(snap.nav.perScheme[0].schemeName).toBe('Alpha Equity Fund');
     expect(snap.nav.perScheme[0].rowCount).toBe(2);
     expect(snap.nav.perScheme[0].watermark).toBe('2024-06-01');
+    expect(snap.nav.perScheme[0].coverageKnown).toBe(true);
+    expect(snap.nav.perScheme[0].coverageStart).toBeNull();
     expect(snap.nav.perScheme[1].rowCount).toBe(1);
+    expect(snap.nav.perScheme[1].coverageKnown).toBe(true);
+    expect(snap.nav.perScheme[1].coverageStart).toBe('2024-02-01');
   });
 
   it('returns empty perScheme when no funds are passed in', async () => {

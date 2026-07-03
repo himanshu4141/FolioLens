@@ -227,6 +227,34 @@ describe('nav repo', () => {
     expect(await navRepo.countBySchemeCode(200)).toBe(1);
     expect(await navRepo.countBySchemeCode(300)).toBe(0);
   });
+
+  it('distinguishes absent, bounded, and full NAV history coverage', async () => {
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: false, startDate: null });
+    expect(await navRepo.hasHistoryCoverage(100, '2024-01-01')).toBe(false);
+
+    await navRepo.markHistoryCoverage([100], '2024-01-01');
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: '2024-01-01' });
+    expect(await navRepo.hasHistoryCoverage(100, '2024-06-01')).toBe(true);
+    expect(await navRepo.hasHistoryCoverage(100, '2023-12-31')).toBe(false);
+    expect(await navRepo.hasHistoryCoverage(100, null)).toBe(false);
+
+    await navRepo.markHistoryCoverage([100], null);
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: null });
+    expect(await navRepo.hasHistoryCoverage(100, null)).toBe(true);
+  });
+
+  it('merges coverage monotonically so concurrent/narrow repairs cannot weaken it', async () => {
+    await navRepo.markHistoryCoverage([100], '2024-01-01');
+    await navRepo.markHistoryCoverage([100], '2025-01-01');
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: '2024-01-01' });
+
+    await navRepo.markHistoryCoverage([100], '2023-01-01');
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: '2023-01-01' });
+
+    await navRepo.markHistoryCoverage([100], null);
+    await navRepo.markHistoryCoverage([100], '2022-01-01');
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: null });
+  });
 });
 
 describe('idx repo', () => {

@@ -145,6 +145,40 @@ describe('fetchFundNavHistory write-back behaviour', () => {
     const localRows = await navRepo.readBySchemeCode(SCHEME_CODE);
     expect(localRows).toHaveLength(SAMPLE_ROWS.length);
     expect(localRows[0]).toMatchObject({ scheme_code: SCHEME_CODE, nav_date: '2022-06-01', nav: 50 });
+    expect(await navRepo.getHistoryCoverage(SCHEME_CODE)).toEqual({ known: true, startDate: null });
+  });
+
+  it('rejects a non-empty recent slice until an unbounded fetch proves full history', async () => {
+    await navRepo.bulkInsert([
+      { scheme_code: SCHEME_CODE, nav_date: '2025-06-01', nav: 80 },
+    ]);
+    const { chain } = makeNavQueryChain(SAMPLE_ROWS);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+
+    const first = await fetchFundNavHistory(SCHEME_CODE);
+    const second = await fetchFundNavHistory(SCHEME_CODE);
+
+    expect(first).toHaveLength(SAMPLE_ROWS.length);
+    expect(second).toHaveLength(SAMPLE_ROWS.length);
+    expect(navHistoryRepo.from).toHaveBeenCalledTimes(1);
+    expect(await navRepo.hasHistoryCoverage(SCHEME_CODE, null)).toBe(true);
+  });
+
+  it('does not record full coverage when the SQLite write fails', async () => {
+    const { chain } = makeNavQueryChain(SAMPLE_ROWS);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+    const write = jest.spyOn(navRepo, 'bulkInsert').mockRejectedValueOnce(new Error('disk full'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await fetchFundNavHistory(SCHEME_CODE);
+
+    expect(result).toHaveLength(SAMPLE_ROWS.length);
+    expect(await navRepo.getHistoryCoverage(SCHEME_CODE)).toEqual({
+      known: false,
+      startDate: null,
+    });
+    write.mockRestore();
+    warn.mockRestore();
   });
 });
 

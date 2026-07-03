@@ -87,6 +87,8 @@ interface TimelineValuation {
   investedValue: number;
   portfolioValue: number;
   hasPortfolioValue: boolean;
+  knownCostFallbacks: number;
+  unexpectedCostFallbacks: number;
 }
 
 export interface InvestmentTimelineInputs {
@@ -102,6 +104,8 @@ export interface InvestmentTimelineInputs {
   candidateDates: string[];
   portfolioValidDates: Set<string>;
   valuationByDate: Map<string, TimelineValuation>;
+  authoritativeNavStartByScheme: Map<number, string | null>;
+  navCacheRepaired: boolean;
 }
 
 interface ComputedTimelineResult {
@@ -110,6 +114,8 @@ interface ComputedTimelineResult {
   evaluationDateCount: number;
   valuationCacheHits: number;
   valuationCacheMisses: number;
+  knownCostFallbacks: number;
+  unexpectedCostFallbacks: number;
 }
 
 const PAGE_SIZE = 1000;
@@ -258,6 +264,40 @@ export function investmentTimelineInputQueryKey(
   ];
 }
 
+/**
+ * A bounded remote repair can make every previously-computed window wrong in
+ * the same session. Remove sibling prepared inputs and outputs immediately so
+ * returning to All cannot paint persisted cost-marked values while refetching.
+ * The currently executing input/output keys are preserved because they are
+ * being rebuilt from the repaired rows right now.
+ */
+export function evictTimelineSiblingsAfterNavRepair(
+  queryClient: QueryClient,
+  funds: FundRef[],
+  userId: string,
+  benchmarkSymbol: string,
+  window: TimeWindow,
+): void {
+  const inputFundKey = stableInvestmentTimelineFundKey(funds);
+  const outputFundKey = timelineOutputFundKey(funds);
+  queryClient.removeQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      if (key[0] !== INVESTMENT_TIMELINE_INPUT_QUERY_KEY || key[1] !== userId) return false;
+      if (key[2] !== inputFundKey) return false;
+      return key[3] !== window;
+    },
+  });
+  queryClient.removeQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      if (key[0] !== 'investmentVsBenchmarkTimeline' || key[1] !== userId) return false;
+      if (key[2] !== outputFundKey) return false;
+      return key[3] !== benchmarkSymbol || key[4] !== window;
+    },
+  });
+}
+
 function getWindowStartDate(window: TimeWindow): string | null {
   if (window === 'All') return null;
 
@@ -286,11 +326,70 @@ function subtractDays(dateStr: string, days: number): string {
   return d.toISOString().split('T')[0];
 }
 
+/**
+ * Earliest authoritative NAV date needed per scheme for this window.
+ * Fully redeemed schemes whose units were already zero before the window are
+ * excluded; positions carried into the window require coverage from the
+ * buffered window start, while later entries require coverage from entry.
+ */
+export function buildRequiredNavStartByScheme(
+  funds: FundRef[],
+  txRows: RawTxRow[],
+  navStartDate: string,
+): Map<number, string> {
+  const fundById = new Map(funds.map((fund) => [fund.id, fund]));
+  const fundIds = new Set(fundById.keys());
+  const transactions = filterReversedTransactionPairs(txRows)
+    .filter((tx) => fundIds.has(tx.fund_id))
+    .sort((a, b) => a.transaction_date.localeCompare(b.transaction_date));
+  const unitsByFund = new Map<string, number>();
+  const required = new Map<number, string>();
+
+  const applyUnits = (tx: RawTxRow) => {
+    const previous = unitsByFund.get(tx.fund_id) ?? 0;
+    const next = isInvestment(tx.transaction_type)
+      ? previous + tx.units
+      : isRedemption(tx.transaction_type)
+        ? Math.max(0, previous - tx.units)
+        : previous;
+    unitsByFund.set(tx.fund_id, next);
+    return next;
+  };
+
+  let index = 0;
+  while (index < transactions.length && transactions[index].transaction_date < navStartDate) {
+    applyUnits(transactions[index]);
+    index += 1;
+  }
+
+  for (const [fundId, units] of unitsByFund) {
+    const fund = fundById.get(fundId);
+    if (fund && units > 0) required.set(fund.schemeCode, navStartDate);
+  }
+
+  for (; index < transactions.length; index += 1) {
+    const tx = transactions[index];
+    const fund = fundById.get(tx.fund_id);
+    const units = applyUnits(tx);
+    if (!fund || units <= 0) continue;
+    const existing = required.get(fund.schemeCode);
+    if (!existing || tx.transaction_date < existing) {
+      required.set(fund.schemeCode, tx.transaction_date);
+    }
+  }
+
+  return required;
+}
+
 export function buildInvestmentTimelineInputs(
   navRows: RawNavRow[],
   txRows: RawTxRow[],
   funds: FundRef[],
   window: TimeWindow,
+  options: {
+    authoritativeNavStartByScheme?: Map<number, string | null>;
+    navCacheRepaired?: boolean;
+  } = {},
 ): InvestmentTimelineInputs {
   const stableFunds = [...funds].sort((a, b) => {
     const idOrder = a.id.localeCompare(b.id);
@@ -376,6 +475,8 @@ export function buildInvestmentTimelineInputs(
       costHistory,
     ),
     valuationByDate: new Map<string, TimelineValuation>(),
+    authoritativeNavStartByScheme: options.authoritativeNavStartByScheme ?? new Map(),
+    navCacheRepaired: options.navCacheRepaired ?? false,
   };
 }
 
@@ -388,6 +489,8 @@ function getTimelineValuation(
 
   let portfolioValue = 0;
   let hasPortfolioValue = false;
+  let knownCostFallbacks = 0;
+  let unexpectedCostFallbacks = 0;
 
   for (const fund of inputs.funds) {
     const units = getUnitsAt(inputs.unitHistory.get(fund.id) ?? [], date);
@@ -405,6 +508,13 @@ function getTimelineValuation(
     if (costBasis > 0) {
       portfolioValue += costBasis;
       hasPortfolioValue = true;
+      const coverageKnown = inputs.authoritativeNavStartByScheme.has(fund.schemeCode);
+      const coverageStart = inputs.authoritativeNavStartByScheme.get(fund.schemeCode) ?? null;
+      if (coverageKnown && (coverageStart === null || coverageStart <= date)) {
+        knownCostFallbacks += 1;
+      } else {
+        unexpectedCostFallbacks += 1;
+      }
     }
   }
 
@@ -412,6 +522,8 @@ function getTimelineValuation(
     investedValue: getInvestedAt(inputs.investedHistory, date),
     portfolioValue,
     hasPortfolioValue,
+    knownCostFallbacks,
+    unexpectedCostFallbacks,
   };
   inputs.valuationByDate.set(date, valuation);
   return { valuation, cacheHit: false };
@@ -433,6 +545,8 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
       evaluationDateCount: 0,
       valuationCacheHits: 0,
       valuationCacheMisses: 0,
+      knownCostFallbacks: 0,
+      unexpectedCostFallbacks: 0,
     };
   }
 
@@ -506,6 +620,8 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
       evaluationDateCount: 0,
       valuationCacheHits: 0,
       valuationCacheMisses: 0,
+      knownCostFallbacks: 0,
+      unexpectedCostFallbacks: 0,
     };
   }
 
@@ -514,12 +630,16 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
   const points: InvestmentVsBenchmarkPoint[] = [];
   let valuationCacheHits = 0;
   let valuationCacheMisses = 0;
+  let knownCostFallbacks = 0;
+  let unexpectedCostFallbacks = 0;
 
   for (const evaluationIndex of evaluationIndexes) {
     const date = validDates[evaluationIndex];
     const { valuation, cacheHit } = getTimelineValuation(inputs, date);
     if (cacheHit) valuationCacheHits += 1;
     else valuationCacheMisses += 1;
+    knownCostFallbacks += valuation.knownCostFallbacks;
+    unexpectedCostFallbacks += valuation.unexpectedCostFallbacks;
 
     const benchmarkClose = validBenchmarkCloses[evaluationIndex] ?? null;
     const simulatedBenchmarkUnits = validBenchmarkUnits[evaluationIndex] ?? 0;
@@ -546,6 +666,8 @@ export function computeInvestmentVsBenchmarkTimelineFromInputs(
     evaluationDateCount: evaluationIndexes.length,
     valuationCacheHits,
     valuationCacheMisses,
+    knownCostFallbacks,
+    unexpectedCostFallbacks,
   };
 }
 
@@ -571,7 +693,6 @@ export async function fetchInvestmentTimelineInputs(
   const inputSpanId = perfStart('query:timeline:inputs');
   const writeScope = captureDatabaseWriteScope();
   const fundIds = funds.map((fund) => fund.id);
-  const schemeCodes = funds.map((fund) => fund.schemeCode);
 
   const txSpanId = perfStart('query:timeline:transactions');
   const txRows = await fetchAllTransactions(userId, fundIds);
@@ -598,15 +719,29 @@ export async function fetchInvestmentTimelineInputs(
   // 12k+ NAV rows + a long-history TRI index. The bounded SELECTs trim
   // both round-trip count and payload size: on the "1Y" window a 10-fund
   // portfolio touches < 3 NAV pages instead of ~13.
+  const requiredNavStartByScheme = buildRequiredNavStartByScheme(
+    funds,
+    txRows,
+    navStartDate,
+  );
   const navSpanId = perfStart('query:timeline:nav');
-  const navRows = await fetchAllNavRows(schemeCodes, navStartDate, writeScope);
-  perfEnd(navSpanId, { rows: navRows.length, since: navStartDate });
+  const navResult = await fetchAllNavRows(requiredNavStartByScheme, writeScope);
+  perfEnd(navSpanId, {
+    rows: navResult.rows.length,
+    since: navStartDate,
+    repaired: navResult.repaired,
+    schemes: requiredNavStartByScheme.size,
+  });
 
-  const inputs = buildInvestmentTimelineInputs(navRows, txRows, funds, window);
+  const inputs = buildInvestmentTimelineInputs(navResult.rows, txRows, funds, window, {
+    authoritativeNavStartByScheme: navResult.authoritativeStartByScheme,
+    navCacheRepaired: navResult.repaired,
+  });
   perfEnd(inputSpanId, {
     tx_rows: txRows.length,
-    nav_rows: navRows.length,
+    nav_rows: navResult.rows.length,
     candidate_dates: inputs.candidateDates.length,
+    nav_cache_repaired: navResult.repaired,
     window,
   });
   return inputs;
@@ -631,6 +766,16 @@ export async function fetchInvestmentVsBenchmarkTimeline(
       staleTime: STALE_TIMES.INVESTMENT_VS_BENCHMARK,
     })
     : await fetchInvestmentTimelineInputs(funds, userId, window);
+
+  if (inputs.navCacheRepaired && !inputCacheHit && inputQueryClient) {
+    evictTimelineSiblingsAfterNavRepair(
+      inputQueryClient,
+      funds,
+      userId,
+      benchmarkSymbol,
+      window,
+    );
+  }
 
   if (!inputs.firstTransactionDate) {
     perfEnd(timelineSpanId, {
@@ -672,6 +817,8 @@ export async function fetchInvestmentVsBenchmarkTimeline(
     evaluation_dates: result.evaluationDateCount,
     valuation_cache_hits: result.valuationCacheHits,
     valuation_cache_misses: result.valuationCacheMisses,
+    known_nav_cost_fallbacks: result.knownCostFallbacks,
+    unexpected_nav_cost_fallbacks: result.unexpectedCostFallbacks,
     window,
     symbol: benchmarkSymbol,
   });
@@ -744,45 +891,16 @@ export async function repairTimelineNavCache(
   }
 }
 
-async function fetchAllNavRows(
+interface TimelineNavFetchResult {
+  rows: RawNavRow[];
+  repaired: boolean;
+  authoritativeStartByScheme: Map<number, string | null>;
+}
+
+async function fetchRemoteNavRows(
   schemeCodes: number[],
   startDate: string,
-  writeScope: DatabaseWriteScope,
 ): Promise<RawNavRow[]> {
-  if (schemeCodes.length === 0) return [];
-
-  if (SQLITE_AVAILABLE) {
-    try {
-      const cached = await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: startDate });
-      // Only use SQLite if every requested scheme has at least one row.
-      // A partial hit (rows for some schemes but not others) means a recently-
-      // added fund has no local NAV history yet — falling through to Supabase
-      // gets the full picture and the write-back populates SQLite for next time.
-      if (cached.length > 0) {
-        const coveredSchemes = new Set(cached.map((r) => r.scheme_code));
-        if (schemeCodes.every((code) => coveredSchemes.has(code))) {
-          // Also verify the data covers the requested start date. SQLite may have
-          // rows for all schemes but only from a more recent date (e.g. the day
-          // bootstrap first ran on a fresh install). A gap between startDate and
-          // the earliest available row triggers "mark to cost" for that period,
-          // producing a visible step-jump when real NAV values first appear.
-          //
-          // The caller already extends startDate 7 days before the visible window
-          // so `getLatestAt` has a floor NAV for non-trading-day boundaries. That
-          // means a normal 2-day weekend gap appears as a 2-day miss here — well
-          // within the 3-day tolerance. A holiday week (e.g. Christmas–New Year)
-          // can produce a 9+-day gap that exceeds the threshold, triggering a
-          // one-time Supabase fetch whose write-back fills the gap permanently.
-          const earliestDate = cached[0].nav_date; // sorted ASC — guaranteed by readBySchemeCodes
-          const gapMs = new Date(earliestDate).getTime() - new Date(startDate).getTime();
-          if (gapMs <= 3 * 24 * 60 * 60 * 1000) return cached;
-        }
-      }
-    } catch (err) {
-      console.warn('[timeline] sqlite nav read failed', err);
-    }
-  }
-
   const rows: RawNavRow[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await navHistoryRepo
@@ -791,18 +909,91 @@ async function fetchAllNavRows(
       .in('scheme_code', schemeCodes)
       .gte('nav_date', startDate)
       .order('nav_date', { ascending: true })
+      .order('scheme_code', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
 
     if (error) throw error;
     rows.push(...((data ?? []) as RawNavRow[]));
     if ((data ?? []).length < PAGE_SIZE) break;
   }
+  return rows;
+}
 
-  if (SQLITE_AVAILABLE && rows.length > 0) {
-    await repairTimelineNavCache(rows, writeScope);
+async function fetchAllNavRows(
+  requiredStartByScheme: Map<number, string>,
+  writeScope: DatabaseWriteScope,
+): Promise<TimelineNavFetchResult> {
+  const schemeCodes = [...requiredStartByScheme.keys()];
+  if (schemeCodes.length === 0) {
+    return { rows: [], repaired: false, authoritativeStartByScheme: new Map() };
+  }
+  const earliestRequired = [...requiredStartByScheme.values()].sort()[0];
+
+  if (!SQLITE_AVAILABLE) {
+    const rows = await fetchRemoteNavRows(schemeCodes, earliestRequired);
+    return {
+      rows,
+      repaired: false,
+      authoritativeStartByScheme: new Map(
+        schemeCodes.map((code) => [code, earliestRequired] as const),
+      ),
+    };
   }
 
-  return rows;
+  const authoritativeStartByScheme = new Map<number, string | null>();
+  let incompleteCodes: number[] = [];
+  try {
+    const states = await Promise.all(schemeCodes.map(async (code) => ({
+      code,
+      coverage: await navRepo.getHistoryCoverage(code),
+      requiredStart: requiredStartByScheme.get(code)!,
+    })));
+    for (const { code, coverage, requiredStart } of states) {
+      if (
+        coverage.known &&
+        (coverage.startDate === null || coverage.startDate <= requiredStart)
+      ) {
+        authoritativeStartByScheme.set(code, coverage.startDate);
+      } else {
+        incompleteCodes.push(code);
+      }
+    }
+
+    if (incompleteCodes.length === 0) {
+      return {
+        rows: await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: earliestRequired }),
+        repaired: false,
+        authoritativeStartByScheme,
+      };
+    }
+  } catch (err) {
+    console.warn('[timeline] sqlite nav coverage read failed', err);
+    incompleteCodes = schemeCodes;
+    authoritativeStartByScheme.clear();
+  }
+
+  const repairStart = incompleteCodes
+    .map((code) => requiredStartByScheme.get(code)!)
+    .sort()[0];
+  const repairedRows = await fetchRemoteNavRows(incompleteCodes, repairStart);
+  if (repairedRows.length > 0) {
+    await repairTimelineNavCache(repairedRows, writeScope);
+  }
+  // Record the requested lower bound, not the first returned NAV. That makes
+  // a successful empty/pre-allotment interval authoritative for NFOs.
+  await navRepo.markHistoryCoverage(incompleteCodes, repairStart, {
+    scope: writeScope,
+    operation: 'timeline_nav_coverage_mark',
+  });
+  for (const code of incompleteCodes) {
+    authoritativeStartByScheme.set(code, repairStart);
+  }
+
+  return {
+    rows: await navRepo.readBySchemeCodes(schemeCodes, { sinceDate: earliestRequired }),
+    repaired: true,
+    authoritativeStartByScheme,
+  };
 }
 
 async function fetchAllIndexRows(

@@ -79,7 +79,11 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // useSchemeMaster select (Phase 3 of deprecate-post-openfolio plan).
 // v8: fund view now exposes scheme_active; useUserFunds/useFundDetail/usePortfolio
 // payloads include schemeActive + navUnavailableCount fields.
-export const __BUSTER__ = 'v8';
+// v9: discard historical NAV-derived results computed from unproven recent-only
+// SQLite slices. The payload shape is stable, but retaining financially wrong
+// `investmentVsBenchmarkTimeline` / `fund-nav-history` entries until their TTL
+// would defeat the C1 correctness repair on first launch.
+export const __BUSTER__ = 'v9';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 

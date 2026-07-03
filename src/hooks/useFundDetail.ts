@@ -387,15 +387,23 @@ export async function fetchFundNavHistory(
   const navHistorySpanId = perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
   let source: 'sqlite' | 'supabase' = 'sqlite';
+  let localCoverageProven = false;
   if (SQLITE_AVAILABLE) {
     try {
-      const local = await navRepo.readBySchemeCode(schemeCode);
-      rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+      const coverageProven = await navRepo.hasHistoryCoverage(
+        schemeCode,
+        sinceDate ?? null,
+      );
+      if (coverageProven) {
+        localCoverageProven = true;
+        const local = await navRepo.readBySchemeCode(schemeCode, { sinceDate });
+        rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+      }
     } catch (err) {
       console.warn('[fetchFundNavHistory] sqlite read failed; falling back', err);
     }
   }
-  if (rows.length === 0) {
+  if (!localCoverageProven) {
     source = 'supabase';
     rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
       (from, to) => {
@@ -411,15 +419,26 @@ export async function fetchFundNavHistory(
     // (sinceDate set) must not be written back — it would look like full
     // history to useFundNavHistory's watermark check and prevent the proper
     // paginated backfill from ever running.
+    let fullHistoryWriteSucceeded = rows.length === 0;
     if (rows.length > 0 && SQLITE_AVAILABLE && !sinceDate) {
       try {
         await navRepo.bulkInsert(
           rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
           { scope: writeScope, operation: 'fund_detail_nav_write_back' },
         );
+        fullHistoryWriteSucceeded = true;
       } catch (err) {
         console.warn('[fetchFundNavHistory] sqlite write failed', err);
       }
+    }
+    if (SQLITE_AVAILABLE && !sinceDate && fullHistoryWriteSucceeded) {
+      // Row presence is not completeness: a recent-only Portfolio write may
+      // already have populated this scheme. Mark full only after this
+      // unbounded upstream query completed and its rows were inserted.
+      await navRepo.markHistoryCoverage([schemeCode], null, {
+        scope: writeScope,
+        operation: 'fund_detail_nav_full_coverage',
+      });
     }
   }
   perfEnd(navHistorySpanId, { rows: rows.length, scheme_code: schemeCode, source });
