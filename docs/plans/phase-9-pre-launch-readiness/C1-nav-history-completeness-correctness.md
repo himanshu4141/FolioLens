@@ -157,6 +157,18 @@ Automated validation covers marker monotonicity, sign-out cleanup through the ex
 The transaction path is considered authoritative for this incident when Cache Debug shows local count equals server count and drift is zero; tests retain the existing global reconciliation contract. The timeline index path remains authoritative through the canonical full snapshot and must log index coverage reaching the first transaction date. Any observed index start gap expands this hotfix before review.
 
 
+## Android Evidence
+
+Final acceptance used Pixel 8a PR-preview OTA `019f2dc4-2424-7a71-9bcd-eee78d8fb21b` at exact implementation `1d716eeed790a9c388f64523cf189c142993c794`; About showed `019f2dc4-242…` on `foliolens-pr` dated 4 July 2026.
+
+- Cache Debug showed 566 local and 566 server transactions, drift 0, and 51,972 NAV rows across 20 schemes with full-history markers. After Portfolio, Fund Detail, Compare, and Past SIP, the v10 React Query blob was 653.8 KB / 30 entries. Its listed families remained bounded outputs/lookups; raw `fund-nav-history`, `performance-timeline`, `index-snapshot`, `fund-detail`, and `fund-detail-index` arrays were absent. Auth occupied 3.2 KB and the onboarding draft was absent.
+- Portfolio All and 3Y matched exactly at display precision on three overlapping dates: 3 June 2024 (`₹24,35,913 / ₹43,37,012 / ₹46,79,458` invested/portfolio/Nifty 500 TRI), 1 April 2025 (`₹34,20,426 / ₹53,35,851 / ₹54,04,671`), and 3 February 2026 (`₹44,72,728 / ₹71,43,115 / ₹71,02,194`). Repeating 3Y → All used the already-proven local inputs; no second NAV repair appeared.
+- The intentionally unchanged current path remained `₹86.05L`, today `+₹16.8K (+0.20%)`, XIRR `15.29%`, NAV as of 3 July. A fresh Nifty 50 All output used 566 transactions, 34,336 NAV rows, 2,060 index rows, 91 evaluation points, 91 valuation-cache hits, one known NFO cost fallback, and zero unexpected fallbacks.
+- DSP Small Cap Fund Detail remained `₹8.76L` on `₹7.46L` invested with 22.20% XIRR. NAV & Facts All spanned January 2013–July 2026: current `₹242.7430`, period start `₹17.6890`, change `+1272.28%`.
+- Compare reproduced held-fund 5Y returns of 11.1% and 14.5% for DSP Aggressive Hybrid and DSP Large & Mid Cap; the revisit read 122 local NAV metric rows in 7 ms with no month-end remote refetch. Past SIP for DSP Aggressive Hybrid produced 60 monthly installments: `₹6.00L` invested, `₹7.77L` current value, `+₹1.77L (+29.4%)`, versus `₹6.16L` in Nifty 500 TRI.
+- App-PID log scans across the matrix contained no SQLite, `catalystLocalStorage`, database-full, auth-lifecycle, or unexpected-coverage errors. The device screen timeout was restored to its original 120 seconds after capture.
+
+
 ## Risks And Mitigations
 
 - **One-time repair is large.** Full history for 20 schemes can exceed 30,000 rows. Serialize writes through the existing database queue and report cold repair separately from warm reads.
@@ -200,6 +212,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - [x] Apply coverage to timeline, Fund Detail, and Compare.
 - [x] Add regression tests and telemetry.
 - [x] Re-pass full repository validation after the Android-discovered month-end ordering, AsyncStorage, and cross-fund-set invalidation corrections (`typecheck`, zero-warning lint, 84 suites / 1,887 tests).
-- [ ] Capture corrected-head Android evidence.
-- [ ] Open implementation PR and request two independent reviews.
+- [x] Capture corrected-head Android evidence.
+- [x] Open implementation PR #257.
+- [ ] Request corrected-head independent reviews and reach dual convergence.
 - [ ] Reach dual convergence, merge, verify main, and resume the performance queue.
