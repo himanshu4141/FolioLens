@@ -1,0 +1,37 @@
+[
+  {
+    "name": "program-milestone",
+    "color": "1d76db",
+    "description": "Implementation PR of an agent-program milestone; activates the convergence gate"
+  },
+  {
+    "name": "program-control-plane",
+    "color": "5319e7",
+    "description": "Long-lived research/control-plane PR of an agent program"
+  },
+  {
+    "name": "needs-review",
+    "color": "fbca04",
+    "description": "Executor requests independent Codex + Claude review"
+  },
+  {
+    "name": "re-review",
+    "color": "d93f0b",
+    "description": "Review findings addressed; executor requests re-review at the new head"
+  },
+  {
+    "name": "codex-converged",
+    "color": "0e8a16",
+    "description": "Codex reviewer converged at the current head; stripped automatically on new commits"
+  },
+  {
+    "name": "claude-converged",
+    "color": "2da44e",
+    "description": "Claude reviewer converged at the current head; stripped automatically on new commits"
+  },
+  {
+    "name": "correctness-hotfix",
+    "color": "b60205",
+    "description": "Correctness interrupt: the milestone queue is paused until this merges"
+  }
+]

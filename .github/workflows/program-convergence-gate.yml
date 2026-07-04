@@ -1,0 +1,74 @@
+# Mechanical merge gate for agent-program implementation PRs.
+#
+# Applies only to PRs labeled `program-milestone`; every other PR skips this
+# workflow entirely (a skipped run satisfies branch protection, so the check
+# can safely be marked "required" for main without affecting normal PRs).
+#
+# Contract:
+#   - The check passes only while BOTH `codex-converged` and `claude-converged`
+#     labels are present on the PR.
+#   - Any new commit (synchronize) strips both labels: convergence is per-head,
+#     and reviewers must explicitly re-converge after changes. This makes the
+#     "merge before final convergence marker" failure mode impossible instead
+#     of merely discouraged.
+#
+# To make the gate binding, add "Dual-review convergence" to the required
+# status checks in branch protection for `main`.
+#
+# Part of the agent-program tooling; see docs/process/AGENT-PROGRAM-PLAYBOOK.md.
+name: Program Convergence Gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate:
+    name: Dual-review convergence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: contains(github.event.pull_request.labels.*.name, 'program-milestone')
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const CONVERGED = ['codex-converged', 'claude-converged'];
+
+            // New commits invalidate prior convergence: strip both labels and
+            // fail until each reviewer re-converges at the new head.
+            if (context.payload.action === 'synchronize') {
+              for (const name of CONVERGED) {
+                try {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+                  core.info(`Stripped stale convergence label: ${name}`);
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+              core.setFailed(
+                'New commits invalidate reviewer convergence. Both reviewers must re-converge at the new head.'
+              );
+              return;
+            }
+
+            // Re-read labels from the API: the event payload is a snapshot and
+            // can be stale relative to concurrent label changes.
+            const { data } = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const names = data.map((label) => label.name);
+            const missing = CONVERGED.filter((name) => !names.includes(name));
+            if (missing.length > 0) {
+              core.setFailed(`Awaiting convergence label(s): ${missing.join(', ')}`);
+            } else {
+              core.info('Both reviewers have converged at this head. Gate is green.');
+            }
