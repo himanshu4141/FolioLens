@@ -164,6 +164,28 @@ describe('fetchFundNavHistory write-back behaviour', () => {
     expect(await navRepo.hasHistoryCoverage(SCHEME_CODE, null)).toBe(true);
   });
 
+  it('evicts every same-user timeline family after the actual full-history repair path', async () => {
+    const keys: readonly unknown[][] = [
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100', 'All'],
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100,fund-2:200', '3Y'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', 'All'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1,fund-2', '^BSESN', '3Y'],
+      ['investmentTimelineInputs', 'user-2', 'fund-1:100', 'All'],
+    ];
+    const removed: readonly unknown[][] = [];
+    const queryClient = {
+      removeQueries: jest.fn(({ predicate }: { predicate: (query: { queryKey: readonly unknown[] }) => boolean }) => {
+        for (const queryKey of keys) if (predicate({ queryKey })) (removed as unknown[][]).push([...queryKey]);
+      }),
+    } as unknown as import('@tanstack/react-query').QueryClient;
+    const { chain } = makeNavQueryChain(SAMPLE_ROWS);
+    (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);
+
+    await fetchFundNavHistory(SCHEME_CODE, { queryClient, userId: 'user-1' });
+
+    expect(removed).toEqual(keys.slice(0, 4));
+  });
+
   it('does not record full coverage when the SQLite write fails', async () => {
     const { chain } = makeNavQueryChain(SAMPLE_ROWS);
     (navHistoryRepo.from as jest.Mock).mockReturnValue(chain);

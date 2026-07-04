@@ -23,6 +23,7 @@ import {
   isStaleDatabaseWriteError,
   type DatabaseWriteScope,
 } from '@/src/lib/db/db';
+import { evictUserTimelinesAfterNavRepair } from '@/src/lib/navRepairInvalidation';
 
 /**
  * React Query key prefixes whose contents this hook's queryFn reads
@@ -278,23 +279,11 @@ export function evictTimelineSiblingsAfterNavRepair(
   benchmarkSymbol: string,
   window: TimeWindow,
 ): void {
-  const inputFundKey = stableInvestmentTimelineFundKey(funds);
-  const outputFundKey = timelineOutputFundKey(funds);
-  queryClient.removeQueries({
-    predicate: (query) => {
-      const key = query.queryKey;
-      if (key[0] !== INVESTMENT_TIMELINE_INPUT_QUERY_KEY || key[1] !== userId) return false;
-      if (key[2] !== inputFundKey) return false;
-      return key[3] !== window;
-    },
-  });
-  queryClient.removeQueries({
-    predicate: (query) => {
-      const key = query.queryKey;
-      if (key[0] !== 'investmentVsBenchmarkTimeline' || key[1] !== userId) return false;
-      if (key[2] !== outputFundKey) return false;
-      return key[3] !== benchmarkSymbol || key[4] !== window;
-    },
+  evictUserTimelinesAfterNavRepair(queryClient, userId, {
+    inputFundKey: stableInvestmentTimelineFundKey(funds),
+    outputFundKey: timelineOutputFundKey(funds),
+    benchmarkSymbol,
+    window,
   });
 }
 

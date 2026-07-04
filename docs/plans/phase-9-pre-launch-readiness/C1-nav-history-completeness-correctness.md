@@ -187,6 +187,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - The implementation bumped the persisted React Query buster to v9 as a semantic correctness purge. No payload shape changed, but persisted pre-C1 timeline/Fund Detail values can be financially wrong and therefore cannot be retained through their normal TTL.
 - Android acceptance on implementation `45ffa2b` found a second source-order bug rather than accepting partial evidence: `month_end_nav` returned 163 valid monthly rows newest-first, while Past SIP and Compare require ascending input. The wrapper normalization and regression tests are part of C1; all native evidence must be rerun on the corrected implementation SHA.
 - Corrected-head evidence on `9d01f95` then exposed repeated Android `SQLiteFullException` writes to `catalystLocalStorage`. C1 now uses one stable React Query storage key, deletes all legacy version-suffixed keys, excludes raw NAV/performance/index daily arrays already backed by SQLite/CDN, caps the serialized client at 4 MiB characters, and drops the largest dehydrated query on a failed write. The buster is v10. Native acceptance must prove legacy cleanup, a bounded successful blob, and zero further AsyncStorage/SQLite full errors after exercising all affected screens.
+- Independent re-review at `b515d4e` found that a repair mutated shared SQLite NAV history but evicted timelines only for the repairing fund set. The final implementation centralizes user-wide NAV-repair eviction: timeline repairs preserve only the exact tuple being rebuilt, while Fund Detail full-history repairs preserve nothing. Bidirectional single-fund/all-funds tests and an actual Fund Detail repair-path test protect the contract. Because this changes implementation code, the otherwise-passing `b515d4e` Android matrix is diagnostic evidence only and must be repeated on the new OTA.
 
 
 ## Progress
@@ -198,7 +199,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - [x] Implement coverage markers, deterministic pagination, and bootstrap repair.
 - [x] Apply coverage to timeline, Fund Detail, and Compare.
 - [x] Add regression tests and telemetry.
-- [x] Re-pass full repository validation after the Android-discovered month-end ordering and AsyncStorage corrections (`typecheck`, zero-warning lint, 84 suites / 1,885 tests).
+- [x] Re-pass full repository validation after the Android-discovered month-end ordering, AsyncStorage, and cross-fund-set invalidation corrections (`typecheck`, zero-warning lint, 84 suites / 1,887 tests).
 - [ ] Capture corrected-head Android evidence.
 - [ ] Open implementation PR and request two independent reviews.
 - [ ] Reach dual convergence, merge, verify main, and resume the performance queue.

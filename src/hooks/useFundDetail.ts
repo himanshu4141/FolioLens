@@ -31,6 +31,7 @@ import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import * as navRepo from '@/src/lib/db/nav';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import { captureDatabaseWriteScope } from '@/src/lib/db/db';
+import { evictUserTimelinesAfterNavRepair } from '@/src/lib/navRepairInvalidation';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -364,6 +365,9 @@ export interface FetchNavHistoryOptions {
    * chart path must always call without this option.
    */
   sinceDate?: string;
+  /** Query context used to evict user timelines after a shared SQLite repair. */
+  queryClient?: QueryClient;
+  userId?: string;
 }
 
 /**
@@ -439,6 +443,9 @@ export async function fetchFundNavHistory(
         scope: writeScope,
         operation: 'fund_detail_nav_full_coverage',
       });
+      if (opts?.queryClient && opts.userId) {
+        evictUserTimelinesAfterNavRepair(opts.queryClient, opts.userId);
+      }
     }
   }
   perfEnd(navHistorySpanId, { rows: rows.length, scheme_code: schemeCode, source });
@@ -517,6 +524,8 @@ export function useFundNavHistory(
   schemeCode: number | null | undefined,
   options: { enabled?: boolean } = {},
 ) {
+  const { session } = useSession();
+  const queryClient = useQueryClient();
   const previewMode = useAppStore((s) => s.previewMode);
   return useQuery({
     queryKey: previewMode
@@ -529,7 +538,10 @@ export function useFundNavHistory(
         // chart and the Past SIP Check 3Y simulation.
         return Promise.resolve(findPreviewNavHistoryByCode(schemeCode) ?? []);
       }
-      return fetchFundNavHistory(schemeCode!);
+      return fetchFundNavHistory(schemeCode!, {
+        queryClient,
+        userId: session?.user.id,
+      });
     },
     staleTime: STALE_TIMES.NAV_HISTORY,
   });

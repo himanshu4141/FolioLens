@@ -697,13 +697,30 @@ describe('C1 authoritative NAV coverage', () => {
     expect(computed.unexpectedCostFallbacks).toBe(0);
   });
 
-  it('evicts stale sibling windows and benchmarks while preserving the rebuilt key', () => {
+  it.each([
+    {
+      label: 'single-fund repair removes an all-funds timeline',
+      funds: [FUND],
+      preservedInput: ['investmentTimelineInputs', 'user-1', 'fund-1:100', 'All'],
+      preservedOutput: ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', 'All'],
+    },
+    {
+      label: 'all-funds repair removes a single-fund timeline',
+      funds: [FUND, { id: 'fund-2', schemeCode: 200 }],
+      preservedInput: ['investmentTimelineInputs', 'user-1', 'fund-1:100,fund-2:200', 'All'],
+      preservedOutput: ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1,fund-2', '^NSEI', 'All'],
+    },
+  ])('$label while preserving only the rebuilt key', ({ funds, preservedInput, preservedOutput }) => {
     const keys: readonly unknown[][] = [
       ['investmentTimelineInputs', 'user-1', 'fund-1:100', 'All'],
       ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y'],
+      ['investmentTimelineInputs', 'user-1', 'fund-1:100,fund-2:200', 'All'],
       ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', 'All'],
       ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^BSESN', 'All'],
       ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', '3Y'],
+      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1,fund-2', '^NSEI', 'All'],
+      ['investmentTimelineInputs', 'user-2', 'fund-1:100', 'All'],
+      ['investmentVsBenchmarkTimeline', 'user-2', 'fund-1', '^NSEI', 'All'],
     ];
     const removed: readonly unknown[][] = [];
     const client = {
@@ -712,12 +729,12 @@ describe('C1 authoritative NAV coverage', () => {
       }),
     } as unknown as QueryClient;
 
-    evictTimelineSiblingsAfterNavRepair(client, [FUND], 'user-1', '^NSEI', 'All');
+    evictTimelineSiblingsAfterNavRepair(client, funds, 'user-1', '^NSEI', 'All');
 
-    expect(removed).toEqual([
-      ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y'],
-      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^BSESN', 'All'],
-      ['investmentVsBenchmarkTimeline', 'user-1', 'fund-1', '^NSEI', '3Y'],
-    ]);
+    expect(removed).not.toContainEqual(preservedInput);
+    expect(removed).not.toContainEqual(preservedOutput);
+    expect(removed).not.toContainEqual(['investmentTimelineInputs', 'user-2', 'fund-1:100', 'All']);
+    expect(removed).not.toContainEqual(['investmentVsBenchmarkTimeline', 'user-2', 'fund-1', '^NSEI', 'All']);
+    expect(removed).toHaveLength(5);
   });
 });
