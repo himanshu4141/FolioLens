@@ -531,7 +531,10 @@ recurring weaknesses.
    all transport, all fixed by §3/§6.
 2. **Status in the PR description, not in commits.** Docs-only status commits to
    the control branch triggered preview builds and deploy comments on every update,
-   waking every subscriber. Description edits are free.
+   waking every subscriber. Description edits are free. As defense in depth, the
+   PR Preview workflow also skips tests for docs-only PRs and skips the OTA
+   publish for docs-only pushes, and Vercel skips docs-only commits via
+   `ignoreCommand` — but the description remains the primary status surface.
 3. **Mechanical gates beat conventions.** One milestone merged before the final
    convergence marker under time pressure. The per-SHA label gate makes that
    impossible rather than discouraged.

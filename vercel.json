@@ -2,6 +2,7 @@
   "buildCommand": "python3 scripts/vercel-build.py",
   "outputDirectory": "dist",
   "framework": null,
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':(exclude)docs' ':(exclude)*.md'",
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]

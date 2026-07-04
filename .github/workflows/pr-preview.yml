@@ -5,8 +5,81 @@ on:
     types: [opened, synchronize]
 
 jobs:
+  # Classifies the change so documentation-only work does not run tests or
+  # publish an OTA update. "Docs" = everything under docs/ plus any Markdown
+  # file anywhere in the repo (README.md, AGENTS.md, VISION.md, ...).
+  changes:
+    name: Detect docs-only changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only_pr: ${{ steps.detect.outputs.docs_only_pr }}
+      docs_only_push: ${{ steps.detect.outputs.docs_only_push }}
+    steps:
+      - uses: actions/github-script@v7
+        id: detect
+        with:
+          script: |
+            // On any error, fall back to "not docs-only" so the full pipeline
+            // runs. This job must never be the reason checks are skipped.
+            const isDoc = (file) => file.startsWith('docs/') || file.endsWith('.md');
+            const { owner, repo } = context.repo;
+            let docsOnlyPr = false;
+            let docsOnlyPush = false;
+            try {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner,
+                repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+              });
+              docsOnlyPr = files.length > 0 && files.every((f) => isDoc(f.filename));
+
+              // For synchronize events, also classify just the pushed range so
+              // a docs-only push to a code PR can skip the redundant OTA
+              // republish (the bundle would be byte-identical).
+              docsOnlyPush = docsOnlyPr;
+              if (context.payload.action === 'synchronize') {
+                try {
+                  const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({
+                    owner,
+                    repo,
+                    basehead: `${context.payload.before}...${context.payload.after}`,
+                  });
+                  const pushed = compare.files ?? [];
+                  // The compare API caps the file list at 300; treat a capped
+                  // or empty result conservatively and run everything.
+                  docsOnlyPush =
+                    pushed.length > 0 &&
+                    pushed.length < 300 &&
+                    pushed.every((f) => isDoc(f.filename));
+                } catch (error) {
+                  // e.g. a force-push made `before` unreachable.
+                  core.info(`Could not classify pushed range: ${error.message}`);
+                  docsOnlyPush = false;
+                }
+              }
+              core.info(`PR files: ${files.length}; docs_only_pr=${docsOnlyPr}; docs_only_push=${docsOnlyPush}`);
+            } catch (error) {
+              core.warning(`Docs-only detection failed, running full pipeline: ${error.message}`);
+              docsOnlyPr = false;
+              docsOnlyPush = false;
+            }
+            core.setOutput('docs_only_pr', String(docsOnlyPr));
+            core.setOutput('docs_only_push', String(docsOnlyPush));
+
   checks:
     name: Typecheck, Lint & Test
+    needs: changes
+    # Skip only when the ENTIRE PR is documentation. Do not widen this to the
+    # pushed range: a skipped required check counts as satisfied, so gating on
+    # the last push alone would let a failing code PR turn green by pushing a
+    # docs commit. `!cancelled()` keeps this job running even if detection
+    # errors out — skipping tests must never be the failure mode.
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only_pr != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -23,6 +96,10 @@ jobs:
 
   eas-update:
     name: EAS Update (PR preview)
+    needs: changes
+    # Docs never reach the OTA bundle: skip the publish (and its PR comment)
+    # when the whole PR is docs-only or this push changed only docs.
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only_pr != 'true' && needs.changes.outputs.docs_only_push != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -57,7 +134,7 @@ jobs:
           EXPO_PUBLIC_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           APP_VARIANT: preview-pr
           EAS_UPDATE_CHANNEL: foliolens-pr
-          EAS_UPDATE_MESSAGE: PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}
+          EAS_UPDATE_MESSAGE: 'PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}'
       - name: Trace OTA IDs + update PR comment
         uses: ./.github/actions/ota-trace
         with:
