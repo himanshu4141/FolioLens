@@ -50,6 +50,7 @@ The reviews agree that current Portfolio value, daily change, and 30-day sparkli
 - Invalidate/remove stale `investmentTimelineInputs` and `investmentVsBenchmarkTimeline` siblings immediately after a timeline repair so All→3Y→All agrees in one session.
 - Make Fund Detail full-history reads reject non-empty but unproven SQLite slices.
 - Make Compare’s five-year metrics reject non-empty but unproven SQLite slices and use its authoritative remote month-end fallback until SQLite coverage is established.
+- Normalize the shared `month_end_nav` provider response to ascending, finite `NavPoint` values so Past SIP and non-local Compare calculations cannot consume the deployed RPC’s descending rows.
 - Surface coverage status in Cache Debug.
 - Emit separate sampled valuation counts for known cost fallback and unexpected coverage miss.
 - Add deterministic tests for partial mixed histories, NFO gaps, pagination ordering, cache invalidation, and affected historical consumers.
@@ -175,6 +176,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - 2026-07-03: Retained Fund Detail and Compare validation/repair because both independently treat a non-empty SQLite history as complete; this is directly testable even though neither caused the reported Portfolio tooltip.
 - 2026-07-03: Reused `sync_state` rather than adding a table or bumping `SCHEMA_VERSION`; marker rows are user-scoped by the database lifecycle and existing sign-out wipe.
 - 2026-07-03: Kept daily full history rather than monthly compaction. The observed 6 MB failure belongs to Android AsyncStorage’s `catalystLocalStorage`, not `foliolens.db`. A representative SQLite database with 34,299 NAV rows, the production primary key, and the secondary index occupied about 2.5 MB after checkpoint. Timeline valuation needs transaction-date/trading-date fidelity, while prepared timeline inputs remain in-memory and only the bounded 90-point output is persisted to AsyncStorage.
+- 2026-07-04: Corrected the shared month-end provider contract after Android acceptance exposed 163 returned rows but zero usable Past SIP installments. The deployed SQL intentionally emits newest-first rows for `DISTINCT ON`; the client now sorts ascending and normalizes numeric values at the wrapper boundary. This also protects Compare’s upstream fallback.
 
 
 ## Amendments
@@ -182,6 +184,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - Compare’s existing bounded upstream month-end fallback remains non-persistent. It does not write a bounded slice or coverage marker into SQLite; root bootstrap or another full-history consumer establishes reusable local proof. This preserves the stronger invariant that a populated NAV table never implies completeness.
 - Fund Detail returns successfully fetched remote rows even if its optional SQLite write fails, but it deliberately withholds the full-history marker in that case. The next read retries the repair instead of trusting an incomplete device cache.
 - The implementation bumped the persisted React Query buster to v9 as a semantic correctness purge. No payload shape changed, but persisted pre-C1 timeline/Fund Detail values can be financially wrong and therefore cannot be retained through their normal TTL.
+- Android acceptance on implementation `45ffa2b` found a second source-order bug rather than accepting partial evidence: `month_end_nav` returned 163 valid monthly rows newest-first, while Past SIP and Compare require ascending input. The wrapper normalization and regression tests are part of C1; all native evidence must be rerun on the corrected implementation SHA.
 
 
 ## Progress
@@ -193,7 +196,7 @@ The transaction path is considered authoritative for this incident when Cache De
 - [x] Implement coverage markers, deterministic pagination, and bootstrap repair.
 - [x] Apply coverage to timeline, Fund Detail, and Compare.
 - [x] Add regression tests and telemetry.
-- [x] Pass full repository validation (`typecheck`, zero-warning lint, 83 suites / 1,879 tests).
+- [x] Re-pass full repository validation after the Android-discovered month-end ordering correction (`typecheck`, zero-warning lint, 84 suites / 1,881 tests).
 - [ ] Capture corrected-head Android evidence.
 - [ ] Open implementation PR and request two independent reviews.
 - [ ] Reach dual convergence, merge, verify main, and resume the performance queue.
