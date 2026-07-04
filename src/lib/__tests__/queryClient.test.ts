@@ -4,6 +4,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     getItem: jest.fn(),
     setItem: jest.fn(),
     removeItem: jest.fn(),
+    getAllKeys: jest.fn().mockResolvedValue([]),
+    multiRemove: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -18,8 +20,10 @@ jest.mock('@/src/lib/analytics', () => ({
 // eslint-disable-next-line import/first -- mocks must register before module imports
 import {
   PERSIST_MAX_AGE_MS,
+  PERSIST_SAFE_MAX_CHARS,
   __BUSTER__,
   queryClient,
+  retryPersistedClient,
   shouldPersistQueryKey,
 } from '@/src/lib/queryClient';
 // eslint-disable-next-line import/first
@@ -39,11 +43,6 @@ describe('shouldPersistQueryKey()', () => {
       ['investmentVsBenchmarkTimeline', ['investmentVsBenchmarkTimeline', 'user-1', 'a', 'b', 'c']],
       ['portfolio-composition', ['portfolio-composition', [12345]]],
       ['money-trail', ['money-trail', 'user-1']],
-      ['fund-detail', ['fund-detail', 'fund-1']],
-      ['fund-detail-index', ['fund-detail-index', '^NSEI']],
-      ['fund-nav-history', ['fund-nav-history', 12345]],
-      ['portfolio-timeline', ['portfolio-timeline', 'user-1']],
-      ['performance-timeline', ['performance-timeline', 'fund-1']],
       ['user-funds', ['user-funds', 'user-1']],
       ['user-transactions', ['user-transactions', 'user-1']],
     ])('%s', (_label, queryKey) => {
@@ -55,6 +54,12 @@ describe('shouldPersistQueryKey()', () => {
     it.each([
       ['user-profile (auth-sensitive)', ['user-profile', 'user-1']],
       ['prepared investment timeline input (user-scoped Maps)', ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y']],
+      ['raw fund NAV history (authoritative copy is SQLite)', ['fund-nav-history', 12345]],
+      ['raw performance history (authoritative copy is SQLite)', ['performance-timeline', 'fund-1']],
+      ['raw index snapshot (authoritative copy is SQLite/CDN)', ['index-snapshot', '^NSEI']],
+      ['fund detail embeds raw NAV history', ['fund-detail', 'fund-1']],
+      ['fund detail index embeds raw index history', ['fund-detail-index', '^NSEI']],
+      ['legacy portfolio timeline', ['portfolio-timeline', 'user-1']],
       ['unknown key', ['some-other-thing', 'foo']],
       ['empty key', []],
       ['non-array key', 'not-an-array'],
@@ -75,6 +80,51 @@ describe('persister config constants', () => {
   it('exports a non-empty buster string so future bumps invalidate the cache', () => {
     expect(typeof __BUSTER__).toBe('string');
     expect(__BUSTER__.length).toBeGreaterThan(0);
+  });
+
+  it('leaves at least 2 MB of the Android 6 MB AsyncStorage database for non-query state', () => {
+    expect(PERSIST_SAFE_MAX_CHARS).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+});
+
+describe('retryPersistedClient()', () => {
+  const makeQuery = (family: string, payload: string) => ({
+    dehydratedAt: 1,
+    state: { data: payload, dataUpdateCount: 1, dataUpdatedAt: 1, error: null, errorUpdateCount: 0, errorUpdatedAt: 0, fetchFailureCount: 0, fetchFailureReason: null, fetchMeta: null, isInvalidated: false, status: 'success' as const, fetchStatus: 'idle' as const },
+    queryKey: [family],
+    queryHash: `[\"${family}\"]`,
+  });
+
+  it('drops the largest query and preserves mutations and the remaining queries', () => {
+    const small = makeQuery('portfolio', 'small');
+    const large = makeQuery('money-trail', 'x'.repeat(1000));
+    const client = {
+      buster: 'v10',
+      timestamp: 1,
+      clientState: { mutations: [], queries: [small, large] },
+    };
+
+    const retried = retryPersistedClient(client, new Error('database is full'), 1);
+
+    expect(retried?.clientState.queries).toEqual([small]);
+    expect(retried?.clientState.mutations).toEqual([]);
+    expect(mockedTrack).toHaveBeenCalledWith(
+      'persister_write_retried',
+      expect.objectContaining({
+        removed_query_family: 'money-trail',
+        remaining_query_count: 1,
+      }),
+    );
+  });
+
+  it('stops retrying when no queries remain', () => {
+    const client = {
+      buster: 'v10',
+      timestamp: 1,
+      clientState: { mutations: [], queries: [] },
+    };
+
+    expect(retryPersistedClient(client, new Error('database is full'), 2)).toBeUndefined();
   });
 });
 
