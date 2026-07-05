@@ -1,19 +1,24 @@
 # Mechanical merge gate for agent-program implementation PRs.
 #
-# Applies only to PRs labeled `program-milestone`; every other PR skips this
-# workflow entirely (a skipped run satisfies branch protection, so the check
-# can safely be marked "required" for main without affecting normal PRs).
+# Membership is derived from the head branch name: any PR whose head branch
+# starts with `program/` is a program PR (a PR's head branch cannot change
+# after creation, so membership cannot be toggled off the way a label can).
+# The `program-milestone` label also opts a PR in, but it is the weaker,
+# human-visible signal — program branches MUST use the `program/` prefix.
+# Every other PR passes immediately, so the "Dual-review convergence" check is
+# safe to mark "required" on main without affecting normal PRs.
 #
-# Contract:
-#   - The check passes only while BOTH `codex-converged` and `claude-converged`
-#     labels are present on the PR.
-#   - Any new commit (synchronize) strips both labels: convergence is per-head,
-#     and reviewers must explicitly re-converge after changes. This makes the
-#     "merge before final convergence marker" failure mode impossible instead
-#     of merely discouraged.
+# Source of truth: SHA-pinned convergence comments. The gate passes only when
+# BOTH reviewers have posted "[<Role> review <ID>] CONVERGED at <head sha>"
+# where the SHA matches the CURRENT head. The codex-converged/claude-converged
+# labels are advisory UX: they are stripped on every push, and adding one is
+# what re-triggers this gate — but they are never trusted as evidence, so a
+# stale label surviving an unlabeled period cannot green the gate.
 #
-# To make the gate binding, add "Dual-review convergence" to the required
-# status checks in branch protection for `main`.
+# Honesty note: with every role posting through one GitHub account, this gate
+# guards against process mistakes, not adversarial agents — a rogue session
+# could forge a reviewer's comment. SHA-pinning makes that auditable after the
+# fact, not impossible.
 #
 # Part of the agent-program tooling; see docs/process/AGENT-PROGRAM-PLAYBOOK.md.
 name: Program Convergence Gate
@@ -23,6 +28,7 @@ on:
     types: [opened, reopened, synchronize, labeled, unlabeled]
 
 permissions:
+  contents: read
   pull-requests: write
   issues: write
 
@@ -31,19 +37,27 @@ jobs:
     name: Dual-review convergence
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: contains(github.event.pull_request.labels.*.name, 'program-milestone')
     steps:
       - uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-            const CONVERGED = ['codex-converged', 'claude-converged'];
+            const pr = context.payload.pull_request;
+            const issue_number = pr.number;
+            const headSha = pr.head.sha.toLowerCase();
+            const labelNames = pr.labels.map((label) => label.name);
 
-            // New commits invalidate prior convergence: strip both labels and
-            // fail until each reviewer re-converges at the new head.
+            const isProgramPr =
+              pr.head.ref.startsWith('program/') || labelNames.includes('program-milestone');
+            if (!isProgramPr) {
+              core.info('Not a program PR (no program/ branch prefix, no program-milestone label); gate passes.');
+              return;
+            }
+
+            // Convergence labels are advisory; strip them on new commits so the
+            // PR's label state never claims a convergence that no longer holds.
             if (context.payload.action === 'synchronize') {
-              for (const name of CONVERGED) {
+              for (const name of ['codex-converged', 'claude-converged']) {
                 try {
                   await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
                   core.info(`Stripped stale convergence label: ${name}`);
@@ -51,24 +65,47 @@ jobs:
                   if (error.status !== 404) throw error;
                 }
               }
-              core.setFailed(
-                'New commits invalidate reviewer convergence. Both reviewers must re-converge at the new head.'
-              );
-              return;
             }
 
-            // Re-read labels from the API: the event payload is a snapshot and
-            // can be stale relative to concurrent label changes.
-            const { data } = await github.rest.issues.listLabelsOnIssue({
+            // Evidence: SHA-pinned CONVERGED comments at the current head, in
+            // issue comments or review bodies. Labels are deliberately not
+            // consulted — they can go stale while the program label is absent.
+            const bodies = [];
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
               issue_number,
               per_page: 100,
             });
-            const names = data.map((label) => label.name);
-            const missing = CONVERGED.filter((name) => !names.includes(name));
+            bodies.push(...comments.map((c) => c.body || ''));
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner,
+              repo,
+              pull_number: issue_number,
+              per_page: 100,
+            });
+            bodies.push(...reviews.map((r) => r.body || ''));
+
+            const convergedAtHead = (role) => {
+              const pattern = new RegExp(
+                `\\[${role} review [^\\]\\n]{1,80}\\][^\\n]{0,100}CONVERGED at ([0-9a-fA-F]{12,40})`,
+                'g'
+              );
+              return bodies.some((body) => {
+                for (const match of body.matchAll(pattern)) {
+                  if (headSha.startsWith(match[1].toLowerCase())) return true;
+                }
+                return false;
+              });
+            };
+
+            const missing = ['Codex', 'Claude'].filter((role) => !convergedAtHead(role));
             if (missing.length > 0) {
-              core.setFailed(`Awaiting convergence label(s): ${missing.join(', ')}`);
+              core.setFailed(
+                `Awaiting SHA-pinned convergence at head ${headSha.slice(0, 12)} from: ${missing.join(', ')}. ` +
+                  'Each reviewer must comment "[<Role> review <ID>] CONVERGED at <head SHA, 12+ hex chars>" ' +
+                  'and add their converged label (the label add re-triggers this gate).'
+              );
             } else {
-              core.info('Both reviewers have converged at this head. Gate is green.');
+              core.info(`Both reviewers have converged at ${headSha}. Gate is green.`);
             }

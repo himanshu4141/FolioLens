@@ -67,7 +67,7 @@ control PR, every comment woke subscribed sessions, and every woken session re-r
 | Tracking table + ledger | Control-plane PR **description** | Body edits create no commits, no CI runs, no bot comments, no notifications — and any session reads it with one cheap API call |
 | Milestone announcements | Control-plane PR comments — **exactly two per milestone** (START, MERGED) | Durable audit trail without thread bloat |
 | Review discussion | Implementation PR threads | Keeps the control PR readable; scoped context for reviewers |
-| Convergence state | `codex-converged` / `claude-converged` labels + `CONVERGED at <sha>` comments on the implementation PR | Machine-checkable; enforced by the gate workflow |
+| Convergence state | SHA-pinned `CONVERGED at <sha>` comments on the implementation PR (source of truth) + advisory converged labels | Machine-checkable; enforced by the gate workflow against the current head |
 | Correctness interrupts | One investigation comment on the control PR + a `correctness-hotfix` PR | High-signal events earn control-PR space |
 
 **Tracking table format** (in the control PR description):
@@ -105,7 +105,7 @@ when the definition file changes on `main`, or run it manually from the Actions 
 | Label | Meaning |
 |---|---|
 | `program-control-plane` | The long-lived research/control-plane PR |
-| `program-milestone` | Implementation PR under a program; **activates the gate** |
+| `program-milestone` | Implementation PR under a program (human-visible marker; the `program/` branch prefix is what binds the gate) |
 | `needs-review` | Executor requests both independent reviews |
 | `re-review` | Findings addressed; executor requests re-review at the new head |
 | `codex-converged` | Codex reviewer converged at the current head |
@@ -113,20 +113,41 @@ when the definition file changes on `main`, or run it manually from the Actions 
 | `correctness-hotfix` | Correctness interrupt; the queue is paused until it merges |
 
 The **Program Convergence Gate** workflow (`program-convergence-gate.yml`, check name
-"Dual-review convergence") runs only on PRs labeled `program-milestone`:
+"Dual-review convergence") runs on every PR and enforces on program PRs:
 
-- It **passes** only while both converged labels are present.
-- Any new commit **strips both converged labels** and fails the check until each
-  reviewer explicitly re-converges at the new head. Convergence is per-SHA by
-  construction — the first program's "merged before the final convergence marker"
-  slip cannot recur.
-- Unlabeled PRs skip the workflow, and skipped runs satisfy branch protection, so
-  the check is safe to mark **required** on `main`. Do that at program start; a gate
-  that can be skipped under time pressure will be.
+- **Membership is the head branch prefix.** Program branches are named
+  `program/<milestone-id>-<slug>` (hotfixes too: `program/<hotfix-id>-<slug>`). A
+  PR's head branch cannot change after creation, so membership cannot be toggled
+  off the way a label can — removing `program-milestone` from a `program/` PR does
+  not bypass the gate. The label also opts a PR in, but it is the weaker signal;
+  always use the branch prefix.
+- **The source of truth is SHA-pinned comments, not labels.** The gate passes only
+  when both a `[Codex review <ID>] CONVERGED at <sha>` and a
+  `[Claude review <ID>] CONVERGED at <sha>` comment exist whose SHA (12+ hex chars)
+  matches the **current** head. A push instantly invalidates convergence because
+  the pinned SHA no longer matches — no label state can go stale into a green gate,
+  and the first program's "merged before the final convergence marker" slip cannot
+  recur.
+- The `codex-converged`/`claude-converged` labels are **advisory UX**: the gate
+  strips them on every push so the PR never displays a convergence that no longer
+  holds, and adding one is what re-triggers the gate evaluation — but they are
+  never trusted as evidence.
+- Non-program PRs pass immediately, so the check is safe to mark **required** on
+  `main` without affecting normal PRs. Do that at program start; a gate that can be
+  skipped under time pressure will be.
+- Honesty about the limit: with every role posting through one GitHub account, the
+  gate guards against **process mistakes, not adversarial agents** — a rogue
+  session could forge a reviewer's comment. SHA-pinning makes that auditable after
+  the fact, not impossible.
 
-Reviewers signal convergence twice, deliberately: the label (machine-readable, feeds
-the gate) and a `[<Role> review <ID>] CONVERGED at <sha>` comment (human-readable
-audit trail that survives label churn).
+**Label lifecycle** (labels only emit GitHub events when their state actually
+changes — re-adding a present label is a silent no-op, so consumption is explicit):
+
+| Label | Added by | Removed by |
+|---|---|---|
+| `needs-review` | Executor, to open round 1 (ensure absent first) | Executor, immediately before the round's batched fix push; at merge |
+| `re-review` | Executor, after each batched fix push, to open the next round (ensure absent first) | Executor, immediately before the next batched fix push; at merge |
+| `codex-converged` / `claude-converged` | Each reviewer, together with the SHA-pinned CONVERGED comment | Gate (automatically, on every push); executor at merge |
 
 ## 5. Lifecycle
 
@@ -162,23 +183,34 @@ before any code was written).
 ### 5.3 Per-milestone cycle
 
 1. **Start.** The executor session selects the first `Pending` row from the tracking
-   table, branches from current `origin/main`, and loads only: the control PR
-   description, the report section(s) for this milestone, and the milestone task
-   prompt. Sets the tracking row to `In progress`. Posts the START comment — this
-   comment is also the reviewers' wake signal.
+   table, branches `program/<milestone-id>-<slug>` from current `origin/main` (the
+   prefix is what binds the PR to the convergence gate — see §4), and loads only:
+   the control PR description, the report section(s) for this milestone, and the
+   milestone task prompt. Sets the tracking row to `In progress`. Posts the START
+   comment — this comment is also the reviewers' wake signal.
 2. **Implement.** Milestone scope only. Repo validation checklist (typecheck, lint,
    full tests, `git diff --check`) plus the milestone's focused tests. Native
    evidence, where required, is recorded at the exact implementation SHA (device,
    channel, OTA/update ID, SHA).
-3. **Request review.** Open as draft; mark ready and add `program-milestone` +
-   `needs-review` when acceptance evidence is complete. Tracking row → `In review`.
-4. **Dual review.** Both reviewer sessions, woken by the START comment, work the
-   implementation PR per §7.4/§7.5 — independent verification, inline threads for
-   actionable findings, one top-level summary each. The executor fixes, replies
-   with commit + evidence, adds `re-review`. Loop until both reviewers post
-   `CONVERGED at <head sha>` and apply their labels.
-5. **Merge.** Only when the gate check and all required checks are green and no
-   actionable thread is open. Squash-merge as usual.
+3. **Request review.** Open as draft; when acceptance evidence is complete, mark
+   ready, add `program-milestone`, then add `needs-review` (ensure it is absent
+   first — §4 label lifecycle). The head SHA at that moment is round 1's **frozen
+   head**. Tracking row → `In review`.
+4. **Dual review, in frozen-head rounds.** Both reviewer sessions, woken by the
+   START comment, review the *same* frozen head per §7.4/§7.5 — independent
+   verification, inline threads for actionable findings, and one round summary
+   each: either `changes requested` or the SHA-pinned CONVERGED comment. **The
+   executor does not push while a round is open.** Only after *both* round
+   summaries are in: if both converged, proceed to merge; otherwise the executor
+   removes the round label, pushes **one batched push** addressing every
+   actionable thread from both reviewers, replies with commit + evidence, and
+   adds `re-review` to open the next round at the new frozen head. The barrier is
+   the point: without it, one reviewer's mid-round push invalidates the other
+   reviewer's in-progress review and the cycle ping-pongs.
+5. **Merge.** Only when the gate check is green — it verifies SHA-pinned
+   `CONVERGED at <head sha>` comments from both reviewers against the current
+   head — plus all other required checks, with no open actionable thread.
+   Squash-merge as usual; remove the round and converged labels at merge.
 6. **Close out.** Executor posts the MERGED comment (PR link, merge SHA, validation
    summary, deviations, carried-forward flags), sets the tracking row to `Merged`,
    appends the ledger entry, and immediately starts the next `Pending` row. No
@@ -199,9 +231,10 @@ Modeled on C1/PR #257. When anyone finds a user-facing correctness defect:
    plus acceptance criteria, or a concrete counterexample/evidence gap. (In C1 this
    step found an additional defect — the pagination tie-breaker — and narrowed the
    blast radius. It is not optional.)
-4. **Fix PR** labeled `program-milestone` + `correctness-hotfix`; the standard gate
-   and review cycle apply. A hotfix touching financial computation or its inputs
-   needs the same golden-equivalence AND garbage-in fixtures as any milestone.
+4. **Fix PR** from branch `program/<hotfix-id>-<slug>`, labeled `program-milestone`
+   + `correctness-hotfix`; the standard gate and review cycle apply. A hotfix
+   touching financial computation or its inputs needs the same golden-equivalence
+   AND garbage-in fixtures as any milestone.
 5. **Resume.** Ledger entry, tracking row, queue resumes.
 
 ### 5.5 Program exit
@@ -228,9 +261,25 @@ is recorded in the report.
   above is enforced. During an active review, each session also subscribes to the
   implementation PR, and unsubscribes from it after merge.
 - Bot comments (EAS preview, Vercel deploy) are never actionable for any role. A
-  session woken by one re-arms silently — no reply, no re-read of history. A
-  session whose runtime cannot subscribe to events polls the control PR only, at a
-  long interval; it never polls the implementation PR while the executor is working.
+  session woken by one re-arms silently — no reply, no re-read of history.
+
+### Wake mechanics (per runtime — this is where automation is real or it isn't)
+
+GitHub *watch/notification* subscriptions do not wake an agent session; nothing
+happens unless the session's runtime has an actual inbound-event or scheduling
+mechanism. Pick the row that matches each session and write it into that session's
+bootstrap prompt:
+
+| Runtime capability | Mechanism |
+|---|---|
+| Webhook wakes (e.g. Claude Code remote sessions via PR-activity subscription) | Subscribe to the control PR for the life of the program; additionally subscribe to the implementation PR during an active review cycle and unsubscribe at merge. Events arrive as session wakes. |
+| Scheduled self-wakes only | Schedule a recurring check (~15–30 min during an active round, ~hourly otherwise) that reads one surface and re-arms silently when nothing changed. |
+| Neither (e.g. Codex cloud polling loops) | Poll on a long interval — and poll only the surface where the next expected event will appear: the control PR between milestones, the implementation PR during an active review cycle. Never tight-loop. |
+| None acceptable | Use §8 stateless Actions dispatch — the only fully event-driven option that needs no live session at all. |
+
+Whatever the mechanism, every persistent session also keeps a slow fallback
+heartbeat (~hourly) so a single missed event cannot strand the program, and a
+no-change heartbeat re-arms without commenting or re-reading history.
 - Context loading per session: control PR **description** + the milestone's report
   section(s) + the PR being worked. The full report is read only when amending it.
   The control PR comment thread is read only during a hotfix investigation.
@@ -335,9 +384,10 @@ this program expects:
     1. Read the control PR DESCRIPTION only (never the comment thread). Select the
        first Pending row; set it to In progress.
     2. Read ONLY that milestone's report section(s) and task prompt from the
-       research branch. Branch from current origin/main after verifying the
-       previous milestone's merge SHA is present. Never merge or cherry-pick the
-       research branch.
+       research branch. Create branch program/{{MILESTONE_ID}}-<slug> from current
+       origin/main after verifying the previous milestone's merge SHA is present
+       (the program/ prefix binds the PR to the convergence gate — it is
+       mandatory). Never merge or cherry-pick the research branch.
     3. Implement ONLY the milestone scope; honor its non-goals. Run the repo
        validation checklist (typecheck, lint, full tests, git diff --check) plus
        the milestone's focused tests. Record all evidence at the exact
@@ -347,13 +397,22 @@ this program expects:
        and post the START comment on PR #{{CONTROL_PR}} ("[Execution
        {{MILESTONE_ID}}] IMPLEMENTATION PR" + link) — that comment is the
        reviewers' wake signal. When acceptance evidence is complete: mark ready,
-       add the program-milestone and needs-review labels, set the tracking row to
-       In review, and subscribe to the implementation PR.
-    5. Review loop: react to PR events — do not poll. Address every actionable
-       review thread with a commit and evidence. Never resolve a reviewer's
-       thread yourself. Add the re-review label after each round of fixes.
-    6. Merge only when the "Dual-review convergence" check is green, all required
-       checks pass, and no actionable thread is open.
+       add the program-milestone label, add the needs-review label (ensure it is
+       absent first — re-adding a present label emits no event), set the tracking
+       row to In review, and subscribe to the implementation PR. The head SHA at
+       this moment is round 1's frozen head.
+    5. Review rounds: DO NOT PUSH while a round is open. Wait until BOTH
+       reviewers have posted their round summary for the current frozen head
+       (changes requested, or their SHA-pinned CONVERGED comment). Then, if
+       fixes are needed: remove the needs-review/re-review label, push ONE
+       batched push addressing every actionable thread from both reviewers,
+       reply to each thread with commit + evidence, and add the re-review label
+       to open the next round at the new frozen head. Never resolve a reviewer's
+       thread yourself. React to PR events; do not tight-loop poll.
+    6. Merge only when the "Dual-review convergence" check is green (it verifies
+       both reviewers' CONVERGED comments pin the CURRENT head SHA), all required
+       checks pass, and no actionable thread is open. Remove the round and
+       converged labels at merge.
     7. Close out: post the MERGED comment on PR #{{CONTROL_PR}} (PR link, merge
        SHA, validation summary, deviations, carried-forward flags); set the
        tracking row to Merged; append the §3 ledger entry to the description;
@@ -396,13 +455,20 @@ this program expects:
     2. When the linked implementation PR is ready for review and labeled
        needs-review, load ONLY: the control PR DESCRIPTION, that milestone's
        report section(s), and the PR's diff and threads. Subscribe to the
-       implementation PR.
-    3. Review under the stance and non-negotiables below. File findings; post ONE
-       top-level summary: approve / changes requested / blocked on evidence.
-    4. On each re-review label (or any new head), re-verify at the new head.
-    5. Converge only when nothing actionable remains: comment
-       "[Codex review <ID>] CONVERGED at <head sha>" AND add the codex-converged
-       label. New commits strip the label automatically; re-converge explicitly.
+       implementation PR. Record the frozen head SHA you are reviewing.
+    3. Review that frozen head under the stance and non-negotiables below. File
+       findings as inline threads; post ONE round summary — either
+       "[Codex review <ID>] round <n> at <short sha>: changes requested" or,
+       if nothing actionable remains, a standalone comment in exactly this
+       format: "[Codex review <ID>] CONVERGED at <full 40-char head SHA>",
+       plus the codex-converged label. The gate parses that comment and matches
+       the SHA against the current head; the label add is what re-triggers it.
+    4. The executor is barred from pushing while a round is open, so the head
+       you review is stable. If a mid-round push happens anyway, the round is
+       void: stop, discard round conclusions, and wait for the re-review label.
+    5. On each re-review label, repeat from step 2 at the new frozen head. A
+       CONVERGED you posted for an older SHA never carries forward — re-converge
+       explicitly at every new head.
     6. After the PR merges, unsubscribe from it and return to step 1.
 
     Primary stance: implementation-versus-contract. Does the diff satisfy the
@@ -447,13 +513,20 @@ this program expects:
     2. When the linked implementation PR is ready for review and labeled
        needs-review, load ONLY: the control PR DESCRIPTION, that milestone's
        report section(s), and the PR's diff and threads. Subscribe to the
-       implementation PR.
-    3. Review under the stance and non-negotiables below. File findings; post ONE
-       top-level summary: approve / changes requested / blocked on evidence.
-    4. On each re-review label (or any new head), re-verify at the new head.
-    5. Converge only when nothing actionable remains: comment
-       "[Claude review <ID>] CONVERGED at <head sha>" AND add the claude-converged
-       label. New commits strip the label automatically; re-converge explicitly.
+       implementation PR. Record the frozen head SHA you are reviewing.
+    3. Review that frozen head under the stance and non-negotiables below. File
+       findings as inline threads; post ONE round summary — either
+       "[Claude review <ID>] round <n> at <short sha>: changes requested" or,
+       if nothing actionable remains, a standalone comment in exactly this
+       format: "[Claude review <ID>] CONVERGED at <full 40-char head SHA>",
+       plus the claude-converged label. The gate parses that comment and matches
+       the SHA against the current head; the label add is what re-triggers it.
+    4. The executor is barred from pushing while a round is open, so the head
+       you review is stable. If a mid-round push happens anyway, the round is
+       void: stop, discard round conclusions, and wait for the re-review label.
+    5. On each re-review label, repeat from step 2 at the new frozen head. A
+       CONVERGED you posted for an older SHA never carries forward — re-converge
+       explicitly at every new head.
     6. After the PR merges, unsubscribe from it and return to step 1.
 
     Primary stance: adversarial challenge. Attack the diagnosis and the test
@@ -493,10 +566,11 @@ this program expects:
        and [Claude issue review] to independently confirm or refute.
     3. Wait for both reviewers to respond once each: confirmed root cause plus
        acceptance criteria, or a concrete counterexample/evidence gap.
-    4. Open the fix PR labeled program-milestone + correctness-hotfix. The
-       standard dual-review convergence gate applies. If the fix touches financial
-       computation or its inputs, include golden-equivalence AND garbage-in
-       fixtures.
+    4. Open the fix PR from branch program/{{HOTFIX_ID}}-<slug>, labeled
+       program-milestone + correctness-hotfix. The standard dual-review
+       convergence gate and frozen-head review rounds apply. If the fix touches
+       financial computation or its inputs, include golden-equivalence AND
+       garbage-in fixtures.
     5. On merge: ledger entry, tracking rows updated, queue resumes.
 
 ## 8. Alternative: stateless per-milestone reviewer dispatch
@@ -533,8 +607,10 @@ recurring weaknesses.
    the control branch triggered preview builds and deploy comments on every update,
    waking every subscriber. Description edits are free. As defense in depth, the
    PR Preview workflow also skips tests for docs-only PRs and skips the OTA
-   publish for docs-only pushes, and Vercel skips docs-only commits via
-   `ignoreCommand` — but the description remains the primary status surface.
+   publish for docs-only pushes, and Vercel skips docs-only deploys via
+   `ignoreCommand` (exact per-merge on production; a conservative all-docs
+   history window on previews) — but the description remains the primary status
+   surface.
 3. **Mechanical gates beat conventions.** One milestone merged before the final
    convergence marker under time pressure. The per-SHA label gate makes that
    impossible rather than discouraged.
@@ -553,3 +629,7 @@ recurring weaknesses.
 8. **One milestone, one PR, sequential.** Shared hot files (`app/_layout.tsx`
    spanned three milestones) make parallel milestones a conflict machine.
    Independent tracks are fine when the report explicitly marks them independent.
+9. **Review in frozen-head rounds.** If the executor can push while one reviewer
+   is mid-review, that review is invalidated on arrival and the cycle ping-pongs.
+   Both reviewers finish at the same frozen head; one batched fix push opens the
+   next round.

@@ -2,7 +2,7 @@
   {
     "name": "program-milestone",
     "color": "1d76db",
-    "description": "Implementation PR of an agent-program milestone; activates the convergence gate"
+    "description": "Program milestone PR (marker; the program/ branch prefix is what binds the convergence gate)"
   },
   {
     "name": "program-control-plane",

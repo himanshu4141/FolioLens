@@ -2,7 +2,7 @@
   "buildCommand": "python3 scripts/vercel-build.py",
   "outputDirectory": "dist",
   "framework": null,
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ':(exclude)docs' ':(exclude)*.md'",
+  "ignoreCommand": "if [ \"$VERCEL_ENV\" = \"production\" ]; then git diff --quiet HEAD^ HEAD -- ':(exclude)docs' ':(exclude)*.md'; else BASE=$(git rev-list --max-count=10 HEAD | tail -n 1) && [ \"$BASE\" != \"$(git rev-parse HEAD)\" ] && git diff --quiet \"$BASE\" HEAD -- ':(exclude)docs' ':(exclude)*.md'; fi",
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
