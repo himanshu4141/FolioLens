@@ -298,7 +298,9 @@ function NavCard({ snap, styles }: { snap: CacheDebugSnapshot['nav']; styles: St
           <Row
             key={s.schemeCode}
             label={s.schemeName ?? `Scheme ${s.schemeCode}`}
-            value={`${formatNumber(s.rowCount)} rows · ${s.watermark ?? '—'}`}
+            value={`${formatNumber(s.rowCount)} rows · ${s.watermark ?? '—'} · ${
+              !s.coverageKnown ? 'coverage unknown' : s.coverageStart ?? 'full history'
+            }`}
             styles={styles}
           />
         ))

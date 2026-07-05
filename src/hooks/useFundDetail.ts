@@ -31,6 +31,7 @@ import { fetchSchemeMaster } from '@/src/hooks/useSchemeMaster';
 import * as navRepo from '@/src/lib/db/nav';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import { captureDatabaseWriteScope } from '@/src/lib/db/db';
+import { evictUserTimelinesAfterNavRepair } from '@/src/lib/navRepairInvalidation';
 
 // Pure windowing utils live in navUtils so they can be unit-tested without
 // pulling in React Native / Supabase dependencies.
@@ -364,6 +365,9 @@ export interface FetchNavHistoryOptions {
    * chart path must always call without this option.
    */
   sinceDate?: string;
+  /** Query context used to evict user timelines after a shared SQLite repair. */
+  queryClient?: QueryClient;
+  userId?: string;
 }
 
 /**
@@ -387,15 +391,23 @@ export async function fetchFundNavHistory(
   const navHistorySpanId = perfStart('query:fundNavHistory');
   let rows: { nav_date: string; nav: number }[] = [];
   let source: 'sqlite' | 'supabase' = 'sqlite';
+  let localCoverageProven = false;
   if (SQLITE_AVAILABLE) {
     try {
-      const local = await navRepo.readBySchemeCode(schemeCode);
-      rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+      const coverageProven = await navRepo.hasHistoryCoverage(
+        schemeCode,
+        sinceDate ?? null,
+      );
+      if (coverageProven) {
+        localCoverageProven = true;
+        const local = await navRepo.readBySchemeCode(schemeCode, { sinceDate });
+        rows = local.map((r) => ({ nav_date: r.nav_date, nav: r.nav }));
+      }
     } catch (err) {
       console.warn('[fetchFundNavHistory] sqlite read failed; falling back', err);
     }
   }
-  if (rows.length === 0) {
+  if (!localCoverageProven) {
     source = 'supabase';
     rows = await paginateRangeQuery<{ nav_date: string; nav: number }>(
       (from, to) => {
@@ -411,14 +423,28 @@ export async function fetchFundNavHistory(
     // (sinceDate set) must not be written back — it would look like full
     // history to useFundNavHistory's watermark check and prevent the proper
     // paginated backfill from ever running.
+    let fullHistoryWriteSucceeded = rows.length === 0;
     if (rows.length > 0 && SQLITE_AVAILABLE && !sinceDate) {
       try {
         await navRepo.bulkInsert(
           rows.map((r) => ({ scheme_code: schemeCode, nav_date: r.nav_date, nav: Number(r.nav) })),
           { scope: writeScope, operation: 'fund_detail_nav_write_back' },
         );
+        fullHistoryWriteSucceeded = true;
       } catch (err) {
         console.warn('[fetchFundNavHistory] sqlite write failed', err);
+      }
+    }
+    if (SQLITE_AVAILABLE && !sinceDate && fullHistoryWriteSucceeded) {
+      // Row presence is not completeness: a recent-only Portfolio write may
+      // already have populated this scheme. Mark full only after this
+      // unbounded upstream query completed and its rows were inserted.
+      await navRepo.markHistoryCoverage([schemeCode], null, {
+        scope: writeScope,
+        operation: 'fund_detail_nav_full_coverage',
+      });
+      if (opts?.queryClient && opts.userId) {
+        evictUserTimelinesAfterNavRepair(opts.queryClient, opts.userId);
       }
     }
   }
@@ -498,6 +524,8 @@ export function useFundNavHistory(
   schemeCode: number | null | undefined,
   options: { enabled?: boolean } = {},
 ) {
+  const { session } = useSession();
+  const queryClient = useQueryClient();
   const previewMode = useAppStore((s) => s.previewMode);
   return useQuery({
     queryKey: previewMode
@@ -510,7 +538,10 @@ export function useFundNavHistory(
         // chart and the Past SIP Check 3Y simulation.
         return Promise.resolve(findPreviewNavHistoryByCode(schemeCode) ?? []);
       }
-      return fetchFundNavHistory(schemeCode!);
+      return fetchFundNavHistory(schemeCode!, {
+        queryClient,
+        userId: session?.user.id,
+      });
     },
     staleTime: STALE_TIMES.NAV_HISTORY,
   });

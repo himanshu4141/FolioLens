@@ -16,6 +16,96 @@ export interface DbNavRow {
 }
 
 const COLUMNS = 'scheme_code, nav_date, nav';
+const COVERAGE_SCOPE_PREFIX = 'nav-coverage:';
+
+export interface NavHistoryCoverage {
+  known: boolean;
+  /** `null` means an unbounded upstream fetch proved full history. */
+  startDate: string | null;
+}
+
+export function navHistoryCoverageScope(schemeCode: number): string {
+  return `${COVERAGE_SCOPE_PREFIX}${schemeCode}`;
+}
+
+/**
+ * Authoritative lower-bound coverage for one scheme.
+ *
+ * Row absence means the local series may be only a recent slice. Row presence
+ * proves a completed upstream read; `watermark_date = NULL` is the strongest
+ * state and means that read was unbounded. This metadata deliberately lives in
+ * `sync_state` so sign-out/reset clears rows and their proof together.
+ */
+export async function getHistoryCoverage(schemeCode: number): Promise<NavHistoryCoverage> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ watermark_date: string | null }>(
+    'SELECT watermark_date FROM sync_state WHERE scope = ?',
+    [navHistoryCoverageScope(schemeCode)],
+  );
+  if (!row) return { known: false, startDate: null };
+  return { known: true, startDate: row.watermark_date };
+}
+
+export async function hasHistoryCoverage(
+  schemeCode: number,
+  requiredStartDate: string | null,
+): Promise<boolean> {
+  const coverage = await getHistoryCoverage(schemeCode);
+  if (!coverage.known) return false;
+  if (coverage.startDate === null) return true;
+  if (requiredStartDate === null) return false;
+  return coverage.startDate <= requiredStartDate;
+}
+
+/**
+ * Record a successful upstream interval after its rows are durably inserted.
+ * The SQL merge is monotonic under concurrent repairs: full history (`NULL`)
+ * can never be weakened, while bounded coverage can only move earlier.
+ */
+export async function markHistoryCoverage(
+  schemeCodes: number[],
+  requestedStartDate: string | null,
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<void> {
+  if (schemeCodes.length === 0) return;
+  const nowIso = new Date().toISOString();
+  await runSerializedDatabaseTransaction(
+    options.operation ?? 'nav_history_coverage_mark',
+    async (db) => {
+      const stmt = await db.prepareAsync(
+        `INSERT INTO sync_state (scope, last_synced_at, watermark_date)
+         VALUES (?, ?, ?)
+         ON CONFLICT(scope) DO UPDATE SET
+           last_synced_at = excluded.last_synced_at,
+           watermark_date = excluded.watermark_date`,
+      );
+      try {
+        for (const schemeCode of new Set(schemeCodes)) {
+          const scope = navHistoryCoverageScope(schemeCode);
+          const existing = await db.getFirstAsync<{ watermark_date: string | null }>(
+            'SELECT watermark_date FROM sync_state WHERE scope = ?',
+            [scope],
+          );
+          const nextStart = existing
+            ? existing.watermark_date === null || requestedStartDate === null
+              ? null
+              : existing.watermark_date < requestedStartDate
+                ? existing.watermark_date
+                : requestedStartDate
+            : requestedStartDate;
+          await stmt.executeAsync([
+            scope,
+            nowIso,
+            nextStart,
+          ]);
+        }
+      } finally {
+        await stmt.finalizeAsync();
+      }
+    },
+    options,
+  );
+}
 
 export async function readBySchemeCodes(
   schemeCodes: number[],
@@ -38,7 +128,7 @@ export async function readBySchemeCodes(
 
 export async function readBySchemeCode(
   schemeCode: number,
-  options: { orderDesc?: boolean; limit?: number } = {},
+  options: { sinceDate?: string; orderDesc?: boolean; limit?: number } = {},
 ): Promise<DbNavRow[]> {
   return readBySchemeCodes([schemeCode], options);
 }

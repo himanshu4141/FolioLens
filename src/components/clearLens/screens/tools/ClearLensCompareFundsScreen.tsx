@@ -238,8 +238,9 @@ async function fetchMonthEndNavForCompare(code: number): Promise<NavPoint[]> {
 
   if (SQLITE_AVAILABLE) {
     try {
-      const rows = await navRepo.readBySchemeCodes([code], { sinceDate: since });
-      if (rows.length > 0) {
+      const coverageProven = await navRepo.hasHistoryCoverage(code, since);
+      if (coverageProven) {
+        const rows = await navRepo.readBySchemeCodes([code], { sinceDate: since });
         return buildMonthEndNavs(rows.map((r) => ({ date: r.nav_date, value: r.nav })));
       }
     } catch (err) {
