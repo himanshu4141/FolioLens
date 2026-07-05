@@ -85,6 +85,17 @@ Automated validation at the measured implementation: focused N4 tests 2 suites /
 
 This evidence remains a useful transition baseline but is no longer final acceptance: independent Codex review found a bootstrap/auth-event ordering race, so corrected-head native evidence is required after the fix OTA.
 
+## Corrected-Head Native Acceptance Evidence
+
+Final Android acceptance ran on the same Pixel 8a / Android 16 PR-preview shell at corrected implementation `74470d30024ef437518cdbbba7ebb8597ab0b775`. Because the `foliolens-pr` channel is shared and another update temporarily became newest, the N4 workflow was rerun to republish the exact code. About verified channel `foliolens-pr` and Android OTA `019f3134-dc70-762a-b35a-0171b4de9ccb` via prefix `019f3134-dc7…` before measurements began.
+
+- Settings to About committed in 79 ms and became post-interaction usable in 85 ms. The sample was idle (`sync_in_flight=false`) with 6 active queries, 20 funds, and 566 transactions.
+- Funds to DSP Small Cap Fund Detail was a cold target: route commit 47 ms and post-interaction usable 65 ms with the same idle/count context. The authenticated hero rendered value `₹8.76L`, daily/return fields, and the Performance and NAV & Facts tabs.
+- AuthGate retained the signed-in account throughout both transitions. App-PID scans found zero auth/session failures, SQLite full/busy/locked/write errors, catalystLocalStorage/database-full failures, or fatal React Native exceptions.
+- The corrected race regressions prove that late null bootstrap cannot overwrite `SIGNED_IN` and late old bootstrap cannot resurrect a session after `SIGNED_OUT`. Together with the original cardinality test, the provider has one underlying bootstrap/subscription and newest-auth-event-wins ordering.
+
+Corrected implementation validation: focused N4 2 suites / 4 tests, full Jest 86 suites / 1,891 tests, typecheck, zero-warning lint, diff check, and required GitHub checks.
+
 ## Amendments
 
 - The implementation keeps CAS PDF upload's action-time `getSession()` token lookup. This is not an application bootstrap or subscription; it deliberately obtains the current access token immediately before a native binary upload.
@@ -114,5 +125,5 @@ This evidence remains a useful transition baseline but is no longer final accept
 - [x] Replace selector-free Zustand subscriptions and localize Funds search.
 - [x] Memoize portfolio insight computation.
 - [x] Add N4 regression tests, including late-bootstrap-after-sign-in and late-bootstrap-after-sign-out ordering.
-- [ ] Run all required validation and corrected-head native transition smoke. Typecheck, zero-warning lint, diff check, focused tests (2 suites / 4 tests), and full Jest (86 suites / 1,891 tests) pass; corrected-head Android evidence is pending.
+- [x] Run all required validation and corrected-head native transition smoke. Typecheck, zero-warning lint, diff check, focused tests (2 suites / 4 tests), full Jest (86 suites / 1,891 tests), and exact corrected-head Android evidence pass.
 - [x] Open draft implementation PR #259. Independent review requests follow the evidence-only commit.
