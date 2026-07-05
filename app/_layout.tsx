@@ -26,6 +26,7 @@ import {
 } from '@/src/lib/queryClient';
 import { useSession } from '@/src/hooks/useSession';
 import { authClient } from '@/src/lib/auth';
+import { SessionProvider } from '@/src/context/SessionContext';
 import { useAppStore } from '@/src/store/appStore';
 import { clearOnboardingDraft } from '@/src/utils/onboardingDraft';
 import { ThemeProvider, useTheme, useClearLensTokens } from '@/src/context/ThemeContext';
@@ -126,6 +127,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function useAppLifecycle() {
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
+  const { getCurrentSession, subscribeToAuth } = useSession();
 
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -144,16 +146,8 @@ function useAppLifecycle() {
       isSqliteSupported: Platform.OS !== 'web',
       now: Date.now,
       installGlobalErrorHandlers,
-      getSession: async () => {
-        const { data: { session } } = await authClient.getSession();
-        return session;
-      },
-      subscribeToAuth: (handler) => {
-        const { data: { subscription } } = authClient.onAuthStateChange((event, session) => {
-          handler(event, session);
-        });
-        return () => subscription.unsubscribe();
-      },
+      getSession: getCurrentSession,
+      subscribeToAuth,
       subscribeToAppState: (handler) => {
         const subscription = AppState.addEventListener('change', (state) => {
           if (state === 'active' || state === 'background' || state === 'inactive') {
@@ -186,10 +180,18 @@ function useAppLifecycle() {
       },
       warn: (message, error) => console.warn(message, error),
     });
-  }, []);
+  }, [getCurrentSession, subscribeToAuth]);
 }
 
 export default function RootLayout() {
+  return (
+    <SessionProvider>
+      <RootLayoutContent />
+    </SessionProvider>
+  );
+}
+
+function RootLayoutContent() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,

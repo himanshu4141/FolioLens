@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import { useIsRestoring, useQueryClient } from '@tanstack/react-query';
 import {
   AssetAllocationPreview,
@@ -42,7 +43,13 @@ export function ClearLensPortfolioScreenDesktop() {
   const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
   const userId = session?.user.id;
-  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore();
+  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore(
+    useShallow((state) => ({
+      defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+      setDefaultBenchmarkSymbol: state.setDefaultBenchmarkSymbol,
+      portfolioChartWindow: state.portfolioChartWindow,
+    })),
+  );
 
   const { data, isLoading, isError, refetch } = usePortfolio(defaultBenchmarkSymbol, {
     enabled: isFocused,

@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import { useConfirmDialog } from '@/src/hooks/useDialog';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
@@ -48,7 +49,13 @@ export function ClearLensGoalSummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
-  const { goals, returnAssumptions, deleteGoal } = useAppStore();
+  const { goals, returnAssumptions, deleteGoal } = useAppStore(
+    useShallow((state) => ({
+      goals: state.goals,
+      returnAssumptions: state.returnAssumptions,
+      deleteGoal: state.deleteGoal,
+    })),
+  );
   const showConfirm = useConfirmDialog();
   const [tab, setTab] = useState<TabKey>('estimate');
 

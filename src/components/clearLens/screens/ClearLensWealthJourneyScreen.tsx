@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchUserTransactions } from '@/src/hooks/useUserTransactions';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
@@ -599,7 +600,12 @@ export function ClearLensWealthJourneyScreen() {
     updateWealthJourney,
     returnAssumptions,
     defaultBenchmarkSymbol,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    wealthJourney: state.wealthJourney,
+    updateWealthJourney: state.updateWealthJourney,
+    returnAssumptions: state.returnAssumptions,
+    defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+  })));
 
   useEffect(() => {
     if (!isFocused) {

@@ -173,7 +173,7 @@ export function ClearLensPastSipCheckScreen() {
   const { session } = useSession();
   const userId = session?.user.id;
   const previewMode = useAppStore((s) => s.previewMode);
-  const { defaultBenchmarkSymbol } = useAppStore();
+  const defaultBenchmarkSymbol = useAppStore((state) => state.defaultBenchmarkSymbol);
 
   const [selectedScheme, setSelectedScheme] = useState<PickedScheme | null>(null);
   const [amountStr, setAmountStr] = useState<string>('10000');
