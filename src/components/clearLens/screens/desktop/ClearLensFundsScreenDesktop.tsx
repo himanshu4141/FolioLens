@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   ActivityIndicator,
   ScrollView,
@@ -64,10 +65,15 @@ export function ClearLensFundsScreenDesktop() {
     defaultBenchmarkSymbol,
     fundsSortBy: sortBy,
     setFundsSortBy: setSortBy,
-    fundsSearchQuery: searchQuery,
-    setFundsSearchQuery: setSearchQuery,
     previewMode,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+    fundsSortBy: state.fundsSortBy,
+    setFundsSortBy: state.setFundsSortBy,
+    previewMode: state.previewMode,
+  })));
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol, { enabled: isFocused });
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
@@ -90,7 +96,7 @@ export function ClearLensFundsScreenDesktop() {
   }, [fundCards, insights?.fundAllocation, summary?.totalValue]);
 
   const sortedFunds = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = deferredSearchQuery.trim().toLowerCase();
     const funds = fundCards.filter((fund) => {
       if (!query) return true;
       return fund.schemeName.toLowerCase().includes(query) || fund.schemeCategory.toLowerCase().includes(query);
@@ -113,7 +119,7 @@ export function ClearLensFundsScreenDesktop() {
           return sortableNumber(b.currentValue) - sortableNumber(a.currentValue);
       }
     });
-  }, [benchmarkXirr, fundCards, searchQuery, sortBy]);
+  }, [benchmarkXirr, deferredSearchQuery, fundCards, sortBy]);
 
   const fundsWithValue = useMemo(
     () => fundCards.filter((fund) => fund.currentValue != null && fund.currentValue > 0),

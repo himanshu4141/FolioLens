@@ -2,6 +2,7 @@ import { useMemo, useCallback } from 'react';
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
 import {
@@ -21,7 +22,12 @@ export function ClearLensGoalPlannerScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
-  const { goals, returnAssumptions } = useAppStore();
+  const { goals, returnAssumptions } = useAppStore(
+    useShallow((state) => ({
+      goals: state.goals,
+      returnAssumptions: state.returnAssumptions,
+    })),
+  );
 
   const rates = assumptionsToRates(returnAssumptions);
 

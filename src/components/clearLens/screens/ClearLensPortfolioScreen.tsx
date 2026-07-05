@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useIsFocused, useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 import { AppOverflowMenu } from '@/src/components/AppOverflowMenu';
 import {
@@ -955,7 +956,13 @@ function ClearLensPortfolioScreenMobile() {
   const userId = session?.user.id;
   const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
   const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
-  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore();
+  const { defaultBenchmarkSymbol, setDefaultBenchmarkSymbol, portfolioChartWindow } = useAppStore(
+    useShallow((state) => ({
+      defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+      setDefaultBenchmarkSymbol: state.setDefaultBenchmarkSymbol,
+      portfolioChartWindow: state.portfolioChartWindow,
+    })),
+  );
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const queryClient = useQueryClient();

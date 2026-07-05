@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useShallow } from 'zustand/react/shallow';
 import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
 import {
   ClearLensFonts,
@@ -34,7 +35,14 @@ export function ClearLensCreateGoalScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
   const { editId } = useLocalSearchParams<{ editId?: string }>();
-  const { goals, addGoal, updateGoal, returnAssumptions } = useAppStore();
+  const { goals, addGoal, updateGoal, returnAssumptions } = useAppStore(
+    useShallow((state) => ({
+      goals: state.goals,
+      addGoal: state.addGoal,
+      updateGoal: state.updateGoal,
+      returnAssumptions: state.returnAssumptions,
+    })),
+  );
 
   const editGoal = editId ? (goals.find((g) => g.id === editId) ?? null) : null;
   const isEditing = editGoal !== null;
