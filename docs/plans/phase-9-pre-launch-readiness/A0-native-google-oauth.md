@@ -124,6 +124,7 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - 2026-07-05: Include account linking in the coordinator migration because it uses the same browser/callback route and otherwise preserves the same race.
 - 2026-07-05: Keep legacy fragments only for rollout compatibility; all newly initiated flows use explicit PKCE.
 - 2026-07-05: Open the implementation PR only after exact-SHA Android evidence, per the revised program process.
+- 2026-07-05: After Android acceptance, rebase onto documentation-only PR #258 before opening the implementation PR. The owner explicitly waived a redundant native rerun because all 19 A0-touched file blobs are identical between measured commit `c729b14de77171e03f9e50fbc1d154ffce684396` and rebased head `2ba2c695a0c43a25885be49ddade71884451a5bc`.
 
 ## Amendments
 
@@ -142,6 +143,14 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - Android release exports: production, preview-main, and preview-PR succeeded; each emitted a 6.3 MB Hermes bundle.
 - iOS release exports: production, preview-main, and preview-PR succeeded; each emitted a 6.2 MB Hermes bundle.
 - Pre-PR manual workflow validation before A0: run `28734201289` published Android update `019f3151-1d17-7eb7-b651-cf57a60ed121` and iOS update `019f3151-1d17-7dd6-b88c-9b52ba105076` at exact base SHA `c597b22924d79d205809dea8acb5057bedcf682f`, with an empty PR target.
+- Final A0 pre-PR workflow: run `28734845945` passed both required jobs at measured implementation `c729b14de77171e03f9e50fbc1d154ffce684396` and published Android update `019f3169-6957-7a06-add7-b04f997f2f64` plus iOS update `019f3169-6957-7d82-b667-b87c0dee0428`.
+- Pixel 8a exact-update verification: Settings -> About displayed `019f3169-695...` before destructive setup and again after clearing app data, redownloading the update, restarting, authenticating, and returning to About.
+- Clean first-attempt sign-in: one Google tap and one account choice reached Portfolio/Funds/Wealth Journey without an app restart or second sign-in tap. Flow `oauth-mr7vmbkm-1` emitted `oauth_started` at 0 ms, `callback_received` at 58,344 ms, `session_started` at 58,348 ms, `browser_returned` at 58,351 ms, `session_confirmed` at 58,596 ms, and `navigation_completed` at 58,636 ms. The callback source was `router`, transport was `code`, and browser result was `success`.
+- Session persistence: force-stop and cold relaunch returned directly to the authenticated Portfolio tabs; the Google sign-in action was absent.
+- Cancellation: closing the Google custom tab returned in 4,547 ms, emitted terminal `browser_dismiss` telemetry at 4,552 ms, cleared loading, and displayed `Google sign-in was cancelled. You can try again when ready.` with an enabled retry action.
+- Background/foreground retry: while the account chooser was active, Home -> Recents -> FolioLens PR preserved the custom tab. Selecting the account then completed flow `oauth-mr7vr7c6-2`: callback at 77,319 ms, session start at 77,321 ms, browser return at 77,323 ms, session confirmation at 77,617 ms, and tab navigation at 77,661 ms.
+- Privacy and failure scan: the captured `[auth/oauth]` records contained zero callback URLs, authorization-code values, access/refresh tokens, email addresses, or provider identities. Captured app logs contained zero auth lifecycle, SQLite, storage, React Native fatal, or unhandled-promise errors. The Android screen timeout was restored from the temporary 1,800,000 ms value to its original 120,000 ms.
+- Post-evidence rebase: PR #258 changed only program documentation. Blob comparison proved all 19 A0-touched files byte-identical at measured commit `c729b14` and rebased head `2ba2c69`. Per the owner's explicit exception, redundant workflow run `28743946990` was cancelled and native evidence was not repeated.
 
 ## Progress
 
@@ -152,5 +161,5 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - [x] Add telemetry and regression tests.
 - [x] Update auth architecture and README.
 - [x] Run focused/full repository validation and six release exports.
-- [ ] Publish exact-SHA pre-PR OTA and capture native Android acceptance evidence.
+- [x] Publish exact-SHA pre-PR OTA and capture native Android acceptance evidence.
 - [ ] Open the ready implementation PR and obtain Codex/Claude convergence.
