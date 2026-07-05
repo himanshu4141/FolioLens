@@ -540,7 +540,7 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 
 | Workflow | Trigger | What it does |
 |---------|---------|---|
-| `pr-preview.yml` | PR open / commit | typecheck + lint + tests + EAS update to `foliolens-pr` (DEV Supabase). Comments the OTA update IDs onto the PR. |
+| `pr-preview.yml` | PR open / commit, or manual branch dispatch | typecheck + lint + tests + EAS update to `foliolens-pr` (DEV Supabase). PR runs comment OTA IDs on the PR; manual pre-PR runs write IDs to the Actions job summary. |
 | `supabase-validate.yml` | PR commit (only when `supabase/**` changes) | Spins up local Supabase, replays migrations, lints `public` schema. Read-only. |
 | `main-deploy.yml` | Push to `main` | typecheck + lint + tests + EAS update to `foliolens-main` (DEV Supabase). |
 | `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions and pushes migrations to DEV Supabase. |
@@ -634,9 +634,14 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 
 
 1. Cut a feature branch off `main`
-2. Open a PR — `pr-preview.yml` ships an OTA update to the `foliolens-pr` channel; PR Vercel preview goes live
-3. Merge to `main` (squash) — `main-deploy.yml` ships an OTA update to `foliolens-main`; `foliolens-dev` Vercel auto-deploys; if `supabase/**` changed, `supabase-deploy-dev.yml` applies the migration / functions
-4. Beta testers on the `preview-main` Android APK get the update on next launch
+2. When native evidence is required, push the branch and manually dispatch `pr-preview.yml` against that branch before opening a PR. For example:
+
+       gh workflow run pr-preview.yml --ref codex/my-branch -f message='Pre-PR evidence: milestone N5'
+
+   Watch the run with `gh run watch`, read the exact Android update ID from its job summary, apply it to the `preview-pr` app, verify About, and capture acceptance evidence. The `foliolens-pr` channel is shared, so verify the exact prefix immediately before measuring; republish the branch if another workflow has become newest.
+3. Open the implementation PR ready for review only after required Android evidence is captured. Include the measured code SHA and evidence in the initial PR body so Codex and Claude can review and converge in one pass. If no native evidence is relevant, open the validated PR directly. Use a draft only when a concrete evidence gap requires reviewer input.
+4. Merge to `main` (squash) — `main-deploy.yml` ships an OTA update to `foliolens-main`; `foliolens-dev` Vercel auto-deploys; if `supabase/**` changed, `supabase-deploy-dev.yml` applies the migration / functions.
+5. Beta testers on the `preview-main` Android APK get the update on next launch.
 
 
 ### Producing a release
