@@ -72,6 +72,23 @@ Use `useShallow` for components that need multiple Zustand values and primitive 
 - Full Jest remains green.
 - A release-like native smoke checks Settings to About and Funds to Fund Detail without new auth bootstrap/subscription logs or behavior regressions.
 
+## Native Acceptance Evidence
+
+Android acceptance ran on a paired Pixel 8a running Android 16 with the PR-preview package `com.foliolens.app.prpreview`. The measured implementation is `1b940695`; the exact Android OTA is `019f2fe5-d91d-7218-b57c-c977bfbb3a9a`. About showed channel `foliolens-pr`, prefix `019f2fe5-d91…`, version `0.0.4`, and the 5 Jul 2026 update date.
+
+- Settings to About committed in 79 ms and became post-interaction usable in 86 ms. The sample was idle (`sync_in_flight=false`) with 6 active queries, 20 funds, and 566 transactions.
+- Funds to Fund Detail was a cold target: route commit 50 ms and post-interaction usable 69 ms, also with `sync_in_flight=false`, 6 active queries, 20 funds, and 566 transactions. The useful hero rendered for DSP US Specific Equity Omni FoF with current value, invested amount, daily move, XIRR, and tabs; the local full-history NAV read then completed from SQLite.
+- App-PID log scans across both transitions found zero auth/session failures, SQLite full/busy/locked/write errors, database-full errors, catalystLocalStorage failures, or fatal React Native exceptions.
+- Runtime routing preserved the authenticated account and AuthGate throughout both transitions. Underlying provider cardinality is established deterministically at this exact implementation by the focused test that mounts three session consumers and observes one `authClient.getSession()` bootstrap, one `authClient.onAuthStateChange()` subscription, and one unsubscribe. Route consumers contain no auth effects, so mounting About or Fund Detail cannot register another provider listener.
+
+Automated validation at the measured implementation: focused N4 tests 2 suites / 2 tests, full Jest 86 suites / 1,889 tests, typecheck, zero-warning lint, and diff check.
+
+## Amendments
+
+- The implementation keeps CAS PDF upload's action-time `getSession()` token lookup. This is not an application bootstrap or subscription; it deliberately obtains the current access token immediately before a native binary upload.
+- Funds search moved from transient Zustand state to layout-local state with a deferred filtering value. It can reset if the app crosses the mobile/desktop breakpoint, but keystrokes no longer fan out through the global store.
+- The cache-shape guard is satisfied with the PR-title marker `[cache-shape-stable]`: N4 changes hook execution and subscriptions but does not alter a React Query key or serialized payload shape, so a `__BUSTER__` bump would incorrectly discard valid financial caches.
+
 ## Risks And Mitigations
 
 - A lifecycle consumer could mount before session bootstrap resolves. The provider's current-session adapter waits for the bootstrap promise.
@@ -93,5 +110,5 @@ Use `useShallow` for components that need multiple Zustand values and primitive 
 - [x] Replace selector-free Zustand subscriptions and localize Funds search.
 - [x] Memoize portfolio insight computation.
 - [x] Add N4 regression tests.
-- [ ] Run all required validation and native transition smoke. Typecheck, zero-warning lint, diff check, focused tests, and full Jest (86 suites / 1,889 tests) pass; exact-head native smoke remains.
-- [ ] Open the implementation PR and request independent reviews.
+- [x] Run all required validation and native transition smoke. Typecheck, zero-warning lint, diff check, focused tests, full Jest (86 suites / 1,889 tests), and exact-head Android transition evidence pass.
+- [x] Open draft implementation PR #259. Independent review requests follow the evidence-only commit.
