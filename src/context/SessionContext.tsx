@@ -67,6 +67,18 @@ function sessionMatches(
   return expected.accessToken === undefined || session.access_token === expected.accessToken;
 }
 
+function reconciliationEvent(
+  previousSession: Session | null,
+  nextSession: Session | null,
+): AuthChangeEvent | null {
+  if (previousSession === null && nextSession !== null) return 'SIGNED_IN';
+  if (previousSession !== null && nextSession === null) return 'SIGNED_OUT';
+  if (previousSession === null || nextSession === null) return null;
+  if (previousSession.user.id !== nextSession.user.id) return 'SIGNED_IN';
+  if (previousSession.access_token !== nextSession.access_token) return 'TOKEN_REFRESHED';
+  return null;
+}
+
 /**
  * Owns the app process's single Supabase session bootstrap and auth listener.
  *
@@ -135,7 +147,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const { data, error } = await authClient.getSession();
     if (error) throw error;
     if (authRevisionRef.current !== reconcileRevision) return sessionRef.current;
+    const event = reconciliationEvent(sessionRef.current, data.session);
+    if (event === null) return sessionRef.current;
+
+    // A successful reconciliation is authoritative when the provider event was
+    // missed. Advance the same revision fence as a real auth event, then
+    // publish the effective transition to lifecycle subscribers exactly once.
+    authRevisionRef.current += 1;
     applySession(data.session);
+    bootstrapRef.current?.resolve();
+    for (const listener of listenersRef.current) {
+      listener(event, data.session);
+    }
     return data.session;
   }, [applySession]);
 

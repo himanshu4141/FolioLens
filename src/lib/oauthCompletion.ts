@@ -28,10 +28,6 @@ interface AuthResult {
 
 export interface OAuthProvider {
   exchangeCodeForSession(code: string): Promise<AuthResult>;
-  setSession(tokens: {
-    access_token: string;
-    refresh_token: string;
-  }): Promise<AuthResult>;
 }
 
 export interface OAuthCompletionRuntime {
@@ -55,6 +51,7 @@ export type OAuthCompletionResult =
     reason:
       | 'provider_error'
       | 'invalid_callback'
+      | 'unsupported_fragment'
       | 'exchange_failed'
       | 'exchange_timeout'
       | 'session_confirmation_failed'
@@ -275,18 +272,25 @@ export class OAuthCompletionCoordinator {
       );
     }
 
+    // Fragment tokens have no PKCE verifier or trustworthy callback
+    // provenance. Accepting them from a custom-scheme deep link would allow an
+    // attacker to swap the app into their own session (login CSRF). All flows
+    // initiated by this bundle use the authorization-code transport.
+    if (payload.type === 'fragment') {
+      this.emit('oauth_failed', attempt, { failure_reason: 'unsupported_fragment' });
+      this.activeAttempt = null;
+      return errorResult(
+        'unsupported_fragment',
+        'This Google sign-in link has expired. Start Google sign-in again.',
+      );
+    }
+
     this.emit('session_started', attempt, { callback_transport: transport });
 
     let authResult: AuthResult;
     try {
-      const providerPromise = payload.type === 'code'
-        ? this.dependencies.provider.exchangeCodeForSession(payload.code)
-        : this.dependencies.provider.setSession({
-            access_token: payload.accessToken,
-            refresh_token: payload.refreshToken,
-          });
       authResult = await withOAuthTimeout(
-        providerPromise,
+        this.dependencies.provider.exchangeCodeForSession(payload.code),
         this.exchangeTimeoutMs,
         'session_exchange',
         this.schedule,

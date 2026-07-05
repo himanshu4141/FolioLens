@@ -35,16 +35,13 @@ function successfulAuthResult() {
 
 function createHarness(overrides: {
   exchange?: jest.Mock;
-  setSession?: jest.Mock;
   waitForSession?: jest.Mock;
   reconcileSession?: jest.Mock;
   navigateToTabs?: jest.Mock;
 } = {}) {
   const exchange = overrides.exchange ?? jest.fn().mockResolvedValue(successfulAuthResult());
-  const setSession = overrides.setSession ?? jest.fn().mockResolvedValue(successfulAuthResult());
   const provider: OAuthProvider = {
     exchangeCodeForSession: exchange,
-    setSession,
   };
   const track = jest.fn();
   const coordinator = new OAuthCompletionCoordinator({
@@ -58,7 +55,7 @@ function createHarness(overrides: {
     reconcileSession: overrides.reconcileSession ?? jest.fn().mockResolvedValue(SESSION),
     navigateToTabs: overrides.navigateToTabs ?? jest.fn(),
   };
-  return { coordinator, exchange, setSession, track, runtime };
+  return { coordinator, exchange, track, runtime };
 }
 
 describe('OAuthCompletionCoordinator', () => {
@@ -100,20 +97,30 @@ describe('OAuthCompletionCoordinator', () => {
     expect(harness.runtime.navigateToTabs).toHaveBeenCalledTimes(1);
   });
 
-  it('supports one legacy fragment callback through setSession', async () => {
+  it('rejects cold and in-flight fragment callbacks without setting a session', async () => {
     const harness = createHarness();
-    const result = await harness.coordinator.completeCallback(
+    const coldResult = await harness.coordinator.completeCallback(
       'foliolens://auth/callback#access_token=legacy-access&refresh_token=legacy-refresh',
       'router',
       harness.runtime,
     );
+    harness.coordinator.beginAttempt('sign_in', METADATA);
+    const activeResult = await harness.coordinator.completeCallback(
+      'foliolens://auth/callback#access_token=other-access&refresh_token=other-refresh',
+      'router',
+      harness.runtime,
+    );
 
-    expect(result).toMatchObject({ status: 'success', transport: 'fragment' });
-    expect(harness.setSession).toHaveBeenCalledWith({
-      access_token: 'legacy-access',
-      refresh_token: 'legacy-refresh',
+    expect(coldResult).toMatchObject({
+      status: 'error',
+      reason: 'unsupported_fragment',
+    });
+    expect(activeResult).toMatchObject({
+      status: 'error',
+      reason: 'unsupported_fragment',
     });
     expect(harness.exchange).not.toHaveBeenCalled();
+    expect(harness.runtime.navigateToTabs).not.toHaveBeenCalled();
   });
 
   it('reconciles once when the shared session event is missed', async () => {

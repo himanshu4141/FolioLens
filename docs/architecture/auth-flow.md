@@ -111,14 +111,15 @@ sequenceDiagram
   alt event was missed
     Coordinator->>Auth: getSession() once for reconciliation
     Auth-->>Session: apply reconciled session
+    Session->>Session: publish effective SIGNED_IN once<br/>to lifecycle subscribers
   end
   Coordinator->>App: replace /(tabs) once
   App->>U: portfolio opens
 ```
 
-`src/lib/supabase.ts` sets `flowType: 'pkce'`; this is not left to the SDK default. The new path passes only the returned authorization code to `exchangeCodeForSession`. A fragment containing access and refresh tokens is accepted only as a compatibility path for a callback initiated by an older implicit-flow bundle during rollout.
+`src/lib/supabase.ts` sets `flowType: 'pkce'`; this is not left to the SDK default. The new path passes only the returned authorization code to `exchangeCodeForSession`. OAuth fragments containing access and refresh tokens are rejected: unlike the code path, they have no PKCE-verifier proof, and accepting them from a custom-scheme URL would permit login-CSRF session swapping. Magic-link fragments remain owned by the separate `/auth/confirm` route.
 
-Both `openAuthSessionAsync` and Expo Router can observe the same native deep link. They call the same process-wide coordinator, whose in-flight/completed map guarantees one exchange and one navigation. URL creation, browser return, exchange, shared-session confirmation, one reconciliation attempt, and navigation are bounded. Cancellation, dismissal, and failures clear the initiating loading state and return actionable UI; no callback screen can spin forever.
+Both `openAuthSessionAsync` and Expo Router can observe the same native deep link. They call the same process-wide coordinator, whose in-flight/completed map guarantees one exchange and one navigation. The Router fallback accepts a `Linking.useURL()` value only when its scheme matches the installed build and its route is exactly `/auth/callback`; stale `/auth/confirm` links wait for the real Router parameters instead of entering OAuth completion. URL creation, browser return, exchange, shared-session confirmation, one reconciliation attempt, and navigation are bounded. Cancellation, dismissal, and failures clear the initiating loading state and return actionable UI; no callback screen can spin forever.
 
 `maybeCompleteAuthSession()` runs only on web, where Expo uses it to close an OAuth popup. Expo's native implementation does not use that method; Android completion is owned by the WebBrowser AppState/Linking polyfill and the shared coordinator.
 

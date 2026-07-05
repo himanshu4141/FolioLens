@@ -41,7 +41,12 @@ export default function OAuthCallbackScreen() {
     scheme?: string;
     callbackUrl?: string;
   }>();
-  const targetScheme = typeof scheme === 'string' && scheme.length > 0 ? scheme : getAppScheme();
+  const configuredScheme = getAppScheme();
+  const targetScheme = Platform.OS === 'web'
+    && typeof scheme === 'string'
+    && scheme.length > 0
+    ? scheme
+    : configuredScheme;
 
   const [state, setState] = useState<CallbackState>('exchanging');
   const [errorState, setErrorState] = useState<ErrorState | null>(null);

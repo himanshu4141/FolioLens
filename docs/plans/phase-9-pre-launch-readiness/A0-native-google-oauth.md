@@ -29,14 +29,14 @@ The relevant historical fixes are PRs #43, #47, #52, #114, and #236. They added 
 - Navigation N4 remains the sole session source and must not be duplicated.
 - The HTTPS bridge at `EXPO_PUBLIC_APP_BASE_URL/auth/callback` remains the registered Google/Supabase redirect target.
 - Production, preview-main, and preview-PR native schemes remain `foliolens`, `foliolens-main`, and `foliolens-pr`.
-- Fragment tokens remain accepted only as an in-memory compatibility path for an implicit callback already in flight during rollout.
+- OAuth fragment tokens are rejected. They cannot prove app-initiated provenance or possession of a PKCE verifier; magic-link fragments remain isolated to `/auth/confirm`.
 - Android is the locally available physical-device evidence surface. iOS scheme behavior will be covered by shared deterministic tests and the existing multi-scheme configuration; any unavailable physical iOS evidence will be stated honestly.
 
 ## Definitions
 
 - PKCE: an OAuth authorization-code flow where the initiating app stores a one-time verifier and later exchanges the returned code. A stolen code is unusable without that verifier.
 - completion coordinator: the single process-wide object that parses, deduplicates, exchanges, confirms, and navigates an OAuth callback.
-- callback transport: either `code` for the canonical PKCE query parameter or `fragment` for legacy access/refresh tokens.
+- callback transport: `code` for the canonical PKCE query parameter. OAuth token fragments are classified only so they can be rejected explicitly.
 - reconciliation: one exceptional `getSession()` call after session-confirmation timeout to detect a session that Supabase persisted but whose auth event was missed.
 - sanitized flow ID: a short non-secret identifier used to correlate stages. It never contains a callback URL, code, token, email, or provider identity.
 
@@ -62,11 +62,11 @@ The relevant historical fixes are PRs #43, #47, #52, #114, and #236. They added 
 
 ## Approach
 
-Create `src/lib/oauthCompletion.ts` as a pure, dependency-injected coordinator with one exported process instance. It parses a callback into PKCE code, legacy fragment, provider error, or invalid input; derives only an in-memory hashed deduplication key; and stores in-flight/completed promises in a bounded map. The first delivery performs the exchange, waits for the shared SessionProvider to expose the expected session, reconciles once on confirmation timeout, replaces the route with `/(tabs)`, and emits sanitized stage telemetry. Duplicate deliveries await or reuse the same result without exchanging or navigating again.
+Create `src/lib/oauthCompletion.ts` as a pure, dependency-injected coordinator with one exported process instance. It parses a callback into PKCE code, rejected token fragment, provider error, or invalid input; derives only an in-memory hashed deduplication key; and stores in-flight/completed promises in a bounded map. The first valid code delivery performs the exchange, waits for the shared SessionProvider to expose the expected session, reconciles once on confirmation timeout, replaces the route with `/(tabs)`, and emits sanitized stage telemetry. Duplicate deliveries await or reuse the same result without exchanging or navigating again.
 
 Create a small React hook that supplies the coordinator with SessionProvider confirmation/reconciliation and Expo Router navigation. `app/auth/index.tsx`, `app/(tabs)/settings/account.tsx`, and `app/auth/callback.tsx` call that hook instead of interpreting callbacks independently. A testable native-attempt runner wraps OAuth URL creation and WebBrowser return with timeouts and returns a terminal result to the initiating screen.
 
-SessionProvider will keep its existing single bootstrap/subscription. It will add a waiter set that resolves when the provider receives the expected user session. A reconciliation method performs one explicit `authClient.getSession()` only after a coordinator timeout and applies that result to the same provider state.
+SessionProvider will keep its existing single bootstrap/subscription. It will add a waiter set that resolves when the provider receives the expected user session. A reconciliation method performs one explicit `authClient.getSession()` only after a coordinator timeout, applies that result to the same provider state, and publishes the effective missed auth transition once to lifecycle subscribers.
 
 Telemetry will use a fixed allowlist of non-sensitive fields: stage duration, platform, app version, EAS channel, app variant, update ID, browser result type, callback transport, callback source, and sanitized flow ID. Tests will assert that URLs, codes, tokens, email, and provider IDs never enter tracked properties.
 
@@ -85,7 +85,7 @@ Set `flowType: 'pkce'`, implement callback parsing/deduplication, and extend Ses
 
 ### 2. Migrate native initiators and callback route
 
-Move sign-in and account linking to the bounded native attempt runner. Move callback-route processing to the same coordinator. Remove native claims around `maybeCompleteAuthSession()` and restrict root fragment handling to magic-link routes. Tests must prove cancel, dismiss, timeout, late callback data, compatibility fragments, and callback replay all terminate.
+Move sign-in and account linking to the bounded native attempt runner. Move callback-route processing to the same coordinator. Remove native claims around `maybeCompleteAuthSession()` and restrict root fragment handling to magic-link routes. Tests must prove cancel, dismiss, timeout, late callback data, rejected OAuth fragments, and callback replay all terminate.
 
 ### 3. Add sanitized telemetry and documentation
 
@@ -109,7 +109,7 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 
 ## Risks And Mitigations
 
-- Switching to PKCE can invalidate an implicit callback initiated by an older bundle. The fragment path remains accepted through `setSession()` during rollout.
+- Switching to PKCE invalidates an implicit OAuth callback initiated by an older bundle. This is an intentional security boundary: fragment tokens are rejected because a custom-scheme fragment has no trustworthy app-initiated provenance.
 - Duplicate callbacks can race before a map entry is visible. The coordinator inserts the shared promise synchronously before awaiting network work.
 - A session event can arrive before a waiter registers. SessionProvider checks its current session snapshot before adding the waiter.
 - A timeout can leave a waiter behind. Waiters remove themselves on resolve, rejection, timeout, and provider unmount.
@@ -123,6 +123,7 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - 2026-07-05: Treat the installed Supabase API contract as authoritative and pass only the PKCE code to `exchangeCodeForSession`.
 - 2026-07-05: Include account linking in the coordinator migration because it uses the same browser/callback route and otherwise preserves the same race.
 - 2026-07-05: Keep legacy fragments only for rollout compatibility; all newly initiated flows use explicit PKCE.
+- 2026-07-05: Supersede the fragment-compatibility decision after independent review identified login-CSRF/session swapping. Reject every OAuth token fragment; only the PKCE code path may establish a Google session.
 - 2026-07-05: Open the implementation PR only after exact-SHA Android evidence, per the revised program process.
 - 2026-07-05: After Android acceptance, rebase onto documentation-only PR #258 before opening the implementation PR. The owner explicitly waived a redundant native rerun because all 19 A0-touched file blobs are identical between measured commit `c729b14de77171e03f9e50fbc1d154ffce684396` and rebased head `2ba2c695a0c43a25885be49ddade71884451a5bc`.
 
@@ -131,6 +132,9 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - The implementation uses the installed `@supabase/auth-js` source as the API contract: `exchangeCodeForSession` accepts the authorization code string, not a reconstructed callback URL. A focused regression test asserts the exact one-time code is passed.
 - Required stages are sent to analytics and mirrored to `[auth/oauth]` release log lines with the same allowlisted payload so physical-device evidence does not depend on PostHog access. Tests scan both sinks for forbidden credentials and identity values.
 - Session reconciliation is revision-guarded. If a newer `SIGNED_OUT` or `SIGNED_IN` event arrives while the exceptional `getSession()` call is pending, the late result cannot overwrite that event.
+- Review correction: an accepted reconciliation now advances the same revision fence and publishes the effective missed transition to lifecycle subscribers exactly once, so SQLite bootstrap and analytics identification cannot be bypassed.
+- Review correction: native Router fallback URLs must match the installed build scheme and exact `/auth/callback` route. A stale `/auth/confirm` URL is ignored while the callback screen waits for late Router code parameters.
+- Review correction: all OAuth token fragments are rejected before provider mutation. Cold, replayed, and in-flight fragment URLs cannot call `setSession`; magic-link fragments remain on their separate confirmation route.
 - Account linking was migrated with sign-in because it used the same browser and callback route. Keeping it separate would have retained the duplicate-exchange and existing-session AuthGate race.
 - Physical iOS evidence is not locally available. All three iOS schemes are release-exported and share the deterministic coordinator tests; the final PR will state this evidence boundary rather than claiming a device run.
 

@@ -16,7 +16,6 @@ import {
 const oauthCompletionCoordinator = new OAuthCompletionCoordinator({
   provider: {
     exchangeCodeForSession: (code) => authClient.exchangeCodeForSession(code),
-    setSession: (tokens) => authClient.setSession(tokens),
   },
   track: (event, properties) => analytics.track(event, properties),
 });

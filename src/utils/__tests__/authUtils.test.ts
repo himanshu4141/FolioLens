@@ -145,6 +145,12 @@ describe('native auth route helpers', () => {
     expect(
       resolveNativeOAuthCallbackUrl({
         scheme: 'foliolens-pr',
+        incomingUrl: 'foliolens-pr://auth/confirm#access_token=stale',
+      }),
+    ).toBeNull();
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
         code: 'late-code',
         incomingUrl: 'foliolens-pr://auth/confirm#access_token=stale',
       }),
@@ -159,5 +165,20 @@ describe('native auth route helpers', () => {
         code: 'route-param',
       }),
     ).toBe('foliolens-pr://auth/callback?code=explicit');
+  });
+
+  it('rejects callback fallbacks from another scheme or auth route', () => {
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        incomingUrl: 'foliolens-main://auth/callback?code=wrong-build',
+      }),
+    ).toBeNull();
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        callbackUrl: 'foliolens-pr://auth/confirm?code=wrong-route',
+      }),
+    ).toBeNull();
   });
 });

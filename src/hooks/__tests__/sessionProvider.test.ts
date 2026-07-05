@@ -252,9 +252,10 @@ describe('SessionProvider', () => {
     act(() => renderer?.unmount());
   });
 
-  it('reconciles a persisted session through the same provider state', async () => {
+  it('reconciles a persisted session and publishes the missed lifecycle event once', async () => {
     mockedGetSession
       .mockResolvedValueOnce({ data: { session: null }, error: null })
+      .mockResolvedValueOnce({ data: { session: NEW_SESSION }, error: null })
       .mockResolvedValueOnce({ data: { session: NEW_SESSION }, error: null });
     mockedOnAuthStateChange.mockReturnValue({
       data: {
@@ -263,6 +264,7 @@ describe('SessionProvider', () => {
     });
     let api: ReturnType<typeof useSession> | undefined;
     const renders = jest.fn();
+    const lifecycleListener = jest.fn();
     let renderer: TestRenderer.ReactTestRenderer | undefined;
 
     await act(async () => {
@@ -279,12 +281,18 @@ describe('SessionProvider', () => {
       await Promise.resolve();
     });
 
+    const unsubscribeLifecycle = api?.subscribeToAuth(lifecycleListener);
+
     await act(async () => {
+      await expect(api?.reconcileSession()).resolves.toBe(NEW_SESSION);
       await expect(api?.reconcileSession()).resolves.toBe(NEW_SESSION);
     });
 
-    expect(mockedGetSession).toHaveBeenCalledTimes(2);
+    expect(mockedGetSession).toHaveBeenCalledTimes(3);
     expect(renders.mock.calls.at(-1)).toEqual([false, NEW_SESSION]);
+    expect(lifecycleListener).toHaveBeenCalledTimes(1);
+    expect(lifecycleListener).toHaveBeenCalledWith('SIGNED_IN', NEW_SESSION);
+    unsubscribeLifecycle?.();
     act(() => renderer?.unmount());
   });
 

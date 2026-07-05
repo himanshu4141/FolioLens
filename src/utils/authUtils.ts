@@ -99,6 +99,23 @@ export function resolveNativeOAuthCallbackUrl(params: {
   code?: string;
   error?: string;
 }): string | null {
-  if (params.callbackUrl) return params.callbackUrl;
-  return buildNativeOAuthCallbackUrl(params) ?? params.incomingUrl ?? null;
+  const isExpectedCallback = (url: string): boolean => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === `${params.scheme}:`
+        && parsed.hostname === 'auth'
+        && parsed.pathname === '/callback';
+    } catch {
+      return false;
+    }
+  };
+
+  if (params.callbackUrl && isExpectedCallback(params.callbackUrl)) {
+    return params.callbackUrl;
+  }
+  const rebuiltCallback = buildNativeOAuthCallbackUrl(params);
+  if (rebuiltCallback) return rebuiltCallback;
+  return params.incomingUrl && isExpectedCallback(params.incomingUrl)
+    ? params.incomingUrl
+    : null;
 }
