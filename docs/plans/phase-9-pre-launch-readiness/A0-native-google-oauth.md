@@ -151,6 +151,7 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 - Background/foreground retry: while the account chooser was active, Home -> Recents -> FolioLens PR preserved the custom tab. Selecting the account then completed flow `oauth-mr7vr7c6-2`: callback at 77,319 ms, session start at 77,321 ms, browser return at 77,323 ms, session confirmation at 77,617 ms, and tab navigation at 77,661 ms.
 - Privacy and failure scan: the captured `[auth/oauth]` records contained zero callback URLs, authorization-code values, access/refresh tokens, email addresses, or provider identities. Captured app logs contained zero auth lifecycle, SQLite, storage, React Native fatal, or unhandled-promise errors. The Android screen timeout was restored from the temporary 1,800,000 ms value to its original 120,000 ms.
 - Post-evidence rebase: PR #258 changed only program documentation. Blob comparison proved all 19 A0-touched files byte-identical at measured commit `c729b14` and rebased head `2ba2c69`. Per the owner's explicit exception, redundant workflow run `28743946990` was cancelled and native evidence was not repeated.
+- Cache-shape declaration: `useOAuthCompletion` and the SessionProvider regressions do not change any React Query key or serialized payload shape. The owner approved the `[cache-shape-stable]` PR-title marker required by the mechanical cache gate.
 
 ## Progress
 
