@@ -128,6 +128,7 @@ Expected results are zero TypeScript errors, zero lint warnings, all focused and
 ## Amendments
 
 - The implementation uses the installed `@supabase/auth-js` source as the API contract: `exchangeCodeForSession` accepts the authorization code string, not a reconstructed callback URL. A focused regression test asserts the exact one-time code is passed.
+- Required stages are sent to analytics and mirrored to `[auth/oauth]` release log lines with the same allowlisted payload so physical-device evidence does not depend on PostHog access. Tests scan both sinks for forbidden credentials and identity values.
 - Session reconciliation is revision-guarded. If a newer `SIGNED_OUT` or `SIGNED_IN` event arrives while the exceptional `getSession()` call is pending, the late result cannot overwrite that event.
 - Account linking was migrated with sign-in because it used the same browser and callback route. Keeping it separate would have retained the duplicate-exchange and existing-session AuthGate race.
 - Physical iOS evidence is not locally available. All three iOS schemes are release-exported and share the deterministic coordinator tests; the final PR will state this evidence boundary rather than claiming a device run.

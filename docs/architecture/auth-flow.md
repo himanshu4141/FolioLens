@@ -122,7 +122,7 @@ Both `openAuthSessionAsync` and Expo Router can observe the same native deep lin
 
 `maybeCompleteAuthSession()` runs only on web, where Expo uses it to close an OAuth popup. Expo's native implementation does not use that method; Android completion is owned by the WebBrowser AppState/Linking polyfill and the shared coordinator.
 
-The coordinator emits `oauth_started`, `browser_returned`, `callback_received`, `session_started`, `session_confirmed`, and `navigation_completed`. Properties are restricted to duration, platform, app/update/channel identifiers, browser result type, callback transport/source, intent, and a non-secret flow ID. Callback URLs, codes, tokens, email addresses, and provider identities are never logged or tracked.
+The coordinator emits `oauth_started`, `browser_returned`, `callback_received`, `session_started`, `session_confirmed`, and `navigation_completed` to analytics and a matching `[auth/oauth]` release log line for device evidence. Properties are restricted to duration, platform, app/update/channel identifiers, browser result type, callback transport/source, intent, and a non-secret flow ID. Callback URLs, codes, tokens, email addresses, and provider identities are never logged or tracked; tests inspect both analytics calls and console payloads for those forbidden values.
 
 ## Why the web bridge
 

@@ -62,6 +62,16 @@ function createHarness(overrides: {
 }
 
 describe('OAuthCompletionCoordinator', () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
   it('deduplicates WebBrowser and Router delivery and exchanges the code itself once', async () => {
     const harness = createHarness();
     harness.coordinator.beginAttempt('sign_in', METADATA);
@@ -174,10 +184,16 @@ describe('OAuthCompletionCoordinator', () => {
       'navigation_completed',
     ]);
     const telemetry = JSON.stringify(harness.track.mock.calls);
+    const releaseLogs = JSON.stringify(warn.mock.calls);
     expect(telemetry).not.toContain('telemetry-secret-code');
     expect(telemetry).not.toContain('session-access-secret');
     expect(telemetry).not.toContain('session-refresh-secret');
     expect(telemetry).not.toContain('person@example.com');
     expect(telemetry).not.toContain('provider-user-secret');
+    expect(releaseLogs).not.toContain('telemetry-secret-code');
+    expect(releaseLogs).not.toContain('session-access-secret');
+    expect(releaseLogs).not.toContain('session-refresh-secret');
+    expect(releaseLogs).not.toContain('person@example.com');
+    expect(releaseLogs).not.toContain('provider-user-secret');
   });
 });

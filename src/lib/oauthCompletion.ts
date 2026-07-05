@@ -385,12 +385,16 @@ export class OAuthCompletionCoordinator {
     attempt: Attempt,
     extra: Record<string, unknown> = {},
   ): void {
-    this.dependencies.track(event, {
+    const properties = {
       ...attempt.metadata,
       flow_id: attempt.flowId,
       intent: attempt.intent,
       duration_ms: Math.max(0, this.now() - attempt.startedAt),
       ...extra,
-    });
+    };
+    // Release logcat evidence uses the same allowlisted payload as analytics.
+    // Never add callback URLs, codes, tokens, email, or provider identity here.
+    console.warn('[auth/oauth]', event, properties);
+    this.dependencies.track(event, properties);
   }
 }
