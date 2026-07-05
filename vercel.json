@@ -2,6 +2,7 @@
   "buildCommand": "python3 scripts/vercel-build.py",
   "outputDirectory": "dist",
   "framework": null,
+  "ignoreCommand": "sh scripts/vercel-ignore.sh",
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
