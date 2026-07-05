@@ -21,7 +21,12 @@ import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { DeleteAccountSheet } from '@/src/components/DeleteAccountSheet';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
-import { parseOAuthCode } from '@/src/utils/authUtils';
+import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
+import {
+  OAUTH_URL_TIMEOUT_MS,
+  runNativeGoogleOAuth,
+} from '@/src/lib/nativeGoogleOAuth';
+import { withOAuthTimeout } from '@/src/lib/oauthCompletion';
 import { maskPan } from './index';
 import {
   ClearLensFonts,
@@ -58,6 +63,7 @@ export default function AccountScreen() {
   const [linkingGoogle, setLinkingGoogle] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
+  const oauth = useOAuthCompletion();
 
   // PAN and DOB are write-once during onboarding so a typo can't accidentally
   // attach someone else's CAS data. Correcting them needs human review, so
@@ -77,26 +83,40 @@ export default function AccountScreen() {
       ? `${window.location.origin}/auth/callback`
       : getNativeBridgeUrl('/auth/callback');
 
-    const { data, error } = await authClient.linkIdentity({
-      provider: 'google',
-      options: { redirectTo, skipBrowserRedirect: Platform.OS !== 'web' },
-    });
+    const createAuthorizationUrl = async () => {
+      const { data, error } = await authClient.linkIdentity({
+        provider: 'google',
+        options: { redirectTo, skipBrowserRedirect: true },
+      });
+      if (error || !data?.url) throw new Error('OAuth URL unavailable');
+      return data.url;
+    };
 
-    if (error) { setLinkError(error.message); setLinkingGoogle(false); return; }
-
-    if (Platform.OS === 'web') {
-      if (data?.url) window.location.href = data.url;
-      return;
-    }
-
-    const result = await WebBrowser.openAuthSessionAsync(data.url, getNativeAuthOrigin());
-    setLinkingGoogle(false);
-
-    if (result.type === 'success') {
-      const code = parseOAuthCode(result.url);
-      if (code) {
-        router.push(`/auth/callback?code=${encodeURIComponent(code)}&callbackUrl=${encodeURIComponent(result.url)}`);
+    try {
+      if (Platform.OS === 'web') {
+        oauth.beginAttempt('link_identity');
+        const url = await withOAuthTimeout(
+          createAuthorizationUrl(),
+          OAUTH_URL_TIMEOUT_MS,
+          'url_creation',
+        );
+        window.location.href = url;
+        return;
       }
+
+      const result = await runNativeGoogleOAuth({
+        intent: 'link_identity',
+        controller: oauth,
+        createAuthorizationUrl,
+        openBrowser: (url) => WebBrowser.openAuthSessionAsync(url, getNativeAuthOrigin()),
+        dismissBrowser: () => WebBrowser.dismissBrowser(),
+      });
+      if (result.status !== 'success') setLinkError(result.message);
+    } catch {
+      oauth.recordFailure('url_creation_failed');
+      setLinkError('FolioLens could not start Google linking. Please try again.');
+    } finally {
+      setLinkingGoogle(false);
     }
   }
 

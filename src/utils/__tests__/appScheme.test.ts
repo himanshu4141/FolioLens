@@ -3,7 +3,6 @@ import {
   getAppScheme,
   getNativeAuthOrigin,
   getNativeBridgeUrl,
-  getNativeExchangeCallbackUrl,
 } from '../appScheme';
 
 jest.mock('expo-constants', () => ({
@@ -94,22 +93,4 @@ describe('appScheme helpers', () => {
     );
   });
 
-  it('builds an HTTPS callback exchange URL when a native callback URL is missing', () => {
-    constants.expoConfig = {
-      extra: { appScheme: 'foliolens-pr' },
-    };
-
-    expect(getNativeExchangeCallbackUrl('abc+123')).toBe(
-      'https://app.foliolens.in/auth/callback?scheme=foliolens-pr&code=abc%2B123',
-    );
-  });
-
-  it('prefers the provided callback URL when one is available', () => {
-    expect(
-      getNativeExchangeCallbackUrl(
-        'ignored',
-        'foliolens-pr://auth/callback?code=abc123&state=xyz',
-      ),
-    ).toBe('foliolens-pr://auth/callback?code=abc123&state=xyz');
-  });
 });

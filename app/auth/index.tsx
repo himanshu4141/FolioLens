@@ -22,7 +22,12 @@ import { featureFlags } from '@/src/lib/featureFlags';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
-import { parseOAuthCode } from '@/src/utils/authUtils';
+import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
+import {
+  OAUTH_URL_TIMEOUT_MS,
+  runNativeGoogleOAuth,
+} from '@/src/lib/nativeGoogleOAuth';
+import { withOAuthTimeout } from '@/src/lib/oauthCompletion';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
@@ -58,6 +63,7 @@ export default function SignInScreen() {
   const [demoSheetOpen, setDemoSheetOpen] = useState(false);
   const showDevAuthShortcut = canShowDevAuthShortcut();
   const enterPreviewMode = useAppStore((s) => s.enterPreviewMode);
+  const oauth = useOAuthCompletion();
 
   function handlePreview() {
     setError(null);
@@ -107,32 +113,40 @@ export default function SignInScreen() {
       ? `${window.location.origin}/auth/callback`
       : getNativeBridgeUrl('/auth/callback');
 
-    const { data, error } = await authClient.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo, skipBrowserRedirect: true },
-    });
+    const createAuthorizationUrl = async () => {
+      const { data, error } = await authClient.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo, skipBrowserRedirect: true },
+      });
+      if (error || !data?.url) throw new Error('OAuth URL unavailable');
+      return data.url;
+    };
 
-    if (error || !data?.url) {
-      setError(error?.message ?? 'Could not start Google sign-in. Please try again.');
-      setLoadingMode(null);
-      return;
-    }
-
-    if (Platform.OS === 'web') {
-      window.location.href = data.url;
-      return;
-    }
-
-    const result = await WebBrowser.openAuthSessionAsync(data.url, getNativeAuthOrigin());
-    setLoadingMode(null);
-
-    if (result.type === 'success') {
-      const code = parseOAuthCode(result.url);
-      if (code) {
-        router.push(
-          `/auth/callback?code=${encodeURIComponent(code)}&callbackUrl=${encodeURIComponent(result.url)}`,
+    try {
+      if (Platform.OS === 'web') {
+        oauth.beginAttempt('sign_in');
+        const url = await withOAuthTimeout(
+          createAuthorizationUrl(),
+          OAUTH_URL_TIMEOUT_MS,
+          'url_creation',
         );
+        window.location.href = url;
+        return;
       }
+
+      const result = await runNativeGoogleOAuth({
+        intent: 'sign_in',
+        controller: oauth,
+        createAuthorizationUrl,
+        openBrowser: (url) => WebBrowser.openAuthSessionAsync(url, getNativeAuthOrigin()),
+        dismissBrowser: () => WebBrowser.dismissBrowser(),
+      });
+      if (result.status !== 'success') setError(result.message);
+    } catch {
+      oauth.recordFailure('url_creation_failed');
+      setError('FolioLens could not start Google sign-in. Please try again.');
+    } finally {
+      setLoadingMode(null);
     }
   }
 
