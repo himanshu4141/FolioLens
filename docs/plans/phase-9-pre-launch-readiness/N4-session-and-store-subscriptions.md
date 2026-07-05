@@ -72,7 +72,7 @@ Use `useShallow` for components that need multiple Zustand values and primitive 
 - Full Jest remains green.
 - A release-like native smoke checks Settings to About and Funds to Fund Detail without new auth bootstrap/subscription logs or behavior regressions.
 
-## Native Acceptance Evidence
+## Initial Native Acceptance Evidence (superseded by code review)
 
 Android acceptance ran on a paired Pixel 8a running Android 16 with the PR-preview package `com.foliolens.app.prpreview`. The measured implementation is `1b940695`; the exact Android OTA is `019f2fe5-d91d-7218-b57c-c977bfbb3a9a`. About showed channel `foliolens-pr`, prefix `019f2fe5-d91…`, version `0.0.4`, and the 5 Jul 2026 update date.
 
@@ -83,11 +83,14 @@ Android acceptance ran on a paired Pixel 8a running Android 16 with the PR-previ
 
 Automated validation at the measured implementation: focused N4 tests 2 suites / 2 tests, full Jest 86 suites / 1,889 tests, typecheck, zero-warning lint, and diff check.
 
+This evidence remains a useful transition baseline but is no longer final acceptance: independent Codex review found a bootstrap/auth-event ordering race, so corrected-head native evidence is required after the fix OTA.
+
 ## Amendments
 
 - The implementation keeps CAS PDF upload's action-time `getSession()` token lookup. This is not an application bootstrap or subscription; it deliberately obtains the current access token immediately before a native binary upload.
 - Funds search moved from transient Zustand state to layout-local state with a deferred filtering value. It can reset if the app crosses the mobile/desktop breakpoint, but keystrokes no longer fan out through the global store.
 - The cache-shape guard is satisfied with the PR-title marker `[cache-shape-stable]`: N4 changes hook execution and subscriptions but does not alter a React Query key or serialized payload shape, so a `__BUSTER__` bump would incorrectly discard valid financial caches.
+- Independent Codex review found that the initial bootstrap promise and auth callback were unsequenced writers. A delayed null bootstrap could erase a newer `SIGNED_IN`, while a delayed old bootstrap could resurrect a newer `SIGNED_OUT`. Auth events now advance a revision and resolve the bootstrap deferred immediately; bootstrap success/error applies only if no auth event has advanced that revision. Focused regressions reproduce both races.
 
 ## Risks And Mitigations
 
@@ -101,6 +104,7 @@ Automated validation at the measured implementation: focused N4 tests 2 suites /
 - 2026-07-05: Chose an in-process provider-to-lifecycle adapter so exactly one Supabase auth listener exists while retaining the independently tested lifecycle controller.
 - 2026-07-05: Kept the CAS upload's action-time token lookup. It is not an application bootstrap or subscription, and it intentionally obtains the current access token at the upload boundary. Removed the redundant action-time session read from portfolio-composition sync because the functions wrapper already supplies auth.
 - 2026-07-05: Localized Funds search independently in mobile and desktop layouts and deferred the filter input. Transient search now resets on a responsive breakpoint swap; this is preferable to publishing each keystroke into the process-wide store.
+- 2026-07-05: Auth events take precedence over an in-flight bootstrap. This preserves the newest identity state and lets the lifecycle proceed from the first authoritative event instead of waiting for a stale bootstrap response.
 
 ## Progress
 
@@ -109,6 +113,6 @@ Automated validation at the measured implementation: focused N4 tests 2 suites /
 - [x] Route application lifecycle auth reads/events through the provider.
 - [x] Replace selector-free Zustand subscriptions and localize Funds search.
 - [x] Memoize portfolio insight computation.
-- [x] Add N4 regression tests.
-- [x] Run all required validation and native transition smoke. Typecheck, zero-warning lint, diff check, focused tests, full Jest (86 suites / 1,889 tests), and exact-head Android transition evidence pass.
+- [x] Add N4 regression tests, including late-bootstrap-after-sign-in and late-bootstrap-after-sign-out ordering.
+- [ ] Run all required validation and corrected-head native transition smoke. Typecheck, zero-warning lint, diff check, focused tests (2 suites / 4 tests), and full Jest (86 suites / 1,891 tests) pass; corrected-head Android evidence is pending.
 - [x] Open draft implementation PR #259. Independent review requests follow the evidence-only commit.

@@ -53,6 +53,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const sessionRef = useRef<Session | null>(null);
+  const authRevisionRef = useRef(0);
   const listenersRef = useRef(new Set<SessionEventListener>());
   const bootstrapRef = useRef<DeferredSession | null>(null);
 
@@ -74,14 +75,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     let mounted = true;
     const deferred = bootstrapRef.current;
     const listeners = listenersRef.current;
+    const bootstrapRevision = authRevisionRef.current;
 
     const {
       data: { subscription },
     } = authClient.onAuthStateChange((event, nextSession) => {
       if (!mounted) return;
+      authRevisionRef.current += 1;
       sessionRef.current = nextSession;
       setSession(nextSession);
       setLoading(false);
+      deferred?.resolve();
       for (const listener of listeners) {
         listener(event, nextSession);
       }
@@ -89,13 +93,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     void authClient.getSession()
       .then(({ data }) => {
-        if (!mounted) return;
+        if (!mounted || authRevisionRef.current !== bootstrapRevision) return;
         sessionRef.current = data.session;
         setSession(data.session);
         setLoading(false);
       })
       .catch((error: unknown) => {
-        if (!mounted) return;
+        if (!mounted || authRevisionRef.current !== bootstrapRevision) return;
         console.warn('[auth] session bootstrap failed', error);
         sessionRef.current = null;
         setSession(null);
