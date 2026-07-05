@@ -63,6 +63,11 @@ Use one workflow for both event types. Pull-request runs continue to label the u
 - The shared channel can be overwritten by another PR run. The runbook requires verifying the About prefix immediately before measurement and republishing when necessary.
 - Manual dispatch could target the wrong ref. The trace summary records `github.sha`, which must match the local implementation SHA before evidence is accepted.
 
+## Amendments
+
+- The first pushed workflow wrapped a GitHub expression containing `#` in an unquoted YAML scalar. YAML treated the hash as a comment, so GitHub rejected the workflow before creating jobs even though Prettier accepted the file. The expression and other dynamic inputs are now quoted, and `actionlint` is a required local validation in addition to Prettier.
+- While touching the publish step, three separate writes to `GITHUB_OUTPUT` were grouped into one redirected block so ShellCheck/actionlint also passes without warnings.
+
 ## Decision Log
 
 - 2026-07-05: Reused `pr-preview.yml` because its OTA trace action already supports an empty PR number.
@@ -72,6 +77,6 @@ Use one workflow for both event types. Pull-request runs continue to label the u
 
 - [x] Add manual branch dispatch and event-aware metadata.
 - [x] Document the pre-PR Android evidence flow.
-- [x] Run repository validation: workflow Prettier check, typecheck, zero-warning lint, and diff check pass.
-- [ ] Open a ready infrastructure PR with all evidence present.
+- [x] Run repository validation: actionlint, workflow Prettier check, typecheck, zero-warning lint, and diff check pass.
+- [x] Open ready infrastructure PR #260 with all applicable evidence present.
 - [ ] Verify a real manual dispatch after merge.
