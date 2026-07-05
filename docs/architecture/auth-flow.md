@@ -111,7 +111,7 @@ sequenceDiagram
   alt event was missed
     Coordinator->>Auth: getSession() once for reconciliation
     Auth-->>Session: apply reconciled session
-    Session->>Session: publish effective SIGNED_IN once<br/>to lifecycle subscribers
+    Session->>Session: publish effective SIGNED_IN once<br/>and suppress one delayed identical provider event
   end
   Coordinator->>App: replace /(tabs) once
   App->>U: portfolio opens

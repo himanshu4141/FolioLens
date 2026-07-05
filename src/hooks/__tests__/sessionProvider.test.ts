@@ -253,14 +253,20 @@ describe('SessionProvider', () => {
   });
 
   it('reconciles a persisted session and publishes the missed lifecycle event once', async () => {
+    let authCallback:
+      | ((event: AuthChangeEvent, session: Session | null) => void)
+      | undefined;
     mockedGetSession
       .mockResolvedValueOnce({ data: { session: null }, error: null })
       .mockResolvedValueOnce({ data: { session: NEW_SESSION }, error: null })
       .mockResolvedValueOnce({ data: { session: NEW_SESSION }, error: null });
-    mockedOnAuthStateChange.mockReturnValue({
-      data: {
-        subscription: { id: 'reconcile', callback: jest.fn(), unsubscribe: jest.fn() },
-      },
+    mockedOnAuthStateChange.mockImplementation((callback) => {
+      authCallback = callback;
+      return {
+        data: {
+          subscription: { id: 'reconcile', callback, unsubscribe: jest.fn() },
+        },
+      };
     });
     let api: ReturnType<typeof useSession> | undefined;
     const renders = jest.fn();
@@ -292,6 +298,21 @@ describe('SessionProvider', () => {
     expect(renders.mock.calls.at(-1)).toEqual([false, NEW_SESSION]);
     expect(lifecycleListener).toHaveBeenCalledTimes(1);
     expect(lifecycleListener).toHaveBeenCalledWith('SIGNED_IN', NEW_SESSION);
+
+    // A delayed copy of the event that reconciliation synthesized is consumed
+    // once, while a genuinely newer token transition still propagates.
+    act(() => authCallback?.('SIGNED_IN', NEW_SESSION));
+    expect(lifecycleListener).toHaveBeenCalledTimes(1);
+    const refreshedSession = {
+      ...NEW_SESSION,
+      access_token: 'refreshed-token',
+    } as Session;
+    act(() => authCallback?.('TOKEN_REFRESHED', refreshedSession));
+    expect(lifecycleListener).toHaveBeenCalledTimes(2);
+    expect(lifecycleListener).toHaveBeenLastCalledWith(
+      'TOKEN_REFRESHED',
+      refreshedSession,
+    );
     unsubscribeLifecycle?.();
     act(() => renderer?.unmount());
   });

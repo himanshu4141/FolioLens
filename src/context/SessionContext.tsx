@@ -49,6 +49,12 @@ interface DeferredSession {
   resolve: () => void;
 }
 
+interface AuthTransition {
+  event: AuthChangeEvent;
+  userId: string | null;
+  accessToken: string | null;
+}
+
 function createDeferredSession(): DeferredSession {
   let resolve = () => {};
   const promise = new Promise<void>((done) => {
@@ -79,6 +85,27 @@ function reconciliationEvent(
   return null;
 }
 
+function authTransition(
+  event: AuthChangeEvent,
+  session: Session | null,
+): AuthTransition {
+  return {
+    event,
+    userId: session?.user.id ?? null,
+    accessToken: session?.access_token ?? null,
+  };
+}
+
+function transitionsMatch(
+  left: AuthTransition | null,
+  right: AuthTransition,
+): boolean {
+  return left !== null
+    && left.event === right.event
+    && left.userId === right.userId
+    && left.accessToken === right.accessToken;
+}
+
 /**
  * Owns the app process's single Supabase session bootstrap and auth listener.
  *
@@ -94,6 +121,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const listenersRef = useRef(new Set<SessionEventListener>());
   const waitersRef = useRef(new Set<SessionWaiter>());
   const bootstrapRef = useRef<DeferredSession | null>(null);
+  const reconciledTransitionRef = useRef<AuthTransition | null>(null);
 
   if (bootstrapRef.current === null) {
     bootstrapRef.current = createDeferredSession();
@@ -156,6 +184,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     authRevisionRef.current += 1;
     applySession(data.session);
     bootstrapRef.current?.resolve();
+    reconciledTransitionRef.current = authTransition(event, data.session);
     for (const listener of listenersRef.current) {
       listener(event, data.session);
     }
@@ -176,6 +205,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       authRevisionRef.current += 1;
       applySession(nextSession);
       deferred?.resolve();
+      const transition = authTransition(event, nextSession);
+      const alreadyPublished = transitionsMatch(
+        reconciledTransitionRef.current,
+        transition,
+      );
+      reconciledTransitionRef.current = null;
+      if (alreadyPublished) return;
       for (const listener of listeners) {
         listener(event, nextSession);
       }
