@@ -451,6 +451,74 @@ describe('didSyncChangeData — bootstrap integration', () => {
   });
 });
 
+describe('C1 NAV history completeness bootstrap', () => {
+  beforeEach(async () => {
+    __resetAllForTests();
+    await __setDbForTests(null);
+    jest.clearAllMocks();
+  });
+
+  it('backfills a recent-only scheme once, marks full history, then resumes delta sync', async () => {
+    await navRepo.bulkInsert([
+      { scheme_code: 100, nav_date: '2026-01-01', nav: 20 },
+    ]);
+
+    (transactionRepo.from as jest.Mock).mockImplementation(() => {
+      let countOnly = false;
+      const chain: any = {
+        select: jest.fn((_columns: string, options?: { head?: boolean }) => {
+          countOnly = options?.head === true;
+          return chain;
+        }),
+        eq: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        range: jest.fn().mockReturnThis(),
+        gte: jest.fn().mockReturnThis(),
+        then: (resolve: (value: ChainResponse) => void) => resolve(
+          countOnly
+            ? { data: null, error: null, count: 0 }
+            : { data: [], error: null },
+        ),
+      };
+      return chain;
+    });
+
+    const navGte = jest.fn().mockReturnThis();
+    const navOrder = jest.fn().mockReturnThis();
+    (navHistoryRepo.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      order: navOrder,
+      range: jest.fn().mockReturnThis(),
+      gte: navGte,
+      then: (resolve: (value: ChainResponse) => void) => resolve({
+        data: [
+          { scheme_code: 100, nav_date: '2020-01-01', nav: 10 },
+          { scheme_code: 100, nav_date: '2026-01-01', nav: 20 },
+        ],
+        error: null,
+      }),
+    }));
+    (indexHistoryRepo.from as jest.Mock).mockImplementation(() =>
+      makeChainQueue([{ data: [], error: null }]).next(),
+    );
+
+    const first = await bootstrap('user-1', [100], []);
+    expect(first.errors).toEqual([]);
+    expect(await navRepo.countBySchemeCode(100)).toBe(2);
+    expect(await navRepo.getHistoryCoverage(100)).toEqual({ known: true, startDate: null });
+    expect(navGte).not.toHaveBeenCalled();
+    expect(navOrder.mock.calls.slice(0, 2)).toEqual([
+      ['nav_date', { ascending: true }],
+      ['scheme_code', { ascending: true }],
+    ]);
+
+    const second = await bootstrap('user-1', [100], []);
+    expect(second.errors).toEqual([]);
+    expect(navGte).toHaveBeenCalledWith('nav_date', '2026-01-01');
+  });
+});
+
 describe('N2D shared-connection sync overlap', () => {
   beforeEach(async () => {
     __resetAllForTests();

@@ -9,8 +9,8 @@
  * exposes `isStale=true` and auto-invokes sync-fund-portfolios on mount.
  */
 
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { authClient } from '@/src/lib/auth';
 import { functionsClient } from '@/src/lib/functions';
 import { analytics } from '@/src/lib/analytics';
 import { fundPortfolioCompositionRepo } from '@/src/lib/data/fundPortfolioComposition';
@@ -328,7 +328,6 @@ export function usePortfolioInsights(
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      await authClient.getSession();
       const res = await functionsClient.invoke('sync-fund-portfolios', {
         body: {},
       });
@@ -354,9 +353,12 @@ export function usePortfolioInsights(
     },
   });
 
-  const insights = compositions && fundCards.length > 0
-    ? computeInsights(fundCards, compositions)
-    : null;
+  const insights = useMemo(
+    () => compositions && fundCards.length > 0
+      ? computeInsights(fundCards, compositions)
+      : null,
+    [compositions, fundCards],
+  );
 
   // Staleness check: if the oldest composition date is >STALE_DAYS ago
   const isStale = compositions !== undefined && compositions.length > 0

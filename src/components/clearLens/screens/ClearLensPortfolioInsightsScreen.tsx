@@ -325,7 +325,7 @@ export function ClearLensPortfolioInsightsScreen() {
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();
   const isFocused = useIsFocused();
-  const { defaultBenchmarkSymbol } = useAppStore();
+  const defaultBenchmarkSymbol = useAppStore((state) => state.defaultBenchmarkSymbol);
   const { data, isLoading: portfolioLoading } = usePortfolio(defaultBenchmarkSymbol, {
     enabled: isFocused,
   });

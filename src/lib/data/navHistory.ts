@@ -27,9 +27,16 @@ export const navHistoryRepo = {
       p_scheme_code: schemeCode,
     });
     if (error) throw new Error(`month_end_nav failed: ${error.message}`);
-    return (data ?? []).map((row: { nav_date: string; nav: number }) => ({
-      date: row.nav_date,
-      value: row.nav,
-    }));
+    // The deployed SQL uses DISTINCT ON with a descending month/date order.
+    // Past SIP and Compare both consume NavPoint[] as an ascending time series,
+    // so normalize at the provider boundary rather than relying on a database
+    // implementation detail. PostgREST may also serialize NUMERIC as a string.
+    return (data ?? [])
+      .map((row: { nav_date: string; nav: number | string }) => ({
+        date: row.nav_date,
+        value: Number(row.nav),
+      }))
+      .filter((row: NavPoint) => row.date.length > 0 && Number.isFinite(row.value))
+      .sort((a: NavPoint, b: NavPoint) => a.date.localeCompare(b.date));
   },
 };

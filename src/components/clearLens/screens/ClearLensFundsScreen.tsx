@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   ActivityIndicator,
   Modal,
@@ -469,10 +470,15 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
     defaultBenchmarkSymbol,
     fundsSortBy: sortBy,
     setFundsSortBy: setSortBy,
-    fundsSearchQuery: searchQuery,
-    setFundsSearchQuery: setSearchQuery,
     previewMode,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+    fundsSortBy: state.fundsSortBy,
+    setFundsSortBy: state.setFundsSortBy,
+    previewMode: state.previewMode,
+  })));
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [expandedFundId, setExpandedFundId] = useState<string | null>(null);
@@ -517,7 +523,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   const sortLabel = SORT_OPTIONS.find((option) => option.value === sortBy)?.label ?? 'Current value';
 
   const sortedFunds = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = deferredSearchQuery.trim().toLowerCase();
     const funds = fundCards.filter((fund) => {
       if (!query) return true;
       return fund.schemeName.toLowerCase().includes(query) || fund.schemeCategory.toLowerCase().includes(query);
@@ -540,7 +546,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
           return sortableNumber(b.currentValue) - sortableNumber(a.currentValue);
       }
     });
-  }, [benchmarkXirr, fundCards, searchQuery, sortBy]);
+  }, [benchmarkXirr, deferredSearchQuery, fundCards, sortBy]);
 
   useEffect(() => {
     if (!didAutoExpand.current && sortedFunds.length > 0) {

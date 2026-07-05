@@ -3,6 +3,12 @@ name: PR Preview
 on:
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Optional label for a pre-PR evidence OTA
+        required: false
+        type: string
 
 jobs:
   # Classifies the change so documentation-only work does not run tests or
@@ -120,9 +126,11 @@ jobs:
         id: eas-update
         run: |
           UPDATE_JSON=$(python3 scripts/eas-update.py)
-          echo "update_json<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$UPDATE_JSON" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "update_json<<EOF"
+            echo "$UPDATE_JSON"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL_DEV }}
           EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_DEV }}
@@ -134,13 +142,13 @@ jobs:
           EXPO_PUBLIC_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           APP_VARIANT: preview-pr
           EAS_UPDATE_CHANNEL: foliolens-pr
-          EAS_UPDATE_MESSAGE: 'PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}'
+          EAS_UPDATE_MESSAGE: "${{ github.event_name == 'pull_request' && format('PR #{0}: {1}', github.event.number, github.event.pull_request.title) || inputs.message || format('Pre-PR evidence: {0}', github.ref_name) }}"
       - name: Trace OTA IDs + update PR comment
         uses: ./.github/actions/ota-trace
         with:
           update_json: ${{ steps.eas-update.outputs.update_json }}
           channel: foliolens-pr
-          commit_sha: ${{ github.event.pull_request.head.sha }}
-          pr_number: ${{ github.event.number }}
+          commit_sha: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          pr_number: "${{ github.event_name == 'pull_request' && github.event.number || '' }}"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.repository }}

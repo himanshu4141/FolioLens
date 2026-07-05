@@ -44,6 +44,8 @@ export interface NavSchemeSnapshot {
   schemeName: string | null;
   rowCount: number;
   watermark: string | null;
+  coverageKnown: boolean;
+  coverageStart: string | null;
 }
 
 export interface IdxSymbolSnapshot {
@@ -120,9 +122,10 @@ async function snapshotNav(funds: FundForSnapshot[]): Promise<CacheDebugSnapshot
 
   const perScheme = await Promise.all(
     codes.map(async (code): Promise<NavSchemeSnapshot> => {
-      const [rowCount, watermark] = await Promise.all([
+      const [rowCount, watermark, coverage] = await Promise.all([
         navRepo.countBySchemeCode(code).catch(() => 0),
         navRepo.getWatermark(code).catch(() => null as string | null),
+        navRepo.getHistoryCoverage(code).catch(() => ({ known: false, startDate: null })),
       ]);
       const fund = funds.find((f) => f.scheme_code === code);
       return {
@@ -130,6 +133,8 @@ async function snapshotNav(funds: FundForSnapshot[]): Promise<CacheDebugSnapshot
         schemeName: fund?.scheme_name ?? null,
         rowCount,
         watermark,
+        coverageKnown: coverage.known,
+        coverageStart: coverage.startDate,
       };
     }),
   );

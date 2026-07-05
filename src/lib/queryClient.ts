@@ -1,9 +1,9 @@
 /**
  * React Query client + persistence configuration.
  *
- * The Portfolio screen pulls ~28k rows on a cold mount (NAV history +
- * index history dominate). Without persistence, every page reload and
- * every navigation past `gcTime` (default 5 min) re-fetches the lot.
+ * The Portfolio screen derives its bounded rendered output from much larger
+ * NAV/index histories. Native SQLite and the index CDN own those raw inputs;
+ * React Query persistence stores only bounded outputs and small lookups.
  *
  * Two levers fix the symptom users feel:
  *
@@ -12,8 +12,9 @@
  *      instead of restarting the fetch.
  *
  *   2. `PersistQueryClientProvider` (mounted in `app/_layout.tsx`)
- *      serialises the cache to AsyncStorage, which is `window.localStorage`
- *      on web. Reload-from-disk is then ~instant.
+ *      serialises the bounded allowlist to AsyncStorage, which is
+ *      `window.localStorage` on web. Reloaded rendered output is then instant
+ *      without duplicating raw daily histories in a second database.
  *
  * The `__BUSTER__` constant is the manual escape hatch: bump it whenever
  * a query's row shape changes or a migration backfills history rows, so
@@ -79,7 +80,15 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // useSchemeMaster select (Phase 3 of deprecate-post-openfolio plan).
 // v8: fund view now exposes scheme_active; useUserFunds/useFundDetail/usePortfolio
 // payloads include schemeActive + navUnavailableCount fields.
-export const __BUSTER__ = 'v8';
+// v9: discard historical NAV-derived results computed from unproven recent-only
+// SQLite slices. The payload shape is stable, but retaining financially wrong
+// `investmentVsBenchmarkTimeline` / `fund-nav-history` entries until their TTL
+// would defeat the C1 correctness repair on first launch.
+// v10: move the buster out of the AsyncStorage key. The old key included the
+// version, so every bump orphaned the previous (potentially multi-megabyte)
+// cache instead of replacing it. Also stop persisting raw daily histories that
+// already live in native SQLite and can exceed Android AsyncStorage's 6 MB DB.
+export const __BUSTER__ = 'v10';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
@@ -132,21 +141,126 @@ export const queryClient = new QueryClient({
  * from AsyncStorage to surface its byte length + parsed contents.
  * Treat as read-only — the persister owns writes.
  */
-export const PERSIST_KEY = `foliolens.react-query-cache.${__BUSTER__}`;
+export const PERSIST_KEY = 'foliolens.react-query-cache';
+const LEGACY_PERSIST_KEY_PREFIX = `${PERSIST_KEY}.v`;
+
+// Android's AsyncStorage SQLite database defaults to 6 MB and also contains
+// auth, Zustand, and onboarding state. Keep the React Query blob comfortably
+// below that shared ceiling. This is a serialized-character guard; JSON data
+// here is overwhelmingly ASCII, and the 2 MB margin also covers UTF-8 growth.
+export const PERSIST_SAFE_MAX_CHARS = 4 * 1024 * 1024;
+
+let legacyCleanup: Promise<void> | null = null;
+
+async function removeLegacyPersistedQueryCaches(): Promise<void> {
+  if (legacyCleanup) return legacyCleanup;
+
+  legacyCleanup = (async () => {
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const legacyKeys = keys.filter((key) => key.startsWith(LEGACY_PERSIST_KEY_PREFIX));
+      if (legacyKeys.length === 0) return;
+
+      await AsyncStorage.multiRemove(legacyKeys);
+      analytics.track('persister_legacy_keys_removed', {
+        key_count: legacyKeys.length,
+      });
+    } catch (err) {
+      // Cleanup is best-effort. Persistence still proceeds through the stable
+      // key and its bounded retry path below. Clear the single-flight promise
+      // so a later restore/write can retry a transient cleanup failure.
+      analytics.track('persister_legacy_cleanup_failed', {
+        error_message: err instanceof Error ? err.message : String(err),
+        error_name: err instanceof Error ? err.name : 'unknown',
+      });
+      legacyCleanup = null;
+    }
+  })();
+
+  return legacyCleanup;
+}
+
+class PersistedClientTooLargeError extends Error {
+  constructor(readonly serializedChars: number) {
+    super(`Persisted React Query cache is ${serializedChars} chars`);
+    this.name = 'PersistedClientTooLargeError';
+  }
+}
+
+function serializePersistedClient(client: PersistedClient): string {
+  const serialized = JSON.stringify(client);
+  if (serialized.length > PERSIST_SAFE_MAX_CHARS) {
+    throw new PersistedClientTooLargeError(serialized.length);
+  }
+  return serialized;
+}
+
+/**
+ * Drop the largest dehydrated query after a failed write. Persistence is an
+ * acceleration layer, never a source of truth, so retaining a smaller valid
+ * cache is safer than silently keeping an old blob after SQLiteFullException.
+ */
+export function retryPersistedClient(
+  client: PersistedClient,
+  error: Error,
+  errorCount: number,
+): PersistedClient | undefined {
+  const queries = client.clientState.queries;
+  if (queries.length === 0) return undefined;
+
+  let largestIndex = 0;
+  let largestChars = -1;
+  for (let index = 0; index < queries.length; index += 1) {
+    const chars = JSON.stringify(queries[index]).length;
+    if (chars > largestChars) {
+      largestIndex = index;
+      largestChars = chars;
+    }
+  }
+
+  const removed = queries[largestIndex];
+  const remainingQueries = queries.filter((_, index) => index !== largestIndex);
+  const attemptedChars =
+    error instanceof PersistedClientTooLargeError
+      ? error.serializedChars
+      : JSON.stringify(client).length;
+
+  analytics.track('persister_write_retried', {
+    buster: __BUSTER__,
+    error_count: errorCount,
+    error_message: error.message,
+    error_name: error.name,
+    attempted_chars: attemptedChars,
+    removed_query_chars: largestChars,
+    removed_query_family:
+      Array.isArray(removed.queryKey) && typeof removed.queryKey[0] === 'string'
+        ? removed.queryKey[0]
+        : 'unknown',
+    remaining_query_count: remainingQueries.length,
+  });
+
+  return {
+    ...client,
+    clientState: {
+      ...client.clientState,
+      queries: remainingQueries,
+    },
+  };
+}
 
 const basePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
   key: PERSIST_KEY,
   throttleTime: 1000,
+  serialize: serializePersistedClient,
+  retry: ({ persistedClient, error, errorCount }) =>
+    retryPersistedClient(persistedClient, error, errorCount),
 });
 
 /**
- * Best-effort blob-size reader. `PersistQueryClientProvider`'s own
- * `onError` callback fires with zero arguments — the actual error is
- * swallowed inside the library — so we wrap the persister below to
- * intercept the exception while we still have it. This helper backs
- * the `blob_size_bytes` field on the resulting analytics event so we
- * can see if AsyncStorage's ~6 MB Android limit is in play.
+ * Best-effort blob-size reader for restore failures. Write errors are handled
+ * inside the TanStack persister through `retryPersistedClient`, because its
+ * public `persistClient` promise intentionally swallows storage exceptions.
  */
 async function readBlobSize(): Promise<number | null> {
   try {
@@ -158,42 +272,18 @@ async function readBlobSize(): Promise<number | null> {
 }
 
 /**
- * Instrumented persister wrapper.
- *
- * The base persister's restore/persist paths catch their own errors
- * and surface them only as a no-op `onError()` upstream, which means
- * the `persister_restore_failed` analytics event we ship today has no
- * useful payload — no error message, no error name, no idea whether
- * we're looking at JSON corruption, a write that landed truncated
- * past Android's ~6 MB AsyncStorage limit, or something else.
- *
- * Wrapping here lets us emit the rich payload at the moment we still
- * have the exception. PostHog dashboards filter on
- * `properties.error_name` / `properties.error_message` to bucket the
- * three suspect causes (size overflow, mid-write interrupt, stringify
- * shape mismatch); `blob_size_bytes` is the load-bearing field for
- * the first one.
- *
- * The original error is re-thrown so the library's own retry /
- * abandon logic is unchanged.
+ * The wrapper removes version-suffixed legacy keys before the first restore or
+ * write and retains detailed restore-failure telemetry. Write-failure
+ * telemetry and bounded degradation live in the base persister retry callback.
  */
 export const persister = {
   persistClient: async (client: PersistedClient) => {
-    try {
-      await basePersister.persistClient(client);
-    } catch (err) {
-      const size = await readBlobSize();
-      analytics.track('persister_write_failed', {
-        buster: __BUSTER__,
-        error_message: err instanceof Error ? err.message : String(err),
-        error_name: err instanceof Error ? err.name : 'unknown',
-        blob_size_bytes: size,
-      });
-      throw err;
-    }
+    await removeLegacyPersistedQueryCaches();
+    await basePersister.persistClient(client);
   },
   restoreClient: async () => {
     try {
+      await removeLegacyPersistedQueryCaches();
       return await basePersister.restoreClient();
     } catch (err) {
       const size = await readBlobSize();
@@ -220,11 +310,6 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   'portfolio',
   'portfolio-composition',
   'investmentVsBenchmarkTimeline',
-  'portfolio-timeline',
-  'performance-timeline',
-  'fund-detail',
-  'fund-detail-index',
-  'fund-nav-history',
   'money-trail',
   // Auxiliary user-scoped lookups.
   'user-funds',
@@ -232,11 +317,6 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   // Per-scheme metadata — shared between Fund Detail and Compare via
   // a single producer / single cache key (`['scheme-master', code]`).
   'scheme-master',
-  // CDN-served daily snapshot of `index_history` for tracked benchmarks
-  // (Phase 9 M5). The HTTP cache fronts most reads; persisting here is
-  // the in-app belt-and-braces so a navigation past the React Query
-  // gcTime doesn't trigger an unnecessary CDN GET.
-  'index-snapshot',
 ];
 
 export function shouldPersistQueryKey(queryKey: QueryKey): boolean {

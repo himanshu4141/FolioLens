@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useShallow } from 'zustand/react/shallow';
 import {
   useAppStore,
   BENCHMARK_OPTIONS,
@@ -49,7 +50,12 @@ export default function PreferencesScreen() {
     setDefaultBenchmarkSymbol,
     returnAssumptions,
     setReturnAssumption,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
+    setDefaultBenchmarkSymbol: state.setDefaultBenchmarkSymbol,
+    returnAssumptions: state.returnAssumptions,
+    setReturnAssumption: state.setReturnAssumption,
+  })));
   const [saved, setSaved] = useState(false);
 
   const [assumptionDrafts, setAssumptionDrafts] = useState<Record<keyof ReturnAssumptions, string>>(
