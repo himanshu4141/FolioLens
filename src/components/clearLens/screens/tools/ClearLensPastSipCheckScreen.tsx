@@ -56,7 +56,6 @@ import {
 import {
   ClearLensFonts,
   ClearLensRadii,
-  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
