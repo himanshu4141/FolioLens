@@ -122,10 +122,14 @@ The **Program Convergence Gate** workflow (`program-convergence-gate.yml`, check
   not bypass the gate. The label also opts a PR in, but it is the weaker signal;
   always use the branch prefix.
 - **The source of truth is SHA-pinned comments, not labels.** The gate passes only
-  when both a `[Codex review <ID>] CONVERGED at <sha>` and a
-  `[Claude review <ID>] CONVERGED at <sha>` comment exist whose SHA (12+ hex chars)
-  matches the **current** head. A push instantly invalidates convergence because
-  the pinned SHA no longer matches — no label state can go stale into a green gate,
+  when both reviewers have posted a comment whose **entire trimmed body is
+  exactly** `[<Role> review <ID>] CONVERGED at <full 40-char head SHA>` matching
+  the **current** head — nothing else in the comment, no footers. Whole-body
+  matching is deliberate: substring matching would accept negations
+  ("NOT CONVERGED at <sha>", "Withdrawing CONVERGED at <sha>") or quoted mentions
+  of the format in discussion. To withdraw a convergence at the same head, edit or
+  delete the marker comment. A push instantly invalidates convergence because the
+  pinned SHA no longer matches — no label state can go stale into a green gate,
   and the first program's "merged before the final convergence marker" slip cannot
   recur.
 - The `codex-converged`/`claude-converged` labels are **advisory UX**: the gate
@@ -459,10 +463,12 @@ this program expects:
     3. Review that frozen head under the stance and non-negotiables below. File
        findings as inline threads; post ONE round summary — either
        "[Codex review <ID>] round <n> at <short sha>: changes requested" or,
-       if nothing actionable remains, a standalone comment in exactly this
-       format: "[Codex review <ID>] CONVERGED at <full 40-char head SHA>",
-       plus the codex-converged label. The gate parses that comment and matches
-       the SHA against the current head; the label add is what re-triggers it.
+       if nothing actionable remains, a standalone comment whose ENTIRE body is
+       exactly: "[Codex review <ID>] CONVERGED at <full 40-char head SHA>" —
+       nothing else, no footer or signature — plus the codex-converged label.
+       The gate accepts only that exact whole-comment format at the current
+       head; the label add is what re-triggers it. To withdraw a convergence at
+       the same head, edit or delete the marker comment.
     4. The executor is barred from pushing while a round is open, so the head
        you review is stable. If a mid-round push happens anyway, the round is
        void: stop, discard round conclusions, and wait for the re-review label.
@@ -517,10 +523,12 @@ this program expects:
     3. Review that frozen head under the stance and non-negotiables below. File
        findings as inline threads; post ONE round summary — either
        "[Claude review <ID>] round <n> at <short sha>: changes requested" or,
-       if nothing actionable remains, a standalone comment in exactly this
-       format: "[Claude review <ID>] CONVERGED at <full 40-char head SHA>",
-       plus the claude-converged label. The gate parses that comment and matches
-       the SHA against the current head; the label add is what re-triggers it.
+       if nothing actionable remains, a standalone comment whose ENTIRE body is
+       exactly: "[Claude review <ID>] CONVERGED at <full 40-char head SHA>" —
+       nothing else, no footer or signature — plus the claude-converged label.
+       The gate accepts only that exact whole-comment format at the current
+       head; the label add is what re-triggers it. To withdraw a convergence at
+       the same head, edit or delete the marker comment.
     4. The executor is barred from pushing while a round is open, so the head
        you review is stable. If a mid-round push happens anyway, the round is
        void: stop, discard round conclusions, and wait for the re-review label.

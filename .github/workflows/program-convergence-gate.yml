@@ -9,11 +9,16 @@
 # safe to mark "required" on main without affecting normal PRs.
 #
 # Source of truth: SHA-pinned convergence comments. The gate passes only when
-# BOTH reviewers have posted "[<Role> review <ID>] CONVERGED at <head sha>"
-# where the SHA matches the CURRENT head. The codex-converged/claude-converged
-# labels are advisory UX: they are stripped on every push, and adding one is
-# what re-triggers this gate — but they are never trusted as evidence, so a
-# stale label surviving an unlabeled period cannot green the gate.
+# BOTH reviewers have posted a comment whose ENTIRE trimmed body is exactly
+#   [<Role> review <ID>] CONVERGED at <full 40-char head SHA>
+# matching the CURRENT head. Whole-body matching is deliberate: a substring
+# match would accept negations ("NOT CONVERGED at <sha>", "Withdrawing
+# CONVERGED at <sha>") or quoted mentions of the format in discussion. To
+# withdraw a convergence at the same head, edit or delete that comment.
+# The codex-converged/claude-converged labels are advisory UX: they are
+# stripped on every push, and adding one is what re-triggers this gate — but
+# they are never trusted as evidence, so a stale label surviving an unlabeled
+# period cannot green the gate.
 #
 # Honesty note: with every role posting through one GitHub account, this gate
 # guards against process mistakes, not adversarial agents — a rogue session
@@ -86,25 +91,25 @@ jobs:
             });
             bodies.push(...reviews.map((r) => r.body || ''));
 
+            // The ENTIRE trimmed comment must be exactly the convergence marker
+            // with the full 40-char current head SHA. Substring matching would
+            // accept negated or quoted forms ("NOT CONVERGED at <sha>",
+            // "Withdrawing CONVERGED at <sha>").
             const convergedAtHead = (role) => {
               const pattern = new RegExp(
-                `\\[${role} review [^\\]\\n]{1,80}\\][^\\n]{0,100}CONVERGED at ([0-9a-fA-F]{12,40})`,
-                'g'
+                `^\\[${role} review [^\\]\\n]{1,80}\\] CONVERGED at ${headSha}$`,
+                'i'
               );
-              return bodies.some((body) => {
-                for (const match of body.matchAll(pattern)) {
-                  if (headSha.startsWith(match[1].toLowerCase())) return true;
-                }
-                return false;
-              });
+              return bodies.some((body) => pattern.test((body || '').trim()));
             };
 
             const missing = ['Codex', 'Claude'].filter((role) => !convergedAtHead(role));
             if (missing.length > 0) {
               core.setFailed(
-                `Awaiting SHA-pinned convergence at head ${headSha.slice(0, 12)} from: ${missing.join(', ')}. ` +
-                  'Each reviewer must comment "[<Role> review <ID>] CONVERGED at <head SHA, 12+ hex chars>" ' +
-                  'and add their converged label (the label add re-triggers this gate).'
+                `Awaiting SHA-pinned convergence at head ${headSha} from: ${missing.join(', ')}. ` +
+                  'Each reviewer must post a standalone comment whose entire body is exactly ' +
+                  `"[<Role> review <ID>] CONVERGED at ${headSha}" (full 40-char SHA, nothing else — ` +
+                  'no footers) and add their converged label (the label add re-triggers this gate).'
               );
             } else {
               core.info(`Both reviewers have converged at ${headSha}. Gate is green.`);
