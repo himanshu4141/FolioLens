@@ -3,6 +3,12 @@ name: PR Preview
 on:
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Optional label for a pre-PR evidence OTA
+        required: false
+        type: string
 
 jobs:
   checks:
@@ -57,13 +63,13 @@ jobs:
           EXPO_PUBLIC_POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           APP_VARIANT: preview-pr
           EAS_UPDATE_CHANNEL: foliolens-pr
-          EAS_UPDATE_MESSAGE: PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}
+          EAS_UPDATE_MESSAGE: ${{ github.event_name == 'pull_request' && format('PR #{0}: {1}', github.event.number, github.event.pull_request.title) || inputs.message || format('Pre-PR evidence: {0}', github.ref_name) }}
       - name: Trace OTA IDs + update PR comment
         uses: ./.github/actions/ota-trace
         with:
           update_json: ${{ steps.eas-update.outputs.update_json }}
           channel: foliolens-pr
-          commit_sha: ${{ github.event.pull_request.head.sha }}
-          pr_number: ${{ github.event.number }}
+          commit_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          pr_number: ${{ github.event_name == 'pull_request' && github.event.number || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.repository }}
