@@ -121,6 +121,7 @@ Expected outputs are zero TypeScript errors, zero lint warnings, all focused/ful
 - PR-preview-only mount diagnostics report only surface name and aggregate active/peak row counts. They emit no fund, transaction, account, or financial identifiers and remain silent on main preview and production.
 - Desktop and mobile browser smoke checks used the existing local demo portfolio. They verified the responsive Funds layouts, deferred search, transaction row navigation, and zero browser console errors; exact-SHA Android evidence remains mandatory before review.
 - Initial Android evidence at `66af267` exposed blank space below an expanded fund because clipped subviews did not recompute the variable-height row window safely. Omitting the prop at `90f6f43` was insufficient because React Native defaults it to `true` on Android; both OTAs are superseded. Funds and Money Trail now explicitly set `removeClippedSubviews={false}`. Bounded FlatList windows still prevent full-array rendering without risking hidden rows under expansion or font scaling.
+- Corrected-head Android acceptance passed on a Pixel 8a running Android 16/API 36 with PR-preview channel `foliolens-pr`, runtime implementation `9c2cb0036264f6574381c59ff1a4d7aaf30f5e41`, and OTA `019f36ba-2965-725e-bb64-313b2d0a6fe9` (About prefix `019f36ba-296`). The 13-row Funds dataset preserved expansion, search, alphabetical sorting, and Fund Detail navigation in dark and light themes with no post-expansion blank rows. The 566-row Money Trail dataset mounted an initial 12 rows and peaked at 30 active rows while preserving search, oldest-first sorting, transaction-type filtering, transaction-detail navigation, rapid scrolling without blank gaps, and scroll-to-top. The final process-scoped log scan found zero React Native fatal, unhandled-promise, auth-lifecycle, SQLite, or storage errors. The temporary Android screen timeout was restored to its original 120000 ms and the prior dark appearance was restored.
 
 ## Progress
 
@@ -130,4 +131,5 @@ Expected outputs are zero TypeScript errors, zero lint warnings, all focused/ful
 - [x] Virtualize Money Trail with variable-height rows and memoized stable-ID handlers.
 - [x] Run focused validation and update this plan with implementation amendments.
 - [x] Run full repository gates: focused 4 suites / 33 tests, full 89 suites / 1,919 tests, typecheck, zero-warning lint, `git diff --check`, and web export.
-- [ ] Capture exact-SHA Android evidence and enter frozen-head review.
+- [x] Capture corrected exact-SHA Android evidence on Pixel 8a / `foliolens-pr` / OTA `019f36ba-2965-725e-bb64-313b2d0a6fe9` for runtime `9c2cb0036264f6574381c59ff1a4d7aaf30f5e41`.
+- [ ] Enter the frozen-head dual-review round.
