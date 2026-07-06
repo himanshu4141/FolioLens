@@ -633,6 +633,7 @@ function makeStyles(tokens: ClearLensTokens) {
   frame: {
     width: '100%',
     maxWidth: MaxContentWidth,
+    alignSelf: 'center',
     gap: ClearLensSpacing.md,
   },
   titleBlock: {
