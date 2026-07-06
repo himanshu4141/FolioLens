@@ -1,8 +1,8 @@
-import { useDeferredValue, useMemo, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
   ActivityIndicator,
-  ScrollView,
+  FlatList,
   StyleSheet,
   Text,
   TextInput,
@@ -37,6 +37,11 @@ import {
   formatClearLensCurrencyDelta,
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
+import {
+  FUNDS_LIST_VIRTUALIZATION,
+  areVirtualizedFundRowInputsEqual,
+} from '@/src/lib/listVirtualization';
+import { useVirtualizedRowMount } from '@/src/lib/listRenderDiagnostics';
 
 type SortOption = FundsSortOption;
 
@@ -55,9 +60,14 @@ function sortableNumber(value: number | null | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
 
+function fundKeyExtractor(fund: FundCardData): string {
+  return fund.id;
+}
+
 export function ClearLensFundsScreenDesktop() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const fundRowStyles = useMemo(() => selectDesktopFundRowStyles(styles), [styles]);
   const router = useRouter();
   const isFocused = useIsFocused();
   const queryClient = useQueryClient();
@@ -66,12 +76,14 @@ export function ClearLensFundsScreenDesktop() {
     fundsSortBy: sortBy,
     setFundsSortBy: setSortBy,
     previewMode,
-  } = useAppStore(useShallow((state) => ({
+  } = useAppStore(
+    useShallow((state) => ({
     defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
     fundsSortBy: state.fundsSortBy,
     setFundsSortBy: state.setFundsSortBy,
     previewMode: state.previewMode,
-  })));
+    })),
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
@@ -99,7 +111,10 @@ export function ClearLensFundsScreenDesktop() {
     const query = deferredSearchQuery.trim().toLowerCase();
     const funds = fundCards.filter((fund) => {
       if (!query) return true;
-      return fund.schemeName.toLowerCase().includes(query) || fund.schemeCategory.toLowerCase().includes(query);
+      return (
+        fund.schemeName.toLowerCase().includes(query) ||
+        fund.schemeCategory.toLowerCase().includes(query)
+      );
     });
 
     return [...funds].sort((a, b) => {
@@ -109,7 +124,10 @@ export function ClearLensFundsScreenDesktop() {
         case 'xirr':
           return sortableNumber(b.returnXirr) - sortableNumber(a.returnXirr);
         case 'benchmarkLead':
-          return sortableNumber(b.returnXirr - benchmarkXirr) - sortableNumber(a.returnXirr - benchmarkXirr);
+          return (
+            sortableNumber(b.returnXirr - benchmarkXirr) -
+            sortableNumber(a.returnXirr - benchmarkXirr)
+          );
         case 'dailyChange':
           return sortableNumber(b.dailyChangePct) - sortableNumber(a.dailyChangePct);
         case 'alphabetical':
@@ -126,22 +144,28 @@ export function ClearLensFundsScreenDesktop() {
     [fundCards],
   );
   const valueSortedFunds = useMemo(
-    () => [...fundsWithValue].sort((a, b) => sortableNumber(b.currentValue) - sortableNumber(a.currentValue)),
+    () =>
+      [...fundsWithValue].sort(
+        (a, b) => sortableNumber(b.currentValue) - sortableNumber(a.currentValue),
+      ),
     [fundsWithValue],
   );
   const allocationSegments = useMemo(
     () =>
-      valueSortedFunds.map((fund, index) => ({
+      valueSortedFunds
+        .map((fund, index) => ({
         id: fund.id,
         pct: allocationPctByFundId.get(fund.id) ?? 0,
-        color: ClearLensSemanticColors.fundAllocation[
+          color:
+            ClearLensSemanticColors.fundAllocation[
           index % ClearLensSemanticColors.fundAllocation.length
         ],
-      })).filter((segment) => segment.pct > 0),
+        }))
+        .filter((segment) => segment.pct > 0),
     [allocationPctByFundId, valueSortedFunds],
   );
   const largestFund = valueSortedFunds[0] ?? null;
-  const largestPct = largestFund ? allocationPctByFundId.get(largestFund.id) ?? null : null;
+  const largestPct = largestFund ? (allocationPctByFundId.get(largestFund.id) ?? null) : null;
   const top3Pct = valueSortedFunds
     .slice(0, 3)
     .reduce((sum, fund) => sum + (allocationPctByFundId.get(fund.id) ?? 0), 0);
@@ -159,7 +183,8 @@ export function ClearLensFundsScreenDesktop() {
   const todaysBest = dailySorted[0] ?? null;
   const todaysWorst = dailySorted.length > 1 ? dailySorted[dailySorted.length - 1] : null;
 
-  function openFundDetail(fundId: string) {
+  const openFundDetail = useCallback(
+    (fundId: string) => {
     const targetQueryKey = previewMode
       ? ['fund-detail', 'preview', fundId]
       : ['fund-detail', fundId];
@@ -174,7 +199,23 @@ export function ClearLensFundsScreenDesktop() {
       }),
     });
     router.push(`/fund/${fundId}`);
-  }
+    },
+    [fundCards.length, previewMode, queryClient, router],
+  );
+
+  const renderFund = useCallback(
+    ({ item: fund }: { item: FundCardData }) => (
+      <FundDesktopCard
+        fund={fund}
+        portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
+        benchmarkXirr={benchmarkXirr}
+        onOpen={openFundDetail}
+        styles={fundRowStyles}
+        tokens={tokens}
+      />
+    ),
+    [allocationPctByFundId, benchmarkXirr, fundRowStyles, openFundDetail, tokens],
+  );
 
   if (isLoading) {
     return (
@@ -185,17 +226,26 @@ export function ClearLensFundsScreenDesktop() {
   }
 
   return (
-    <ScrollView
+    <FlatList
       style={styles.scroll}
       contentContainerStyle={styles.scrollContent}
+      data={sortedFunds}
+      keyExtractor={fundKeyExtractor}
+      renderItem={renderFund}
+      numColumns={2}
+      columnWrapperStyle={styles.grid}
+      initialNumToRender={FUNDS_LIST_VIRTUALIZATION.initialNumToRender}
+      maxToRenderPerBatch={FUNDS_LIST_VIRTUALIZATION.maxToRenderPerBatch}
+      windowSize={FUNDS_LIST_VIRTUALIZATION.windowSize}
       showsVerticalScrollIndicator={false}
-    >
+      ListHeaderComponent={
       <View style={styles.frame}>
         <View style={styles.titleBlock}>
           <Text style={styles.eyebrow}>Funds</Text>
           <Text style={styles.title}>Your Funds</Text>
           <Text style={styles.subtitle}>
-            How your {fundCards.length} holding{fundCards.length === 1 ? '' : 's'} stack up — concentration, daily movers, and per-fund metrics.
+              How your {fundCards.length} holding{fundCards.length === 1 ? '' : 's'} stack up —
+              concentration, daily movers, and per-fund metrics.
           </Text>
         </View>
 
@@ -221,10 +271,7 @@ export function ClearLensFundsScreenDesktop() {
             <View style={styles.summaryGrid}>
               <SummaryMetric label="Holdings" value={String(fundCards.length)} />
               <View style={styles.summaryDivider} />
-              <SummaryMetric
-                label="Top 3 concentration"
-                value={`${top3Pct.toFixed(1)}%`}
-              />
+                <SummaryMetric label="Top 3 concentration" value={`${top3Pct.toFixed(1)}%`} />
               <View style={styles.summaryDivider} />
               <View style={styles.summaryMetricWide}>
                 <Text style={styles.summaryLabel}>Largest holding</Text>
@@ -246,18 +293,10 @@ export function ClearLensFundsScreenDesktop() {
             {(todaysBest || todaysWorst) && (
               <View style={styles.summaryMoversRow}>
                 {todaysBest && (
-                  <MoverChip
-                    label="Today's best"
-                    fund={todaysBest}
-                    tone="positive"
-                  />
+                    <MoverChip label="Today's best" fund={todaysBest} tone="positive" />
                 )}
                 {todaysWorst && todaysWorst.id !== todaysBest?.id && (
-                  <MoverChip
-                    label="Today's worst"
-                    fund={todaysWorst}
-                    tone="negative"
-                  />
+                    <MoverChip label="Today's worst" fund={todaysWorst} tone="negative" />
                 )}
               </View>
             )}
@@ -297,29 +336,20 @@ export function ClearLensFundsScreenDesktop() {
         </View>
 
         <View style={styles.listHeader}>
-          <Text style={styles.listTitle}>{sortedFunds.length} fund{sortedFunds.length === 1 ? '' : 's'}</Text>
+            <Text style={styles.listTitle}>
+              {sortedFunds.length} fund{sortedFunds.length === 1 ? '' : 's'}
+            </Text>
           <Text style={styles.listMeta}>Click a card to open the detail page</Text>
         </View>
-
-        <View style={styles.grid}>
-          {sortedFunds.map((fund) => (
-            <FundDesktopCard
-              key={fund.id}
-              fund={fund}
-              portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
-              benchmarkXirr={benchmarkXirr}
-              onOpen={() => openFundDetail(fund.id)}
-            />
-          ))}
-          {sortedFunds.length === 0 && (
+        </View>
+      }
+      ListEmptyComponent={
             <ClearLensCard style={styles.emptyCard}>
               <Ionicons name="search-outline" size={28} color={tokens.colors.textTertiary} />
               <Text style={styles.emptyText}>No funds match your search.</Text>
             </ClearLensCard>
-          )}
-        </View>
-      </View>
-    </ScrollView>
+      }
+    />
   );
 }
 
@@ -335,11 +365,17 @@ function SummaryMetric({
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const valueColor =
-    tone === 'positive' ? tokens.colors.emerald : tone === 'negative' ? CLEAR_LENS_RED : tokens.colors.navy;
+    tone === 'positive'
+      ? tokens.colors.emerald
+      : tone === 'negative'
+        ? CLEAR_LENS_RED
+        : tokens.colors.navy;
   return (
     <View style={styles.summaryMetric}>
       <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={[styles.summaryValue, { color: valueColor }]} numberOfLines={1}>{value}</Text>
+      <Text style={[styles.summaryValue, { color: valueColor }]} numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -356,32 +392,93 @@ function MoverChip({
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const color = tone === 'positive' ? tokens.colors.emerald : CLEAR_LENS_RED;
-  const surface = tone === 'positive'
+  const surface =
+    tone === 'positive'
     ? tokens.semantic.sentiment.positiveSurface
     : tokens.semantic.sentiment.negativeSurface;
   const pct = fund.dailyChangePct ?? 0;
   return (
     <View style={[styles.moverChip, { backgroundColor: surface }]}>
-      <Text style={[styles.moverChipLabel, { color }]} numberOfLines={1}>{label}</Text>
-      <Text style={styles.moverChipName} numberOfLines={1}>{parseFundName(fund.schemeName).base}</Text>
+      <Text style={[styles.moverChipLabel, { color }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.moverChipName} numberOfLines={1}>
+        {parseFundName(fund.schemeName).base}
+      </Text>
       <Text style={[styles.moverChipDelta, { color }]}>{formatClearLensPercentDelta(pct)}</Text>
     </View>
   );
 }
 
-function FundDesktopCard({
+type DesktopFundsStyles = ReturnType<typeof makeStyles>;
+
+function selectDesktopFundRowStyles(styles: DesktopFundsStyles) {
+  const {
+    alphaBadge,
+    alphaBadgeText,
+    cardFooter,
+    cardMeta,
+    cardName,
+    cardOuter,
+    cardTitle,
+    cardTop,
+    footerCell,
+    footerDivider,
+    footerLabel,
+    footerValue,
+    fundCard,
+    primaryLabel,
+    primaryRow,
+    primaryValue,
+    primaryValueBlock,
+    secondaryLabel,
+    secondaryStat,
+    secondaryStats,
+    secondaryValue,
+  } = styles;
+  return {
+    alphaBadge,
+    alphaBadgeText,
+    cardFooter,
+    cardMeta,
+    cardName,
+    cardOuter,
+    cardTitle,
+    cardTop,
+    footerCell,
+    footerDivider,
+    footerLabel,
+    footerValue,
+    fundCard,
+    primaryLabel,
+    primaryRow,
+    primaryValue,
+    primaryValueBlock,
+    secondaryLabel,
+    secondaryStat,
+    secondaryStats,
+    secondaryValue,
+  };
+}
+
+type DesktopFundRowStyles = ReturnType<typeof selectDesktopFundRowStyles>;
+
+const FundDesktopCard = memo(function FundDesktopCard({
   fund,
   portfolioPct,
   benchmarkXirr,
   onOpen,
+  styles,
+  tokens,
 }: {
   fund: FundCardData;
   portfolioPct: number | null;
   benchmarkXirr: number;
-  onOpen: () => void;
+  onOpen: (fundId: string) => void;
+  styles: DesktopFundRowStyles;
+  tokens: ClearLensTokens;
 }) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  useVirtualizedRowMount('funds-desktop');
   const { base, planBadge } = parseFundName(fund.schemeName);
   const dailyColor = (fund.dailyChangePct ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
   const alphaPpRaw = (fund.returnXirr - benchmarkXirr) * 100;
@@ -391,34 +488,43 @@ function FundDesktopCard({
   const ahead = alphaPp >= 0;
   const xirrColor = ahead ? tokens.colors.emerald : CLEAR_LENS_RED;
   const alphaSign = alphaPp > 0 ? '+' : alphaPp < 0 ? '' : '±';
-  const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(fund.schemeCategory);
-  const accentColor = isDebtLike
-    ? tokens.semantic.asset.debt
-    : tokens.semantic.asset.equity;
+  const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(
+    fund.schemeCategory,
+  );
+  const accentColor = isDebtLike ? tokens.semantic.asset.debt : tokens.semantic.asset.equity;
   const gain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
-  const gainPct = gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
+  const gainPct =
+    gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
   const gainColor = (gain ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
 
   return (
-    <TouchableOpacity onPress={onOpen} activeOpacity={0.78} style={styles.cardOuter}>
+    <TouchableOpacity onPress={() => onOpen(fund.id)} activeOpacity={0.78} style={styles.cardOuter}>
       <ClearLensCard style={[styles.fundCard, { borderLeftColor: accentColor }]}>
         {/* Title row */}
         <View style={styles.cardTop}>
           <View style={styles.cardName}>
-            <Text style={styles.cardTitle} numberOfLines={2}>{base}</Text>
+            <Text style={styles.cardTitle} numberOfLines={2}>
+              {base}
+            </Text>
             <Text style={styles.cardMeta} numberOfLines={1}>
-              {fund.schemeCategory}{planBadge ? ` · ${planBadge}` : ''}
+              {fund.schemeCategory}
+              {planBadge ? ` · ${planBadge}` : ''}
               {portfolioPct != null ? ` · ${portfolioPct.toFixed(1)}% of portfolio` : ''}
             </Text>
           </View>
           <View
             style={[
               styles.alphaBadge,
-              { backgroundColor: ahead ? tokens.semantic.sentiment.positiveSurface : tokens.semantic.sentiment.negativeSurface },
+              {
+                backgroundColor: ahead
+                  ? tokens.semantic.sentiment.positiveSurface
+                  : tokens.semantic.sentiment.negativeSurface,
+              },
             ]}
           >
             <Text style={[styles.alphaBadgeText, { color: xirrColor }]}>
-              {alphaSign}{Math.abs(alphaPp).toFixed(1)} pp vs benchmark
+              {alphaSign}
+              {Math.abs(alphaPp).toFixed(1)} pp vs benchmark
             </Text>
           </View>
         </View>
@@ -427,7 +533,12 @@ function FundDesktopCard({
         <View style={styles.primaryRow}>
           <View style={styles.primaryValueBlock}>
             <Text style={styles.primaryLabel}>Current value</Text>
-            <Text style={styles.primaryValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+            <Text
+              style={styles.primaryValue}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
               {fund.currentValue != null ? formatCurrency(fund.currentValue) : 'NAV pending'}
             </Text>
           </View>
@@ -438,11 +549,17 @@ function FundDesktopCard({
               label="XIRR"
               value={formatXirr(fund.returnXirr)}
               valueColor={xirrColor}
+              styles={styles}
+              tokens={tokens}
             />
             <SecondaryStat
               label="Today"
-              value={fund.dailyChangePct != null ? formatClearLensPercentDelta(fund.dailyChangePct) : '—'}
+              value={
+                fund.dailyChangePct != null ? formatClearLensPercentDelta(fund.dailyChangePct) : '—'
+              }
               valueColor={dailyColor}
+              styles={styles}
+              tokens={tokens}
             />
           </View>
         </View>
@@ -451,7 +568,9 @@ function FundDesktopCard({
         <View style={styles.cardFooter}>
           <View style={styles.footerCell}>
             <Text style={styles.footerLabel}>Invested</Text>
-            <Text style={styles.footerValue} numberOfLines={1}>{formatCurrency(fund.investedAmount)}</Text>
+            <Text style={styles.footerValue} numberOfLines={1}>
+              {formatCurrency(fund.investedAmount)}
+            </Text>
           </View>
           <View style={styles.footerDivider} />
           <View style={styles.footerCell}>
@@ -470,19 +589,21 @@ function FundDesktopCard({
       </ClearLensCard>
     </TouchableOpacity>
   );
-}
+}, areVirtualizedFundRowInputsEqual);
 
 function SecondaryStat({
   label,
   value,
   valueColor,
+  styles,
+  tokens,
 }: {
   label: string;
   value: string;
   valueColor?: string;
+  styles: DesktopFundRowStyles;
+  tokens: ClearLensTokens;
 }) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
   return (
     <View style={styles.secondaryStat}>
       <Text style={styles.secondaryLabel}>{label}</Text>
@@ -507,7 +628,7 @@ function makeStyles(tokens: ClearLensTokens) {
     paddingHorizontal: ClearLensSpacing.xl,
     paddingTop: ClearLensSpacing.xl,
     paddingBottom: ClearLensSpacing.xxl,
-    alignItems: 'center',
+      gap: ClearLensSpacing.md,
   },
   frame: {
     width: '100%',
@@ -669,8 +790,9 @@ function makeStyles(tokens: ClearLensTokens) {
     color: cl.textTertiary,
   },
   grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+      width: '100%',
+      maxWidth: MaxContentWidth,
+      alignSelf: 'center',
     gap: ClearLensSpacing.md,
   },
   cardOuter: {
@@ -781,6 +903,8 @@ function makeStyles(tokens: ClearLensTokens) {
   },
   emptyCard: {
     width: '100%',
+      maxWidth: MaxContentWidth,
+      alignSelf: 'center',
     alignItems: 'center',
     gap: ClearLensSpacing.sm,
     paddingVertical: ClearLensSpacing.xl,

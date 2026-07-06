@@ -13,7 +13,8 @@ For the how-it-runs, read [docs/INFRASTRUCTURE.md](./docs/INFRASTRUCTURE.md).
 - **Auth** — magic-link sign-in (via Resend on `foliolens.in`) and explicit PKCE Google OAuth. Native Google callbacks from WebBrowser and Expo Router converge through one bounded, idempotent completion coordinator, confirm the single shared SessionProvider state, and navigate once; cancellation, timeout, and network failures always clear loading with an actionable retry. Existing magic-link accounts can connect Google from Settings → Connected Accounts through the same coordinator.
 - **Import portfolio** — drop-zone-first onboarding wizard. Welcome shows a single drag-and-drop hero for the portfolio statement PDF; users without one on hand follow a one-question app-family tile (Zerodha / Angel / ICICI Direct vs Groww / Kuvera / fund-house apps vs both) that quietly routes them to the right CDSL / NSDL or CAMS / KFintech portal — no acronyms surface to the user. After a PDF is picked, an unlock step asks for PAN (the default PDF password) plus an optional DOB and a "My PDF uses a different password" reveal for users who set a custom one when requesting the statement; PAN format is validated including the 4th-character entity code (P / C / H / F / A / T / B / L / J / G), DOB takes DD-MM-YYYY (Indian convention), and both fields are write-once after save with a Settings → Account "Request correction" link as the support escape hatch. The success screen surfaces real fund names and per-fund XIRR from the live import. Upload pipeline supports CAMS / KFintech / MFCentral with PAN password (or a custom override) and CDSL / NSDL with PAN + DOB, requires Detailed statements with transaction history, and keeps second uploads additive (duplicate transactions skipped, only new ones inserted). Auto-refresh uses Resend Inbound (`cas-<token>@foliolens.in` in prod, `cas-dev-<token>@foliolens.in` in dev) with Gmail / Outlook setup guidance, a completion checklist, and transactional success / failure emails after inbound PDF processing.
 - **Portfolio / Home screen** — Clear Lens design: hero value, NAV staleness context, XIRR vs configurable benchmark, investment-vs-benchmark chart with `1M / 3M / 6M / 1Y / 3Y / All` ranges, top movers, allocation preview, Portfolio Insights entry, Your Funds entry, Wealth Journey, Money Trail preview.
-- **Money Trail** — every transaction with a hero summary, by-financial-year mini chart (tap a bar to see invested / withdrawn for that year), simplified type filter chips (Investment / Withdrawal / Switch / Dividend / Failed / Other), search, sort, CSV export, scroll-to-top FAB. Hero respects only date-range / fund scope; drill-down filters never empty out summary tiles.
+- **Your Funds** — allocation overview, local deferred search, sort controls, expandable mobile cards, and the desktop two-column fund grid. Mobile and desktop lists render a bounded window of holdings so larger portfolios do not mount every fund card at once.
+- **Money Trail** — every transaction with a hero summary, by-financial-year mini chart (tap a bar to see invested / withdrawn for that year), simplified type filter chips (Investment / Withdrawal / Switch / Dividend / Failed / Other), deferred search, sort, CSV export, scroll-to-top FAB, and a virtualized transaction window for large CAS histories. Hero respects only date-range / fund scope; drill-down filters never empty out summary tiles.
 - **Fund detail** — current value, gain/loss, SIP-adjusted XIRR, composition cards, Performance tab with crosshair-synced fund-vs-benchmark return, NAV history. NAV sourced from OpenFolio (mfapi.in backup). Fund metadata — AUM, 1/3/5yr returns, expense ratio, fund manager, benchmark, risk label, exit load, min investment/SIP — sourced from OpenFolio `/v1/metadata` via daily `sync-fund-meta` (mfdata.in backup per `b1_field_meta.status`; `officially_absent`/`not_applicable` statuses surface as honest "unavailable" rather than falling back to mfdata). Star ratings removed; replaced by OpenFolio-computed returns and official risk label. Display guards in `src/utils/mfdataGuards.ts` (`readRiskLabel` / `readBenchmarkName` / `readFundManager`) filter junk stored in `scheme_master` — OCR shrapnel, suitability paragraphs, and holdings-bleed — before any value reaches the screen; junk renders as "—" or hides the row via the existing null paths. **Payout plan metrics** — Compare Funds and Fund Detail bypass locally-computed NAV metrics for IDCW/payout/dividend schemes (which would otherwise show distorted CAGR/drawdown due to NAV drops on each distribution); instead they use the `period_returns` / `risk_ratios` as-reported blob, which OpenFolio #65 populated with the Growth-twin's correct numbers for ~82% of payout schemes. Detection is via `isPayoutPlan(schemeName, optionType)` in `src/utils/computedFundMetrics.ts`; "Dividend Yield Fund" is correctly treated as a strategy (not payout) unless an IDCW marker is also present. **Compare Funds fund identity** — fund chips now show `family_name` (the canonical portfolio name from OpenFolio, e.g. "HDFC Flexi Cap Fund") as the title instead of the full AMFI scheme name, with a secondary `Direct · Growth` chip sourced from `plan_type` / `option_type` — both written by `universe-backfill` + `sync-fund-meta` from OF `/v1/metadata`; `shortSchemeName()` regex trimming is retained as a fallback only for inactive registry shells OF doesn't index. **Compare Funds cross-category banner** — the "Different categories" warning now uses `fundComparisonKey` / `categoriesInSameGroup` (`src/utils/schemeName.ts`) so legacy dirty `sebi_category` spellings and a null/broad-Equity fallback (fund not yet backfilled) never falsely trigger the banner. 35 active Large & Mid Cap Fund schemes had wrong `sebi_category` values due to 'large midcap' / 'large & midcap' spelling variants missing from `deriveSchemeCategoryFromName` — corrected on dev with a targeted UPDATE and the resolver extended to prevent recurrence. **Compare Funds honest labels and risk shape** — the as-reported state (before the NAV series hydrates) now surfaces every metric OpenFolio provides: `stdDev` from `risk_ratios.risk.std_deviation` and `maxDrawdown` from `risk_ratios.max_drawdown_5y`. Where Sharpe/Sortino can't be shown (no local history yet) the Risk card shows "Needs history" instead of a bare "—". Fund manager null values render as "Not disclosed" (genuinely null for some AMCs) and period returns for funds younger than the requested window show "Too new" instead of "—". When the computed path wins (Sharpe/Sortino available) but the NAV series is shorter than 3 or 5 years, the missing longer periods are gap-filled from the as-reported blob with a `†` provenance marker — each period still uses exactly one source.
 - **Leaderboard** — benchmark-aware leaders / laggards.
 - **Wealth Journey** — corpus-first planning: detected SIP pace, future-SIP targeting, top-ups, withdrawal scenarios, inflation-adjusted side-by-side projections.
@@ -34,7 +35,7 @@ For the how-it-runs, read [docs/INFRASTRUCTURE.md](./docs/INFRASTRUCTURE.md).
 ## Prerequisites
 
 | Tool | Install |
-|---|---|
+| ------------ | ------------------------------------ |
 | Node.js 20+ | [nodejs.org](https://nodejs.org) |
 | Expo CLI | `npm install -g expo-cli` |
 | EAS CLI | `npm install -g eas-cli` |
@@ -135,7 +136,7 @@ Magic-link flows through Resend SMTP on `foliolens.in`. Google OAuth uses two Go
 The native scheme depends on which APK is installed:
 
 | Variant | Scheme |
-|---------|--------|
+| -------------- | ------------------- |
 | `production` | `foliolens://` |
 | `preview-main` | `foliolens-main://` |
 | `preview-pr` | `foliolens-pr://` |
@@ -145,7 +146,7 @@ The native scheme depends on which APK is installed:
 ## CI/CD
 
 | Trigger | Workflow | What it does |
-|---|---|---|
+| ------------------------------- | -------------------------- | ------------------------------------------------------------------------ |
 | PR open / commit | `pr-preview.yml` | typecheck + lint + tests + EAS update to `foliolens-pr` (DEV Supabase) |
 | PR commit on `supabase/**` | `supabase-validate.yml` | local migration replay + `db lint` |
 | Push to `main` | `main-deploy.yml` | typecheck + lint + tests + EAS update to `foliolens-main` (DEV Supabase) |
@@ -194,7 +195,7 @@ docs/
 ## Phase status
 
 | Phase | Status |
-|-------|--------|
+| ----------------------------------------- | -------------------------------------------------------------------------- |
 | 1 Foundation | Shipped (auth, schema, base CI) |
 | 2 Data pipeline + portfolio (M1–M9 + M11) | Shipped |
 | 3 Clear Lens design system | Shipped |

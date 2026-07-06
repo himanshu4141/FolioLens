@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -52,6 +56,11 @@ import {
   type PortfolioTransaction,
 } from '@/src/utils/moneyTrail';
 import { exportMoneyTrailCsv } from '@/src/utils/moneyTrailExport';
+import {
+  MONEY_TRAIL_LIST_VIRTUALIZATION,
+  areVirtualizedTransactionRowInputsEqual,
+} from '@/src/lib/listVirtualization';
+import { useVirtualizedRowMount } from '@/src/lib/listRenderDiagnostics';
 
 const DATE_PRESETS: { value: MoneyTrailDatePreset; label: string }[] = [
   { value: 'this_fy', label: 'This financial year' },
@@ -86,6 +95,10 @@ const SORT_OPTIONS: MoneyTrailSortOption[] = [
   'fund_desc',
 ];
 
+function transactionKeyExtractor(transaction: PortfolioTransaction): string {
+  return transaction.id;
+}
+
 function HeroSection({
   transactions,
   summaryMode,
@@ -97,8 +110,14 @@ function HeroSection({
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const summary = useMemo(() => buildMoneyTrailSummary(transactions, summaryMode), [summaryMode, transactions]);
-  const annualFlows = useMemo(() => buildAnnualMoneyFlows(transactions, summaryMode), [summaryMode, transactions]);
+  const summary = useMemo(
+    () => buildMoneyTrailSummary(transactions, summaryMode),
+    [summaryMode, transactions],
+  );
+  const annualFlows = useMemo(
+    () => buildAnnualMoneyFlows(transactions, summaryMode),
+    [summaryMode, transactions],
+  );
   const moneyInCount = useMemo(
     () => transactions.filter((tx) => tx.direction === 'money_in' && !tx.hiddenByDefault).length,
     [transactions],
@@ -108,14 +127,17 @@ function HeroSection({
     [transactions],
   );
 
-  const copy = summaryMode === 'fund_cost_basis'
+  const copy =
+    summaryMode === 'fund_cost_basis'
     ? { hero: 'Cost basis', flowIn: 'Money into fund', flowOut: 'Money out of fund' }
     : { hero: 'Net invested', flowIn: 'Money in', flowOut: 'Money out' };
 
   return (
     <ClearLensCard style={styles.heroCard}>
       <View>
-        <Text style={styles.heroEyebrow}>{copy.hero} · {rangeLabel}</Text>
+        <Text style={styles.heroEyebrow}>
+          {copy.hero} · {rangeLabel}
+        </Text>
         <Text style={styles.heroValue}>{formatCurrency(summary.netInvested)}</Text>
       </View>
 
@@ -139,9 +161,7 @@ function HeroSection({
         />
       </View>
 
-      {annualFlows.length > 0 ? (
-        <AnnualBars annualFlows={annualFlows} />
-      ) : null}
+      {annualFlows.length > 0 ? <AnnualBars annualFlows={annualFlows} /> : null}
     </ClearLensCard>
   );
 }
@@ -190,7 +210,9 @@ function AnnualBars({ annualFlows }: { annualFlows: ReturnType<typeof buildAnnua
   );
 
   const activeFy = selectedFy ?? visibleFlows[visibleFlows.length - 1]?.financialYear ?? null;
-  const activeFlow = activeFy ? visibleFlows.find((flow) => flow.financialYear === activeFy) ?? null : null;
+  const activeFlow = activeFy
+    ? (visibleFlows.find((flow) => flow.financialYear === activeFy) ?? null)
+    : null;
 
   return (
     <View style={styles.annualBlock}>
@@ -213,10 +235,16 @@ function AnnualBars({ annualFlows }: { annualFlows: ReturnType<typeof buildAnnua
           <Text style={styles.annualDetailFy}>{activeFlow.financialYear}</Text>
           <View style={styles.annualDetailRow}>
             <Text style={styles.annualDetailItem}>
-              Invested <Text style={[styles.annualDetailValue, { color: tokens.colors.emeraldDeep }]}>{formatCurrency(activeFlow.invested)}</Text>
+              Invested{' '}
+              <Text style={[styles.annualDetailValue, { color: tokens.colors.emeraldDeep }]}>
+                {formatCurrency(activeFlow.invested)}
+              </Text>
             </Text>
             <Text style={styles.annualDetailItem}>
-              Withdrawn <Text style={[styles.annualDetailValue, { color: tokens.colors.amber }]}>{formatCurrency(activeFlow.withdrawn)}</Text>
+              Withdrawn{' '}
+              <Text style={[styles.annualDetailValue, { color: tokens.colors.amber }]}>
+                {formatCurrency(activeFlow.withdrawn)}
+              </Text>
             </Text>
           </View>
         </View>
@@ -225,7 +253,8 @@ function AnnualBars({ annualFlows }: { annualFlows: ReturnType<typeof buildAnnua
       <View style={styles.annualBars}>
         {visibleFlows.map((flow) => {
           const investedHeight = Math.max(6, (flow.invested / maxValue) * 64);
-          const withdrawnHeight = flow.withdrawn > 0 ? Math.max(3, (flow.withdrawn / maxValue) * 28) : 0;
+          const withdrawnHeight =
+            flow.withdrawn > 0 ? Math.max(3, (flow.withdrawn / maxValue) * 28) : 0;
           const isActive = flow.financialYear === activeFy;
           return (
             <TouchableOpacity
@@ -264,36 +293,88 @@ function AnnualBars({ annualFlows }: { annualFlows: ReturnType<typeof buildAnnua
   );
 }
 
-function TransactionRow({
+type MoneyTrailStyles = ReturnType<typeof makeStyles>;
+
+function selectTransactionRowStyles(styles: MoneyTrailStyles) {
+  const {
+    statusText,
+    transactionAmount,
+    transactionAmountBlock,
+    transactionCopy,
+    transactionDate,
+    transactionFund,
+    transactionIcon,
+    transactionRow,
+    transactionRowFirst,
+    transactionRowLast,
+    transactionType,
+  } = styles;
+  return {
+    statusText,
+    transactionAmount,
+    transactionAmountBlock,
+    transactionCopy,
+    transactionDate,
+    transactionFund,
+    transactionIcon,
+    transactionRow,
+    transactionRowFirst,
+    transactionRowLast,
+    transactionType,
+  };
+}
+
+type TransactionRowStyles = ReturnType<typeof selectTransactionRowStyles>;
+
+const TransactionRow = memo(function TransactionRow({
   transaction,
-  onPress,
+  isFirst,
+  isLast,
+  onOpen,
+  styles,
+  tokens,
 }: {
   transaction: PortfolioTransaction;
-  onPress: () => void;
+  isFirst: boolean;
+  isLast: boolean;
+  onOpen: (transactionId: string) => void;
+  styles: TransactionRowStyles;
+  tokens: ClearLensTokens;
 }) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  useVirtualizedRowMount('money-trail');
   const treatment = transactionTreatment(transaction, tokens);
 
   return (
-    <TouchableOpacity style={styles.transactionRow} onPress={onPress} activeOpacity={0.76}>
+    <TouchableOpacity
+      style={[
+        styles.transactionRow,
+        isFirst && styles.transactionRowFirst,
+        isLast && styles.transactionRowLast,
+      ]}
+      onPress={() => onOpen(transaction.id)}
+      activeOpacity={0.76}
+    >
       <View style={[styles.transactionIcon, { backgroundColor: treatment.bg }]}>
         <Ionicons name={treatment.icon} size={18} color={treatment.color} />
       </View>
       <View style={styles.transactionCopy}>
         <Text style={styles.transactionType}>{transaction.userFacingType}</Text>
-        <Text style={styles.transactionFund} numberOfLines={1}>{transaction.fundName}</Text>
+        <Text style={styles.transactionFund} numberOfLines={1}>
+          {transaction.fundName}
+        </Text>
         <Text style={styles.transactionDate}>{formatMoneyTrailDate(transaction.date)}</Text>
       </View>
       <View style={styles.transactionAmountBlock}>
-        <Text style={[styles.transactionAmount, { color: treatment.color }]}>{formatCurrency(transaction.amount)}</Text>
+        <Text style={[styles.transactionAmount, { color: treatment.color }]}>
+          {formatCurrency(transaction.amount)}
+        </Text>
         <Text style={[styles.statusText, { color: treatment.statusColor }]}>
           {statusLabel(transaction.status)}
         </Text>
       </View>
     </TouchableOpacity>
   );
-}
+}, areVirtualizedTransactionRowInputsEqual);
 
 function transactionTreatment(
   transaction: PortfolioTransaction,
@@ -363,7 +444,10 @@ function ActiveFilterChips({
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const chips: string[] = [];
   if (query.trim()) chips.push(`Search: ${query.trim()}`);
-  if (filters.datePreset !== 'all_time') chips.push(DATE_PRESETS.find((item) => item.value === filters.datePreset)?.label ?? 'Date range');
+  if (filters.datePreset !== 'all_time')
+    chips.push(
+      DATE_PRESETS.find((item) => item.value === filters.datePreset)?.label ?? 'Date range',
+    );
   if (filters.fundIds.length > 0) {
     const names = filters.fundIds
       .map((fundId) => fundOptions.find((fund) => fund.id === fundId)?.name)
@@ -385,7 +469,11 @@ function ActiveFilterChips({
   if (chips.length === 0) return null;
 
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.chipRow}
+    >
       {chips.map((chip) => (
         <View key={chip} style={styles.activeChip}>
           <Text style={styles.activeChipText}>{chip}</Text>
@@ -503,12 +591,20 @@ function FilterSheet({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.filterSheet} onPress={(event) => event.stopPropagation()}>
-          <SheetHeader title="Filters" onClose={onClose} trailing="Clear all" onTrailing={() => {
+          <SheetHeader
+            title="Filters"
+            onClose={onClose}
+            trailing="Clear all"
+            onTrailing={() => {
             setDraft(DEFAULT_MONEY_TRAIL_FILTERS);
             setMinAmountText('');
             setMaxAmountText('');
-          }} />
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.filterContent}>
+            }}
+          />
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.filterContent}
+          >
             <FilterGroup title="Date range">
               <View style={styles.wrapRow}>
                 {DATE_PRESETS.map((preset) => (
@@ -516,7 +612,9 @@ function FilterSheet({
                     key={preset.value}
                     label={preset.label}
                     selected={draft.datePreset === preset.value}
-                    onPress={() => setDraft((current) => ({ ...current, datePreset: preset.value }))}
+                    onPress={() =>
+                      setDraft((current) => ({ ...current, datePreset: preset.value }))
+                    }
                   />
                 ))}
               </View>
@@ -524,14 +622,18 @@ function FilterSheet({
                 <View style={styles.inputRow}>
                   <TextInput
                     value={draft.customStartDate ?? ''}
-                    onChangeText={(value) => setDraft((current) => ({ ...current, customStartDate: value }))}
+                    onChangeText={(value) =>
+                      setDraft((current) => ({ ...current, customStartDate: value }))
+                    }
                     placeholder="Start YYYY-MM-DD"
                     placeholderTextColor={tokens.colors.textTertiary}
                     style={styles.textInput}
                   />
                   <TextInput
                     value={draft.customEndDate ?? ''}
-                    onChangeText={(value) => setDraft((current) => ({ ...current, customEndDate: value }))}
+                    onChangeText={(value) =>
+                      setDraft((current) => ({ ...current, customEndDate: value }))
+                    }
                     placeholder="End YYYY-MM-DD"
                     placeholderTextColor={tokens.colors.textTertiary}
                     style={styles.textInput}
@@ -543,7 +645,9 @@ function FilterSheet({
             <FilterGroup title="Transaction type">
               <View style={styles.wrapRow}>
                 {TYPE_FILTER_GROUPS.map((group) => {
-                  const selected = group.values.every((value) => draft.transactionTypes.includes(value));
+                  const selected = group.values.every((value) =>
+                    draft.transactionTypes.includes(value),
+                  );
                   return (
                     <ChoiceChip
                       key={group.label}
@@ -619,12 +723,16 @@ function FilterSheet({
 
             <TouchableOpacity
               style={styles.toggleRow}
-              onPress={() => setDraft((current) => ({ ...current, includeHidden: !current.includeHidden }))}
+              onPress={() =>
+                setDraft((current) => ({ ...current, includeHidden: !current.includeHidden }))
+              }
               activeOpacity={0.76}
             >
               <View>
                 <Text style={styles.toggleTitle}>Include hidden/reversed transactions</Text>
-                <Text style={styles.toggleSubtitle}>Shows failed, cancelled, and reversed rows.</Text>
+                <Text style={styles.toggleSubtitle}>
+                  Shows failed, cancelled, and reversed rows.
+                </Text>
               </View>
               <View style={[styles.toggleTrack, draft.includeHidden && styles.toggleTrackActive]}>
                 <View style={[styles.toggleKnob, draft.includeHidden && styles.toggleKnobActive]} />
@@ -672,7 +780,8 @@ function ExportSheet({
             </View>
             <Text style={styles.exportTitle}>Export your transactions</Text>
             <Text style={styles.exportText}>
-              File will include {transactionCount} visible transaction{transactionCount === 1 ? '' : 's'} matching your current filters.
+              File will include {transactionCount} visible transaction
+              {transactionCount === 1 ? '' : 's'} matching your current filters.
             </Text>
             {exportResult && <Text style={styles.exportResult}>{exportResult}</Text>}
             {exportError && (
@@ -739,7 +848,11 @@ function SheetActions({
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   return (
     <View style={styles.sheetActions}>
-      <TouchableOpacity style={styles.sheetSecondaryButton} onPress={onSecondary} activeOpacity={0.76}>
+      <TouchableOpacity
+        style={styles.sheetSecondaryButton}
+        onPress={onSecondary}
+        activeOpacity={0.76}
+      >
         <Text style={styles.sheetSecondaryText}>{secondaryLabel}</Text>
       </TouchableOpacity>
       <TouchableOpacity style={styles.sheetPrimaryButton} onPress={onPrimary} activeOpacity={0.82}>
@@ -772,8 +885,17 @@ function ChoiceChip({
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   return (
-    <TouchableOpacity style={[styles.choiceChip, selected && styles.choiceChipSelected]} onPress={onPress} activeOpacity={0.76}>
-      <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]} numberOfLines={1}>{label}</Text>
+    <TouchableOpacity
+      style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+      onPress={onPress}
+      activeOpacity={0.76}
+    >
+      <Text
+        style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -784,9 +906,15 @@ function EmptyTransactions({ filtered, onPrimary }: { filtered: boolean; onPrima
   return (
     <ClearLensCard style={styles.emptyCard}>
       <View style={styles.emptyIcon}>
-        <Ionicons name={filtered ? 'search-outline' : 'cloud-upload-outline'} size={30} color={tokens.colors.emerald} />
+        <Ionicons
+          name={filtered ? 'search-outline' : 'cloud-upload-outline'}
+          size={30}
+          color={tokens.colors.emerald}
+        />
       </View>
-      <Text style={styles.emptyTitle}>{filtered ? 'No matching transactions' : 'No transactions yet'}</Text>
+      <Text style={styles.emptyTitle}>
+        {filtered ? 'No matching transactions' : 'No transactions yet'}
+      </Text>
       <Text style={styles.emptyText}>
         {filtered
           ? 'Try changing your filters or date range.'
@@ -805,14 +933,16 @@ export default function MoneyTrailScreen() {
   useTrackInsightViewed('money_trail');
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const transactionRowStyles = useMemo(() => selectTransactionRowStyles(styles), [styles]);
   const router = useRouter();
   const isFocused = useIsFocused();
   const isDesktop = useIsDesktop();
   const params = useLocalSearchParams<{ fundId?: string }>();
   const requestedFundId = typeof params.fundId === 'string' ? params.fundId : undefined;
   const didApplyFundParam = useRef(false);
-  const scrollRef = useRef<ScrollView | null>(null);
+  const scrollRef = useRef<FlatList<PortfolioTransaction> | null>(null);
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [filters, setFilters] = useState<MoneyTrailFilters>(DEFAULT_MONEY_TRAIL_FILTERS);
   // Sort lives in the store so it survives navigating away and back, and so
   // any future Money Trail desktop variant shares the same source of truth.
@@ -843,8 +973,8 @@ export default function MoneyTrailScreen() {
   }, [requestedFundId]);
 
   const visibleTransactions = useMemo(
-    () => applyMoneyTrailControls(transactions, filters, query, sortBy),
-    [filters, query, sortBy, transactions],
+    () => applyMoneyTrailControls(transactions, filters, deferredQuery, sortBy),
+    [deferredQuery, filters, sortBy, transactions],
   );
   // Hero summary should reflect the *scope* of what's being viewed (date
   // range + optional fund focus), not drill-down list filters. Otherwise
@@ -870,14 +1000,14 @@ export default function MoneyTrailScreen() {
     sortBy,
     transactions,
   ]);
-  const summaryMode: MoneyTrailSummaryMode = filters.fundIds.length > 0
-    ? 'fund_cost_basis'
-    : 'portfolio_external';
+  const summaryMode: MoneyTrailSummaryMode =
+    filters.fundIds.length > 0 ? 'fund_cost_basis' : 'portfolio_external';
   const rangeLabel = useMemo(
     () => DATE_PRESETS.find((preset) => preset.value === filters.datePreset)?.label ?? 'All time',
     [filters.datePreset],
   );
-  const hasAnyFilter = query.trim().length > 0 ||
+  const hasAnyFilter =
+    query.trim().length > 0 ||
     filters.datePreset !== 'all_time' ||
     filters.transactionTypes.length > 0 ||
     filters.amcNames.length > 0 ||
@@ -886,14 +1016,40 @@ export default function MoneyTrailScreen() {
     filters.maxAmount != null ||
     filters.includeHidden;
 
-  function clearFilters() {
+  const clearFilters = useCallback(() => {
     setFilters(DEFAULT_MONEY_TRAIL_FILTERS);
     setQuery('');
-  }
+  }, []);
 
-  function scrollToTop() {
-    scrollRef.current?.scrollTo({ y: 0, animated: true });
-  }
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }, []);
+
+  const openTransaction = useCallback(
+    (transactionId: string) => {
+      router.push(`/money-trail/${transactionId}`);
+    },
+    [router],
+  );
+
+  const renderTransaction = useCallback(
+    ({ item: transaction, index }: { item: PortfolioTransaction; index: number }) => (
+      <TransactionRow
+        transaction={transaction}
+        isFirst={index === 0}
+        isLast={index === visibleTransactions.length - 1}
+        onOpen={openTransaction}
+        styles={transactionRowStyles}
+        tokens={tokens}
+      />
+    ),
+    [openTransaction, tokens, transactionRowStyles, visibleTransactions.length],
+  );
+
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const next = event.nativeEvent.contentOffset.y > SCROLL_TOP_THRESHOLD;
+    setShowScrollTop((current) => (current === next ? current : next));
+  }, []);
 
   async function handleExport() {
     setExportResult(null);
@@ -921,25 +1077,36 @@ export default function MoneyTrailScreen() {
       ) : isError ? (
         <View style={styles.centered}>
           <Text style={styles.errorText}>Couldn&apos;t load Money Trail.</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => refetch()} activeOpacity={0.82}>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={() => refetch()}
+              activeOpacity={0.82}
+            >
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView
+          <FlatList
           ref={scrollRef}
+            data={transactions.length > 0 ? visibleTransactions : []}
+            keyExtractor={transactionKeyExtractor}
+            renderItem={renderTransaction}
+            initialNumToRender={MONEY_TRAIL_LIST_VIRTUALIZATION.initialNumToRender}
+            maxToRenderPerBatch={MONEY_TRAIL_LIST_VIRTUALIZATION.maxToRenderPerBatch}
+            windowSize={MONEY_TRAIL_LIST_VIRTUALIZATION.windowSize}
+            removeClippedSubviews={Platform.OS === 'android'}
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={32}
-          onScroll={(event) => {
-            const next = event.nativeEvent.contentOffset.y > SCROLL_TOP_THRESHOLD;
-            if (next !== showScrollTop) setShowScrollTop(next);
-          }}
-        >
+            onScroll={handleScroll}
+            ListHeaderComponent={
+              <View style={styles.listIntro}>
           <View style={styles.titleBlock}>
             <Text style={styles.eyebrow}>Money Trail</Text>
             <Text style={styles.title}>Where every rupee went</Text>
-            <Text style={styles.subtitle}>Every investment, withdrawal, switch, and dividend in your portfolio.</Text>
+                  <Text style={styles.subtitle}>
+                    Every investment, withdrawal, switch, and dividend in your portfolio.
+                  </Text>
           </View>
 
           {transactions.length > 0 ? (
@@ -952,7 +1119,11 @@ export default function MoneyTrailScreen() {
 
               <View style={styles.controlsBlock}>
                 <View style={styles.searchBox}>
-                  <Ionicons name="search-outline" size={18} color={tokens.colors.textTertiary} />
+                        <Ionicons
+                          name="search-outline"
+                          size={18}
+                          color={tokens.colors.textTertiary}
+                        />
                   <TextInput
                     value={query}
                     onChangeText={setQuery}
@@ -961,10 +1132,22 @@ export default function MoneyTrailScreen() {
                     style={styles.searchInput}
                   />
                 </View>
-                <TouchableOpacity style={styles.iconButton} onPress={() => setSortOpen(true)} activeOpacity={0.76}>
-                  <Ionicons name="swap-vertical-outline" size={19} color={tokens.colors.navy} />
+                      <TouchableOpacity
+                        style={styles.iconButton}
+                        onPress={() => setSortOpen(true)}
+                        activeOpacity={0.76}
+                      >
+                        <Ionicons
+                          name="swap-vertical-outline"
+                          size={19}
+                          color={tokens.colors.navy}
+                        />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.iconButton} onPress={() => setFilterOpen(true)} activeOpacity={0.76}>
+                      <TouchableOpacity
+                        style={styles.iconButton}
+                        onPress={() => setFilterOpen(true)}
+                        activeOpacity={0.76}
+                      >
                   <Ionicons name="filter-outline" size={19} color={tokens.colors.navy} />
                 </TouchableOpacity>
               </View>
@@ -983,32 +1166,36 @@ export default function MoneyTrailScreen() {
                     {visibleTransactions.length} shown · {MONEY_TRAIL_SORT_LABELS[sortBy]}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.exportButton} onPress={() => setExportOpen(true)} activeOpacity={0.76}>
-                  <Ionicons name="download-outline" size={17} color={tokens.colors.emeraldDeep} />
+                      <TouchableOpacity
+                        style={styles.exportButton}
+                        onPress={() => setExportOpen(true)}
+                        activeOpacity={0.76}
+                      >
+                        <Ionicons
+                          name="download-outline"
+                          size={17}
+                          color={tokens.colors.emeraldDeep}
+                        />
                   <Text style={styles.exportButtonText}>Export</Text>
                 </TouchableOpacity>
               </View>
-
-              {visibleTransactions.length === 0 ? (
-                <EmptyTransactions filtered={hasAnyFilter} onPrimary={clearFilters} />
-              ) : (
-                <View style={styles.transactionList}>
-                  {visibleTransactions.map((transaction) => (
-                    <TransactionRow
-                      key={transaction.id}
-                      transaction={transaction}
-                      onPress={() => router.push(`/money-trail/${transaction.id}`)}
-                    />
-                  ))}
-                </View>
-              )}
             </>
+                ) : null}
+              </View>
+            }
+            ListEmptyComponent={
+              transactions.length > 0 ? (
+                <EmptyTransactions filtered={hasAnyFilter} onPrimary={clearFilters} />
           ) : (
             <EmptyTransactions filtered={false} onPrimary={() => router.push('/onboarding')} />
-          )}
-
+              )
+            }
+            ListFooterComponent={
+              <View style={styles.listFooter}>
           <PortfolioDisclaimer />
-        </ScrollView>
+              </View>
+            }
+          />
       )}
 
       <SortSheet
@@ -1056,7 +1243,13 @@ function makeStyles(tokens: ClearLensTokens) {
   scroll: {
     paddingHorizontal: ClearLensSpacing.md,
     paddingBottom: ClearLensSpacing.xxl,
+    },
+    listIntro: {
     gap: ClearLensSpacing.md,
+      marginBottom: ClearLensSpacing.md,
+    },
+    listFooter: {
+      marginTop: ClearLensSpacing.md,
   },
   titleBlock: {
     gap: 4,
@@ -1334,23 +1527,30 @@ function makeStyles(tokens: ClearLensTokens) {
     color: cl.emeraldDeep,
     fontFamily: ClearLensFonts.bold,
   },
-  transactionList: {
-    borderRadius: ClearLensRadii.lg,
-    backgroundColor: cl.surface,
-    borderWidth: 1,
-    borderColor: cl.border,
-    overflow: 'hidden',
-    ...ClearLensShadow,
-  },
   transactionRow: {
     minHeight: 86,
     padding: ClearLensSpacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     gap: ClearLensSpacing.sm,
+      backgroundColor: cl.surface,
+      borderLeftWidth: 1,
+      borderRightWidth: 1,
+      borderColor: cl.border,
     borderBottomWidth: 1,
     borderBottomColor: cl.borderLight,
   },
+    transactionRowFirst: {
+      borderTopWidth: 1,
+      borderTopLeftRadius: ClearLensRadii.lg,
+      borderTopRightRadius: ClearLensRadii.lg,
+      ...ClearLensShadow,
+    },
+    transactionRowLast: {
+      borderBottomColor: cl.border,
+      borderBottomLeftRadius: ClearLensRadii.lg,
+      borderBottomRightRadius: ClearLensRadii.lg,
+    },
   transactionIcon: {
     width: 34,
     height: 34,
