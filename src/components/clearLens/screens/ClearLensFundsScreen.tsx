@@ -1,11 +1,11 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
   ActivityIndicator,
+  FlatList,
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -54,6 +54,11 @@ import { useResponsiveLayout } from '@/src/components/responsive';
 import { ClearLensFundsScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensFundsScreenDesktop';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import type { FundsSortOption } from '@/src/store/appStore';
+import {
+  FUNDS_LIST_VIRTUALIZATION,
+  areVirtualizedFundRowInputsEqual,
+} from '@/src/lib/listVirtualization';
+import { useVirtualizedRowMount } from '@/src/lib/listRenderDiagnostics';
 
 // Re-export the canonical type so consumers can keep using the local name.
 type SortOption = FundsSortOption;
@@ -74,6 +79,10 @@ const SORT_OPTIONS: { value: SortOption; label: string; icon: keyof typeof Ionic
 
 function sortableNumber(value: number | null | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+function fundKeyExtractor(fund: FundCardData): string {
+  return fund.id;
 }
 
 function FundSparkline({
@@ -164,7 +173,9 @@ function AllocationOverview({
       <View style={styles.largestBox}>
         <View style={[styles.allocationDot, { backgroundColor: tokens.colors.emerald }]} />
         <Text style={styles.largestPrefix}>Largest:</Text>
-        <Text style={styles.largestName} numberOfLines={1}>{largestPosition}</Text>
+        <Text style={styles.largestName} numberOfLines={1}>
+          {largestPosition}
+        </Text>
         {largestPositionPct != null && (
           <Text style={styles.largestPct}>{largestPositionPct.toFixed(1)}%</Text>
         )}
@@ -173,7 +184,92 @@ function AllocationOverview({
   );
 }
 
-export function FundListItem({
+type FundsStyles = ReturnType<typeof makeStyles>;
+
+function selectFundRowStyles(styles: FundsStyles) {
+  const {
+    compactMetric,
+    compactMetricLabel,
+    compactMetricRow,
+    compactMetricValue,
+    expandButton,
+    expandedPanel,
+    expandedRows,
+    fundCard,
+    fundMainTap,
+    fundMeta,
+    fundName,
+    fundNameBlock,
+    fundTopRow,
+    fundValue,
+    maturedBadge,
+    maturedBadgeText,
+    metricRow,
+    metricRowDivider,
+    metricRowLabel,
+    metricRowSubvalue,
+    metricRowValue,
+    metricRowValueBlock,
+    shareText,
+    sparklineBlock,
+    sparklineLabel,
+    sparklinePanel,
+    staleBadge,
+    staleBadgeText,
+    transactionsAction,
+    transactionsActionText,
+    valueBlock,
+  } = styles;
+  return {
+    compactMetric,
+    compactMetricLabel,
+    compactMetricRow,
+    compactMetricValue,
+    expandButton,
+    expandedPanel,
+    expandedRows,
+    fundCard,
+    fundMainTap,
+    fundMeta,
+    fundName,
+    fundNameBlock,
+    fundTopRow,
+    fundValue,
+    maturedBadge,
+    maturedBadgeText,
+    metricRow,
+    metricRowDivider,
+    metricRowLabel,
+    metricRowSubvalue,
+    metricRowValue,
+    metricRowValueBlock,
+    shareText,
+    sparklineBlock,
+    sparklineLabel,
+    sparklinePanel,
+    staleBadge,
+    staleBadgeText,
+    transactionsAction,
+    transactionsActionText,
+    valueBlock,
+  };
+}
+
+type FundRowStyles = ReturnType<typeof selectFundRowStyles>;
+
+type FundListItemProps = {
+  fund: FundCardData;
+  portfolioPct: number | null;
+  expanded: boolean;
+  onToggle: (fundId: string) => void;
+  onOpen: (fundId: string) => void;
+  onOpenTransactions: (fundId: string) => void;
+  latestNavDate: string | null;
+  styles: FundRowStyles;
+  tokens: ClearLensTokens;
+};
+
+export const FundListItem = memo(function FundListItem({
   fund,
   portfolioPct,
   expanded,
@@ -181,24 +277,22 @@ export function FundListItem({
   onOpen,
   onOpenTransactions,
   latestNavDate,
-}: {
-  fund: FundCardData;
-  portfolioPct: number | null;
-  expanded: boolean;
-  onToggle: () => void;
-  onOpen: () => void;
-  onOpenTransactions: () => void;
-  latestNavDate: string | null;
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  styles,
+  tokens,
+}: FundListItemProps) {
+  useVirtualizedRowMount('funds-mobile');
   const { base, planBadge } = parseFundName(fund.schemeName);
   const gain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
-  const gainPct = gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
+  const gainPct =
+    gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
   const matured = isMaturedScheme(fund.schemeActive, fund.schemeName);
   // Matured schemes have intentionally frozen NAV — suppress the stale badge.
-  const stale = matured ? { stale: false, veryStale: false, critical: false, label: '' } : navStaleness(fund.currentNavDate ?? latestNavDate);
-  const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(fund.schemeCategory);
+  const stale = matured
+    ? { stale: false, veryStale: false, critical: false, label: '' }
+    : navStaleness(fund.currentNavDate ?? latestNavDate);
+  const isDebtLike = /debt|liquid|gilt|income|overnight|money market|ultra short/i.test(
+    fund.schemeCategory,
+  );
   const categoryColor = isDebtLike ? CLEAR_LENS_DEBT : tokens.semantic.asset.equity;
   const dailyColor = (fund.dailyChangePct ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
   const gainColor = (gain ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
@@ -209,11 +303,18 @@ export function FundListItem({
   return (
     <ClearLensCard style={[styles.fundCard, { borderLeftColor: categoryColor }]}>
       <View style={styles.fundTopRow}>
-        <TouchableOpacity style={styles.fundMainTap} onPress={onOpen} activeOpacity={0.76}>
+        <TouchableOpacity
+          style={styles.fundMainTap}
+          onPress={() => onOpen(fund.id)}
+          activeOpacity={0.76}
+        >
           <View style={styles.fundNameBlock}>
-            <Text style={styles.fundName} numberOfLines={2}>{base}</Text>
+            <Text style={styles.fundName} numberOfLines={2}>
+              {base}
+            </Text>
             <Text style={styles.fundMeta} numberOfLines={1}>
-              {fund.schemeCategory}{planBadge ? ` · ${planBadge}` : ''}
+              {fund.schemeCategory}
+              {planBadge ? ` · ${planBadge}` : ''}
             </Text>
             {matured ? (
               <View style={styles.maturedBadge}>
@@ -227,12 +328,24 @@ export function FundListItem({
             ) : null}
           </View>
           <View style={styles.valueBlock}>
-            <Text style={styles.fundValue}>{fund.currentValue != null ? formatCurrency(fund.currentValue) : 'NAV pending'}</Text>
-            <Text style={styles.shareText}>{portfolioPct != null ? `${portfolioPct.toFixed(1)}%` : '—'}</Text>
+            <Text style={styles.fundValue}>
+              {fund.currentValue != null ? formatCurrency(fund.currentValue) : 'NAV pending'}
+            </Text>
+            <Text style={styles.shareText}>
+              {portfolioPct != null ? `${portfolioPct.toFixed(1)}%` : '—'}
+            </Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.expandButton} onPress={onToggle} activeOpacity={0.75}>
-          <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={tokens.colors.slate} />
+        <TouchableOpacity
+          style={styles.expandButton}
+          onPress={() => onToggle(fund.id)}
+          activeOpacity={0.75}
+        >
+          <Ionicons
+            name={expanded ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={tokens.colors.slate}
+          />
         </TouchableOpacity>
       </View>
 
@@ -259,17 +372,32 @@ export function FundListItem({
           <View style={styles.expandedRows}>
             <MetricRow
               label="Today"
-              value={fund.dailyChangePct != null ? formatClearLensPercentDelta(fund.dailyChangePct) : '—'}
+              value={
+                fund.dailyChangePct != null ? formatClearLensPercentDelta(fund.dailyChangePct) : '—'
+              }
               subvalue={
                 fund.dailyChangeAmount != null
                   ? `${formatClearLensCurrencyDelta(fund.dailyChangeAmount)}${stale.stale ? ` · ${stale.label}` : ''}`
                   : undefined
               }
               color={dailyColor}
+              styles={styles}
+              tokens={tokens}
             />
-            <MetricRow label="XIRR" value={xirrLabel} color={xirrColor} />
+            <MetricRow
+              label="XIRR"
+              value={xirrLabel}
+              color={xirrColor}
+              styles={styles}
+              tokens={tokens}
+            />
             <View style={styles.metricRowDivider} />
-            <MetricRow label="Invested (SIP)" value={formatCurrency(fund.investedAmount)} />
+            <MetricRow
+              label="Invested (SIP)"
+              value={formatCurrency(fund.investedAmount)}
+              styles={styles}
+              tokens={tokens}
+            />
             <MetricRow
               label="Gain / Loss"
               value={gain != null ? formatClearLensCurrencyDelta(gain) : '—'}
@@ -282,14 +410,23 @@ export function FundListItem({
                   : undefined
               }
               color={gainColor}
+              styles={styles}
+              tokens={tokens}
             />
             {(fund.realizedAmount > 0 || fund.realizedGain !== 0) && (
               <>
-                <MetricRow label="Redeemed" value={formatCurrency(fund.realizedAmount)} />
+                <MetricRow
+                  label="Redeemed"
+                  value={formatCurrency(fund.realizedAmount)}
+                  styles={styles}
+                  tokens={tokens}
+                />
                 <MetricRow
                   label="Booked P&L"
                   value={formatClearLensCurrencyDelta(fund.realizedGain)}
                   color={fund.realizedGain >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED}
+                  styles={styles}
+                  tokens={tokens}
                 />
               </>
             )}
@@ -306,7 +443,7 @@ export function FundListItem({
 
           <TouchableOpacity
             style={styles.transactionsAction}
-            onPress={onOpenTransactions}
+            onPress={() => onOpenTransactions(fund.id)}
             activeOpacity={0.76}
           >
             <Ionicons name="receipt-outline" size={18} color={tokens.colors.emeraldDeep} />
@@ -317,21 +454,23 @@ export function FundListItem({
       )}
     </ClearLensCard>
   );
-}
+}, areVirtualizedFundRowInputsEqual);
 
 function MetricRow({
   label,
   value,
   subvalue,
   color,
+  styles,
+  tokens,
 }: {
   label: string;
   value: string;
   subvalue?: string;
   color?: string;
+  styles: FundRowStyles;
+  tokens: ClearLensTokens;
 }) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
   // The previous default of `ClearLensColors.navy` froze to the LIGHT navy
   // (#0A1430), which renders black-on-black on the dark surface. Resolve the
   // default through the live tokens so it tracks the active scheme.
@@ -340,9 +479,13 @@ function MetricRow({
     <View style={styles.metricRow}>
       <Text style={styles.metricRowLabel}>{label}</Text>
       <View style={styles.metricRowValueBlock}>
-        <Text style={[styles.metricRowValue, { color: resolvedColor }]} numberOfLines={1}>{value}</Text>
+        <Text style={[styles.metricRowValue, { color: resolvedColor }]} numberOfLines={1}>
+          {value}
+        </Text>
         {subvalue ? (
-          <Text style={[styles.metricRowSubvalue, { color: resolvedColor }]} numberOfLines={1}>{subvalue}</Text>
+          <Text style={[styles.metricRowSubvalue, { color: resolvedColor }]} numberOfLines={1}>
+            {subvalue}
+          </Text>
         ) : null}
       </View>
     </View>
@@ -418,9 +561,19 @@ function FundsBottomNav() {
     icon: keyof typeof Ionicons.glyphMap;
     onPress: () => void;
   }[] = [
-    { route: 'portfolio', label: 'Portfolio', icon: 'pie-chart-outline', onPress: () => router.replace('/(tabs)') },
+    {
+      route: 'portfolio',
+      label: 'Portfolio',
+      icon: 'pie-chart-outline',
+      onPress: () => router.replace('/(tabs)'),
+    },
     { route: 'funds', label: 'Funds', icon: 'list-outline', onPress: () => {} },
-    { route: 'wealth', label: 'Wealth Journey', icon: 'calculator-outline', onPress: () => router.replace('/(tabs)/wealth-journey') },
+    {
+      route: 'wealth',
+      label: 'Wealth Journey',
+      icon: 'calculator-outline',
+      onPress: () => router.replace('/(tabs)/wealth-journey'),
+    },
   ];
 
   return (
@@ -440,7 +593,10 @@ function FundsBottomNav() {
               size={24}
               color={active ? tokens.colors.emerald : tokens.colors.textTertiary}
             />
-            <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]} numberOfLines={1}>
+            <Text
+              style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}
+              numberOfLines={1}
+            >
               {item.label}
             </Text>
           </TouchableOpacity>
@@ -460,23 +616,29 @@ export function ClearLensFundsScreen({ insideTab = false }: { insideTab?: boolea
 function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  const fundRowStyles = useMemo(() => selectFundRowStyles(styles), [styles]);
   const router = useRouter();
   const isFocused = useIsFocused();
   const handleImportPress = useImportPortfolioPress();
   const { session } = useSession();
-  const accountMetadata = session?.user.user_metadata as { full_name?: string; name?: string } | undefined;
-  const accountLabel = accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
+  const accountMetadata = session?.user.user_metadata as
+    | { full_name?: string; name?: string }
+    | undefined;
+  const accountLabel =
+    accountMetadata?.full_name ?? accountMetadata?.name ?? session?.user.email ?? null;
   const {
     defaultBenchmarkSymbol,
     fundsSortBy: sortBy,
     setFundsSortBy: setSortBy,
     previewMode,
-  } = useAppStore(useShallow((state) => ({
+  } = useAppStore(
+    useShallow((state) => ({
     defaultBenchmarkSymbol: state.defaultBenchmarkSymbol,
     fundsSortBy: state.fundsSortBy,
     setFundsSortBy: state.setFundsSortBy,
     previewMode: state.previewMode,
-  })));
+    })),
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
@@ -505,7 +667,10 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   }, [fundCards, insights?.fundAllocation, summary?.totalValue]);
 
   const valueSortedFunds = useMemo(
-    () => [...fundCards].sort((a, b) => sortableNumber(b.currentValue) - sortableNumber(a.currentValue)),
+    () =>
+      [...fundCards].sort(
+        (a, b) => sortableNumber(b.currentValue) - sortableNumber(a.currentValue),
+      ),
     [fundCards],
   );
   const largestPosition =
@@ -513,20 +678,24 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
     (valueSortedFunds[0] ? parseFundName(valueSortedFunds[0].schemeName).base : '—');
   const largestPositionPct =
     insights?.fundAllocation[0]?.pct ??
-    (valueSortedFunds[0] ? allocationPctByFundId.get(valueSortedFunds[0].id) ?? null : null);
+    (valueSortedFunds[0] ? (allocationPctByFundId.get(valueSortedFunds[0].id) ?? null) : null);
   const topThreeShare = insights?.fundAllocation.length
     ? insights.fundAllocation.slice(0, 3).reduce((sum, item) => sum + item.pct, 0)
     : valueSortedFunds
       .slice(0, 3)
       .reduce((sum, fund) => sum + (allocationPctByFundId.get(fund.id) ?? 0), 0);
   const benchmarkXirr = summary?.marketXirr ?? 0;
-  const sortLabel = SORT_OPTIONS.find((option) => option.value === sortBy)?.label ?? 'Current value';
+  const sortLabel =
+    SORT_OPTIONS.find((option) => option.value === sortBy)?.label ?? 'Current value';
 
   const sortedFunds = useMemo(() => {
     const query = deferredSearchQuery.trim().toLowerCase();
     const funds = fundCards.filter((fund) => {
       if (!query) return true;
-      return fund.schemeName.toLowerCase().includes(query) || fund.schemeCategory.toLowerCase().includes(query);
+      return (
+        fund.schemeName.toLowerCase().includes(query) ||
+        fund.schemeCategory.toLowerCase().includes(query)
+      );
     });
 
     return [...funds].sort((a, b) => {
@@ -536,7 +705,10 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
         case 'xirr':
           return sortableNumber(b.returnXirr) - sortableNumber(a.returnXirr);
         case 'benchmarkLead':
-          return sortableNumber(b.returnXirr - benchmarkXirr) - sortableNumber(a.returnXirr - benchmarkXirr);
+          return (
+            sortableNumber(b.returnXirr - benchmarkXirr) -
+            sortableNumber(a.returnXirr - benchmarkXirr)
+          );
         case 'dailyChange':
           return sortableNumber(b.dailyChangePct) - sortableNumber(a.dailyChangePct);
         case 'alphabetical':
@@ -556,19 +728,19 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   }, [sortedFunds]);
 
   const allocationSegments = useMemo<AllocationSegment[]>(
-    () => valueSortedFunds
+    () =>
+      valueSortedFunds
       .map((fund, index) => ({
         id: fund.id,
         pct: allocationPctByFundId.get(fund.id) ?? 0,
-        color: tokens.semantic.fundAllocation[
-          index % tokens.semantic.fundAllocation.length
-        ],
+          color: tokens.semantic.fundAllocation[index % tokens.semantic.fundAllocation.length],
       }))
       .filter((segment) => segment.pct > 0),
     [allocationPctByFundId, valueSortedFunds, tokens.semantic.fundAllocation],
   );
 
-  function openFundDetail(fundId: string) {
+  const openFundDetail = useCallback(
+    (fundId: string) => {
     const targetQueryKey = previewMode
       ? ['fund-detail', 'preview', fundId]
       : ['fund-detail', fundId];
@@ -583,7 +755,46 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
       }),
     });
     router.push(`/fund/${fundId}`);
-  }
+    },
+    [fundCards.length, previewMode, queryClient, router],
+  );
+
+  const toggleFund = useCallback((fundId: string) => {
+    setExpandedFundId((current) => (current === fundId ? null : fundId));
+  }, []);
+
+  const openTransactions = useCallback(
+    (fundId: string) => {
+      router.push(`/money-trail?fundId=${fundId}`);
+    },
+    [router],
+  );
+
+  const renderFund = useCallback(
+    ({ item: fund }: { item: FundCardData }) => (
+      <FundListItem
+        fund={fund}
+        latestNavDate={summary?.latestNavDate ?? null}
+        portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
+        expanded={expandedFundId === fund.id}
+        onToggle={toggleFund}
+        onOpen={openFundDetail}
+        onOpenTransactions={openTransactions}
+        styles={fundRowStyles}
+        tokens={tokens}
+      />
+    ),
+    [
+      allocationPctByFundId,
+      expandedFundId,
+      openFundDetail,
+      openTransactions,
+      fundRowStyles,
+      summary?.latestNavDate,
+      toggleFund,
+      tokens,
+    ],
+  );
 
   return (
     <ClearLensScreen>
@@ -606,12 +817,24 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
           <ActivityIndicator size="large" color={tokens.colors.emerald} />
         </View>
       ) : (
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <FlatList
+          style={styles.scrollView}
+          contentContainerStyle={styles.scroll}
+          data={sortedFunds}
+          keyExtractor={fundKeyExtractor}
+          renderItem={renderFund}
+          extraData={expandedFundId}
+          initialNumToRender={FUNDS_LIST_VIRTUALIZATION.initialNumToRender}
+          maxToRenderPerBatch={FUNDS_LIST_VIRTUALIZATION.maxToRenderPerBatch}
+          windowSize={FUNDS_LIST_VIRTUALIZATION.windowSize}
+          removeClippedSubviews={false}
+          showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            <View style={styles.listIntro}>
           <View style={styles.heroCopy}>
             <Text style={styles.heroTitle}>Your Funds</Text>
             <Text style={styles.heroSubtitle}>Search, sort, and open every holding.</Text>
           </View>
-
           <AllocationOverview
             fundCount={fundCards.length}
             topThreeShare={topThreeShare}
@@ -619,7 +842,6 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
             largestPositionPct={largestPositionPct}
             segments={allocationSegments}
           />
-
           <View style={styles.controls}>
             <View style={styles.searchBox}>
               <Ionicons name="search-outline" size={18} color={tokens.colors.textTertiary} />
@@ -633,30 +855,19 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
             </View>
             <TouchableOpacity style={styles.sortButton} onPress={() => setSortMenuOpen(true)}>
               <Ionicons name="swap-vertical-outline" size={18} color={tokens.colors.navy} />
-              <Text style={styles.sortButtonText} numberOfLines={1}>{sortLabel}</Text>
+                  <Text style={styles.sortButtonText} numberOfLines={1}>
+                    {sortLabel}
+                  </Text>
             </TouchableOpacity>
           </View>
-
           <View style={styles.listHeader}>
             <Text style={styles.listTitle}>Funds</Text>
             <Text style={styles.listCount}>{sortedFunds.length} shown</Text>
           </View>
-
-          {sortedFunds.map((fund) => (
-            <FundListItem
-              key={fund.id}
-              fund={fund}
-              latestNavDate={summary?.latestNavDate ?? null}
-              portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
-              expanded={expandedFundId === fund.id}
-              onToggle={() => setExpandedFundId((current) => current === fund.id ? null : fund.id)}
-              onOpen={() => openFundDetail(fund.id)}
-              onOpenTransactions={() => router.push(`/money-trail?fundId=${fund.id}`)}
+            </View>
+          }
+          ListFooterComponent={<PortfolioDisclaimer />}
             />
-          ))}
-
-          <PortfolioDisclaimer />
-        </ScrollView>
       )}
       {!insideTab && <FundsBottomNav />}
       <SortBottomSheet
@@ -680,6 +891,9 @@ function makeStyles(tokens: ClearLensTokens) {
     paddingBottom: ClearLensSpacing.lg,
     gap: ClearLensSpacing.md,
   },
+    listIntro: {
+      gap: ClearLensSpacing.md,
+    },
   heroCopy: {
     gap: ClearLensSpacing.xs,
   },
