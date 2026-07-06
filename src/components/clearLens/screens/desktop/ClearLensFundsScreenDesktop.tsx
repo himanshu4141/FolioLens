@@ -42,6 +42,7 @@ import {
   areVirtualizedFundRowInputsEqual,
 } from '@/src/lib/listVirtualization';
 import { useVirtualizedRowMount } from '@/src/lib/listRenderDiagnostics';
+import { useFundDetailTransitionPrefetch } from '@/src/hooks/useFundDetail';
 
 type SortOption = FundsSortOption;
 
@@ -71,6 +72,7 @@ export function ClearLensFundsScreenDesktop() {
   const router = useRouter();
   const isFocused = useIsFocused();
   const queryClient = useQueryClient();
+  const prefetchFundDetail = useFundDetailTransitionPrefetch();
   const {
     defaultBenchmarkSymbol,
     fundsSortBy: sortBy,
@@ -184,10 +186,11 @@ export function ClearLensFundsScreenDesktop() {
   const todaysWorst = dailySorted.length > 1 ? dailySorted[dailySorted.length - 1] : null;
 
   const openFundDetail = useCallback(
-    (fundId: string) => {
+    (fund: FundCardData) => {
+    prefetchFundDetail({ id: fund.id, schemeCode: fund.schemeCode });
     const targetQueryKey = previewMode
-      ? ['fund-detail', 'preview', fundId]
-      : ['fund-detail', fundId];
+      ? ['fund-detail', 'preview', fund.id]
+      : ['fund-detail', fund.id];
     startNavigationMeasurement({
       transition: 'fund_detail',
       fromRoute: 'funds',
@@ -198,9 +201,16 @@ export function ClearLensFundsScreenDesktop() {
         fundCount: fundCards.length,
       }),
     });
-    router.push(`/fund/${fundId}`);
+    router.push(`/fund/${fund.id}`);
     },
-    [fundCards.length, previewMode, queryClient, router],
+    [fundCards.length, prefetchFundDetail, previewMode, queryClient, router],
+  );
+
+  const prefetchFund = useCallback(
+    (fund: FundCardData) => {
+      prefetchFundDetail({ id: fund.id, schemeCode: fund.schemeCode });
+    },
+    [prefetchFundDetail],
   );
 
   const renderFund = useCallback(
@@ -210,11 +220,12 @@ export function ClearLensFundsScreenDesktop() {
         portfolioPct={allocationPctByFundId.get(fund.id) ?? null}
         benchmarkXirr={benchmarkXirr}
         onOpen={openFundDetail}
+        onPrefetch={prefetchFund}
         styles={fundRowStyles}
         tokens={tokens}
       />
     ),
-    [allocationPctByFundId, benchmarkXirr, fundRowStyles, openFundDetail, tokens],
+    [allocationPctByFundId, benchmarkXirr, fundRowStyles, openFundDetail, prefetchFund, tokens],
   );
 
   if (isLoading) {
@@ -468,13 +479,15 @@ const FundDesktopCard = memo(function FundDesktopCard({
   portfolioPct,
   benchmarkXirr,
   onOpen,
+  onPrefetch,
   styles,
   tokens,
 }: {
   fund: FundCardData;
   portfolioPct: number | null;
   benchmarkXirr: number;
-  onOpen: (fundId: string) => void;
+  onOpen: (fund: FundCardData) => void;
+  onPrefetch: (fund: FundCardData) => void;
   styles: DesktopFundRowStyles;
   tokens: ClearLensTokens;
 }) {
@@ -498,7 +511,12 @@ const FundDesktopCard = memo(function FundDesktopCard({
   const gainColor = (gain ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
 
   return (
-    <TouchableOpacity onPress={() => onOpen(fund.id)} activeOpacity={0.78} style={styles.cardOuter}>
+    <TouchableOpacity
+      onPressIn={() => onPrefetch(fund)}
+      onPress={() => onOpen(fund)}
+      activeOpacity={0.78}
+      style={styles.cardOuter}
+    >
       <ClearLensCard style={[styles.fundCard, { borderLeftColor: accentColor }]}>
         {/* Title row */}
         <View style={styles.cardTop}>
