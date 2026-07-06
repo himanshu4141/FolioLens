@@ -120,6 +120,7 @@ Expected outputs are zero TypeScript errors, zero lint warnings, all focused/ful
 - Money Trail keeps its existing `minHeight: 86` rather than a fixed height and does not provide `getItemLayout`. Android font scaling can increase row height, so fixed offsets would be incorrect and could clip text. This does not weaken virtualization; the list still uses bounded initial, batch, and viewport-window settings.
 - PR-preview-only mount diagnostics report only surface name and aggregate active/peak row counts. They emit no fund, transaction, account, or financial identifiers and remain silent on main preview and production.
 - Desktop and mobile browser smoke checks used the existing local demo portfolio. They verified the responsive Funds layouts, deferred search, transaction row navigation, and zero browser console errors; exact-SHA Android evidence remains mandatory before review.
+- Initial Android evidence at `66af267` exposed blank space below an expanded fund because `removeClippedSubviews` did not recompute the variable-height row window safely. That OTA is superseded. Both Funds and Money Trail now leave clipping disabled; bounded FlatList windows still prevent full-array rendering without risking hidden rows under expansion or font scaling.
 
 ## Progress
 

@@ -827,7 +827,6 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
           initialNumToRender={FUNDS_LIST_VIRTUALIZATION.initialNumToRender}
           maxToRenderPerBatch={FUNDS_LIST_VIRTUALIZATION.maxToRenderPerBatch}
           windowSize={FUNDS_LIST_VIRTUALIZATION.windowSize}
-          removeClippedSubviews={Platform.OS === 'android'}
           showsVerticalScrollIndicator={false}
           ListHeaderComponent={
             <View style={styles.listIntro}>

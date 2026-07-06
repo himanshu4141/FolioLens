@@ -6,7 +6,6 @@ import {
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -1094,8 +1093,7 @@ export default function MoneyTrailScreen() {
             initialNumToRender={MONEY_TRAIL_LIST_VIRTUALIZATION.initialNumToRender}
             maxToRenderPerBatch={MONEY_TRAIL_LIST_VIRTUALIZATION.maxToRenderPerBatch}
             windowSize={MONEY_TRAIL_LIST_VIRTUALIZATION.windowSize}
-            removeClippedSubviews={Platform.OS === 'android'}
-          contentContainerStyle={styles.scroll}
+            contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={32}
             onScroll={handleScroll}
