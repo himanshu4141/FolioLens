@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -9,10 +9,10 @@ import {
 } from 'react-native';
 import * as Linking from 'expo-linking';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { authClient } from '@/src/lib/auth';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
-import { getAppScheme, getNativeExchangeCallbackUrl } from '@/src/utils/appScheme';
-import { parseSessionFromUrl } from '@/src/utils/authUtils';
+import { getAppScheme } from '@/src/utils/appScheme';
+import { resolveNativeOAuthCallbackUrl } from '@/src/utils/authUtils';
+import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensRadii,
@@ -28,31 +28,31 @@ interface ErrorState {
   isDuplicate: boolean;
 }
 
+const CALLBACK_INPUT_TIMEOUT_MS = 10_000;
+
 export default function OAuthCallbackScreen() {
   const router = useRouter();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const cl = tokens.colors;
-  const { code, error: oauthError, error_description, scheme, callbackUrl } = useLocalSearchParams<{
+  const { code, error: oauthError, scheme, callbackUrl } = useLocalSearchParams<{
     code?: string;
     error?: string;
-    error_description?: string;
     scheme?: string;
     callbackUrl?: string;
   }>();
-  const targetScheme = typeof scheme === 'string' && scheme.length > 0 ? scheme : getAppScheme();
+  const configuredScheme = getAppScheme();
+  const targetScheme = Platform.OS === 'web'
+    && typeof scheme === 'string'
+    && scheme.length > 0
+    ? scheme
+    : configuredScheme;
 
   const [state, setState] = useState<CallbackState>('exchanging');
   const [errorState, setErrorState] = useState<ErrorState | null>(null);
   const [wasAutoLinked, setWasAutoLinked] = useState(false);
   const incomingUrl = Linking.useURL();
-  // Guard against re-entry: useEffect's deps include code/callbackUrl/incomingUrl,
-  // any of which can update from undefined → defined as expo-router parses the
-  // route URL. Without this ref the effect fires twice — once before params
-  // populate (showing the "authorization code missing" error) and once after
-  // (succeeding). User sees a brief failure flash then a successful navigate,
-  // which is what the prod-mobile bug was.
-  const exchangeAttemptedRef = useRef(false);
+  const oauth = useOAuthCompletion();
 
   useEffect(() => {
     // ── Web path ──────────────────────────────────────────────────────────────
@@ -77,121 +77,37 @@ export default function OAuthCallbackScreen() {
     }
 
     // ── Native path ───────────────────────────────────────────────────────────
-    if (oauthError) {
-      const desc = error_description ?? oauthError;
-      const isDuplicate =
-        oauthError === 'access_denied' ||
-        desc.toLowerCase().includes('already');
-      setErrorState({
-        message: isDuplicate
-          ? 'This email already has a FolioLens account created with email sign-in. Sign in with your magic link first, then connect Google from Settings → Connected Accounts.'
-          : `Sign-in failed: ${desc}`,
-        isDuplicate,
-      });
-      setState('error');
-      return;
-    }
-
-    // Wait for at least one input to populate before deciding anything. On
-    // first render, expo-router may not have parsed the search params yet
-    // (code, callbackUrl) and Linking.useURL() may not have the deep link.
-    // Without this guard we'd briefly show an error and then succeed.
-    if (!code && !callbackUrl && !incomingUrl) return;
-
-    // Single-attempt guard. Code is single-use at the OAuth server, so a
-    // second exchange attempt with the same code returns `invalid_grant`.
-    if (exchangeAttemptedRef.current) return;
-    exchangeAttemptedRef.current = true;
-
-    async function exchange() {
-      try {
-        if (!code) {
-          const sessionUrl =
-            (typeof callbackUrl === 'string' && callbackUrl.length > 0 ? callbackUrl : null) ??
-            incomingUrl;
-          const sessionTokens = sessionUrl ? parseSessionFromUrl(sessionUrl) : null;
-
-          if (sessionTokens) {
-            const { error } = await authClient.setSession({
-              access_token: sessionTokens.accessToken,
-              refresh_token: sessionTokens.refreshToken,
-            });
-
-            if (error) {
-              console.error('[auth/callback] setSession failed: %s', error.message);
-              setErrorState({
-                message: `Sign-in failed: ${error.message}`,
-                isDuplicate: false,
-              });
-              setState('error');
-              return;
-            }
-
-            setState('linked');
-            // AuthGate in _layout.tsx will detect the new session and handle routing.
-            return;
-          }
-
-          setErrorState({
-            message: 'We could not complete Google sign-in because the authorization code was missing. Please try again.',
-            isDuplicate: false,
-          });
-          setState('error');
-          return;
-        }
-
-        const exchangeCode = code;
-        const callbackHref = getNativeExchangeCallbackUrl(exchangeCode, callbackUrl);
-
-        // Pass the full reconstructed URL; Supabase extracts the code param
-        // and retrieves the stored PKCE verifier from AsyncStorage automatically.
-        const { data, error } = await authClient.exchangeCodeForSession(callbackHref);
-
-        if (error) {
-          // Surface the verbatim Supabase error to logs so production crashes
-          // can be diagnosed via adb logcat / device console without rebuilding.
-          console.error(
-            '[auth/callback] exchangeCodeForSession failed: %s (status=%s, code=%s)',
-            error.message,
-            (error as { status?: number }).status ?? 'n/a',
-            (error as { code?: string }).code ?? 'n/a',
-          );
-          const isDuplicate = error.message.toLowerCase().includes('already');
-          setErrorState({
-            message: isDuplicate
-              ? 'This email already has a FolioLens account. Sign in with your magic link first, then connect Google from Settings → Connected Accounts.'
-              : `Sign-in failed: ${error.message}`,
-            isDuplicate,
-          });
-          setState('error');
-          return;
-        }
-
-        // Detect whether Supabase auto-linked an existing email account
-        const identities = data.session?.user?.identities ?? [];
-        const hasEmail = identities.some((id: { provider: string }) => id.provider === 'email');
-        const hasGoogle = identities.some((id: { provider: string }) => id.provider === 'google');
-        if (hasEmail && hasGoogle) {
-          setWasAutoLinked(true);
-        }
-
-        setState('linked');
-        // AuthGate in _layout.tsx will detect the new session and handle routing.
-      } catch (err) {
-        console.error(
-          '[auth/callback] unexpected error during exchange: %s',
-          err instanceof Error ? err.message : String(err),
-        );
+    const callback = resolveNativeOAuthCallbackUrl({
+      scheme: targetScheme,
+      callbackUrl: typeof callbackUrl === 'string' ? callbackUrl : undefined,
+      incomingUrl,
+      code: typeof code === 'string' ? code : undefined,
+      error: typeof oauthError === 'string' ? oauthError : undefined,
+    });
+    if (!callback) {
+      const timeout = setTimeout(() => {
         setErrorState({
-          message: 'An unexpected error occurred. Please try again.',
+          message: 'FolioLens did not receive the Google callback. Please return and try again.',
           isDuplicate: false,
         });
         setState('error');
-      }
+      }, CALLBACK_INPUT_TIMEOUT_MS);
+      return () => clearTimeout(timeout);
     }
 
-    exchange();
-  }, [callbackUrl, code, incomingUrl, oauthError, error_description, router, targetScheme]);
+    let active = true;
+    void oauth.completeCallback(callback, 'router').then((result) => {
+      if (!active) return;
+      if (result.status === 'success') {
+        setWasAutoLinked(result.wasAutoLinked);
+        setState('linked');
+        return;
+      }
+      setErrorState({ message: result.message, isDuplicate: result.isDuplicate });
+      setState('error');
+    });
+    return () => { active = false; };
+  }, [callbackUrl, code, incomingUrl, oauth, oauthError, targetScheme]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 

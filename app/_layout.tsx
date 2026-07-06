@@ -34,7 +34,7 @@ import { PreviewBanner } from '@/src/components/PreviewBanner';
 import { PreviewExitConfirmModal } from '@/src/components/clearLens/PreviewExitConfirmModal';
 import { AppDialog } from '@/src/components/clearLens/AppDialog';
 import { featureFlags } from '@/src/lib/featureFlags';
-import { parseSessionFromUrl } from '@/src/utils/authUtils';
+import { isNativeMagicLinkUrl, parseSessionFromUrl } from '@/src/utils/authUtils';
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { NavigationPerformanceObserver } from '@/src/components/NavigationPerformanceObserver';
@@ -50,11 +50,9 @@ import {
   syncDeltaForUser,
 } from '@/src/lib/db/sync';
 
-// Required for expo-web-browser openAuthSessionAsync to complete on Android.
-// When Chrome Custom Tabs redirects to the app's active scheme, Android opens the app via
-// the deep link. This call detects that URL and resolves the pending
-// openAuthSessionAsync promise. Without it, the promise never settles on Android.
-WebBrowser.maybeCompleteAuthSession();
+// Expo defines maybeCompleteAuthSession as a web-popup bridge only. Native
+// completion is owned by openAuthSessionAsync plus the shared OAuth coordinator.
+if (Platform.OS === 'web') WebBrowser.maybeCompleteAuthSession();
 
 /**
  * Parse a magic-link deep-link URL and establish a Supabase session.
@@ -66,13 +64,12 @@ WebBrowser.maybeCompleteAuthSession();
  * On native `detectSessionInUrl` is false so Supabase won't pick these up
  * automatically — we parse and forward them ourselves.
  *
- * NOTE: Google OAuth (PKCE) callbacks do NOT flow through this function.
- * They arrive as <scheme>://auth/callback?code=... and are handled entirely
- * within app/auth/callback.tsx, which calls authClient.exchangeCodeForSession.
- * The openAuthSessionAsync call in auth/index.tsx returns the URL directly,
- * so the Linking listener below never fires for OAuth callbacks.
+ * Google OAuth callbacks are deliberately ignored here. WebBrowser and Expo
+ * Router can both receive them, so they go through the one process-wide OAuth
+ * completion coordinator instead of this magic-link listener.
  */
 function handleAuthDeepLink(url: string) {
+  if (!isNativeMagicLinkUrl(url)) return;
   const sessionTokens = parseSessionFromUrl(url);
   if (sessionTokens) {
     authClient.setSession({

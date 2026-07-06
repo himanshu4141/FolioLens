@@ -9,9 +9,10 @@ graph TB
   subgraph Mobile["Native app (iOS / Android)"]
     auth_screen["app/auth/index.tsx<br/>──────────────<br/>• Email input<br/>• Continue with Google"]
     confirm_screen["app/auth/confirm.tsx<br/>──────────────<br/>• Hash-fragment session pickup<br/>• useURL() deep-link handler"]
-    callback_screen["app/auth/callback.tsx<br/>──────────────<br/>• exchangeCodeForSession()<br/>• PKCE verifier from AsyncStorage"]
+    callback_screen["app/auth/callback.tsx<br/>──────────────<br/>• Router callback delivery<br/>• bounded retry/error UI"]
+    coordinator["src/lib/oauthCompletion.ts<br/>──────────────<br/>• parse + deduplicate callback<br/>• exchange code once<br/>• confirm session + navigate"]
     scheme_util["src/utils/appScheme.ts<br/>──────────────<br/>• getNativeBridgeUrl(path)<br/>• getNativeAuthOrigin()"]
-    session_hook["src/hooks/useSession.ts"]
+    session_provider["SessionProvider<br/>──────────────<br/>• one getSession bootstrap<br/>• one auth subscription<br/>• bounded confirmation"]
   end
 
   subgraph WebShim["Vercel-hosted web (app.foliolens.in)"]
@@ -39,11 +40,14 @@ graph TB
   auth -- "OAuth URL" --> consent
   consent -- "code redirect" --> web_callback
   web_callback -- "if native: foliolens://...<br/>handover to app" --> callback_screen
-  callback_screen -- "exchangeCodeForSession()" --> auth
+  auth_screen -- "WebBrowser result" --> coordinator
+  callback_screen -- "same callback" --> coordinator
+  coordinator -- "exchangeCodeForSession(code) once" --> auth
+  coordinator -- "confirm shared session" --> session_provider
 
   auth_screen --> scheme_util
   confirm_screen --> scheme_util
-  auth -.session.-> session_hook
+  auth -.session.-> session_provider
 ```
 
 ## Magic-link sequence (native)
@@ -84,6 +88,8 @@ sequenceDiagram
   participant Google as accounts.google.com
   participant Web as app.foliolens.in/auth/callback
   participant Auth as Supabase Auth
+  participant Coordinator as OAuth completion coordinator
+  participant Session as SessionProvider
 
   U->>App: tap Continue with Google
   App->>App: getNativeBridgeUrl('/auth/callback')<br/>= bridge URL with ?scheme=foliolens
@@ -97,12 +103,27 @@ sequenceDiagram
   Web->>Web: detect native bridge host
   Web->>Browser: window.location.replace foliolens://auth/callback?code=...
   Browser-->>App: deep-link result.url
-
-  App->>App: parseOAuthCode(result.url)
-  App->>Auth: exchangeCodeForSession(reconstructedCallbackUrl)<br/>(uses PKCE verifier from AsyncStorage)
-  Auth-->>App: session OK
-  App->>U: navigate to /(tabs)
+  App->>Coordinator: WebBrowser result and/or Router callback
+  Coordinator->>Coordinator: hash callback in memory; deduplicate delivery
+  Coordinator->>Auth: exchangeCodeForSession(code)<br/>(uses PKCE verifier from AsyncStorage)
+  Auth-->>Session: one SIGNED_IN event
+  Coordinator->>Session: wait for exact returned session
+  alt event was missed
+    Coordinator->>Auth: getSession() once for reconciliation
+    Auth-->>Session: apply reconciled session
+    Session->>Session: publish effective SIGNED_IN once<br/>and suppress one delayed identical provider event
+  end
+  Coordinator->>App: replace /(tabs) once
+  App->>U: portfolio opens
 ```
+
+`src/lib/supabase.ts` sets `flowType: 'pkce'`; this is not left to the SDK default. The new path passes only the returned authorization code to `exchangeCodeForSession`. OAuth fragments containing access and refresh tokens are rejected: unlike the code path, they have no PKCE-verifier proof, and accepting them from a custom-scheme URL would permit login-CSRF session swapping. Magic-link fragments remain owned by the separate `/auth/confirm` route.
+
+Both `openAuthSessionAsync` and Expo Router can observe the same native deep link. They call the same process-wide coordinator, whose in-flight/completed map guarantees one exchange and one navigation. The Router fallback accepts a `Linking.useURL()` value only when its scheme matches the installed build and its route is exactly `/auth/callback`; stale `/auth/confirm` links wait for the real Router parameters instead of entering OAuth completion. URL creation, browser return, exchange, shared-session confirmation, one reconciliation attempt, and navigation are bounded. Cancellation, dismissal, and failures clear the initiating loading state and return actionable UI; no callback screen can spin forever.
+
+`maybeCompleteAuthSession()` runs only on web, where Expo uses it to close an OAuth popup. Expo's native implementation does not use that method; Android completion is owned by the WebBrowser AppState/Linking polyfill and the shared coordinator.
+
+The coordinator emits `oauth_started`, `browser_returned`, `callback_received`, `session_started`, `session_confirmed`, and `navigation_completed` to analytics and a matching `[auth/oauth]` release log line for device evidence. Properties are restricted to duration, platform, app/update/channel identifiers, browser result type, callback transport/source, intent, and a non-secret flow ID. Callback URLs, codes, tokens, email addresses, and provider identities are never logged or tracked; tests inspect both analytics calls and console payloads for those forbidden values.
 
 ## Why the web bridge
 
@@ -122,7 +143,7 @@ On a desktop browser without `?scheme=foliolens`, the same web pages serve regul
 | `EXPO_PUBLIC_SUPABASE_URL` | Client (build-time) | GoTrue endpoint |
 | `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Client (build-time) | Anon API key |
 | `EXPO_PUBLIC_APP_BASE_URL` | Client (build-time) | Bridge host — `https://app.foliolens.in` (prod) or `https://foliolens-dev.vercel.app` (dev) |
-| `EXPO_PUBLIC_APP_SCHEME` | Client (build-time) | Defaults to `foliolens`; native deep-link scheme |
+| `EXPO_PUBLIC_APP_SCHEME` | Client (build-time) | Native deep-link scheme (`foliolens`, `foliolens-main`, or `foliolens-pr`) |
 | (Supabase Dashboard) | Auth → Providers → Google | Google OAuth client id + secret per project |
 | (Supabase Dashboard) | Auth → URL Configuration | Allowed redirect URLs include `foliolens://**` and the web bridge |
 | (Resend Dashboard) | Domains → `foliolens.in` | DKIM/SPF/DMARC verified for the magic-link sender |

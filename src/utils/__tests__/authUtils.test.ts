@@ -1,4 +1,11 @@
-import { parseOAuthCode, parseSessionFromUrl } from '../authUtils';
+import {
+  buildNativeOAuthCallbackUrl,
+  isNativeMagicLinkUrl,
+  parseOAuthCallback,
+  parseOAuthCode,
+  parseSessionFromUrl,
+  resolveNativeOAuthCallbackUrl,
+} from '../authUtils';
 
 // ---------------------------------------------------------------------------
 // parseOAuthCode
@@ -68,5 +75,110 @@ describe('parseSessionFromUrl', () => {
 
   it('returns null when only one token is present', () => {
     expect(parseSessionFromUrl('fundlens://auth/callback#access_token=token123')).toBeNull();
+  });
+});
+
+describe('parseOAuthCallback', () => {
+  it('prefers the canonical PKCE code transport', () => {
+    expect(parseOAuthCallback('foliolens-pr://auth/callback?code=one-time-code')).toEqual({
+      type: 'code',
+      code: 'one-time-code',
+    });
+  });
+
+  it('keeps legacy fragment tokens as a compatibility transport', () => {
+    expect(
+      parseOAuthCallback(
+        'foliolens-pr://auth/callback#access_token=legacy-access&refresh_token=legacy-refresh',
+      ),
+    ).toEqual({
+      type: 'fragment',
+      accessToken: 'legacy-access',
+      refreshToken: 'legacy-refresh',
+    });
+  });
+
+  it('classifies provider errors without retaining their description', () => {
+    expect(
+      parseOAuthCallback(
+        'foliolens-pr://auth/callback?error=access_denied&error_description=user%40example.com',
+      ),
+    ).toEqual({ type: 'error', error: 'access_denied' });
+  });
+
+  it('rejects callbacks without a supported transport', () => {
+    expect(parseOAuthCallback('foliolens-pr://auth/callback?state=opaque')).toEqual({
+      type: 'invalid',
+    });
+  });
+});
+
+describe('native auth route helpers', () => {
+  it('recognises only the native magic-link confirmation route', () => {
+    expect(
+      isNativeMagicLinkUrl(
+        'foliolens-main://auth/confirm#access_token=one&refresh_token=two',
+      ),
+    ).toBe(true);
+    expect(isNativeMagicLinkUrl('foliolens-main://auth/callback?code=one')).toBe(false);
+    expect(isNativeMagicLinkUrl('https://app.foliolens.in/auth/confirm')).toBe(false);
+  });
+
+  it('reconstructs late Expo Router callback params without leaking extra fields', () => {
+    expect(
+      buildNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        code: 'abc+123',
+      }),
+    ).toBe('foliolens-pr://auth/callback?code=abc%2B123');
+    expect(
+      buildNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        error: 'access_denied',
+      }),
+    ).toBe('foliolens-pr://auth/callback?error=access_denied');
+    expect(buildNativeOAuthCallbackUrl({ scheme: 'foliolens-pr' })).toBeNull();
+  });
+
+  it('waits for late Router params and then prefers them over a stale Linking URL', () => {
+    expect(resolveNativeOAuthCallbackUrl({ scheme: 'foliolens-pr' })).toBeNull();
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        incomingUrl: 'foliolens-pr://auth/confirm#access_token=stale',
+      }),
+    ).toBeNull();
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        code: 'late-code',
+        incomingUrl: 'foliolens-pr://auth/confirm#access_token=stale',
+      }),
+    ).toBe('foliolens-pr://auth/callback?code=late-code');
+  });
+
+  it('prefers an explicit callback URL delivered by WebBrowser routing', () => {
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        callbackUrl: 'foliolens-pr://auth/callback?code=explicit',
+        code: 'route-param',
+      }),
+    ).toBe('foliolens-pr://auth/callback?code=explicit');
+  });
+
+  it('rejects callback fallbacks from another scheme or auth route', () => {
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        incomingUrl: 'foliolens-main://auth/callback?code=wrong-build',
+      }),
+    ).toBeNull();
+    expect(
+      resolveNativeOAuthCallbackUrl({
+        scheme: 'foliolens-pr',
+        callbackUrl: 'foliolens-pr://auth/confirm?code=wrong-route',
+      }),
+    ).toBeNull();
   });
 });

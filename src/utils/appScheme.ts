@@ -22,11 +22,3 @@ export function getNativeBridgeUrl(path: '/auth/confirm' | '/auth/callback'): st
   const baseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? 'https://app.foliolens.in';
   return `${baseUrl}${path}?scheme=${scheme}`;
 }
-
-export function getNativeExchangeCallbackUrl(code: string, callbackUrl?: string): string {
-  if (typeof callbackUrl === 'string' && callbackUrl.length > 0) {
-    return callbackUrl;
-  }
-
-  return `${getNativeBridgeUrl('/auth/callback')}&code=${encodeURIComponent(code)}`;
-}
