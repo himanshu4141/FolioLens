@@ -74,7 +74,7 @@ function ClearLensFundDetailScreen() {
   const isFocused = useIsFocused();
   const [activeTab, setActiveTab] = useState<FundDetailTab>('performance');
   const cachedFund = useCachedFundCard(id);
-  const { data, isLoading, isError } = useFundDetail(id, { enabled: isFocused });
+  const { data, isLoading, isError, isSuccess } = useFundDetail(id, { enabled: isFocused });
   // Full NAV history is fetched in parallel as a background query. The
   // header card / metadata / XIRR render off `data` (small fetch), and
   // the charts gate on `navHistory.length > 1` so they show their own
@@ -90,6 +90,7 @@ function ClearLensFundDetailScreen() {
     isRestoring,
     isLoading,
     isError,
+    isSuccess,
     hasDetail: !!data,
     hasCachedFund: !!cachedFund,
   });

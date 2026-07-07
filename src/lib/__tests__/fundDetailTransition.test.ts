@@ -10,6 +10,7 @@ describe('Fund Detail transition state', () => {
       isRestoring: false,
       isLoading: true,
       isError: false,
+      isSuccess: false,
       hasDetail: false,
       hasCachedFund: true,
     })).toBe('ready');
@@ -20,6 +21,7 @@ describe('Fund Detail transition state', () => {
       isRestoring: false,
       isLoading: true,
       isError: false,
+      isSuccess: false,
       hasDetail: false,
       hasCachedFund: false,
     })).toBe('loading');
@@ -27,6 +29,18 @@ describe('Fund Detail transition state', () => {
       isRestoring: false,
       isLoading: false,
       isError: true,
+      isSuccess: false,
+      hasDetail: false,
+      hasCachedFund: false,
+    })).toBe('error');
+  });
+
+  it('shows an error when a cold query succeeds without a matching fund', () => {
+    expect(resolveFundDetailEntryState({
+      isRestoring: false,
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
       hasDetail: false,
       hasCachedFund: false,
     })).toBe('error');

@@ -9,6 +9,7 @@ interface FundDetailEntryInput {
   isRestoring: boolean;
   isLoading: boolean;
   isError: boolean;
+  isSuccess: boolean;
   hasDetail: boolean;
   hasCachedFund: boolean;
 }
@@ -16,12 +17,14 @@ export function resolveFundDetailEntryState({
   isRestoring,
   isLoading,
   isError,
+  isSuccess,
   hasDetail,
   hasCachedFund,
 }: FundDetailEntryInput): FundDetailEntryState {
   if (isRestoring) return 'loading';
   if (hasDetail || hasCachedFund) return 'ready';
   if (isError) return 'error';
+  if (isSuccess) return 'error';
   if (isLoading) return 'loading';
   return 'loading';
 }

@@ -130,11 +130,12 @@ The focused suite must prove canonical prefetch keys, parallel dispatch, warm/co
 - The three selected-tab bodies are loaded with `React.lazy`, not only conditionally rendered. This keeps `react-native-gifted-charts` and `react-native-svg` out of the route module and delays each tab bundle until selection.
 - `useCachedFundCard` reads the exact active Portfolio key for the current session, preview mode, and benchmark instead of scanning all Portfolio entries. This prevents a stale account or preview cache from supplying the warm hero while preserving the no-fetch contract.
 - Entry-state selection is a pure tested contract. A cold terminal query error now wins over the loading fallback; the previous `data === undefined` ordering could leave an errored deep link on a spinner.
+- Native cold-path validation exposed the related successful-null case (`fetchFundDetail` found no matching fund). The entry-state contract now treats a settled query with no detail or cached card as an error shell with a usable back action instead of an indefinite spinner.
 
 ## Validation Results
 
-- Focused N6 suites: 3 suites, 67 tests passed.
-- Full Jest: 90 suites, 1,927 tests passed.
+- Focused N6 suites: 4 suites, 72 tests passed.
+- Full Jest: 91 suites, 1,932 tests passed.
 - TypeScript: zero errors.
 - ESLint: zero warnings with `--max-warnings 0`.
 - `git diff --check`: clean.
