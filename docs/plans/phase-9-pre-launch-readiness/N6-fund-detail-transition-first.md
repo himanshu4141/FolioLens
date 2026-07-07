@@ -123,7 +123,7 @@ The focused suite must prove canonical prefetch keys, parallel dispatch, warm/co
 - [x] Add canonical query/prefetch and cached-card contracts with tests.
 - [x] Wire mobile/desktop Funds prefetch.
 - [x] Split the route into transition shell and isolated tab modules.
-- [ ] Run all validation and exact-head field evidence.
+- [x] Run all validation and exact-head field evidence.
 
 ## Amendments
 
@@ -139,4 +139,20 @@ The focused suite must prove canonical prefetch keys, parallel dispatch, warm/co
 - TypeScript: zero errors.
 - ESLint: zero warnings with `--max-warnings 0`.
 - `git diff --check`: clean.
-- Exact-SHA responsive and Android evidence remains pending until the rebased implementation is committed and published.
+- Exact-SHA Android evidence passed on the Pixel 8a; details are recorded below. Local web rendering reached the auth screen with safe placeholder environment values, but the sample portfolio now requires posting the demo-signup form. No personal email was transmitted, so responsive browser evidence remains a documented environment limitation rather than an acceptance claim.
+
+## Exact-Head Android Evidence
+
+- Device: physical Google Pixel 8a (`akita`), Android PR-preview application `com.foliolens.app.prpreview`.
+- Runtime implementation: `aba8b6f4e36860f7e79d9c35c350f9c4393fda87`.
+- Channel: `foliolens-pr`.
+- Android OTA: `019f39eb-e71e-710d-8c14-c1ca2cc57430`.
+- Workflow: green pre-PR run `28832069957`; its trace binds the OTA to the exact runtime SHA.
+- About verification: visible prefix `019f39eb-e71…`; subsequent startup reported no newer update available.
+- Warm Funds → Fund Detail: route commit/post-interaction usable measured 63/68 ms on one holding and 52/61 ms on another. The hero, `Go back`, tab controls, and Performance content were visible. The first run's detail/history work completed later (detail 131 ms; full SQLite NAV history 215 ms), proving route usability did not wait for either query.
+- Deferred/back behavior: on a previously unopened holding, an on-device sequence tapped `Go back` 120 ms after the row tap. Funds was visible again while full detail continued and completed at 649 ms; NAV history completed at 137 ms. The transition remained responsive while metadata was in flight.
+- Repeat navigation: reopening that holding measured 59/66 ms and emitted no Fund Detail or NAV-history query timing, confirming the warm cache path.
+- Selected-tab isolation: Performance showed fund-value chart content; NAV & Facts showed Expense Ratio/AUM; Mix & Weight showed Top Holdings and Portfolio Weight. Content from the other tab modules was absent in each scoped UI dump.
+- Cold/error path: direct deep link to a non-existent fund resolved in 50 ms to the visible `Couldn't load fund data` shell with a working `Go back`; back returned to the prior valid Fund Detail screen.
+- Runtime health across the corrected evidence process: `fatal_or_unhandled=0`, `sqlite_errors=0`, `auth_errors=0`, `storage_errors=0`, and React Native error-level lines `=0`.
+- Device hygiene: screen timeout restored from the temporary evidence value to its original `120000` ms.
