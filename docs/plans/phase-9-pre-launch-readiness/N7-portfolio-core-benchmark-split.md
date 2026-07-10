@@ -150,5 +150,51 @@ Performance/native evidence:
 - [x] Refactor Portfolio core and benchmark query helpers.
 - [x] Reuse normalized per-fund transaction streams across all core calculations.
 - [x] Add focused financial equivalence, dedupe, and pathological XIRR tests.
-- [ ] Run focused/full validation and capture performance evidence.
-- [ ] Capture exact-head Android evidence and open the N7 implementation PR.
+- [x] Run focused/full validation and capture performance evidence.
+- [x] Capture exact-head Android evidence and open the N7 implementation PR.
+
+## Evidence
+
+Local validation at runtime commit `6242282d209334b77fdb9e00bb85d3f92228a61e`:
+
+- Focused Portfolio suite: `src/hooks/__tests__/usePortfolio.test.ts`, 20 tests passed.
+- Focused XIRR suite: `src/utils/__tests__/xirr.test.ts`, 80 tests passed.
+- Focused sync invalidation suite: `src/lib/__tests__/syncInvalidation.test.ts`, 28 tests passed.
+- Full Jest: 91 suites / 1,944 tests passed.
+- `npm run typecheck` passed.
+- `npm run lint` passed with zero warnings.
+- `git diff --check` passed.
+- PR-preview workflow run `29085704006` passed for runtime commit `6242282d209334b77fdb9e00bb85d3f92228a61e`.
+
+Exact Android OTA evidence:
+
+- Device: physical Pixel 8a, Android 16 / API 36.
+- App/channel: `com.foliolens.app.prpreview`, `foliolens-pr`.
+- Android OTA/update ID: `019f4b88-2fef-75c0-a87e-f52ce133619a`.
+- In-app About verified prefix: `019f4b88-2fe`.
+- iOS OTA from the same workflow: `019f4b88-2fef-7d72-9ef4-07966b259d1d`.
+
+Privacy-safe Android observations:
+
+- Initial Portfolio refresh on the exact OTA rendered Portfolio, fund cards, portfolio XIRR, and benchmark XIRR. Perf logs showed core work once, then selected-index benchmark work:
+
+      [perf] query:userFunds 271ms rows:20
+      [perf] query:userTransactions 223ms rows:566 source:sqlite
+      [perf] query:portfolio:nav 2013ms rows:1084 source:sqlite
+      [perf] query:portfolio:core 2642ms fund_cards:13 txs:566 navs:1084 idxs:0
+      [perf] query:indexSnapshot 369ms symbol:^NSEITRI ok:true points:6717
+      [perf] query:portfolio:index 40ms rows:2060 symbol:^NSEITRI source:sqlite
+      [perf] query:portfolio:benchmark 3185ms rows:2060 symbol:^NSEITRI source:sqlite
+
+- Switching to Nifty 100 TRI changed the visible benchmark copy to Nifty 100 and ran only selected benchmark/index work:
+
+      [perf] query:portfolio:index 47ms rows:2060 symbol:^NIFTY100TRI source:sqlite
+      [perf] query:portfolio:benchmark 570ms rows:2060 symbol:^NIFTY100TRI source:sqlite
+      [perf] query:indexSnapshot 717ms symbol:^NIFTY100TRI ok:true points:7805
+
+  No `query:portfolio:core`, `query:userFunds`, `query:userTransactions`, or `query:portfolio:nav` lines appeared during the benchmark switch, and no eager all-benchmark full fetch was observed.
+
+- Navigating away to Settings / About after the benchmark switch produced no delayed `query:portfolio`, `query:performanceTimeline`, `investmentVsBenchmark`, `query:portfolio:nav`, or `query:indexSnapshot` work after blur.
+- Funds navigation rendered the Funds list without Portfolio/timeline work. Opening Fund Detail from a warm Funds row logged `navigation:press_to_route_commit 117ms` and `navigation:press_to_post_interaction_usable 132ms`; the screen rendered Performance, NAV & Facts, Mix & Weight, and XIRR selectors.
+- Fund Detail selector checks switched to Mix & Weight and NAV & Facts. The selected modules rendered expected selector-specific content such as holdings/asset/sector and fund-fact/NAV labels, with no Portfolio recomputation logs.
+- Error scan across the checked Android evidence segments found zero app auth lifecycle, SQLite, storage, React Native fatal, or unhandled-promise signatures. Only unrelated platform `AconfigStorageReadException` and accessibility-dumper diagnostic lines appeared during `uiautomator` inspection.
