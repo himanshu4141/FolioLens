@@ -16,10 +16,15 @@ jest.mock('@/src/lib/data/indexHistory', () => ({
 import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first
 import {
+  fetchPortfolioCoreData,
   fetchPortfolioData,
+  portfolioBenchmarkQueryKey,
+  portfolioCoreQueryKey,
+  portfolioQueryKey,
   prefetchPortfolioBenchmark,
   selectCachedFundCard,
   selectCachedPortfolioWeight,
+  type PortfolioCoreData,
   type PortfolioData,
 } from '../usePortfolio';
 // eslint-disable-next-line import/first
@@ -45,15 +50,41 @@ const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
 // fetcher paths fall through to Supabase when SQLite is empty, which
 // matches the cold-start contract the production code relies on.
 beforeEach(async () => {
+  fakeQueryCache = new Map();
   __resetAllForTests();
   await __setDbForTests(null);
 });
 
-// Stand-in QueryClient that just runs the queryFn — the real client would
-// add cache lookups, but in unit tests we want every fetch to hit the
-// supabase mock so the existing fixtures keep covering the SQL paths.
+let fakeQueryCache: Map<string, unknown>;
+
+function queryKeyId(queryKey: readonly unknown[]): string {
+  return JSON.stringify(queryKey);
+}
+
+// Stand-in QueryClient with the cache-or-fetch behavior `fetchPortfolioData`
+// relies on. It keeps the test fixtures small while still proving that the new
+// benchmark path reuses the core query result instead of rerunning core work.
 const fakeQc = {
-  fetchQuery: <T,>({ queryFn }: { queryFn: () => Promise<T> }) => queryFn(),
+  fetchQuery: async <T,>({
+    queryKey,
+    queryFn,
+  }: {
+    queryKey: readonly unknown[];
+    queryFn: () => Promise<T>;
+  }) => {
+    const key = queryKeyId(queryKey);
+    if (fakeQueryCache.has(key)) return fakeQueryCache.get(key) as T;
+    const pending = Promise.resolve().then(queryFn);
+    fakeQueryCache.set(key, pending);
+    try {
+      const value = await pending;
+      fakeQueryCache.set(key, value);
+      return value;
+    } catch (err) {
+      fakeQueryCache.delete(key);
+      throw err;
+    }
+  },
 } as unknown as QueryClient;
 
 // ---------------------------------------------------------------------------
@@ -347,6 +378,58 @@ describe('fetchPortfolioData()', () => {
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
     expect(isNaN(result.summary!.marketXirr)).toBe(true);
+  });
+
+  it('uses distinct public, core, and benchmark query keys', () => {
+    expect(portfolioQueryKey('user-1', '^NSEITRI')).toEqual([
+      'portfolio',
+      'user-1',
+      '^NSEITRI',
+    ]);
+    expect(portfolioCoreQueryKey('user-1')).toEqual(['portfolio-core', 'user-1']);
+    expect(portfolioBenchmarkQueryKey('user-1', '^NSEITRI')).toEqual([
+      'portfolio-benchmark',
+      'user-1',
+      '^NSEITRI',
+    ]);
+  });
+
+  it('computes benchmark-independent core once across benchmark variants', async () => {
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
+
+    const first = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
+    const callsAfterFirst = {
+      funds: fundFrom.mock.calls.length,
+      transactions: txFrom.mock.calls.length,
+      nav: navFrom.mock.calls.length,
+    };
+
+    const second = await fetchPortfolioData(fakeQc, 'user-1', '^NIFTY500TRI');
+
+    expect(second.fundCards).toBe(first.fundCards);
+    expect(second.summary?.totalValue).toBe(first.summary?.totalValue);
+    expect(second.summary?.totalInvested).toBe(first.summary?.totalInvested);
+    expect(second.summary?.xirr).toBe(first.summary?.xirr);
+    expect(second.summary?.benchmarkSymbol).toBe('^NIFTY500TRI');
+    expect(fundFrom).toHaveBeenCalledTimes(callsAfterFirst.funds);
+    expect(txFrom).toHaveBeenCalledTimes(callsAfterFirst.transactions);
+    expect(navFrom).toHaveBeenCalledTimes(callsAfterFirst.nav);
+  });
+
+  it('exposes the core result without benchmark-specific summary fields', async () => {
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
+
+    const core: PortfolioCoreData = await fetchPortfolioCoreData(fakeQc, 'user-1');
+
+    expect(core.fundCards).toHaveLength(1);
+    expect(core.summary).toMatchObject({
+      totalValue: 150 * 140,
+      totalInvested: 16000,
+      navUnavailableCount: 0,
+    });
+    expect(core.summary).not.toHaveProperty('marketXirr');
+    expect(core.summary).not.toHaveProperty('benchmarkSymbol');
+    expect(core.benchmarkTransactions).toHaveLength(MOCK_TXS.length);
   });
 
   // ── Fix 12: portfolio-level gain/loss ──────────────────────────────────────

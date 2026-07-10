@@ -2,12 +2,15 @@ import {
   xirr,
   formatXirr,
   computeRealizedGains,
+  computeRealizedGainsFromNormalizedTransactions,
   buildCashflowsFromTransactions,
+  buildCashflowsFromNormalizedTransactions,
   filterReversedTransactionPairs,
   buildBenchmarkLookup,
   simulateBenchmarkInvestment,
   simulateBenchmarkInvestmentFromNormalizedTransactions,
   computeBenchmarkXirr,
+  computeBenchmarkXirrFromNormalizedTransactions,
   type Cashflow,
   type Transaction,
 } from '../xirr';
@@ -106,6 +109,21 @@ describe('xirr()', () => {
       { date: daysFrom(ORIGIN, 1), amount: 1 },
     ];
     expect(xirr(flows)).toBeNaN();
+  });
+
+  it('bounds pathological fallback runtime', () => {
+    const flows: Cashflow[] = [
+      { date: ORIGIN, amount: -1e12 },
+      { date: daysFrom(ORIGIN, 1), amount: 1 },
+      { date: yearsFrom(ORIGIN, 30), amount: 2 },
+    ];
+
+    const startedAt = Date.now();
+    const rate = xirr(flows);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(rate).toBeNaN();
+    expect(elapsedMs).toBeLessThan(1000);
   });
 
   it('handles extremely high return (>100x) without infinite loop', () => {
@@ -443,6 +461,19 @@ describe('computeRealizedGains()', () => {
       // Without the phantom: avgCost = 100/unit, realizedGain = 5000 - 40*100 = 1000
       expect(result.realizedGain).toBeCloseTo(1000, 5);
     });
+
+    it('normalized realized-gain helper matches the raw helper', () => {
+      const txs: Transaction[] = [
+        { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+        { transaction_date: '2024-06-01', transaction_type: 'switch_in', units: 500, amount: 0 },
+        { transaction_date: '2024-09-01', transaction_type: 'redemption', units: 40, amount: 5000 },
+      ];
+      const normalized = filterReversedTransactionPairs(txs);
+
+      expect(computeRealizedGainsFromNormalizedTransactions(normalized)).toEqual(
+        computeRealizedGains(txs),
+      );
+    });
   });
 });
 
@@ -582,6 +613,21 @@ describe('buildCashflowsFromTransactions()', () => {
     expect(result.netUnits).toBe(0);
     expect(result.investedAmount).toBe(0);
     expect(result.historicalCashflows).toEqual([]);
+  });
+
+  it('normalized cashflow helper matches the raw helper for switches and redemptions', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+      { transaction_date: '2024-03-01', transaction_type: 'switch_in', units: 50, amount: 6000 },
+      { transaction_date: '2024-06-01', transaction_type: 'switch_out', units: 30, amount: 3900 },
+      { transaction_date: '2024-09-01', transaction_type: 'redemption', units: 40, amount: 5600 },
+      { transaction_date: '2024-10-01', transaction_type: 'purchase', units: 10, amount: 0 },
+    ];
+    const normalized = filterReversedTransactionPairs(txs);
+
+    expect(buildCashflowsFromNormalizedTransactions(normalized, 12000, today)).toEqual(
+      buildCashflowsFromTransactions(txs, 12000, today),
+    );
   });
 });
 
@@ -873,6 +919,27 @@ describe('computeBenchmarkXirr()', () => {
     const handXirr = xirr(handFlows);
 
     expect(helperResult.xirr).toBeCloseTo(handXirr, 6);
+  });
+
+  it('normalized benchmark helper matches raw helper after reversal filtering', () => {
+    const txs: Transaction[] = [
+      { transaction_date: '2024-01-01', transaction_type: 'purchase', units: 100, amount: 10000 },
+      { transaction_date: '2024-03-01', transaction_type: 'purchase', units: 50, amount: 25000 },
+      { transaction_date: '2024-03-01', transaction_type: 'redemption', units: 0, amount: 25000 },
+      { transaction_date: '2024-07-01', transaction_type: 'switch_in', units: 30, amount: 3600 },
+      { transaction_date: '2024-10-01', transaction_type: 'switch_out', units: 10, amount: 1300 },
+    ];
+    const normalized = filterReversedTransactionPairs(txs);
+    const input = {
+      transactions: txs,
+      benchmarkValueAt: lookup,
+      terminalDate: new Date('2025-01-01'),
+    };
+
+    expect(computeBenchmarkXirrFromNormalizedTransactions({
+      ...input,
+      transactions: normalized,
+    })).toEqual(computeBenchmarkXirr(input));
   });
 
   // Regression — usePortfolio.marketXirr previously terminated at the latest

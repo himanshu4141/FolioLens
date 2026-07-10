@@ -39,6 +39,7 @@ describe('syncInvalidationPrefixes', () => {
     }));
 
     expect(prefixes).toEqual(new Set([
+      'portfolio-core',
       'portfolio',
       'fund-detail',
       'fund-nav-history',
@@ -66,6 +67,8 @@ describe('syncInvalidationPrefixes', () => {
     expect(prefixes).toEqual(new Set([
       'user-funds',
       'user-transactions',
+      'portfolio-core',
+      'portfolio-benchmark',
       'portfolio',
       'fund-detail',
       'money-trail',
@@ -99,6 +102,7 @@ describe('syncInvalidationPrefixes', () => {
     }));
 
     expect(prefixes).toEqual(new Set([
+      'portfolio-benchmark',
       'portfolio',
       'fund-detail-index',
       'index-snapshot',

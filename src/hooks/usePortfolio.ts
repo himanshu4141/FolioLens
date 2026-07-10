@@ -22,11 +22,13 @@ import {
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import {
   xirr,
-  buildCashflowsFromTransactions,
-  computeRealizedGains,
+  buildCashflowsFromNormalizedTransactions,
   buildBenchmarkLookup,
-  computeBenchmarkXirr,
+  computeBenchmarkXirrFromNormalizedTransactions,
+  computeRealizedGainsFromNormalizedTransactions,
+  filterReversedTransactionPairs,
   type Cashflow,
+  type Transaction,
 } from '@/src/utils/xirr';
 import { isMaturedScheme } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
@@ -96,6 +98,36 @@ export interface PortfolioData {
   summary: PortfolioSummary | null;
 }
 
+export type PortfolioQueryKey = readonly ['portfolio', string, string];
+export type PortfolioCoreQueryKey = readonly ['portfolio-core', string];
+export type PortfolioBenchmarkQueryKey = readonly ['portfolio-benchmark', string, string];
+
+export interface PortfolioCoreSummary {
+  totalValue: number;
+  totalInvested: number;
+  dailyChangeAmount: number;
+  dailyChangePct: number;
+  xirr: number;
+  latestNavDate: string | null;
+  navUnavailableCount: number;
+}
+
+export interface PortfolioCoreData {
+  fundCards: FundCardData[];
+  summary: PortfolioCoreSummary | null;
+  benchmarkTransactions: Transaction[];
+  firstTransactionDate: string | null;
+  terminalDateIso: string;
+  totalTransactionCount: number;
+  navRowCount: number;
+}
+
+export interface PortfolioBenchmarkData {
+  benchmarkSymbol: string;
+  marketXirr: number;
+  indexRowCount: number;
+}
+
 export interface CachedPortfolioWeight {
   percentage: number;
   rank: number | null;
@@ -114,12 +146,42 @@ function isPortfolioFundRow(row: UserFundRow): row is UserFundRow & PortfolioFun
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
-export async function fetchPortfolioData(
-  qc: QueryClient,
+export function portfolioQueryKey(userId: string, benchmarkSymbol: string): PortfolioQueryKey {
+  return ['portfolio', userId, benchmarkSymbol];
+}
+
+export function portfolioCoreQueryKey(userId: string): PortfolioCoreQueryKey {
+  return ['portfolio-core', userId];
+}
+
+export function portfolioBenchmarkQueryKey(
   userId: string,
   benchmarkSymbol: string,
-): Promise<PortfolioData> {
-  const portfolioSpanId = perfStart('query:portfolio');
+): PortfolioBenchmarkQueryKey {
+  return ['portfolio-benchmark', userId, benchmarkSymbol];
+}
+
+function composePortfolioData(
+  core: PortfolioCoreData,
+  benchmark: PortfolioBenchmarkData,
+): PortfolioData {
+  return {
+    fundCards: core.fundCards,
+    summary: core.summary
+      ? {
+        ...core.summary,
+        marketXirr: benchmark.marketXirr,
+        benchmarkSymbol: benchmark.benchmarkSymbol,
+      }
+      : null,
+  };
+}
+
+export async function fetchPortfolioCoreData(
+  qc: QueryClient,
+  userId: string,
+): Promise<PortfolioCoreData> {
+  const portfolioSpanId = perfStart('query:portfolio:core');
   const writeScope = captureDatabaseWriteScope();
 
   // Shared user-funds and user-transactions caches. Other screens (Fund
@@ -145,15 +207,36 @@ export async function fetchPortfolioData(
   const validFunds = allFunds.filter((f) => f.is_active === true).filter(isPortfolioFundRow);
   if (!validFunds.length) {
     perfEnd(portfolioSpanId, { funds: 0, txs: 0, navs: 0, idxs: 0 });
-    return { fundCards: [], summary: null };
+    return {
+      fundCards: [],
+      summary: null,
+      benchmarkTransactions: [],
+      firstTransactionDate: allTxs[0]?.transaction_date ?? null,
+      terminalDateIso: new Date().toISOString(),
+      totalTransactionCount: allTxs.length,
+      navRowCount: 0,
+    };
   }
 
-  // Group transactions by fund_id
+  // Group and reversal-filter transactions by fund_id once. Downstream
+  // holdings, realized gains, XIRR, and benchmark simulation reuse these same
+  // arrays instead of each helper repeating reversal-pair detection.
   const txByFund = new Map<string, UserTransactionRow[]>();
   for (const tx of allTxs) {
     const existing = txByFund.get(tx.fund_id) ?? [];
     existing.push(tx);
     txByFund.set(tx.fund_id, existing);
+  }
+  const normalizedTxByFund = new Map<string, UserTransactionRow[]>();
+  for (const fund of validFunds) {
+    normalizedTxByFund.set(
+      fund.id,
+      filterReversedTransactionPairs(txByFund.get(fund.id) ?? []),
+    );
+  }
+  const benchmarkTransactions: UserTransactionRow[] = [];
+  for (const fund of validFunds) {
+    benchmarkTransactions.push(...(normalizedTxByFund.get(fund.id) ?? []));
   }
 
   const schemeCodes = validFunds.map((f) => f.scheme_code);
@@ -245,66 +328,8 @@ export async function fetchPortfolioData(
     navHistoryByScheme.set(code, pts.filter((p) => p.date >= navCutoff30d));
   }
 
-  // Benchmark index history — for the market-XIRR comparison we need
-  // every index close from the user's first transaction onward (so the
-  // benchmark cashflows simulate every buy/sell at the right price).
-  //
-  // Three-tier read order:
-  //   1. SQLite local repo (instant, offline-capable)
-  //   2. CDN snapshot via `fetchIndexHistory` (Phase 9 M5)
-  //   3. Paginated `index_history` SELECT (M5's own fallback inside
-  //      `fetchIndexHistory`)
-  // On a cold start, the CDN path warms SQLite via write-back so the
-  // next mount is purely local.
   const firstTxDate = allTxs[0]?.transaction_date ?? null;
-  let benchmarkRows: IndexRow[] = [];
-  let benchmarkSource: 'sqlite' | 'snapshot' = 'sqlite';
-  if (benchmarkSymbol) {
-    const indexSpanId = perfStart('query:portfolio:index');
-    if (SQLITE_AVAILABLE) {
-      try {
-        const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
-          sinceDate: firstTxDate ?? undefined,
-          orderDesc: true,
-        });
-        benchmarkRows = localRows.map((r) => ({
-          index_date: r.index_date,
-          close_value: r.close_value,
-        }));
-      } catch (err) {
-        console.warn('[usePortfolio] sqlite idx read failed; falling back', err);
-      }
-    }
-    if (benchmarkRows.length === 0) {
-      benchmarkSource = 'snapshot';
-      const points = await fetchIndexHistory(benchmarkSymbol, firstTxDate);
-      benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
-      if (benchmarkRows.length > 0 && SQLITE_AVAILABLE) {
-        try {
-          await idxRepo.bulkInsert(
-            benchmarkRows.map((r) => ({
-              index_symbol: benchmarkSymbol,
-              index_date: r.index_date,
-              close_value: r.close_value,
-            })),
-            { scope: writeScope, operation: 'portfolio_index_write_back' },
-          );
-        } catch (err) {
-          console.warn('[usePortfolio] sqlite idx write failed', err);
-        }
-      }
-    }
-    perfEnd(indexSpanId, {
-      rows: benchmarkRows.length,
-      symbol: benchmarkSymbol,
-      source: benchmarkSource,
-    });
-  }
-
-  const benchmarkMap = new Map<string, number>();
-  for (const row of benchmarkRows) {
-    benchmarkMap.set(row.index_date, row.close_value);
-  }
+  const terminalDate = new Date();
 
   // Compute per-fund card data
   const fundCards: FundCardData[] = [];
@@ -317,20 +342,23 @@ export async function fetchPortfolioData(
 
   for (const fund of validFunds) {
     const navInfo = navByScheme.get(fund.scheme_code);
-    const txs = txByFund.get(fund.id) ?? [];
+    const txs = normalizedTxByFund.get(fund.id) ?? [];
     const schemeActive = fund.scheme_active ?? null;
 
     if (txs.length === 0) continue;
-
-    const today = new Date();
 
     if (!navInfo) {
       // NAV sync hasn't run for this scheme yet — show a pending card so the user
       // can see their holding rather than having it silently disappear.
       console.warn(`[usePortfolio] no NAV data for scheme ${fund.scheme_code} — showing pending card`);
-      const { netUnits, investedAmount } = buildCashflowsFromTransactions(txs, 0, today);
+      const { netUnits, investedAmount } = buildCashflowsFromNormalizedTransactions(
+        txs,
+        0,
+        terminalDate,
+      );
       if (netUnits < 0.001) continue; // skip fully-exited funds
-      const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs);
+      const { realizedGain, realizedAmount, redeemedUnits } =
+        computeRealizedGainsFromNormalizedTransactions(txs);
       navUnavailableCount++;
       fundCards.push({
         id: fund.id,
@@ -357,10 +385,10 @@ export async function fetchPortfolioData(
     }
 
     // First pass: get netUnits and historical cashflows (currentValue unknown yet)
-    const { historicalCashflows, netUnits, investedAmount } = buildCashflowsFromTransactions(
+    const { historicalCashflows, netUnits, investedAmount } = buildCashflowsFromNormalizedTransactions(
       txs,
       0,
-      today,
+      terminalDate,
     );
 
     if (netUnits < 0.001) continue; // skip fully-exited funds (guards against floating-point residuals)
@@ -374,15 +402,16 @@ export async function fetchPortfolioData(
     allCashflows.push(...historicalCashflows);
 
     // Build fund-level XIRR cashflows with terminal inflow
-    const { xirrCashflows: fundXirrFlows } = buildCashflowsFromTransactions(
+    const { xirrCashflows: fundXirrFlows } = buildCashflowsFromNormalizedTransactions(
       txs,
       currentValue,
-      today,
+      terminalDate,
     );
     const fundXirr = xirr(fundXirrFlows);
 
     // Realized gains for partially/fully redeemed funds
-    const { realizedGain, realizedAmount, redeemedUnits } = computeRealizedGains(txs);
+    const { realizedGain, realizedAmount, redeemedUnits } =
+      computeRealizedGainsFromNormalizedTransactions(txs);
 
     fundCards.push({
       id: fund.id,
@@ -417,37 +446,11 @@ export async function fetchPortfolioData(
       ? (portfolioDailyChange / portfolioTotalPreviousValue) * 100
       : 0;
 
-  const today = new Date();
   const portfolioXirrFlows: Cashflow[] = [
     ...allCashflows,
-    { date: today, amount: portfolioTotalValue },
+    { date: terminalDate, amount: portfolioTotalValue },
   ];
   const portfolioXirrRate = allCashflows.length > 0 ? xirr(portfolioXirrFlows) : NaN;
-
-  // Market XIRR — "what would I have got investing the same money in the
-  // benchmark." Terminate at `today` (same as portfolioXirr) using at-or-
-  // before benchmark lookup, so fund and benchmark XIRR are directly
-  // comparable. Previously this terminated at the latest benchmark date,
-  // which produced a 1–2-day asymmetry against portfolioXirr's `today`
-  // terminal — small per call, but that's exactly how 0.5–1%/yr spurious
-  // alpha sneaks in (cf. Past SIP Check fix in PR #99).
-  let marketXirr = NaN;
-  if (allCashflows.length > 0 && benchmarkRows.length > 0) {
-    const benchmarkValueAt = buildBenchmarkLookup(
-      benchmarkRows.map((row) => ({
-        date: row.index_date,
-        value: row.close_value,
-      })),
-    );
-    const allTransactions = allTxs.filter((tx) =>
-      validFunds.some((f) => f.id === tx.fund_id),
-    );
-    marketXirr = computeBenchmarkXirr({
-      transactions: allTransactions,
-      benchmarkValueAt,
-      terminalDate: today,
-    }).xirr;
-  }
 
   // Exclude matured/inactive schemes from the freshness date so a frozen
   // NAV (e.g. a matured FMP from 2021) doesn't suppress the "as of today"
@@ -464,14 +467,12 @@ export async function fetchPortfolioData(
       .sort()
       .pop() ?? null;
 
-  const summary: PortfolioSummary = {
+  const summary: PortfolioCoreSummary = {
     totalValue: portfolioTotalValue,
     totalInvested: portfolioTotalInvested,
     dailyChangeAmount: portfolioDailyChange,
     dailyChangePct: portfolioDailyChangePct,
     xirr: portfolioXirrRate,
-    marketXirr,
-    benchmarkSymbol,
     latestNavDate,
     navUnavailableCount,
   };
@@ -480,9 +481,145 @@ export async function fetchPortfolioData(
     fund_cards: fundCards.length,
     txs: allTxs.length,
     navs: navRows.length,
-    idxs: benchmarkRows.length,
+    idxs: 0,
   });
-  return { fundCards, summary };
+  return {
+    fundCards,
+    summary,
+    benchmarkTransactions,
+    firstTransactionDate: firstTxDate,
+    terminalDateIso: terminalDate.toISOString(),
+    totalTransactionCount: allTxs.length,
+    navRowCount: navRows.length,
+  };
+}
+
+async function loadBenchmarkRows(
+  benchmarkSymbol: string,
+  firstTransactionDate: string | null,
+  writeScope: ReturnType<typeof captureDatabaseWriteScope>,
+): Promise<{ rows: IndexRow[]; source: 'sqlite' | 'snapshot' | 'none' }> {
+  if (!benchmarkSymbol) return { rows: [], source: 'none' };
+
+  let benchmarkRows: IndexRow[] = [];
+  let benchmarkSource: 'sqlite' | 'snapshot' = 'sqlite';
+  if (SQLITE_AVAILABLE) {
+    try {
+      const localRows = await idxRepo.readBySymbol(benchmarkSymbol, {
+        sinceDate: firstTransactionDate ?? undefined,
+        orderDesc: true,
+      });
+      benchmarkRows = localRows.map((r) => ({
+        index_date: r.index_date,
+        close_value: r.close_value,
+      }));
+    } catch (err) {
+      console.warn('[usePortfolio] sqlite idx read failed; falling back', err);
+    }
+  }
+  if (benchmarkRows.length === 0) {
+    benchmarkSource = 'snapshot';
+    const points = await fetchIndexHistory(benchmarkSymbol, firstTransactionDate);
+    benchmarkRows = points.map((p) => ({ index_date: p.date, close_value: p.value }));
+    if (benchmarkRows.length > 0 && SQLITE_AVAILABLE) {
+      try {
+        await idxRepo.bulkInsert(
+          benchmarkRows.map((r) => ({
+            index_symbol: benchmarkSymbol,
+            index_date: r.index_date,
+            close_value: r.close_value,
+          })),
+          { scope: writeScope, operation: 'portfolio_index_write_back' },
+        );
+      } catch (err) {
+        console.warn('[usePortfolio] sqlite idx write failed', err);
+      }
+    }
+  }
+
+  return { rows: benchmarkRows, source: benchmarkSource };
+}
+
+export async function fetchPortfolioBenchmarkData(
+  qc: QueryClient,
+  userId: string,
+  benchmarkSymbol: string,
+): Promise<PortfolioBenchmarkData> {
+  const benchmarkSpanId = perfStart('query:portfolio:benchmark');
+  const writeScope = captureDatabaseWriteScope();
+  const core = await qc.fetchQuery({
+    queryKey: portfolioCoreQueryKey(userId),
+    queryFn: () => fetchPortfolioCoreData(qc, userId),
+    staleTime: STALE_TIMES.PORTFOLIO,
+  });
+
+  let marketXirr = NaN;
+  let indexRowCount = 0;
+  let indexSource: 'sqlite' | 'snapshot' | 'none' = 'none';
+  if (core.benchmarkTransactions.length > 0 && benchmarkSymbol) {
+    const indexSpanId = perfStart('query:portfolio:index');
+    const { rows: benchmarkRows, source } = await loadBenchmarkRows(
+      benchmarkSymbol,
+      core.firstTransactionDate,
+      writeScope,
+    );
+    indexRowCount = benchmarkRows.length;
+    indexSource = source;
+    perfEnd(indexSpanId, {
+      rows: indexRowCount,
+      symbol: benchmarkSymbol,
+      source: indexSource,
+    });
+
+    if (benchmarkRows.length > 0) {
+      const benchmarkValueAt = buildBenchmarkLookup(
+        benchmarkRows.map((row) => ({
+          date: row.index_date,
+          value: row.close_value,
+        })),
+      );
+      marketXirr = computeBenchmarkXirrFromNormalizedTransactions({
+        transactions: core.benchmarkTransactions,
+        benchmarkValueAt,
+        terminalDate: new Date(core.terminalDateIso),
+      }).xirr;
+    }
+  }
+
+  perfEnd(benchmarkSpanId, {
+    rows: indexRowCount,
+    symbol: benchmarkSymbol,
+    source: indexSource,
+  });
+  return { benchmarkSymbol, marketXirr, indexRowCount };
+}
+
+export async function fetchPortfolioData(
+  qc: QueryClient,
+  userId: string,
+  benchmarkSymbol: string,
+): Promise<PortfolioData> {
+  const portfolioSpanId = perfStart('query:portfolio');
+  const [core, benchmark] = await Promise.all([
+    qc.fetchQuery({
+      queryKey: portfolioCoreQueryKey(userId),
+      queryFn: () => fetchPortfolioCoreData(qc, userId),
+      staleTime: STALE_TIMES.PORTFOLIO,
+    }),
+    qc.fetchQuery({
+      queryKey: portfolioBenchmarkQueryKey(userId, benchmarkSymbol),
+      queryFn: () => fetchPortfolioBenchmarkData(qc, userId, benchmarkSymbol),
+      staleTime: STALE_TIMES.PORTFOLIO,
+    }),
+  ]);
+  const result = composePortfolioData(core, benchmark);
+  perfEnd(portfolioSpanId, {
+    fund_cards: result.fundCards.length,
+    txs: core.totalTransactionCount,
+    navs: core.navRowCount,
+    idxs: benchmark.indexRowCount,
+  });
+  return result;
 }
 
 export function prefetchPortfolioBenchmark(
@@ -491,7 +628,7 @@ export function prefetchPortfolioBenchmark(
   benchmarkSymbol: string,
 ): Promise<void> {
   return queryClient.prefetchQuery({
-    queryKey: ['portfolio', userId, benchmarkSymbol],
+    queryKey: portfolioQueryKey(userId, benchmarkSymbol),
     queryFn: () => fetchPortfolioData(queryClient, userId, benchmarkSymbol),
     staleTime: STALE_TIMES.PORTFOLIO,
   });

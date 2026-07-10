@@ -255,7 +255,19 @@ function normalizeTransactionType(type: string): string {
  * On each redemption, gain = proceeds - (units × avg_cost_at_redemption).
  */
 export function computeRealizedGains(transactions: Transaction[]): RealizedGains {
-  const sorted = filterReversedTransactionPairs(transactions).sort((a, b) =>
+  return computeRealizedGainsFromNormalizedTransactions(filterReversedTransactionPairs(transactions));
+}
+
+/**
+ * Realized-gain calculation for callers that already performed
+ * `filterReversedTransactionPairs()`. This avoids repeating the reversal
+ * pairing pass when one caller needs units, cashflows, realized gains, and
+ * benchmark simulation from the same transaction stream.
+ */
+export function computeRealizedGainsFromNormalizedTransactions(
+  transactions: Transaction[],
+): RealizedGains {
+  const sorted = [...transactions].sort((a, b) =>
     a.transaction_date.localeCompare(b.transaction_date),
   );
 
@@ -312,11 +324,27 @@ export function buildCashflowsFromTransactions(
   currentValue: number,
   currentDate: Date,
 ): TransactionCashflows {
+  return buildCashflowsFromNormalizedTransactions(
+    filterReversedTransactionPairs(transactions),
+    currentValue,
+    currentDate,
+  );
+}
+
+/**
+ * Cashflow construction for callers that already own a reversal-filtered
+ * transaction series.
+ */
+export function buildCashflowsFromNormalizedTransactions(
+  transactions: Transaction[],
+  currentValue: number,
+  currentDate: Date,
+): TransactionCashflows {
   let netUnits = 0;
   let totalCost = 0; // running cost basis — deducted on sells
   const historicalCashflows: Cashflow[] = [];
 
-  for (const tx of filterReversedTransactionPairs(transactions)) {
+  for (const tx of transactions) {
     const date = new Date(tx.transaction_date);
     const isOutflow =
       tx.transaction_type === 'purchase' ||
@@ -504,8 +532,21 @@ export interface BenchmarkXirrResult {
  *    negative).
  */
 export function computeBenchmarkXirr(input: BenchmarkXirrInput): BenchmarkXirrResult {
+  return computeBenchmarkXirrFromNormalizedTransactions({
+    ...input,
+    transactions: filterReversedTransactionPairs(input.transactions),
+  });
+}
+
+/**
+ * Benchmark XIRR for callers that already own a reversal-filtered transaction
+ * series.
+ */
+export function computeBenchmarkXirrFromNormalizedTransactions(
+  input: BenchmarkXirrInput,
+): BenchmarkXirrResult {
   const { transactions, benchmarkValueAt, terminalDate } = input;
-  const sim = simulateBenchmarkInvestment(transactions, benchmarkValueAt);
+  const sim = simulateBenchmarkInvestmentFromNormalizedTransactions(transactions, benchmarkValueAt);
   const terminalDateStr = terminalDate.toISOString().split('T')[0];
   const terminalClose = benchmarkValueAt(terminalDateStr);
 

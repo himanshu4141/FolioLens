@@ -191,6 +191,8 @@ export default function DataSyncScreen() {
       // points is now stale relative to the freshly published row. Drop
       // those entries so the next mount reads the new data.
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['portfolio-core'] }),
+        queryClient.invalidateQueries({ queryKey: ['portfolio-benchmark'] }),
         queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
         queryClient.invalidateQueries({ queryKey: ['fund-detail'] }),
         queryClient.invalidateQueries({ queryKey: ['fund-nav-history'] }),
