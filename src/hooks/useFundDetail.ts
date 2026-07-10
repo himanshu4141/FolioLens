@@ -12,6 +12,7 @@
  *  - xirr: fund-level XIRR
  */
 
+import { useCallback } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { xirr, buildCashflowsFromTransactions, computeRealizedGains } from '@/src/utils/xirr';
@@ -84,6 +85,21 @@ export interface FundDetailData {
   portfolioTurnover: number | null;
   terDate: string | null;
   schemeActive: boolean | null;
+}
+
+export function fundDetailQueryKey(fundId: string, previewMode: boolean) {
+  return previewMode
+    ? ['fund-detail', 'preview', fundId] as const
+    : ['fund-detail', fundId] as const;
+}
+
+export function fundNavHistoryQueryKey(
+  schemeCode: number | null | undefined,
+  previewMode: boolean,
+) {
+  return previewMode
+    ? ['fund-nav-history', 'preview', schemeCode] as const
+    : ['fund-nav-history', schemeCode] as const;
 }
 
 interface FundDetailRow {
@@ -317,6 +333,29 @@ export async function fetchFundDetail(
   };
 }
 
+export interface FundDetailQueryInput {
+  fundId: string;
+  previewMode: boolean;
+  queryClient: QueryClient;
+  userId?: string;
+}
+
+export function fundDetailQueryOptions({
+  fundId,
+  previewMode,
+  queryClient,
+  userId,
+}: FundDetailQueryInput) {
+  return {
+    queryKey: fundDetailQueryKey(fundId, previewMode),
+    queryFn: () =>
+      previewMode
+        ? Promise.resolve(buildPreviewFundDetail(fundId))
+        : fetchFundDetail(queryClient, userId!, fundId),
+    staleTime: STALE_TIMES.PORTFOLIO,
+  };
+}
+
 export function useFundDetail(
   fundId: string,
   options: { enabled?: boolean } = {},
@@ -326,17 +365,16 @@ export function useFundDetail(
   const previewMode = useAppStore((s) => s.previewMode);
   const qc = useQueryClient();
   return useQuery({
-    queryKey: previewMode
-      ? ['fund-detail', 'preview', fundId]
-      : ['fund-detail', fundId],
+    ...fundDetailQueryOptions({
+      fundId,
+      previewMode,
+      queryClient: qc,
+      userId,
+    }),
     // Preview mode swaps the Supabase fetch for an in-memory fixture so
     // the Fund Detail screen paints immediately instead of sitting on a
     // spinner waiting for queries that can't resolve (no real session).
     enabled: (options.enabled ?? true) && !!fundId && (previewMode || !!userId),
-    queryFn: () =>
-      previewMode
-        ? Promise.resolve(buildPreviewFundDetail(fundId))
-        : fetchFundDetail(qc, userId!, fundId),
     // Match `PORTFOLIO` so Fund Detail's currentValue stays in sync with
     // the Portfolio cards' currentValue across screen navigation. Cache
     // audit finding #10: `staleTime: 0` was originally chosen to "match
@@ -346,7 +384,6 @@ export function useFundDetail(
     // matching staleTime is the correct way to keep them in sync; users
     // who want the freshest possible NAV pull-to-refresh, which fires
     // a refetch regardless of staleTime.
-    staleTime: STALE_TIMES.PORTFOLIO,
   });
 }
 
@@ -452,6 +489,73 @@ export async function fetchFundNavHistory(
   return rows.map((r) => ({ date: r.nav_date, value: Number(r.nav) }));
 }
 
+export interface FundNavHistoryQueryInput {
+  schemeCode: number | null | undefined;
+  previewMode: boolean;
+  queryClient: QueryClient;
+  userId?: string;
+}
+
+export function fundNavHistoryQueryOptions({
+  schemeCode,
+  previewMode,
+  queryClient,
+  userId,
+}: FundNavHistoryQueryInput) {
+  return {
+    queryKey: fundNavHistoryQueryKey(schemeCode, previewMode),
+    queryFn: () => {
+      if (previewMode && schemeCode != null) {
+        return Promise.resolve(findPreviewNavHistoryByCode(schemeCode) ?? []);
+      }
+      return fetchFundNavHistory(schemeCode!, { queryClient, userId });
+    },
+    staleTime: STALE_TIMES.NAV_HISTORY,
+  };
+}
+
+export interface FundDetailPrefetchTarget {
+  id: string;
+  schemeCode: number;
+}
+
+export function prefetchFundDetailTransition(
+  queryClient: QueryClient,
+  target: FundDetailPrefetchTarget,
+  options: { previewMode: boolean; userId?: string },
+): void {
+  if (!options.previewMode && !options.userId) return;
+
+  void Promise.all([
+    queryClient.prefetchQuery(fundDetailQueryOptions({
+      fundId: target.id,
+      previewMode: options.previewMode,
+      queryClient,
+      userId: options.userId,
+    })),
+    queryClient.prefetchQuery(fundNavHistoryQueryOptions({
+      schemeCode: target.schemeCode,
+      previewMode: options.previewMode,
+      queryClient,
+      userId: options.userId,
+    })),
+  ]);
+}
+
+export function useFundDetailTransitionPrefetch() {
+  const { session } = useSession();
+  const userId = session?.user.id;
+  const previewMode = useAppStore((state) => state.previewMode);
+  const queryClient = useQueryClient();
+
+  return useCallback(
+    (target: FundDetailPrefetchTarget) => {
+      prefetchFundDetailTransition(queryClient, target, { previewMode, userId });
+    },
+    [previewMode, queryClient, userId],
+  );
+}
+
 /**
  * After a successful fetch-fund-nav hydration, compare the server-reported
  * last_nav_date against the local SQLite watermark for this scheme. When the
@@ -528,21 +632,12 @@ export function useFundNavHistory(
   const queryClient = useQueryClient();
   const previewMode = useAppStore((s) => s.previewMode);
   return useQuery({
-    queryKey: previewMode
-      ? ['fund-nav-history', 'preview', schemeCode]
-      : ['fund-nav-history', schemeCode],
+    ...fundNavHistoryQueryOptions({
+      schemeCode,
+      previewMode,
+      queryClient,
+      userId: session?.user.id,
+    }),
     enabled: (options.enabled ?? true) && schemeCode != null,
-    queryFn: () => {
-      if (previewMode && schemeCode != null) {
-        // 36-month synthetic series — enough for the Fund Detail
-        // chart and the Past SIP Check 3Y simulation.
-        return Promise.resolve(findPreviewNavHistoryByCode(schemeCode) ?? []);
-      }
-      return fetchFundNavHistory(schemeCode!, {
-        queryClient,
-        userId: session?.user.id,
-      });
-    },
-    staleTime: STALE_TIMES.NAV_HISTORY,
   });
 }

@@ -517,6 +517,42 @@ export function selectCachedPortfolioWeight(
   };
 }
 
+export function selectCachedFundCard(
+  portfolio: PortfolioData | undefined,
+  fundId: string,
+): FundCardData | null {
+  return portfolio?.fundCards.find((candidate) => candidate.id === fundId) ?? null;
+}
+
+/**
+ * Observe the already-cached Funds card used to open Fund Detail. The returned
+ * object is the exact cache object, so warm navigation can paint a hero without
+ * allocating a partial FundDetailData payload or starting another query.
+ */
+export function useCachedFundCard(fundId: string): FundCardData | null {
+  const { session } = useSession();
+  const userId = session?.user.id;
+  const previewMode = useAppStore((state) => state.previewMode);
+  const benchmarkSymbol = useAppStore((state) => state.defaultBenchmarkSymbol);
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => previewMode
+      ? ['portfolio', 'preview']
+      : ['portfolio', userId, benchmarkSymbol],
+    [benchmarkSymbol, previewMode, userId],
+  );
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  );
+  const getSnapshot = useCallback(
+    () => selectCachedFundCard(queryClient.getQueryData<PortfolioData>(queryKey), fundId),
+    [fundId, queryClient, queryKey],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
 /**
  * Observe only an already-cached Portfolio result for Fund Detail's weight
  * card. This subscribes directly to QueryCache instead of mounting a second

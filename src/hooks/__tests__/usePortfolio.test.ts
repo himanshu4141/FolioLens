@@ -18,6 +18,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import {
   fetchPortfolioData,
   prefetchPortfolioBenchmark,
+  selectCachedFundCard,
   selectCachedPortfolioWeight,
   type PortfolioData,
 } from '../usePortfolio';
@@ -389,6 +390,17 @@ describe('N2 targeted Portfolio behavior', () => {
       rank: 2,
       totalValue: 1000,
     });
+  });
+
+  it('selects the exact cached fund card without allocating a detail payload', () => {
+    const fundCard = { id: 'fund-1', schemeCode: 123 };
+    const portfolio = {
+      fundCards: [fundCard],
+      summary: null,
+    } as unknown as PortfolioData;
+
+    expect(selectCachedFundCard(portfolio, 'fund-1')).toBe(fundCard);
+    expect(selectCachedFundCard(portfolio, 'missing')).toBeNull();
   });
 
   it('returns no Fund Detail weight when the cached result is incomplete', () => {

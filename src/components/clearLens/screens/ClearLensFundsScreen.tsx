@@ -59,6 +59,7 @@ import {
   areVirtualizedFundRowInputsEqual,
 } from '@/src/lib/listVirtualization';
 import { useVirtualizedRowMount } from '@/src/lib/listRenderDiagnostics';
+import { useFundDetailTransitionPrefetch } from '@/src/hooks/useFundDetail';
 
 // Re-export the canonical type so consumers can keep using the local name.
 type SortOption = FundsSortOption;
@@ -262,7 +263,8 @@ type FundListItemProps = {
   portfolioPct: number | null;
   expanded: boolean;
   onToggle: (fundId: string) => void;
-  onOpen: (fundId: string) => void;
+  onOpen: (fund: FundCardData) => void;
+  onPrefetch: (fund: FundCardData) => void;
   onOpenTransactions: (fundId: string) => void;
   latestNavDate: string | null;
   styles: FundRowStyles;
@@ -275,6 +277,7 @@ export const FundListItem = memo(function FundListItem({
   expanded,
   onToggle,
   onOpen,
+  onPrefetch,
   onOpenTransactions,
   latestNavDate,
   styles,
@@ -305,7 +308,8 @@ export const FundListItem = memo(function FundListItem({
       <View style={styles.fundTopRow}>
         <TouchableOpacity
           style={styles.fundMainTap}
-          onPress={() => onOpen(fund.id)}
+          onPressIn={() => onPrefetch(fund)}
+          onPress={() => onOpen(fund)}
           activeOpacity={0.76}
         >
           <View style={styles.fundNameBlock}>
@@ -648,6 +652,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
 
   const { data, isLoading } = usePortfolio(defaultBenchmarkSymbol, { enabled: isFocused });
   const queryClient = useQueryClient();
+  const prefetchFundDetail = useFundDetailTransitionPrefetch();
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
   const { insights } = usePortfolioInsights(fundCards, { enabled: isFocused });
@@ -740,10 +745,11 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   );
 
   const openFundDetail = useCallback(
-    (fundId: string) => {
+    (fund: FundCardData) => {
+    prefetchFundDetail({ id: fund.id, schemeCode: fund.schemeCode });
     const targetQueryKey = previewMode
-      ? ['fund-detail', 'preview', fundId]
-      : ['fund-detail', fundId];
+      ? ['fund-detail', 'preview', fund.id]
+      : ['fund-detail', fund.id];
     startNavigationMeasurement({
       transition: 'fund_detail',
       fromRoute: 'funds',
@@ -754,9 +760,16 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
         fundCount: fundCards.length,
       }),
     });
-    router.push(`/fund/${fundId}`);
+    router.push(`/fund/${fund.id}`);
     },
-    [fundCards.length, previewMode, queryClient, router],
+    [fundCards.length, prefetchFundDetail, previewMode, queryClient, router],
+  );
+
+  const prefetchFund = useCallback(
+    (fund: FundCardData) => {
+      prefetchFundDetail({ id: fund.id, schemeCode: fund.schemeCode });
+    },
+    [prefetchFundDetail],
   );
 
   const toggleFund = useCallback((fundId: string) => {
@@ -779,6 +792,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
         expanded={expandedFundId === fund.id}
         onToggle={toggleFund}
         onOpen={openFundDetail}
+        onPrefetch={prefetchFund}
         onOpenTransactions={openTransactions}
         styles={fundRowStyles}
         tokens={tokens}
@@ -788,6 +802,7 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
       allocationPctByFundId,
       expandedFundId,
       openFundDetail,
+      prefetchFund,
       openTransactions,
       fundRowStyles,
       summary?.latestNavDate,

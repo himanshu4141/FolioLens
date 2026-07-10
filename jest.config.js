@@ -17,7 +17,7 @@ const config = {
   },
   setupFiles: ['<rootDir>/jest.env.ts'],
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { strict: true } }],
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { strict: true, jsx: 'react-jsx' } }],
   },
   // Collect coverage from all src files so untested files show as 0%
   collectCoverageFrom: [

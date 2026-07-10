@@ -27,7 +27,12 @@ import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first
 import { filterToWindow, indexTo100, type TimeWindow } from '@/src/utils/navUtils';
 // eslint-disable-next-line import/first
-import { fetchFundDetail } from '@/src/hooks/useFundDetail';
+import {
+  fetchFundDetail,
+  fundDetailQueryKey,
+  fundNavHistoryQueryKey,
+  prefetchFundDetailTransition,
+} from '@/src/hooks/useFundDetail';
 // eslint-disable-next-line import/first
 import { fundViewRepo } from '@/src/lib/data/userFund';
 // eslint-disable-next-line import/first
@@ -90,6 +95,46 @@ describe("window = 'All'", () => {
 
   test('returns empty array when input is empty', () => {
     expect(filterToWindow([], 'All')).toEqual([]);
+  });
+});
+
+describe('Fund Detail transition query contract', () => {
+  test('uses canonical preview and authenticated keys', () => {
+    expect(fundDetailQueryKey('fund-1', false)).toEqual(['fund-detail', 'fund-1']);
+    expect(fundDetailQueryKey('fund-1', true)).toEqual(['fund-detail', 'preview', 'fund-1']);
+    expect(fundNavHistoryQueryKey(123, false)).toEqual(['fund-nav-history', 123]);
+    expect(fundNavHistoryQueryKey(123, true)).toEqual(['fund-nav-history', 'preview', 123]);
+  });
+
+  test('dispatches detail and full-history prefetches in parallel', () => {
+    const never = new Promise<void>(() => undefined);
+    const prefetchQuery = jest.fn((_options: { queryKey: readonly unknown[] }) => never);
+    const queryClient = { prefetchQuery } as unknown as QueryClient;
+
+    prefetchFundDetailTransition(
+      queryClient,
+      { id: 'fund-1', schemeCode: 123 },
+      { previewMode: false, userId: 'user-1' },
+    );
+
+    expect(prefetchQuery).toHaveBeenCalledTimes(2);
+    expect(prefetchQuery.mock.calls.map(([options]) => options.queryKey)).toEqual([
+      ['fund-detail', 'fund-1'],
+      ['fund-nav-history', 123],
+    ]);
+  });
+
+  test('does not prefetch authenticated data before a session exists', () => {
+    const prefetchQuery = jest.fn();
+    const queryClient = { prefetchQuery } as unknown as QueryClient;
+
+    prefetchFundDetailTransition(
+      queryClient,
+      { id: 'fund-1', schemeCode: 123 },
+      { previewMode: false },
+    );
+
+    expect(prefetchQuery).not.toHaveBeenCalled();
   });
 });
 
