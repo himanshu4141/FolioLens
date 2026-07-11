@@ -25,6 +25,7 @@ import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import * as txRepo from '@/src/lib/db/tx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import { captureDatabaseWriteScope } from '@/src/lib/db/db';
+import type { TransactionFreshnessMarker } from '@/src/lib/transactionFreshness';
 
 export interface UserTransactionRow {
   // PK columns Portfolio / Fund Detail / xirr math need.
@@ -115,6 +116,40 @@ export async function countUserTransactionsRemote(userId: string): Promise<numbe
     return count ?? 0;
   } catch (err) {
     console.warn('[useUserTransactions] count query threw: %s', String(err));
+    return null;
+  }
+}
+
+/**
+ * Cheap web freshness marker for server-side imports. Web has no SQLite
+ * sync loop, so it needs a small authoritative signal that says whether
+ * transaction-backed persisted Portfolio results were computed from an old
+ * server state.
+ */
+export async function fetchUserTransactionFreshnessRemote(
+  userId: string,
+): Promise<TransactionFreshnessMarker | null> {
+  try {
+    const { data, count, error } = await transactionRepo
+      .from()
+      .select('created_at', { count: 'exact' })
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) {
+      console.warn('[useUserTransactions] freshness marker query failed: %s', error.message);
+      return null;
+    }
+
+    const latestCreatedAt = Array.isArray(data)
+      ? ((data[0] as { created_at?: string | null } | undefined)?.created_at ?? null)
+      : null;
+    return {
+      count: count ?? 0,
+      latestCreatedAt,
+    };
+  } catch (err) {
+    console.warn('[useUserTransactions] freshness marker query threw: %s', String(err));
     return null;
   }
 }

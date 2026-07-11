@@ -63,6 +63,7 @@ function createHarness(initialSession: AppLifecycleSession | null = USER_SESSION
     }),
     bootstrapForUser: jest.fn(async () => ({ changed: false })),
     syncDeltaForUser: jest.fn(async () => ({ changed: false })),
+    checkWebFreshnessForUser: jest.fn(async () => ({ changed: false })),
     didSyncChangeData: jest.fn((result) => result.changed),
     clearLocalDb: jest.fn(async () => {}),
     clearQueryClient: jest.fn(),
@@ -221,10 +222,46 @@ describe('startAppLifecycle with analytics disabled', () => {
     expect(harness.dependencies.bootstrapForUser).not.toHaveBeenCalled();
     expect(harness.dependencies.syncDeltaForUser).not.toHaveBeenCalled();
     expect(harness.dependencies.clearLocalDb).not.toHaveBeenCalled();
+    expect(harness.dependencies.checkWebFreshnessForUser).toHaveBeenCalledWith('user-1');
     expect(harness.dependencies.clearQueryClient).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.removePersistedClient).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.resetUserScopedState).toHaveBeenCalledTimes(1);
     expect(harness.dependencies.clearOnboardingDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs web freshness on initial session and invalidates when the marker advanced', async () => {
+    const harness = createHarness();
+    const result = { changed: true };
+    harness.dependencies.isSqliteSupported = false;
+    jest.mocked(harness.dependencies.checkWebFreshnessForUser!).mockResolvedValue(result);
+
+    startAppLifecycle(harness.dependencies);
+    await settlePromises();
+
+    expect(harness.dependencies.bootstrapForUser).not.toHaveBeenCalled();
+    expect(harness.dependencies.checkWebFreshnessForUser).toHaveBeenCalledWith('user-1');
+    expect(harness.dependencies.invalidateQueries).toHaveBeenCalledWith(result);
+  });
+
+  it('runs and throttles web foreground freshness instead of native delta sync', async () => {
+    const harness = createHarness();
+    harness.dependencies.isSqliteSupported = false;
+    startAppLifecycle(harness.dependencies);
+    await settlePromises();
+    jest.mocked(harness.dependencies.checkWebFreshnessForUser!).mockClear();
+
+    harness.setCurrentTime(200_000);
+    harness.emitAppState('active');
+    await settlePromises();
+
+    expect(harness.dependencies.syncDeltaForUser).not.toHaveBeenCalled();
+    expect(harness.dependencies.checkWebFreshnessForUser).toHaveBeenCalledWith('user-1');
+
+    harness.setCurrentTime(205_000);
+    harness.emitAppState('active');
+    await settlePromises();
+
+    expect(harness.dependencies.checkWebFreshnessForUser).toHaveBeenCalledTimes(1);
   });
 
   it('retains lifecycle diagnostics when analytics is enabled', async () => {

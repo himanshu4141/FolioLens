@@ -92,7 +92,10 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // v11: stop persisting `user-transactions` on native. SQLite owns the durable
 // native transaction copy; React Query can rebuild the in-memory input from it,
 // while web still persists the query because it has no SQLite read-through.
-export const __BUSTER__ = 'v11';
+// v12: public Portfolio payloads include a transaction freshness marker used by
+// web to detect server-side CAS imports before the old one-hour Portfolio
+// staleTime can keep a pre-import value alive across reloads.
+export const __BUSTER__ = 'v12';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 

@@ -34,6 +34,7 @@ export interface AppLifecycleDependencies<TSyncResult> {
   subscribeToAppState: (handler: (state: AppLifecycleState) => void) => () => void;
   bootstrapForUser: (userId: string) => Promise<TSyncResult>;
   syncDeltaForUser: (userId: string) => Promise<TSyncResult>;
+  checkWebFreshnessForUser?: (userId: string) => Promise<TSyncResult>;
   didSyncChangeData: (result: TSyncResult) => boolean;
   clearLocalDb: () => Promise<void>;
   clearQueryClient: () => void;
@@ -87,6 +88,7 @@ export function startAppLifecycle<TSyncResult>(
   let lastActiveAt = now();
   let lastForegroundSyncAt = 0;
   let pendingSignOutCleanup: Promise<void> | null = null;
+  let pendingWebFreshnessCheck: Promise<void> | null = null;
 
   const identifySession = (session: AppLifecycleSession | null) => {
     if (session?.user) {
@@ -123,10 +125,31 @@ export function startAppLifecycle<TSyncResult>(
     })();
   };
 
+  const runWebFreshnessCheck = (userId: string) => {
+    const checkWebFreshnessForUser = dependencies.checkWebFreshnessForUser;
+    if (isSqliteSupported || !checkWebFreshnessForUser) return;
+    if (pendingWebFreshnessCheck) return;
+
+    pendingWebFreshnessCheck = (async () => {
+      try {
+        const result = await checkWebFreshnessForUser(userId);
+        if (dependencies.didSyncChangeData(result)) {
+          void dependencies.invalidateQueries(result);
+        }
+      } catch (error) {
+        dependencies.warn('[web/freshness] transaction marker check failed', error);
+      } finally {
+        pendingWebFreshnessCheck = null;
+      }
+    })();
+  };
+
   void dependencies.getSession().then((session) => {
     identifySession(session);
     if (isSqliteSupported && session?.user.id) {
       runBootstrap(session.user.id);
+    } else if (session?.user.id) {
+      runWebFreshnessCheck(session.user.id);
     }
   });
 
@@ -138,6 +161,8 @@ export function startAppLifecycle<TSyncResult>(
         track('auth_signin_after_recent_signout');
       }
       runBootstrap(session.user.id);
+    } else if (event === 'SIGNED_IN' && session?.user.id) {
+      runWebFreshnessCheck(session.user.id);
     }
 
     if (event !== 'SIGNED_OUT') return;
@@ -176,13 +201,13 @@ export function startAppLifecycle<TSyncResult>(
         });
       }
 
-      if (isSqliteSupported) {
-        const sinceLastSync = currentTime - lastForegroundSyncAt;
-        if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
-          lastForegroundSyncAt = currentTime;
-          void dependencies.getSession().then((session) => {
-            const userId = session?.user.id;
-            if (!userId) return;
+      const sinceLastSync = currentTime - lastForegroundSyncAt;
+      if (sinceLastSync >= FOREGROUND_SYNC_MIN_INTERVAL_MS) {
+        lastForegroundSyncAt = currentTime;
+        void dependencies.getSession().then((session) => {
+          const userId = session?.user.id;
+          if (!userId) return;
+          if (isSqliteSupported) {
             dependencies.syncDeltaForUser(userId)
               .then((result) => {
                 if (dependencies.didSyncChangeData(result)) {
@@ -192,8 +217,10 @@ export function startAppLifecycle<TSyncResult>(
               .catch((error) => {
                 dependencies.warn('[db/sync] foreground delta failed', error);
               });
-          });
-        }
+          } else {
+            runWebFreshnessCheck(userId);
+          }
+        });
       }
       return;
     }

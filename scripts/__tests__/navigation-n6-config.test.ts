@@ -138,6 +138,7 @@ jest.mock('expo-router', () => {
 });
 
 jest.mock('@tanstack/react-query', () => ({
+  keepPreviousData: undefined,
   useIsRestoring: () => mockRestoring,
   useQueryClient: () => ({ getQueryData: jest.fn(), prefetchQuery: jest.fn() }),
 }));
