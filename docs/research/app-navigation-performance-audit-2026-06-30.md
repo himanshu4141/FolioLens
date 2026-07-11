@@ -752,13 +752,46 @@ Because the agents may post through the same GitHub account, every comment start
 | Interrupt | C1 | Merged | [#257](https://github.com/himanshu4141/FolioLens/pull/257) | `289d224f` | Codex/Claude CONVERGED at docs head `d3a779c0` / measured code `1d716eee`; 84 suites / 1,887 tests, typecheck, zero-warning lint, and diff check; per-scheme authoritative NAV coverage, deterministic pagination, cross-fund-set repair invalidation, month-end ordering, and bounded React Query v10 persistence shipped; exact-SHA Android PR-preview showed All/3Y overlap agreement, zero unexpected NAV cost fallbacks, working Fund Detail/Compare/Past SIP, a 653.8 KB bounded persisted cache, and zero SQLite/`catalystLocalStorage`/database-full errors |
 | 7 | N4 | Merged | [#259](https://github.com/himanshu4141/FolioLens/pull/259) | `526dbc3e` | Codex/Claude CONVERGED at evidence head `60cdd171` / measured code `74470d30`; 86 suites / 1,891 tests, typecheck, zero-warning lint, and diff check; one session bootstrap/subscription/unsubscribe across three consumers with newest-auth-event-wins race regressions; exact-OTA Android PR-preview retained authenticated boot through Settings→About (79/85 ms) and cold Funds→Fund Detail (47/65 ms), with zero auth/session, SQLite full/busy/locked/write, `catalystLocalStorage`/database-full, or fatal React Native errors |
 | 8 | Auth A0 | Merged | [#262](https://github.com/himanshu4141/FolioLens/pull/262) | `07c00df5` | Codex/Claude CONVERGED at evidence head `a507af3d` / runtime `c61d633a`; focused 5 suites / 48 tests, full 88 suites / 1,915 tests, typecheck, zero-warning lint, diff and cache checks; explicit PKCE, one process-wide completion coordinator, strict callback route/scheme validation, fragment-token rejection, and exact-once reconciled lifecycle delivery shipped; corrected exact-OTA Android first-attempt success, cancel/retry, background/foreground retry, cold restore, and crafted-fragment rejection passed with zero relevant auth, lifecycle, SQLite, storage, fatal, or unhandled errors |
-| 9 | N5 | Pending | — | — | — |
-| 10 | N6 | Pending | — | — | — |
-| 11 | N7 | Pending | — | — | — |
-| 12 | N8 | Pending | — | — | — |
+| 9 | N5 | Merged | [#263](https://github.com/himanshu4141/FolioLens/pull/263) | `fb7bbb1d` | Codex/Claude CONVERGED at head `6b8e8f67`; focused 1 suite / 4 tests after review correction, full 89 suites / 1,919 tests, typecheck, zero-warning lint, diff check, and 1,800 px responsive web smoke passed; exact-OTA Android PR-preview showed 13 Funds rows and 566 Money Trail transactions with peak 30 active transaction rows, zero fatal/auth/SQLite/storage errors; review added desktop-axis correction and native variable-height lists kept clipping disabled after blank-row reproduction |
+| 10 | N6 | Merged | [#265](https://github.com/himanshu4141/FolioLens/pull/265) | `184fe508` | Codex/Claude CONVERGED at head `784c0db1`; focused rendered-transition suite 9 tests, full 91 suites / 1,937 tests, typecheck, zero-warning lint, diff check, PR Preview Typecheck/Lint/Test, and Cache shape passed; exact-OTA Android PR-preview showed transition-first Fund Detail evidence at runtime `aba8b6f4`; review fix was test/config-only |
+| 11 | N7 | Merged | [#266](https://github.com/himanshu4141/FolioLens/pull/266) | `68467551` | Codex/Claude CONVERGED at head `1fa2e530`; focused Portfolio/XIRR/sync-invalidation 3 suites / 129 tests, full 91 suites / 1,945 tests, typecheck, zero-warning lint, diff check, PR Preview Typecheck/Lint/Test, and Cache shape passed; exact-OTA Android PR-preview at runtime `1c52e6c` passed Portfolio and benchmark-switch smoke; round-1 financial-correctness chronology issue was fixed with global benchmark transaction ordering and a multi-fund interleaved benchmark-XIRR regression |
+| 12 | N8 | Merged | [#267](https://github.com/himanshu4141/FolioLens/pull/267) | `908f66db` | Codex/Claude CONVERGED at head `f2d83fdc`; focused queryClient 1 suite / 34 tests, full 91 suites / 1,947 tests, typecheck, zero-warning lint, diff check, `npx expo install --check`, production exports, Cache shape, PR Preview Typecheck/Lint/Test, and EAS Update passed; Android Hermes bytes fell 6,323,979 → 5,865,690, Android assets 70 / 17,041,824 bytes → 39 / 8,915,404 bytes, web JS 3,380,734 → 2,861,524 bytes, web assets 59 / 10,372,759 bytes → 28 / 2,185,951 bytes; exact-OTA Android PR-preview covered Settings/About, Portfolio restore, Funds, Fund Detail tabs, and Money Trail with zero relevant error signatures |
+| Interrupt | C2 | Merged | [#268](https://github.com/himanshu4141/FolioLens/pull/268) | `ffc98748` | Codex/Claude CONVERGED at head `1d8647e9`; focused C2 3 suites / 39 tests, focused cache/freshness 5 suites / 82 tests, N6 config 1 suite / 9 tests, full 92 suites / 1,956 tests, typecheck, zero-warning lint, diff check, CI Typecheck/Lint/Test, Cache shape, EAS Update, Vercel, and Dual-review convergence passed; web Portfolio freshness correctness interrupt closed by server transaction count/latest-`created_at` marker, public Portfolio `transactionFreshness` metadata, React Query buster `v12`, and web invalidation on initial session, sign-in, foreground return, and post-persisted-cache restore |
 
-PR #250 merges last, after this table is complete and the report reflects the measured outcome of
-all implementation PRs.
+### Program closeout outcome
+
+All implementation and correctness-interrupt PRs in this program are merged and present on
+`origin/main`: N1 [#251](https://github.com/himanshu4141/FolioLens/pull/251), N2
+[#252](https://github.com/himanshu4141/FolioLens/pull/252), N2D
+[#253](https://github.com/himanshu4141/FolioLens/pull/253), N2T
+[#254](https://github.com/himanshu4141/FolioLens/pull/254), N0
+[#255](https://github.com/himanshu4141/FolioLens/pull/255), N3
+[#256](https://github.com/himanshu4141/FolioLens/pull/256), C1
+[#257](https://github.com/himanshu4141/FolioLens/pull/257), N4
+[#259](https://github.com/himanshu4141/FolioLens/pull/259), Auth A0
+[#262](https://github.com/himanshu4141/FolioLens/pull/262), N5
+[#263](https://github.com/himanshu4141/FolioLens/pull/263), N6
+[#265](https://github.com/himanshu4141/FolioLens/pull/265), N7
+[#266](https://github.com/himanshu4141/FolioLens/pull/266), N8
+[#267](https://github.com/himanshu4141/FolioLens/pull/267), and C2
+[#268](https://github.com/himanshu4141/FolioLens/pull/268).
+
+The program shipped the measured scheduling, lifecycle, list virtualization, Fund Detail,
+portfolio-core, bundle/cache, native Google auth, and cache-correctness fixes called for by this
+audit. The final user-visible Android PR-preview evidence after N8 covered Settings/About,
+Portfolio session restore, Funds, Fund Detail Performance/NAV & Facts/Mix & Weight, and Money Trail
+with zero app auth lifecycle, SQLite, storage, React Native fatal, JavaScript application,
+TypeError/ReferenceError, or unhandled-promise signatures. C2 then closed the last correctness
+interrupt before final closeout by preventing stale web Portfolio aggregates after server-side CAS
+imports.
+
+The only accepted unmet evidence condition is physical iOS field evidence. It remained unavailable
+through the implementation queue and is explicitly carried in the PR #250 ledger rather than being
+substituted with inferred Android/web results. This limits platform-specific confidence for iOS
+gesture/frame behaviour, but no unresolved correctness blocker remains and the repository validation,
+dual-review, Android field, and deterministic web-cache evidence required for closeout are complete.
+
+PR #250 merges last, after this final report update is pushed and its docs-only checks are green.
 
 ---
 
@@ -1164,20 +1197,20 @@ tests, and production exports.
 
 ## Final recommendation
 
-Because the hangs occur on both main and preview, start the cross-channel performance path with N1
-measurement and N2: **focus-aware cancellation of deterministic prefetch plus removal of Fund
-Detail's second portfolio hook**. Android now demonstrates a separate 4.8–5.9 second timeline path
-plus failed SQLite cache repair. Land N2D first as the small shared-database correctness change,
-then N2T for benchmark-independent input reuse and bounded valuation with clean timing attribution.
-Then run N0 lifecycle decoupling as a correctness fix and to remove the preview-only amplifier; it
-is not the shared root cause. Follow with N3 granular invalidation/focus gating, then N4 and N5
-before broad beta. The larger Fund Detail and portfolio core refactors follow once the contained
-fixes are measured.
+This audit is complete as a program. The implementation sequence followed the original ordering
+with two correctness interrupts (C1 and C2) inserted when reviewer evidence showed financial/cache
+freshness risk. The final state on `origin/main` addresses the cross-channel navigation contention
+with measurement, focus-gated work, granular invalidation, list virtualization, transition-first
+Fund Detail rendering, portfolio core/benchmark separation, bundle/cache cleanup, and deterministic
+native Google OAuth completion.
 
-Run Auth A0 as an independent workstream in the same issue list, per the requested scope. It remains
-important reliability work, but it must not gate the navigation sequence. Coordinate it with N4 so
-the repository lands one shared SessionProvider rather than two competing auth state sources.
+The final closeout should not reopen the already-merged implementation sequence. Future work should
+be treated as ordinary product or platform follow-up, with two explicit caveats preserved from this
+program:
 
-Treat bundle/cache work as the final layer. It matters for cold launch and first route evaluation,
-but the current code already contains a more direct explanation for the intermittent in-session
-hangs: too much invisible work is allowed to run at the same time as navigation.
+- physical iOS field evidence was unavailable and remains a recorded platform-evidence limitation;
+- web Portfolio freshness after server-side CAS imports is fixed by C2's transaction marker, but
+  future transaction-dependent web caches should use the same freshness/invalidation pattern rather
+  than relying on long stale windows.
+
+With C2 merged and logged, PR #250 can merge as the historical audit and program-control record.
