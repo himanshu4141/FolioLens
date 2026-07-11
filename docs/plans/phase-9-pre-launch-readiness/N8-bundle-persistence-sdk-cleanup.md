@@ -105,6 +105,14 @@ Local validation at runtime commit `38df543dac7d17604c9c47983136d2d676e11bce`:
 - Android and web production exports completed before and after N8.
 - PR-preview workflow run `29140822276` passed for runtime commit `38df543dac7d17604c9c47983136d2d676e11bce`.
 
+Round-1 review response:
+
+- Claude and Codex both requested the same test-coverage fix for the web-only `user-transactions` persistence branch.
+- The batched fix adds a `shouldPersistQueryKey()` regression proving `['user-transactions', userId]` is persisted on web, where there is no SQLite read-through, while the existing native test continues to prove the same key is not persisted on native.
+- Focused validation after the review fix: `npx jest src/lib/__tests__/queryClient.test.ts --runInBand` passed, 1 suite / 34 tests.
+- Full validation after the review fix: full Jest passed, 91 suites / 1,947 tests; `npm run typecheck` passed; `npm run lint` passed with zero warnings; `git diff --check` passed.
+- This review fix changes tests and evidence documentation only. Runtime app code remains the measured implementation `38df543dac7d17604c9c47983136d2d676e11bce`, so the accepted Pixel 8a OTA evidence remains current.
+
 Export measurements:
 
 | Metric | Baseline at `6846755` | N8 at `38df543` | Change |

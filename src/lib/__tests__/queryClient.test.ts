@@ -33,6 +33,8 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { authClient } from '@/src/lib/auth';
 // eslint-disable-next-line import/first
 import { analytics } from '@/src/lib/analytics';
+// eslint-disable-next-line import/first
+import { Platform } from 'react-native';
 
 const mockedSignOut = authClient.signOut as jest.MockedFunction<typeof authClient.signOut>;
 const mockedTrack = analytics.track as jest.MockedFunction<typeof analytics.track>;
@@ -47,6 +49,17 @@ describe('shouldPersistQueryKey()', () => {
       ['user-funds', ['user-funds', 'user-1']],
     ])('%s', (_label, queryKey) => {
       expect(shouldPersistQueryKey(queryKey)).toBe(true);
+    });
+
+    it('persists web user-transactions because web has no SQLite read-through', () => {
+      const originalOS = Platform.OS;
+      Platform.OS = 'web';
+
+      try {
+        expect(shouldPersistQueryKey(['user-transactions', 'user-1'])).toBe(true);
+      } finally {
+        Platform.OS = originalOS;
+      }
     });
   });
 
