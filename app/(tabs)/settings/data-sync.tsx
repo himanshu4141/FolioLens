@@ -9,7 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useIsRestoring, useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import Svg, { Line as SvgLine, Path as SvgPath } from 'react-native-svg';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {

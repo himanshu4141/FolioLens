@@ -23,7 +23,7 @@ import {
 } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   ClearLensCard,
   ClearLensHeader,

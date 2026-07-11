@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { PieChart } from 'react-native-gifted-charts';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { PieChart } from 'react-native-gifted-charts/dist/PieChart';
 import { useFundComposition } from '@/src/hooks/useFundComposition';
 import { useCachedPortfolioWeight } from '@/src/hooks/usePortfolio';
 import { formatCurrency } from '@/src/utils/formatting';

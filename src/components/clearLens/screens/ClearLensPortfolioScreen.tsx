@@ -11,7 +11,7 @@ import {
   Dimensions,
   type GestureResponderEvent,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
@@ -31,7 +31,6 @@ import {
 import { useUserFunds } from '@/src/hooks/useUserFunds';
 import { syncDeltaForUser } from '@/src/lib/db/sync';
 import { useImportPortfolioPress } from '@/src/hooks/useImportPortfolioPress';
-import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import {
   useInvestmentVsBenchmarkTimeline,
@@ -69,8 +68,6 @@ import {
   formatClearLensPercentDelta,
 } from '@/src/utils/clearLensFormat';
 import { createTargetedBenchmarkPrefetch } from '@/src/lib/targetedBenchmarkPrefetch';
-import { useResponsiveLayout } from '@/src/components/responsive';
-import { ClearLensPortfolioScreenDesktop } from '@/src/components/clearLens/screens/desktop/ClearLensPortfolioScreenDesktop';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_WIDTH = SCREEN_WIDTH - ClearLensSpacing.md * 2 - ClearLensSpacing.md * 2;
@@ -939,14 +936,7 @@ export function PortfolioEmptyState({ onImport }: { onImport: () => void }) {
   );
 }
 
-export function ClearLensPortfolioScreen() {
-  useTrackInsightViewed('home');
-  const { layout } = useResponsiveLayout();
-  if (layout === 'desktop') return <ClearLensPortfolioScreenDesktop />;
-  return <ClearLensPortfolioScreenMobile />;
-}
-
-function ClearLensPortfolioScreenMobile() {
+export function ClearLensPortfolioScreenMobile() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const router = useRouter();

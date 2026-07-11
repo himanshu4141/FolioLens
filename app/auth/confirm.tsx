@@ -8,7 +8,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
