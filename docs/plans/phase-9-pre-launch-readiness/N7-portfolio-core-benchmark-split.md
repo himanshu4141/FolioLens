@@ -155,6 +155,17 @@ Performance/native evidence:
 
 ## Evidence
 
+Round-1 correction evidence at runtime commit `1c52e6cdb812bdd09e5645aa514b1d5e39c4bc3c`:
+
+- Review finding fixed: the benchmark transaction stream now preserves global transaction chronology after per-fund reversal filtering, instead of concatenating normalized streams in fund order. The comparator sorts by `transaction_date` with deterministic tie-breakers (`created_at`, `id`, `fund_id`, `transaction_type`, `amount`, `units`).
+- Regression added: a multi-fund fixture with interleaved purchases/redemptions asserts `benchmarkTransactions` order is global chronological and `marketXirr` matches `computeBenchmarkXirrFromNormalizedTransactions()` over that chronological stream.
+- Focused validation: `src/hooks/__tests__/usePortfolio.test.ts`, `src/utils/__tests__/xirr.test.ts`, and `src/lib/__tests__/syncInvalidation.test.ts` passed, 3 suites / 129 tests.
+- Full local validation: 91 suites / 1,945 tests passed; `npm run typecheck` passed; `npm run lint` passed with zero warnings; `git diff --check` passed.
+- PR-preview workflow run `29131745910` passed for runtime commit `1c52e6cdb812bdd09e5645aa514b1d5e39c4bc3c`.
+- Corrected Android OTA evidence: physical Pixel 8a, Android 16 / API 36, app `com.foliolens.app.prpreview`, channel `foliolens-pr`, Android OTA/update ID `019f4e7e-aaf0-7a47-a946-88c2586cf752`, in-app About verified prefix `019f4e7e-aaf`. The iOS OTA from the same workflow was `019f4e7e-aaf0-73d4-9770-14f80bf3c773`.
+- Corrected Android smoke: Portfolio rendered with Portfolio/XIRR/benchmark labels; switching to Nifty 100 TRI rendered the Nifty 100 benchmark copy; error scan found zero app auth lifecycle, SQLite, storage, React Native fatal, or unhandled-promise signatures. Screen timeout was restored to `120000`.
+- The earlier Android OTA `019f4b88-2fef-75c0-a87e-f52ce133619a` is superseded for runtime acceptance because code changed after round-1 review.
+
 Local validation at runtime commit `6242282d209334b77fdb9e00bb85d3f92228a61e`:
 
 - Focused Portfolio suite: `src/hooks/__tests__/usePortfolio.test.ts`, 20 tests passed.
