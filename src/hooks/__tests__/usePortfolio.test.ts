@@ -226,6 +226,33 @@ describe('fetchPortfolioData()', () => {
     expect(isFinite(result.summary!.xirr) || isNaN(result.summary!.xirr)).toBe(true);
   });
 
+  it('attaches the transaction freshness marker used by web persisted-cache invalidation', async () => {
+    setupRepos({
+      funds: MOCK_FUNDS,
+      txs: [
+        {
+          ...MOCK_TXS[0],
+          id: 'tx-1',
+          created_at: '2026-07-11T07:00:00.000Z',
+        },
+        {
+          ...MOCK_TXS[1],
+          id: 'tx-2',
+          created_at: '2026-07-11T08:00:00.000Z',
+        },
+      ],
+      nav: MOCK_NAV,
+      index: MOCK_INDEX,
+    });
+
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
+
+    expect(result.transactionFreshness).toEqual({
+      count: 2,
+      latestCreatedAt: '2026-07-11T08:00:00.000Z',
+    });
+  });
+
   it('does not show funds that only have a failed-payment purchase/reversal pair', async () => {
     const failedPaymentTxs = [
       {

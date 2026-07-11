@@ -47,6 +47,7 @@ import {
   didSyncChangeData,
   syncDeltaForUser,
 } from '@/src/lib/db/sync';
+import { checkWebPortfolioFreshness } from '@/src/lib/webPortfolioFreshness';
 
 // Expo defines maybeCompleteAuthSession as a web-popup bridge only. Native
 // completion is owned by openAuthSessionAsync plus the shared OAuth coordinator.
@@ -75,6 +76,16 @@ function handleAuthDeepLink(url: string) {
       refresh_token: sessionTokens.refreshToken,
     });
   }
+}
+
+async function checkAndInvalidateWebPortfolioFreshness(
+  userId: string,
+  pathname: string,
+): Promise<void> {
+  if (Platform.OS !== 'web') return;
+  const result = await checkWebPortfolioFreshness(queryClient, userId);
+  if (!didSyncChangeData(result)) return;
+  await invalidateQueriesForSync(queryClient, result, syncVisibleRoute(pathname));
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -153,6 +164,7 @@ function useAppLifecycle() {
       },
       bootstrapForUser,
       syncDeltaForUser,
+      checkWebFreshnessForUser: (userId) => checkWebPortfolioFreshness(queryClient, userId),
       didSyncChangeData,
       clearLocalDb,
       clearQueryClient: () => queryClient.clear(),
@@ -187,6 +199,8 @@ export default function RootLayout() {
 }
 
 function RootLayoutContent() {
+  const pathname = usePathname();
+  const { getCurrentSession } = useSession();
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
@@ -236,6 +250,15 @@ function RootLayoutContent() {
           console.log('[persister] cache restored', { buster: __BUSTER__ });
           perfNow('persister:restored', { buster: __BUSTER__ });
           analytics.track('persister_restored', { buster: __BUSTER__ });
+          void getCurrentSession()
+            .then((session) => {
+              const userId = session?.user.id;
+              if (!userId) return;
+              return checkAndInvalidateWebPortfolioFreshness(userId, pathname);
+            })
+            .catch((error) => {
+              console.warn('[web/freshness] post-restore check failed', error);
+            });
         }}
         onError={() => {
           // Restoration errors (corrupt JSON, AsyncStorage read failure)

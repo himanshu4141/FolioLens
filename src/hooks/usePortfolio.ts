@@ -43,6 +43,10 @@ import * as navRepo from '@/src/lib/db/nav';
 import * as idxRepo from '@/src/lib/db/idx';
 import { SQLITE_AVAILABLE } from '@/src/lib/db/availability';
 import { captureDatabaseWriteScope } from '@/src/lib/db/db';
+import {
+  transactionFreshnessFromRows,
+  type TransactionFreshnessMarker,
+} from '@/src/lib/transactionFreshness';
 
 interface NavRow {
   scheme_code: number;
@@ -96,6 +100,7 @@ export interface PortfolioSummary {
 export interface PortfolioData {
   fundCards: FundCardData[];
   summary: PortfolioSummary | null;
+  transactionFreshness?: TransactionFreshnessMarker;
 }
 
 export type PortfolioQueryKey = readonly ['portfolio', string, string];
@@ -120,6 +125,7 @@ export interface PortfolioCoreData {
   terminalDateIso: string;
   totalTransactionCount: number;
   navRowCount: number;
+  transactionFreshness: TransactionFreshnessMarker;
 }
 
 export interface PortfolioBenchmarkData {
@@ -196,6 +202,7 @@ function composePortfolioData(
         benchmarkSymbol: benchmark.benchmarkSymbol,
       }
       : null,
+    transactionFreshness: core.transactionFreshness,
   };
 }
 
@@ -223,6 +230,7 @@ export async function fetchPortfolioCoreData(
       staleTime: STALE_TIMES.USER_TRANSACTIONS,
     }),
   ]);
+  const transactionFreshness = transactionFreshnessFromRows(allTxs);
 
   // Portfolio renders active funds only; inactive rows still live in the
   // shared cache for Money Trail / historical views.
@@ -237,6 +245,7 @@ export async function fetchPortfolioCoreData(
       terminalDateIso: new Date().toISOString(),
       totalTransactionCount: allTxs.length,
       navRowCount: 0,
+      transactionFreshness,
     };
   }
 
@@ -513,6 +522,7 @@ export async function fetchPortfolioCoreData(
     terminalDateIso: terminalDate.toISOString(),
     totalTransactionCount: allTxs.length,
     navRowCount: navRows.length,
+    transactionFreshness,
   };
 }
 
@@ -759,7 +769,7 @@ export function usePortfolio(
   const userId = session?.user.id;
   const queryClient = useQueryClient();
 
-  const query = useQuery({
+  const query = useQuery<PortfolioData>({
     queryKey: previewMode ? ['portfolio', 'preview'] : ['portfolio', userId, benchmarkSymbol],
     enabled: (options.enabled ?? true) && (previewMode || !!userId),
     queryFn: () =>
