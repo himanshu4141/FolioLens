@@ -8,8 +8,8 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { LineChart } from 'react-native-gifted-charts';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { LineChart } from 'react-native-gifted-charts/dist/LineChart';
 import Svg, { G, Line as SvgLine, Rect as SvgRect, Text as SvgText } from 'react-native-svg';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {

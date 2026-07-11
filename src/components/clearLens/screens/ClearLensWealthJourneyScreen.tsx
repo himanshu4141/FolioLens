@@ -14,7 +14,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useQuery, useQueryClient } from '@tanstack/react-query';

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { authClient } from '@/src/lib/auth';

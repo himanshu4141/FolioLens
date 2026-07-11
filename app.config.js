@@ -89,6 +89,8 @@ module.exports = ({ config }) => {
     plugins: [
       'expo-router',
       'expo-sqlite',
+      'expo-font',
+      'expo-web-browser',
       [
         'expo-splash-screen',
         {

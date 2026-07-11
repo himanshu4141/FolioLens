@@ -23,7 +23,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { useQuery } from '@tanstack/react-query';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -388,7 +388,12 @@ function PersisterCard({
         <Row label="Parse error" value={snap.parseError} valueColor={tokens.colors.negative} styles={styles} />
       ) : null}
       {snap.byKeyPrefix.map((p) => (
-        <Row key={p.prefix} label={p.prefix} value={`${formatNumber(p.count)} entries`} styles={styles} />
+        <Row
+          key={p.prefix}
+          label={p.prefix}
+          value={`${formatNumber(p.count)} entries · ${formatBytes(p.serializedChars)}`}
+          styles={styles}
+        />
       ))}
     </View>
   );

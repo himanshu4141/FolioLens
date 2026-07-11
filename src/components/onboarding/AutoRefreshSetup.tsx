@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensFonts,

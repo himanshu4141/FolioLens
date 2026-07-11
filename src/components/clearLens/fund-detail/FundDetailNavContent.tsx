@@ -7,8 +7,8 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { LineChart } from 'react-native-gifted-charts';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { LineChart } from 'react-native-gifted-charts/dist/LineChart';
 import type { FundDetailData, TimeWindow } from '@/src/hooks/useFundDetail';
 import { filterToWindow } from '@/src/hooks/useFundDetail';
 import { useClearLensTokens } from '@/src/context/ThemeContext';

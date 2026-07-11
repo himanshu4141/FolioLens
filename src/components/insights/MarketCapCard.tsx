@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { PieChart } from 'react-native-gifted-charts';
+import { PieChart } from 'react-native-gifted-charts/dist/PieChart';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import {
   ClearLensSpacing,

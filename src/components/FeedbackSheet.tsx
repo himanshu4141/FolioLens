@@ -14,7 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Updates from 'expo-updates';
 import * as ImagePicker from 'expo-image-picker';
 import ExpoConstants from 'expo-constants';

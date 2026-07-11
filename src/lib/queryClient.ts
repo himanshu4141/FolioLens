@@ -29,6 +29,7 @@
  * `inFlightSignOut` so 50 in-flight 401s only sign out once.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { MutationCache, QueryCache, QueryClient, type QueryKey } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import type { PersistedClient, Persister } from '@tanstack/react-query-persist-client';
@@ -88,7 +89,10 @@ import { isAuthSessionInvalidError } from '@/src/lib/authError';
 // version, so every bump orphaned the previous (potentially multi-megabyte)
 // cache instead of replacing it. Also stop persisting raw daily histories that
 // already live in native SQLite and can exceed Android AsyncStorage's 6 MB DB.
-export const __BUSTER__ = 'v10';
+// v11: stop persisting `user-transactions` on native. SQLite owns the durable
+// native transaction copy; React Query can rebuild the in-memory input from it,
+// while web still persists the query because it has no SQLite read-through.
+export const __BUSTER__ = 'v11';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
@@ -187,6 +191,44 @@ class PersistedClientTooLargeError extends Error {
   }
 }
 
+export interface PersistedQueryPrefixSummary {
+  prefix: string;
+  count: number;
+  serializedChars: number;
+}
+
+export interface PersistedClientMetrics {
+  serializedChars: number;
+  queryCount: number;
+  byKeyPrefix: PersistedQueryPrefixSummary[];
+}
+
+export function summarizePersistedClient(client: PersistedClient): PersistedClientMetrics {
+  const serialized = JSON.stringify(client);
+  const byPrefix = new Map<string, { count: number; serializedChars: number }>();
+
+  for (const query of client.clientState.queries) {
+    const head = Array.isArray(query.queryKey) ? query.queryKey[0] : null;
+    const prefix = typeof head === 'string' ? head : '<non-string>';
+    const current = byPrefix.get(prefix) ?? { count: 0, serializedChars: 0 };
+    current.count += 1;
+    current.serializedChars += JSON.stringify(query).length;
+    byPrefix.set(prefix, current);
+  }
+
+  return {
+    serializedChars: serialized.length,
+    queryCount: client.clientState.queries.length,
+    byKeyPrefix: [...byPrefix.entries()]
+      .map(([prefix, stats]) => ({ prefix, ...stats }))
+      .sort((a, b) => b.serializedChars - a.serializedChars || b.count - a.count),
+  };
+}
+
+function prefixSummaryForAnalytics(metrics: PersistedClientMetrics): Record<string, number> {
+  return Object.fromEntries(metrics.byKeyPrefix.map((entry) => [entry.prefix, entry.serializedChars]));
+}
+
 function serializePersistedClient(client: PersistedClient): string {
   const serialized = JSON.stringify(client);
   if (serialized.length > PERSIST_SAFE_MAX_CHARS) {
@@ -282,16 +324,39 @@ export const persister = {
     await basePersister.persistClient(client);
   },
   restoreClient: async () => {
+    const startedAt = Date.now();
     try {
       await removeLegacyPersistedQueryCaches();
-      return await basePersister.restoreClient();
+      const restored = await basePersister.restoreClient();
+      const restoreDurationMs = Date.now() - startedAt;
+      if (restored) {
+        const metrics = summarizePersistedClient(restored);
+        analytics.track('persister_restore_completed', {
+          buster: restored.buster ?? __BUSTER__,
+          restore_duration_ms: restoreDurationMs,
+          blob_size_bytes: metrics.serializedChars,
+          query_count: metrics.queryCount,
+          query_prefix_bytes: prefixSummaryForAnalytics(metrics),
+        });
+      } else {
+        analytics.track('persister_restore_completed', {
+          buster: __BUSTER__,
+          restore_duration_ms: restoreDurationMs,
+          blob_size_bytes: 0,
+          query_count: 0,
+          query_prefix_bytes: {},
+        });
+      }
+      return restored;
     } catch (err) {
+      const restoreDurationMs = Date.now() - startedAt;
       const size = await readBlobSize();
       analytics.track('persister_restore_failed', {
         buster: __BUSTER__,
         error_message: err instanceof Error ? err.message : String(err),
         error_name: err instanceof Error ? err.name : 'unknown',
         blob_size_bytes: size,
+        restore_duration_ms: restoreDurationMs,
       });
       throw err;
     }
@@ -313,14 +378,22 @@ const PERSIST_ALLOWLIST: readonly string[] = [
   'money-trail',
   // Auxiliary user-scoped lookups.
   'user-funds',
-  'user-transactions',
   // Per-scheme metadata — shared between Fund Detail and Compare via
   // a single producer / single cache key (`['scheme-master', code]`).
   'scheme-master',
+];
+const WEB_ONLY_PERSIST_ALLOWLIST: readonly string[] = [
+  // Native has the durable SQLite tx table; web does not. Keep this persisted
+  // only on web so Money Trail / Wealth Journey still hydrate without a full
+  // network pull after reload, while Android avoids duplicating the largest
+  // raw user-scoped array inside AsyncStorage.
+  'user-transactions',
 ];
 
 export function shouldPersistQueryKey(queryKey: QueryKey): boolean {
   if (!Array.isArray(queryKey) || queryKey.length === 0) return false;
   const head = queryKey[0];
-  return typeof head === 'string' && PERSIST_ALLOWLIST.includes(head);
+  if (typeof head !== 'string') return false;
+  if (PERSIST_ALLOWLIST.includes(head)) return true;
+  return Platform.OS === 'web' && WEB_ONLY_PERSIST_ALLOWLIST.includes(head);
 }

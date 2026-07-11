@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsRestoring } from '@tanstack/react-query';
 import {
   ClearLensCard,

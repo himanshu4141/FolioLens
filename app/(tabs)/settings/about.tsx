@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -8,14 +8,14 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Updates from 'expo-updates';
 import ExpoConstants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { authClient } from '@/src/lib/auth';
 import { UtilityHeader } from '@/src/components/UtilityHeader';
-import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
+import type { FeedbackKind } from '@/src/components/FeedbackSheet';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useAlertDialog, useConfirmDialog } from '@/src/hooks/useDialog';
 import { useAppStore } from '@/src/store/appStore';
@@ -33,6 +33,9 @@ import { useClearLensTokens } from '@/src/context/ThemeContext';
 const HELP_URL = 'https://foliolens.in/faq.html';
 const PRIVACY_URL = 'https://foliolens.in/privacy.html';
 const TERMS_URL = 'https://foliolens.in/terms.html';
+const LazyFeedbackSheet = lazy(() =>
+  import('@/src/components/FeedbackSheet').then((module) => ({ default: module.FeedbackSheet })),
+);
 
 type InfoRowProps = {
   label: string;
@@ -257,11 +260,15 @@ export default function AboutScreen() {
         </View>
       </ScrollView>
 
-      <FeedbackSheet
-        visible={feedbackKind != null}
-        kind={feedbackKind}
-        onClose={() => setFeedbackKind(null)}
-      />
+      {feedbackKind != null ? (
+        <Suspense fallback={null}>
+          <LazyFeedbackSheet
+            visible
+            kind={feedbackKind}
+            onClose={() => setFeedbackKind(null)}
+          />
+        </Suspense>
+      ) : null}
     </SafeAreaView>
   );
 }

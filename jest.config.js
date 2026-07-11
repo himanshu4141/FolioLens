@@ -13,6 +13,7 @@ const config = {
     '<rootDir>/scripts/__tests__/**/*.test.ts',
   ],
   moduleNameMapper: {
+    '^@expo/vector-icons/Ionicons$': '<rootDir>/__mocks__/@expo/vector-icons/Ionicons.ts',
     '^@/(.*)$': '<rootDir>/$1',
   },
   setupFiles: ['<rootDir>/jest.env.ts'],

@@ -5,7 +5,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { usePathname, useRouter, useSegments } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';

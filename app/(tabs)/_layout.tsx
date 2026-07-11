@@ -1,6 +1,6 @@
 import { Platform, StyleSheet, View } from 'react-native';
 import { Tabs, usePathname } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { useClearLensTokens } from '@/src/context/ThemeContext';

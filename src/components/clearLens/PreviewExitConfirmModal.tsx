@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useAppStore } from '@/src/store/appStore';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
 import { useResponsiveLayout } from '@/src/components/responsive';
