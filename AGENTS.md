@@ -1,107 +1,182 @@
 # AGENTS.md
 
 ## Purpose
-This file defines how coding agents should plan and execute work in this repository.
 
-## Project State
+This file is the stable entry point for coding agents in this repository. Keep it
+short and durable: it should tell agents how to load context, how to avoid common
+repo-specific mistakes, and which checks must pass before closing work.
 
-Phases 1–3 are fully shipped: foundation, the Phase 2 data pipeline (M1–M9 + M11), and the Clear Lens design system. Phase 4 (Tools Hub) has M0 + M1 (Goal Planner) shipped; M2–M4 are stacked PRs. Phase 5 (CAS onboarding redesign) is in flight — M1 wizard at PR #92, M2 Resend Inbound backend at PR #93. The app has magic-link + Google auth, the upload-first onboarding wizard, home screen with XIRR / benchmark / Money Trail preview, fund detail, leaderboard, wealth simulator, portfolio insights, native feedback form with screenshot attachments, and three EAS-channel build flavours (production / preview-main / preview-pr).
+Do not use this file as a product-status snapshot. Current capabilities belong in
+`README.md`, screen/navigation details in `docs/SCREENS.md`, infrastructure state in
+`docs/INFRASTRUCTURE.md`, and active plans in `docs/plans/`.
 
-Active ExecPlans live under `docs/plans/<phase>/`. Shipped plans move to `docs/plans/archive/`. The brand was renamed FundLens → FolioLens; expect old names only inside archive material.
+## Progressive context loading
 
-## Repository Anchors
+Load only the context needed for the task.
 
-Read `VISION.md` at the start of every session. Read the others on-demand. These root and `docs/`-level files describe the **current** state of the app — prefer them over walking the ExecPlan archive when you need to know what the code does today.
+1. Always read `VISION.md` first. It defines the product goal and what must remain
+   true from a user perspective.
+2. Read `README.md` only when you need the current shipped capability set, local
+   setup, project structure, or release workflow.
+3. Read the task-specific docs below only when the change touches that area.
+4. Read active ExecPlans under `docs/plans/` only for the feature/refactor you are
+   working on. Archive docs are historical; use them for background only.
+5. Prefer current root/docs material over old plan/archive material when deciding
+   what the app does today.
 
 | Read this | When you are... |
 |---|---|
-| `VISION.md` | Always — read this first |
-| `DESIGN.md` | Building or changing UI, picking colours, working with the Clear Lens token system, or anything theme-related (light / dark / system). The token source of truth is `src/constants/clearLensTheme.ts`; this doc explains how to consume it via `useClearLensTokens()`. |
-| `docs/SCREENS.md` | Working out screen layout, navigation, or the desktop-vs-mobile rendering split (chrome / shells / responsive breakpoints) |
-| `docs/INFRASTRUCTURE.md` | Anything that touches CI/CD, environments, secrets, Supabase / Vercel / Resend / Expo config, or domain routing |
-| `docs/TECH-DISCOVERY.md` | Touching DB schema, third-party data sources, or the data pipeline |
+| `VISION.md` | Starting any session or checking product intent |
+| `README.md` | Checking current capabilities, setup, structure, or release flow |
+| `DESIGN.md` | Building/changing UI, colours, typography, theme, Clear Lens tokens |
+| `docs/SCREENS.md` | Working on layout, navigation, responsive shells, desktop/mobile split |
+| `docs/INFRASTRUCTURE.md` | Touching CI/CD, EAS/Vercel/Supabase/Resend/PostHog, env vars, releases |
+| `docs/TECH-DISCOVERY.md` | Touching DB schema, data sources, ingestion, OpenFolio/mfdata pipeline |
+| `docs/architecture/cache-surfaces.md` | Touching React Query, Zustand, AsyncStorage, SQLite, invalidation, persistence |
+| `docs/EXIT-RUNBOOK.md` | Touching Supabase abstraction, lock-in boundaries, provider swap points |
+| `docs/process/PLANS.md` | Creating or maintaining an ExecPlan |
+| `docs/process/AGENT-PROGRAM-PLAYBOOK.md` | Running a multi-agent/milestone program |
 
-## ExecPlans
-When writing complex features, multi-day efforts, or significant refactors, use an ExecPlan as described in `docs/process/PLANS.md` from design through implementation.
+Stable repository facts:
+- The product is FolioLens. Older archived material may still say FundLens.
+- The app is Expo/React Native with web support, Supabase-backed data, EAS update
+  channels, Vercel web hosting, and PostHog observability.
+- The source of truth for what is currently shipped is not this file.
 
-An ExecPlan is required when:
-- The work spans multiple files or systems.
-- The change is risky, ambiguous, or has multiple steps.
-- The work is expected to take more than a short session.
+## Planning defaults
 
-For small, contained changes (single file edits, small fixes), an ExecPlan is not required.
-
-ExecPlans must follow the formatting and content requirements in `docs/process/PLANS.md`.
-
-## Defaults
 - Prefer explicit assumptions over implicit ones.
-- Keep plans and progress up to date as work evolves.
-- Validate with runnable checks where possible.
+- Keep plans and progress updated when work spans multiple steps.
+- Validate with runnable checks in proportion to risk.
+- For small, contained changes, an ExecPlan is not required.
+- For work that spans multiple files/systems, is risky, or will take more than a
+  short session, create or update an ExecPlan following `docs/process/PLANS.md`.
 
-## Validation Checklist (required before closing any PR)
+## Validation checklist before closing any PR
 
-Do not raise or mark a PR ready-for-review until all of the following pass:
+Do not raise or mark a PR ready-for-review until the relevant checks pass.
 
-### TypeScript + Lint
+### TypeScript + lint
+
 ```bash
 npm run typecheck   # zero errors
 npm run lint        # zero warnings (--max-warnings 0)
 ```
 
+Run focused tests for the changed area. Run full Jest when touching shared hooks,
+cache, auth, data access, navigation, analytics, or cross-cutting utilities.
+
+```bash
+npm test -- --runInBand
+```
+
 ### React hooks
-- All `useEffect`, `useCallback`, and `useMemo` hooks must include every variable they reference in their dependency array.
-- `react-hooks/exhaustive-deps` is set to `'error'` — lint will catch this, but review manually too.
+
+- All `useEffect`, `useCallback`, and `useMemo` hooks must include every variable
+  they reference in their dependency array.
+- `react-hooks/exhaustive-deps` is set to `error`; lint catches most issues, but
+  review manually too.
 
 ### Edge Functions
-- Any Edge Function that uses Deno APIs (`Deno.serve`, `jsr:`, `npm:`) must be in `supabase/functions/` and excluded from the root `tsconfig.json` and `eslint.config.js`.
-- After making changes to an Edge Function, verify it is deployed: check the function's last-deployed timestamp in the Supabase Dashboard or re-deploy explicitly.
+
+- Any Edge Function using Deno APIs (`Deno.serve`, `jsr:`, `npm:`) must live in
+  `supabase/functions/` and be excluded from root `tsconfig.json` and
+  `eslint.config.js`.
+- After changing an Edge Function, verify deployment or explicitly state that it
+  was not deployed.
 - Edge Functions called by pg_cron must be deployed with `--no-verify-jwt`.
 
 ### Supabase migrations
-- After writing a new migration, apply it to the production DB (`supabase db push` or via the Supabase MCP tool) and confirm it ran without errors.
-- For cron schedule changes, verify the `cron.job` table reflects the new schedule.
-- New user-owned tables FK their `user_id` column to `public.app_user(id)`, never to `auth.users(id)`. The schema is decoupled from Supabase Auth — keep it that way. See `supabase/migrations/20260514000000_app_user_decouple.sql`.
-- Any new table in the `public` schema that the app reads/writes via supabase-js needs explicit `GRANT` statements — Supabase no longer auto-exposes `public` tables to the Data API (see `supabase/migrations/20260513000002_explicit_data_api_grants.sql` for the project-wide convention and the rationale).
 
-### Reducing Supabase lock-in
-The app uses Supabase but stays exit-ready. Full reasoning + the 90-day exit plan: `docs/EXIT-RUNBOOK.md`.
+- After writing a migration, apply it to the intended DB (`supabase db push` or
+  equivalent) and confirm it ran.
+- For cron schedule changes, verify `cron.job`.
+- New user-owned tables FK `user_id` to `public.app_user(id)`, not `auth.users(id)`.
+- New public tables read/written by supabase-js need explicit `GRANT` statements.
+  See `supabase/migrations/20260513000002_explicit_data_api_grants.sql`.
 
-- All client access goes through wrappers, not `supabase` directly:
+## Supabase exit-readiness rules
+
+The app uses Supabase but keeps provider boundaries explicit.
+
+- Client access goes through wrappers:
   - Auth: `src/lib/auth/index.ts` (`authClient`)
   - Edge Functions: `src/lib/functions/index.ts` (`functionsClient`)
   - Storage: `src/lib/storage/index.ts` (`storageClient`)
   - Data API: `src/lib/data/<table>.ts` (`<table>Repo`)
-- Do not import `supabase` from `@/src/lib/supabase` outside these wrappers. New data access goes through (or extends) the per-table repo.
-- Avoid net-new Supabase-specific surface area: no Realtime, no Supabase Vault, no `supabase.rpc()` from the client, no new `SECURITY DEFINER` functions unless absolutely necessary, no new pg_cron jobs with business logic in SQL (cron should call an HTTP endpoint).
-- **Tests mock at the wrapper boundary**, not the supabase module. A new test for code that uses `functionsClient` should `jest.mock('@/src/lib/functions', () => ({ functionsClient: { invoke: jest.fn() } }))` — never `jest.mock('@/src/lib/supabase', ...)`. Same for `@/src/lib/auth`, `@/src/lib/storage`, and `@/src/lib/data/<table>`. Bootstrap stubs in `jest.env.ts` + `__mocks__/@react-native-async-storage/` keep the supabase client importable without leaking real I/O. If a wrapper's interface changes, only that wrapper's consumers' tests update; if the underlying provider changes, only the wrappers do.
+- Do not import `supabase` from `@/src/lib/supabase` outside wrappers.
+- New data access goes through, or extends, a per-table repo.
+- Avoid net-new Supabase-specific surface area: no Realtime, no Supabase Vault,
+  no client-side `supabase.rpc()`, no new `SECURITY DEFINER` functions unless
+  unavoidable, and no business logic embedded in pg_cron SQL. Cron should call an
+  HTTP endpoint.
+- Tests mock at the wrapper boundary, not the Supabase module. For example,
+  mock `@/src/lib/functions` when testing `functionsClient` consumers.
 
-### Caches
-Every cache layer is inventoried in [`docs/architecture/cache-surfaces.md`](./docs/architecture/cache-surfaces.md). Read it before introducing a new cache or changing the shape, lifetime, owner, invalidation path, persistence policy, or sign-out behaviour of a cached payload. The doc holds the bug taxonomy (12 classes) we use for audits and the "when adding a new cache" checklist.
+## Cache correctness rules
+
+Every cache layer is inventoried in `docs/architecture/cache-surfaces.md`. Read it
+before introducing a cache or changing cache shape, lifetime, owner, invalidation,
+persistence, restore, or sign-out behaviour.
 
 For cache-affecting work:
-- Update `docs/architecture/cache-surfaces.md` in the same PR unless the change is provably unrelated to cache shape/lifetime/invalidation/persistence. State that reasoning in the PR when skipping the doc update.
-- React Query changes must document the query key shape, owning hook/screen, `staleTime`/`gcTime`, persistence allowlist status, and all invalidation triggers. If the query reads transactions, NAV, index, fund metadata, auth/session, or server-imported data, wire it into the global sync/invalidation scheme (`SyncResult`/`invalidateQueriesForSync` or an explicit equivalent) for both native and web.
-- Persisted React Query payload shape changes require a `__BUSTER__` bump and focused restore/invalidation tests.
-- Zustand, AsyncStorage, and SQLite changes must document their version mechanism (`version`, `-vN` key suffix, or `SCHEMA_VERSION`), migration/repair path, sign-out cleanup, and lifecycle/restore invalidation behaviour.
-- Avoid broad root invalidation as a default. Prefer granular invalidation derived from the rows or domains that actually changed. If broad invalidation is necessary, explain why it cannot cause hidden-screen work or stale visible data.
-- Server-side imports/mutations must identify every client cache that can become stale across devices. Validate foreground return, initial session/bootstrap, persisted-cache restore, and web reload paths where applicable.
-- Add focused tests for the cache invariant being changed: version bump/migration, sign-out cleanup, restore after persistence, cross-device freshness, hidden-screen non-refetch, or native SQLite read-through.
+- Update `docs/architecture/cache-surfaces.md` in the same PR unless the change is
+  provably unrelated to cache shape/lifetime/invalidation/persistence. State that
+  reasoning in the PR when skipping the doc update.
+- React Query changes must document query key shape, owning hook/screen,
+  `staleTime`/`gcTime`, persistence allowlist status, and invalidation triggers.
+- If a query reads transactions, NAV, index, fund metadata, auth/session, or
+  server-imported data, wire it into the global sync/invalidation scheme
+  (`SyncResult`/`invalidateQueriesForSync` or an explicit equivalent) for native
+  and web.
+- Persisted React Query payload shape changes require a `__BUSTER__` bump and
+  focused restore/invalidation tests.
+- Zustand, AsyncStorage, and SQLite changes must document their version mechanism
+  (`version`, `-vN` key suffix, or `SCHEMA_VERSION`), migration/repair path,
+  sign-out cleanup, and lifecycle/restore invalidation behaviour.
+- Avoid broad root invalidation as a default. Prefer granular invalidation derived
+  from the rows/domains that changed. If broad invalidation is necessary, explain
+  why it cannot cause hidden-screen work or stale visible data.
+- Server-side imports/mutations must identify every client cache that can become
+  stale across devices. Validate foreground return, initial session/bootstrap,
+  persisted-cache restore, and web reload paths where applicable.
+- Add focused tests for changed cache invariants: version bump/migration, sign-out
+  cleanup, restore after persistence, cross-device freshness, hidden-screen
+  non-refetch, or native SQLite read-through.
 
-### PostHog and observability
-Use explicit, privacy-safe analytics. Do not enable autocapture or session replay by default.
+## PostHog and observability rules
 
-When adding or changing user-visible flows, cache/sync/auth/import paths, or performance-sensitive work:
-- Decide whether a PostHog event or UX timing signal is needed. If not, state why in the PR.
-- Use the `analytics` facade and existing helpers (`perfMark`, navigation performance, UX telemetry) rather than importing PostHog SDKs directly.
-- Keep event names and properties stable, low-cardinality, and documented in `docs/INFRASTRUCTURE.md` when they are operationally meaningful or dashboard/alert-worthy.
-- Never send tokens, callback URLs, emails, PANs, fund IDs, transaction IDs, route pathnames with identifiers, raw query keys, raw error payloads containing user data, or financial amounts. Bucket counts/sizes where exact values are not required.
-- Include release/debug dimensions such as `platform`, `app_version`, and `eas_update_id` where they help isolate regressions.
-- Add or update sanitizer/allowlist tests for any new analytics helper or event-family that could otherwise leak identifiers.
+Use explicit, privacy-safe analytics. Do not enable autocapture or session replay
+by default.
 
-### Stacked PRs
-- When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.
-- After adding commits to a lower branch, rebase all downstream branches and force-push.
+When adding or changing user-visible flows, cache/sync/auth/import paths, or
+performance-sensitive work:
+- Decide whether a PostHog event or UX timing signal is needed. If not, state why
+  in the PR.
+- Use the `analytics` facade and existing helpers (`perfMark`, navigation
+  performance, UX telemetry) rather than importing PostHog SDKs directly.
+- Keep event names/properties stable, low-cardinality, and documented in
+  `docs/INFRASTRUCTURE.md` when operationally meaningful or dashboard/alert-worthy.
+- Never send tokens, callback URLs, emails, PANs, fund IDs, transaction IDs, route
+  pathnames with identifiers, raw query keys, raw user-data error payloads, or
+  financial amounts.
+- Bucket counts/sizes unless exact values are operationally required and safe.
+- Include release/debug dimensions such as `platform`, `app_version`, and
+  `eas_update_id` where they help isolate regressions.
+- Add or update sanitizer/allowlist tests for any new analytics helper or event
+  family that could otherwise leak identifiers.
 
-### Documentation
-- After implementation, add an "Amendments" section to the relevant ExecPlan(s) if the actual implementation diverged from the original plan.
-- Update the README "What works now" section to reflect any new capabilities.
+## Stacked PRs
+
+- Bug fixes must go on the earliest milestone branch where the faulty code was
+  introduced, not on the tip of the stack.
+- After adding commits to a lower branch, rebase downstream branches and
+  force-push intentionally.
+
+## Documentation updates
+
+- Update docs in the same PR when behaviour, architecture, cache surfaces,
+  observability, infrastructure, or developer workflow changes.
+- Add an "Amendments" section to relevant ExecPlans if implementation diverges
+  from the plan.
+- Update README "What works now" only when user-visible capabilities change.
