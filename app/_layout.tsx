@@ -36,6 +36,7 @@ import { isNativeMagicLinkUrl, parseSessionFromUrl } from '@/src/utils/authUtils
 import VercelInsights from '@/src/components/VercelInsights';
 import { ErrorBoundary } from '@/src/components/ErrorBoundary';
 import { NavigationPerformanceObserver } from '@/src/components/NavigationPerformanceObserver';
+import { UxRuntimeTelemetryObserver } from '@/src/components/UxRuntimeTelemetryObserver';
 import { analytics } from '@/src/lib/analytics';
 import { perfNow } from '@/src/lib/perfMark';
 import { installGlobalErrorHandlers } from '@/src/lib/installGlobalErrorHandlers';
@@ -303,6 +304,7 @@ function ThemedAppShell() {
       */}
       <AuthGate key={resolvedScheme}>
         <NavigationPerformanceObserver />
+        <UxRuntimeTelemetryObserver />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: clearLens.colors.background } }}>
           <Stack.Screen name="auth" />
           <Stack.Screen name="(tabs)" />

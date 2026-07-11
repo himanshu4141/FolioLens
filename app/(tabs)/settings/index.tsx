@@ -11,6 +11,7 @@ import { useIsFocused, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import {
   getNavigationCacheContext,
   startNavigationMeasurement,
@@ -106,6 +107,10 @@ export default function SettingsScreen() {
   });
 
   const navBadge = navStatusBadge(latestNavRow, cl);
+  useUxScreenReady('settings', true, {
+    cacheState: latestNavRow ? 'warm' : 'unknown',
+    rowCount: latestNavRow ? 1 : 0,
+  });
 
   function openAbout() {
     startNavigationMeasurement({

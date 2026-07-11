@@ -42,6 +42,7 @@ import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { navStaleness, type TimeWindow } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 import { MoneyTrailPreviewCard } from '@/src/components/clearLens/MoneyTrailPreviewCard';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
@@ -1067,6 +1068,11 @@ export function ClearLensPortfolioScreenMobile() {
   );
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail({
     enabled: isFocused,
+  });
+  useUxScreenReady('portfolio', !showFirstLoad && !isError, {
+    cacheState: data ? 'warm' : 'empty',
+    fundCount: fundCards.length,
+    transactionCount: moneyTrailData?.transactions.length,
   });
 
   function openSettings() {

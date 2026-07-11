@@ -18,6 +18,7 @@ import { UtilityHeader } from '@/src/components/UtilityHeader';
 import type { FeedbackKind } from '@/src/components/FeedbackSheet';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useAlertDialog, useConfirmDialog } from '@/src/hooks/useDialog';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import { useAppStore } from '@/src/store/appStore';
 import { analytics } from '@/src/lib/analytics';
 import {
@@ -98,6 +99,7 @@ function LinkRow({ icon, label, onPress, isLast }: LinkRowProps) {
 export default function AboutScreen() {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+  useUxScreenReady('about', true, { cacheState: 'warm', rowCount: 1 });
   const [copiedUpdateId, setCopiedUpdateId] = useState(false);
   const [feedbackKind, setFeedbackKind] = useState<FeedbackKind | null>(null);
   const showAlert = useAlertDialog();

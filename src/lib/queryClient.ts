@@ -37,6 +37,7 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
 import { isAuthSessionInvalidError } from '@/src/lib/authError';
+import { trackUxCacheHealth } from '@/src/lib/uxTelemetry';
 
 // Bump this when a query's row shape changes or a migration backfills
 // history rows. Persisted entries are discarded on next start.
@@ -341,6 +342,12 @@ export const persister = {
           query_count: metrics.queryCount,
           query_prefix_bytes: prefixSummaryForAnalytics(metrics),
         });
+        trackUxCacheHealth({
+          cacheState: 'restored',
+          blobSizeBytes: metrics.serializedChars,
+          queryCount: metrics.queryCount,
+          buster: restored.buster ?? __BUSTER__,
+        });
       } else {
         analytics.track('persister_restore_completed', {
           buster: __BUSTER__,
@@ -348,6 +355,12 @@ export const persister = {
           blob_size_bytes: 0,
           query_count: 0,
           query_prefix_bytes: {},
+        });
+        trackUxCacheHealth({
+          cacheState: 'empty',
+          blobSizeBytes: 0,
+          queryCount: 0,
+          buster: __BUSTER__,
         });
       }
       return restored;
