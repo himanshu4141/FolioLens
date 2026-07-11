@@ -16,12 +16,22 @@ jest.mock('@/src/lib/data/indexHistory', () => ({
 import type { QueryClient } from '@tanstack/react-query';
 // eslint-disable-next-line import/first
 import {
+  fetchPortfolioCoreData,
   fetchPortfolioData,
+  portfolioBenchmarkQueryKey,
+  portfolioCoreQueryKey,
+  portfolioQueryKey,
   prefetchPortfolioBenchmark,
   selectCachedFundCard,
   selectCachedPortfolioWeight,
+  type PortfolioCoreData,
   type PortfolioData,
 } from '../usePortfolio';
+// eslint-disable-next-line import/first
+import {
+  buildBenchmarkLookup,
+  computeBenchmarkXirrFromNormalizedTransactions,
+} from '@/src/utils/xirr';
 // eslint-disable-next-line import/first
 import { fundViewRepo } from '@/src/lib/data/userFund';
 // eslint-disable-next-line import/first
@@ -45,15 +55,41 @@ const { __resetAllForTests } = jest.requireMock('expo-sqlite') as {
 // fetcher paths fall through to Supabase when SQLite is empty, which
 // matches the cold-start contract the production code relies on.
 beforeEach(async () => {
+  fakeQueryCache = new Map();
   __resetAllForTests();
   await __setDbForTests(null);
 });
 
-// Stand-in QueryClient that just runs the queryFn — the real client would
-// add cache lookups, but in unit tests we want every fetch to hit the
-// supabase mock so the existing fixtures keep covering the SQL paths.
+let fakeQueryCache: Map<string, unknown>;
+
+function queryKeyId(queryKey: readonly unknown[]): string {
+  return JSON.stringify(queryKey);
+}
+
+// Stand-in QueryClient with the cache-or-fetch behavior `fetchPortfolioData`
+// relies on. It keeps the test fixtures small while still proving that the new
+// benchmark path reuses the core query result instead of rerunning core work.
 const fakeQc = {
-  fetchQuery: <T,>({ queryFn }: { queryFn: () => Promise<T> }) => queryFn(),
+  fetchQuery: async <T,>({
+    queryKey,
+    queryFn,
+  }: {
+    queryKey: readonly unknown[];
+    queryFn: () => Promise<T>;
+  }) => {
+    const key = queryKeyId(queryKey);
+    if (fakeQueryCache.has(key)) return fakeQueryCache.get(key) as T;
+    const pending = Promise.resolve().then(queryFn);
+    fakeQueryCache.set(key, pending);
+    try {
+      const value = await pending;
+      fakeQueryCache.set(key, value);
+      return value;
+    } catch (err) {
+      fakeQueryCache.delete(key);
+      throw err;
+    }
+  },
 } as unknown as QueryClient;
 
 // ---------------------------------------------------------------------------
@@ -347,6 +383,151 @@ describe('fetchPortfolioData()', () => {
     const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
     expect(result.summary).not.toBeNull();
     expect(isNaN(result.summary!.marketXirr)).toBe(true);
+  });
+
+  it('uses distinct public, core, and benchmark query keys', () => {
+    expect(portfolioQueryKey('user-1', '^NSEITRI')).toEqual([
+      'portfolio',
+      'user-1',
+      '^NSEITRI',
+    ]);
+    expect(portfolioCoreQueryKey('user-1')).toEqual(['portfolio-core', 'user-1']);
+    expect(portfolioBenchmarkQueryKey('user-1', '^NSEITRI')).toEqual([
+      'portfolio-benchmark',
+      'user-1',
+      '^NSEITRI',
+    ]);
+  });
+
+  it('computes benchmark-independent core once across benchmark variants', async () => {
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
+
+    const first = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
+    const callsAfterFirst = {
+      funds: fundFrom.mock.calls.length,
+      transactions: txFrom.mock.calls.length,
+      nav: navFrom.mock.calls.length,
+    };
+
+    const second = await fetchPortfolioData(fakeQc, 'user-1', '^NIFTY500TRI');
+
+    expect(second.fundCards).toBe(first.fundCards);
+    expect(second.summary?.totalValue).toBe(first.summary?.totalValue);
+    expect(second.summary?.totalInvested).toBe(first.summary?.totalInvested);
+    expect(second.summary?.xirr).toBe(first.summary?.xirr);
+    expect(second.summary?.benchmarkSymbol).toBe('^NIFTY500TRI');
+    expect(fundFrom).toHaveBeenCalledTimes(callsAfterFirst.funds);
+    expect(txFrom).toHaveBeenCalledTimes(callsAfterFirst.transactions);
+    expect(navFrom).toHaveBeenCalledTimes(callsAfterFirst.nav);
+  });
+
+  it('preserves global transaction chronology for benchmark XIRR across funds', async () => {
+    const funds = [
+      {
+        ...MOCK_FUNDS[0],
+        id: 'fund-a',
+        scheme_code: 11111,
+        scheme_name: 'Fund A',
+      },
+      {
+        ...MOCK_FUNDS[0],
+        id: 'fund-b',
+        scheme_code: 22222,
+        scheme_name: 'Fund B',
+      },
+    ];
+    const txs = [
+      {
+        id: 'tx-a-buy',
+        fund_id: 'fund-a',
+        transaction_date: '2023-01-01',
+        transaction_type: 'purchase',
+        units: 100,
+        amount: 100,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-01-01T01:00:00Z',
+      },
+      {
+        id: 'tx-b-buy',
+        fund_id: 'fund-b',
+        transaction_date: '2023-02-01',
+        transaction_type: 'purchase',
+        units: 20,
+        amount: 200,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-02-01T01:00:00Z',
+      },
+      {
+        id: 'tx-a-sell',
+        fund_id: 'fund-a',
+        transaction_date: '2023-03-01',
+        transaction_type: 'redemption',
+        units: 60,
+        amount: 300,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-03-01T01:00:00Z',
+      },
+    ];
+    const nav = [
+      { scheme_code: 11111, nav_date: '2024-01-01', nav: 5 },
+      { scheme_code: 11111, nav_date: '2023-12-31', nav: 5 },
+      { scheme_code: 22222, nav_date: '2024-01-01', nav: 20 },
+      { scheme_code: 22222, nav_date: '2023-12-31', nav: 20 },
+    ];
+    const index = [
+      { index_date: '2023-01-01', close_value: 100 },
+      { index_date: '2023-02-01', close_value: 200 },
+      { index_date: '2023-03-01', close_value: 250 },
+      { index_date: '2024-01-01', close_value: 500 },
+    ];
+    setupRepos({ funds, txs, nav, index });
+
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
+    const core = fakeQueryCache.get(queryKeyId(portfolioCoreQueryKey('user-1'))) as PortfolioCoreData;
+
+    expect(core.benchmarkTransactions.map((tx) => [
+      tx.fund_id,
+      tx.transaction_date,
+      tx.transaction_type,
+    ].join('|'))).toEqual([
+      'fund-a|2023-01-01|purchase',
+      'fund-b|2023-02-01|purchase',
+      'fund-a|2023-03-01|redemption',
+    ]);
+
+    const benchmarkValueAt = buildBenchmarkLookup(
+      index.map((row) => ({ date: row.index_date, value: row.close_value })),
+    );
+    const expected = computeBenchmarkXirrFromNormalizedTransactions({
+      transactions: txs,
+      benchmarkValueAt,
+      terminalDate: new Date(core.terminalDateIso),
+    }).xirr;
+
+    expect(isFinite(expected)).toBe(true);
+    expect(result.summary!.marketXirr).toBeCloseTo(expected, 10);
+  });
+
+  it('exposes the core result without benchmark-specific summary fields', async () => {
+    setupRepos({ funds: MOCK_FUNDS, txs: MOCK_TXS, nav: MOCK_NAV, index: MOCK_INDEX });
+
+    const core: PortfolioCoreData = await fetchPortfolioCoreData(fakeQc, 'user-1');
+
+    expect(core.fundCards).toHaveLength(1);
+    expect(core.summary).toMatchObject({
+      totalValue: 150 * 140,
+      totalInvested: 16000,
+      navUnavailableCount: 0,
+    });
+    expect(core.summary).not.toHaveProperty('marketXirr');
+    expect(core.summary).not.toHaveProperty('benchmarkSymbol');
+    expect(core.benchmarkTransactions).toHaveLength(MOCK_TXS.length);
   });
 
   // ── Fix 12: portfolio-level gain/loss ──────────────────────────────────────

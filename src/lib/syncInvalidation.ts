@@ -28,6 +28,8 @@ export const SYNC_INVALIDATION_PREFIXES = {
   transaction: [
     'user-funds',
     'user-transactions',
+    'portfolio-core',
+    'portfolio-benchmark',
     'portfolio',
     'fund-detail',
     'money-trail',
@@ -42,6 +44,7 @@ export const SYNC_INVALIDATION_PREFIXES = {
     'universal-picker:your-families',
   ],
   nav: [
+    'portfolio-core',
     'portfolio',
     'fund-detail',
     'fund-nav-history',
@@ -56,6 +59,7 @@ export const SYNC_INVALIDATION_PREFIXES = {
     'past-sip-check:fund-nav',
   ],
   index: [
+    'portfolio-benchmark',
     'portfolio',
     'fund-detail-index',
     'index-snapshot',
