@@ -28,6 +28,11 @@ import {
   type PortfolioData,
 } from '../usePortfolio';
 // eslint-disable-next-line import/first
+import {
+  buildBenchmarkLookup,
+  computeBenchmarkXirrFromNormalizedTransactions,
+} from '@/src/utils/xirr';
+// eslint-disable-next-line import/first
 import { fundViewRepo } from '@/src/lib/data/userFund';
 // eslint-disable-next-line import/first
 import { transactionRepo } from '@/src/lib/data/transaction';
@@ -414,6 +419,99 @@ describe('fetchPortfolioData()', () => {
     expect(fundFrom).toHaveBeenCalledTimes(callsAfterFirst.funds);
     expect(txFrom).toHaveBeenCalledTimes(callsAfterFirst.transactions);
     expect(navFrom).toHaveBeenCalledTimes(callsAfterFirst.nav);
+  });
+
+  it('preserves global transaction chronology for benchmark XIRR across funds', async () => {
+    const funds = [
+      {
+        ...MOCK_FUNDS[0],
+        id: 'fund-a',
+        scheme_code: 11111,
+        scheme_name: 'Fund A',
+      },
+      {
+        ...MOCK_FUNDS[0],
+        id: 'fund-b',
+        scheme_code: 22222,
+        scheme_name: 'Fund B',
+      },
+    ];
+    const txs = [
+      {
+        id: 'tx-a-buy',
+        fund_id: 'fund-a',
+        transaction_date: '2023-01-01',
+        transaction_type: 'purchase',
+        units: 100,
+        amount: 100,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-01-01T01:00:00Z',
+      },
+      {
+        id: 'tx-b-buy',
+        fund_id: 'fund-b',
+        transaction_date: '2023-02-01',
+        transaction_type: 'purchase',
+        units: 20,
+        amount: 200,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-02-01T01:00:00Z',
+      },
+      {
+        id: 'tx-a-sell',
+        fund_id: 'fund-a',
+        transaction_date: '2023-03-01',
+        transaction_type: 'redemption',
+        units: 60,
+        amount: 300,
+        nav_at_transaction: null,
+        folio_number: null,
+        cas_import_id: null,
+        created_at: '2023-03-01T01:00:00Z',
+      },
+    ];
+    const nav = [
+      { scheme_code: 11111, nav_date: '2024-01-01', nav: 5 },
+      { scheme_code: 11111, nav_date: '2023-12-31', nav: 5 },
+      { scheme_code: 22222, nav_date: '2024-01-01', nav: 20 },
+      { scheme_code: 22222, nav_date: '2023-12-31', nav: 20 },
+    ];
+    const index = [
+      { index_date: '2023-01-01', close_value: 100 },
+      { index_date: '2023-02-01', close_value: 200 },
+      { index_date: '2023-03-01', close_value: 250 },
+      { index_date: '2024-01-01', close_value: 500 },
+    ];
+    setupRepos({ funds, txs, nav, index });
+
+    const result = await fetchPortfolioData(fakeQc, 'user-1', '^NSEI');
+    const core = fakeQueryCache.get(queryKeyId(portfolioCoreQueryKey('user-1'))) as PortfolioCoreData;
+
+    expect(core.benchmarkTransactions.map((tx) => [
+      tx.fund_id,
+      tx.transaction_date,
+      tx.transaction_type,
+    ].join('|'))).toEqual([
+      'fund-a|2023-01-01|purchase',
+      'fund-b|2023-02-01|purchase',
+      'fund-a|2023-03-01|redemption',
+    ]);
+
+    const benchmarkValueAt = buildBenchmarkLookup(
+      index.map((row) => ({ date: row.index_date, value: row.close_value })),
+    );
+    const expected = computeBenchmarkXirrFromNormalizedTransactions({
+      transactions: txs,
+      benchmarkValueAt,
+      terminalDate: new Date(core.terminalDateIso),
+    }).xirr;
+
+    expect(isFinite(expected)).toBe(true);
+    expect(result.summary!.marketXirr).toBeCloseTo(expected, 10);
   });
 
   it('exposes the core result without benchmark-specific summary fields', async () => {

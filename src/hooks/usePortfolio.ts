@@ -146,6 +146,28 @@ function isPortfolioFundRow(row: UserFundRow): row is UserFundRow & PortfolioFun
   return !!row && !!row.id && row.scheme_code != null && !!row.scheme_name;
 }
 
+function compareBenchmarkTransactions(a: UserTransactionRow, b: UserTransactionRow): number {
+  const byDate = a.transaction_date.localeCompare(b.transaction_date);
+  if (byDate !== 0) return byDate;
+
+  const byCreatedAt = String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''));
+  if (byCreatedAt !== 0) return byCreatedAt;
+
+  const byId = String(a.id ?? '').localeCompare(String(b.id ?? ''));
+  if (byId !== 0) return byId;
+
+  const byFund = a.fund_id.localeCompare(b.fund_id);
+  if (byFund !== 0) return byFund;
+
+  const byType = a.transaction_type.localeCompare(b.transaction_type);
+  if (byType !== 0) return byType;
+
+  const byAmount = a.amount - b.amount;
+  if (byAmount !== 0) return byAmount;
+
+  return a.units - b.units;
+}
+
 export function portfolioQueryKey(userId: string, benchmarkSymbol: string): PortfolioQueryKey {
   return ['portfolio', userId, benchmarkSymbol];
 }
@@ -228,16 +250,16 @@ export async function fetchPortfolioCoreData(
     txByFund.set(tx.fund_id, existing);
   }
   const normalizedTxByFund = new Map<string, UserTransactionRow[]>();
+  const normalizedTxSet = new Set<UserTransactionRow>();
   for (const fund of validFunds) {
-    normalizedTxByFund.set(
-      fund.id,
-      filterReversedTransactionPairs(txByFund.get(fund.id) ?? []),
-    );
+    const normalizedTxs = filterReversedTransactionPairs(txByFund.get(fund.id) ?? []);
+    normalizedTxByFund.set(fund.id, normalizedTxs);
+    for (const tx of normalizedTxs) normalizedTxSet.add(tx);
   }
-  const benchmarkTransactions: UserTransactionRow[] = [];
-  for (const fund of validFunds) {
-    benchmarkTransactions.push(...(normalizedTxByFund.get(fund.id) ?? []));
-  }
+  const validFundIds = new Set(validFunds.map((fund) => fund.id));
+  const benchmarkTransactions = allTxs
+    .filter((tx) => validFundIds.has(tx.fund_id) && normalizedTxSet.has(tx))
+    .sort(compareBenchmarkTransactions);
 
   const schemeCodes = validFunds.map((f) => f.scheme_code);
 
