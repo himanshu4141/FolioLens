@@ -388,7 +388,12 @@ function PersisterCard({
         <Row label="Parse error" value={snap.parseError} valueColor={tokens.colors.negative} styles={styles} />
       ) : null}
       {snap.byKeyPrefix.map((p) => (
-        <Row key={p.prefix} label={p.prefix} value={`${formatNumber(p.count)} entries`} styles={styles} />
+        <Row
+          key={p.prefix}
+          label={p.prefix}
+          value={`${formatNumber(p.count)} entries · ${formatBytes(p.serializedChars)}`}
+          styles={styles}
+        />
       ))}
     </View>
   );

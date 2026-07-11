@@ -25,6 +25,7 @@ import {
   queryClient,
   retryPersistedClient,
   shouldPersistQueryKey,
+  summarizePersistedClient,
 } from '@/src/lib/queryClient';
 // eslint-disable-next-line import/first
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
@@ -44,7 +45,6 @@ describe('shouldPersistQueryKey()', () => {
       ['portfolio-composition', ['portfolio-composition', [12345]]],
       ['money-trail', ['money-trail', 'user-1']],
       ['user-funds', ['user-funds', 'user-1']],
-      ['user-transactions', ['user-transactions', 'user-1']],
     ])('%s', (_label, queryKey) => {
       expect(shouldPersistQueryKey(queryKey)).toBe(true);
     });
@@ -53,6 +53,7 @@ describe('shouldPersistQueryKey()', () => {
   describe('does NOT persist', () => {
     it.each([
       ['user-profile (auth-sensitive)', ['user-profile', 'user-1']],
+      ['native user-transactions raw array (authoritative copy is SQLite)', ['user-transactions', 'user-1']],
       ['prepared investment timeline input (user-scoped Maps)', ['investmentTimelineInputs', 'user-1', 'fund-1:100', '3Y']],
       ['raw fund NAV history (authoritative copy is SQLite)', ['fund-nav-history', 12345]],
       ['raw performance history (authoritative copy is SQLite)', ['performance-timeline', 'fund-1']],
@@ -84,6 +85,65 @@ describe('persister config constants', () => {
 
   it('leaves at least 2 MB of the Android 6 MB AsyncStorage database for non-query state', () => {
     expect(PERSIST_SAFE_MAX_CHARS).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+});
+
+describe('summarizePersistedClient()', () => {
+  it('reports total size, query count, and per-prefix serialized bytes', () => {
+    const stateFor = (data: string) => ({
+      data,
+      dataUpdateCount: 1,
+      dataUpdatedAt: 1,
+      error: null,
+      errorUpdateCount: 0,
+      errorUpdatedAt: 0,
+      fetchFailureCount: 0,
+      fetchFailureReason: null,
+      fetchMeta: null,
+      isInvalidated: false,
+      status: 'success' as const,
+      fetchStatus: 'idle' as const,
+    });
+    const firstPortfolio = {
+      dehydratedAt: 1,
+      state: stateFor('x'.repeat(20)),
+      queryKey: ['portfolio', 'user-1'],
+      queryHash: '["portfolio","user-1"]',
+    };
+    const secondPortfolio = {
+      dehydratedAt: 1,
+      state: stateFor('y'.repeat(10)),
+      queryKey: ['portfolio', 'user-1', '^NSEI'],
+      queryHash: '["portfolio","user-1","^NSEI"]',
+    };
+    const moneyTrail = {
+      dehydratedAt: 1,
+      state: stateFor('z'.repeat(100)),
+      queryKey: ['money-trail', 'user-1'],
+      queryHash: '["money-trail","user-1"]',
+    };
+    const client = {
+      buster: 'v11',
+      timestamp: 1,
+      clientState: { mutations: [], queries: [firstPortfolio, secondPortfolio, moneyTrail] },
+    };
+
+    const metrics = summarizePersistedClient(client);
+
+    expect(metrics.serializedChars).toBe(JSON.stringify(client).length);
+    expect(metrics.queryCount).toBe(3);
+    expect(metrics.byKeyPrefix).toEqual([
+      {
+        prefix: 'portfolio',
+        count: 2,
+        serializedChars: JSON.stringify(firstPortfolio).length + JSON.stringify(secondPortfolio).length,
+      },
+      {
+        prefix: 'money-trail',
+        count: 1,
+        serializedChars: JSON.stringify(moneyTrail).length,
+      },
+    ]);
   });
 });
 

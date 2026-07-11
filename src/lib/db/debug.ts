@@ -66,7 +66,7 @@ export interface PersisterSnapshot {
   buster: string | null;
   timestamp: number | null;
   entryCount: number | null;
-  byKeyPrefix: { prefix: string; count: number }[];
+  byKeyPrefix: { prefix: string; count: number; serializedChars: number }[];
   parseError: string | null;
 }
 
@@ -220,15 +220,18 @@ async function snapshotPersister(): Promise<PersisterSnapshot> {
       clientState?: { queries?: { queryKey?: unknown[] }[] };
     };
     const queries = parsed.clientState?.queries ?? [];
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { count: number; serializedChars: number }>();
     for (const q of queries) {
       const head = q.queryKey?.[0];
       const prefix = typeof head === 'string' ? head : '<non-string>';
-      counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+      const current = counts.get(prefix) ?? { count: 0, serializedChars: 0 };
+      current.count += 1;
+      current.serializedChars += JSON.stringify(q).length;
+      counts.set(prefix, current);
     }
     const byKeyPrefix = [...counts.entries()]
-      .map(([prefix, count]) => ({ prefix, count }))
-      .sort((a, b) => b.count - a.count);
+      .map(([prefix, stats]) => ({ prefix, ...stats }))
+      .sort((a, b) => b.serializedChars - a.serializedChars || b.count - a.count);
     return {
       blobSizeBytes,
       buster: parsed.buster ?? null,

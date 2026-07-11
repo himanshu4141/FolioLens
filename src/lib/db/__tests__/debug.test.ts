@@ -206,6 +206,7 @@ describe('snapshotCache — persister scope', () => {
     // sorted descending by count, so portfolio (2) is first
     const portfolio = snap.persister.byKeyPrefix.find((p) => p.prefix === 'portfolio');
     expect(portfolio?.count).toBe(2);
+    expect(portfolio?.serializedChars).toBeGreaterThan(0);
     expect(snap.persister.byKeyPrefix[0].prefix).toBe('portfolio');
   });
 
@@ -240,6 +241,7 @@ describe('snapshotCache — persister scope', () => {
     const snap = await snapshotCache('user-1', FUNDS);
     const nonString = snap.persister.byKeyPrefix.find((p) => p.prefix === '<non-string>');
     expect(nonString?.count).toBe(1);
+    expect(nonString?.serializedChars).toBeGreaterThan(0);
   });
 });
 
