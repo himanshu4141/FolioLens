@@ -76,7 +76,27 @@ The app uses Supabase but stays exit-ready. Full reasoning + the 90-day exit pla
 - **Tests mock at the wrapper boundary**, not the supabase module. A new test for code that uses `functionsClient` should `jest.mock('@/src/lib/functions', () => ({ functionsClient: { invoke: jest.fn() } }))` — never `jest.mock('@/src/lib/supabase', ...)`. Same for `@/src/lib/auth`, `@/src/lib/storage`, and `@/src/lib/data/<table>`. Bootstrap stubs in `jest.env.ts` + `__mocks__/@react-native-async-storage/` keep the supabase client importable without leaking real I/O. If a wrapper's interface changes, only that wrapper's consumers' tests update; if the underlying provider changes, only the wrappers do.
 
 ### Caches
-Every cache layer is inventoried in [`docs/architecture/cache-surfaces.md`](./docs/architecture/cache-surfaces.md). Read it before introducing a new cache or changing the shape of a cached payload. The doc holds the bug taxonomy (12 classes) we use for audits and the "when adding a new cache" checklist — including bumping the right version mechanism (`__BUSTER__` for React Query, `version` for Zustand, `-vN`-suffixed key for AsyncStorage drafts, `SCHEMA_VERSION` for SQLite) and adding sign-out cleanup if the data is user-scoped.
+Every cache layer is inventoried in [`docs/architecture/cache-surfaces.md`](./docs/architecture/cache-surfaces.md). Read it before introducing a new cache or changing the shape, lifetime, owner, invalidation path, persistence policy, or sign-out behaviour of a cached payload. The doc holds the bug taxonomy (12 classes) we use for audits and the "when adding a new cache" checklist.
+
+For cache-affecting work:
+- Update `docs/architecture/cache-surfaces.md` in the same PR unless the change is provably unrelated to cache shape/lifetime/invalidation/persistence. State that reasoning in the PR when skipping the doc update.
+- React Query changes must document the query key shape, owning hook/screen, `staleTime`/`gcTime`, persistence allowlist status, and all invalidation triggers. If the query reads transactions, NAV, index, fund metadata, auth/session, or server-imported data, wire it into the global sync/invalidation scheme (`SyncResult`/`invalidateQueriesForSync` or an explicit equivalent) for both native and web.
+- Persisted React Query payload shape changes require a `__BUSTER__` bump and focused restore/invalidation tests.
+- Zustand, AsyncStorage, and SQLite changes must document their version mechanism (`version`, `-vN` key suffix, or `SCHEMA_VERSION`), migration/repair path, sign-out cleanup, and lifecycle/restore invalidation behaviour.
+- Avoid broad root invalidation as a default. Prefer granular invalidation derived from the rows or domains that actually changed. If broad invalidation is necessary, explain why it cannot cause hidden-screen work or stale visible data.
+- Server-side imports/mutations must identify every client cache that can become stale across devices. Validate foreground return, initial session/bootstrap, persisted-cache restore, and web reload paths where applicable.
+- Add focused tests for the cache invariant being changed: version bump/migration, sign-out cleanup, restore after persistence, cross-device freshness, hidden-screen non-refetch, or native SQLite read-through.
+
+### PostHog and observability
+Use explicit, privacy-safe analytics. Do not enable autocapture or session replay by default.
+
+When adding or changing user-visible flows, cache/sync/auth/import paths, or performance-sensitive work:
+- Decide whether a PostHog event or UX timing signal is needed. If not, state why in the PR.
+- Use the `analytics` facade and existing helpers (`perfMark`, navigation performance, UX telemetry) rather than importing PostHog SDKs directly.
+- Keep event names and properties stable, low-cardinality, and documented in `docs/INFRASTRUCTURE.md` when they are operationally meaningful or dashboard/alert-worthy.
+- Never send tokens, callback URLs, emails, PANs, fund IDs, transaction IDs, route pathnames with identifiers, raw query keys, raw error payloads containing user data, or financial amounts. Bucket counts/sizes where exact values are not required.
+- Include release/debug dimensions such as `platform`, `app_version`, and `eas_update_id` where they help isolate regressions.
+- Add or update sanitizer/allowlist tests for any new analytics helper or event-family that could otherwise leak identifiers.
 
 ### Stacked PRs
 - When a bug fix is committed, it must go on the earliest milestone branch where the faulty code was introduced — not on the tip of the stack.
