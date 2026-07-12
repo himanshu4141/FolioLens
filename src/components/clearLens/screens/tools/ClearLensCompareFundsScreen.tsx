@@ -9,7 +9,7 @@
  * Supersedes the tabbed M3v2 screen.
  * Design spec: design_handoff_compare_redesign/README.md + Option C spec.
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ScrollView,
   StyleSheet,
