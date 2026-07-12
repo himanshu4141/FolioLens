@@ -5,6 +5,7 @@ import {
   normalizeUxSurfaceFromPathname,
   sanitizeUxProperties,
   setUxTelemetryContext,
+  trackUxCacheHealth,
   trackUxJsStall,
   trackUxScreenReady,
 } from '@/src/lib/uxTelemetry';
@@ -127,6 +128,30 @@ describe('uxTelemetry', () => {
       surface: 'funds',
       metric: 'stall_ms',
       stall_ms: 400,
+    }));
+  });
+
+  it('emits cache health slow events with byte values above the alert threshold', () => {
+    trackUxCacheHealth({
+      cacheState: 'restored',
+      blobSizeBytes: 5_400_000,
+      queryCount: 42,
+      buster: 'v12',
+    });
+
+    expect(mockTrack).toHaveBeenCalledWith('ux_cache_health', expect.objectContaining({
+      cache_state: 'restored',
+      blob_size_bucket: '5MB+',
+      query_count_bucket: '11-50',
+      buster: 'v12',
+    }));
+    expect(mockTrack).toHaveBeenCalledWith('ux_slow_event', expect.objectContaining({
+      source_event: 'ux_cache_health',
+      surface: 'app',
+      metric: 'blob_size_bytes',
+      blob_size_bytes: 5_400_000,
+      threshold_bytes: 5_000_000,
+      cache_state: 'restored',
     }));
   });
 });

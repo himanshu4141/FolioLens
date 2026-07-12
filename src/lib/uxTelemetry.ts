@@ -29,6 +29,7 @@ export type UxSourceEvent =
   | 'ux_screen_ready'
   | 'ux_interaction_latency'
   | 'ux_js_stall'
+  | 'ux_cache_health'
   | 'navigation_performance'
   | 'perf_mark';
 
@@ -86,6 +87,7 @@ interface UxSlowEventInput {
 }
 
 const MAX_SAFE_METRIC = 1_000_000;
+const MAX_SAFE_BYTES = 50_000_000;
 const MAX_ACTION_LENGTH = 64;
 
 export const UX_THRESHOLDS = {
@@ -126,6 +128,7 @@ const SOURCE_EVENTS = new Set<UxSourceEvent>([
   'ux_screen_ready',
   'ux_interaction_latency',
   'ux_js_stall',
+  'ux_cache_health',
   'navigation_performance',
   'perf_mark',
 ]);
@@ -183,6 +186,8 @@ export function trackUxScreenReady(input: UxScreenReadyInput): void {
 }
 
 export function trackUxInteractionLatency(input: UxInteractionLatencyInput): void {
+  // Staged for future fixed-vocabulary interaction timing call sites. Do not
+  // pass dynamic labels here; `action` must remain a bounded enum-like string.
   const properties = sanitizeUxProperties({
     ...uxContext,
     surface: input.surface,
@@ -241,7 +246,7 @@ export function trackUxCacheHealth(input: UxCacheHealthInput): void {
     input.blobSizeBytes >= UX_THRESHOLDS.cacheBlobBytes
   ) {
     trackUxSlowEvent({
-      sourceEvent: 'perf_mark',
+      sourceEvent: 'ux_cache_health',
       surface: 'app',
       metric: 'blob_size_bytes',
       valueBytes: input.blobSizeBytes,
@@ -377,5 +382,8 @@ function copyBoundedNumber(
 ): void {
   const value = input[key];
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return;
-  output[key] = Math.min(Math.round(value), MAX_SAFE_METRIC);
+  const max = key === 'blob_size_bytes' || key === 'threshold_bytes'
+    ? MAX_SAFE_BYTES
+    : MAX_SAFE_METRIC;
+  output[key] = Math.min(Math.round(value), max);
 }

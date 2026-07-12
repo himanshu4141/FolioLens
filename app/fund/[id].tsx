@@ -104,7 +104,9 @@ function ClearLensFundDetailScreen() {
     [data],
   );
   const chartsReady = usePerformanceChartReadiness(isFocused, activeTab);
-  useUxScreenReady('fund_detail', entryState === 'ready', {
+  const fundDetailReadyForTelemetry =
+    entryState === 'ready' && (activeTab !== 'performance' || chartsReady);
+  useUxScreenReady('fund_detail', fundDetailReadyForTelemetry, {
     cacheState: data ? 'warm' : cachedFund ? 'restored' : 'unknown',
     rowCount: navHistory.length,
   });

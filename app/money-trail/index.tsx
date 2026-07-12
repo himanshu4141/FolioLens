@@ -964,6 +964,19 @@ export default function MoneyTrailScreen() {
   // (ClearLensPortfolioScreen.tsx:947).
   const isRestoring = useIsRestoring();
   const showFirstLoad = isRestoring || isLoading || data === undefined;
+  const coldStartRef = useRef(data === undefined);
+  const restoredFromPersistedCacheRef = useRef(isRestoring);
+  useEffect(() => {
+    if (isRestoring) restoredFromPersistedCacheRef.current = true;
+  }, [isRestoring]);
+  let uxCacheState: 'restored' | 'network' | 'warm' | 'empty' = 'empty';
+  if (restoredFromPersistedCacheRef.current) {
+    uxCacheState = 'restored';
+  } else if (coldStartRef.current) {
+    uxCacheState = 'network';
+  } else if (data) {
+    uxCacheState = 'warm';
+  }
   const transactions = useMemo(() => data?.transactions ?? [], [data?.transactions]);
 
   useEffect(() => {
@@ -977,7 +990,8 @@ export default function MoneyTrailScreen() {
     [deferredQuery, filters, sortBy, transactions],
   );
   useUxScreenReady('money_trail', !showFirstLoad && !isError, {
-    cacheState: data ? 'warm' : 'empty',
+    coldStart: coldStartRef.current,
+    cacheState: uxCacheState,
     rowCount: visibleTransactions.length,
     transactionCount: transactions.length,
   });

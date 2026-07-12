@@ -6,7 +6,12 @@ import {
   type PerfSpanId,
 } from '@/src/lib/perfMark';
 import { isSyncInFlight } from '@/src/lib/performanceRuntimeState';
-import { trackUxSlowEvent, type UxCacheState, type UxSurface } from '@/src/lib/uxTelemetry';
+import {
+  trackUxSlowEvent,
+  UX_THRESHOLDS,
+  type UxCacheState,
+  type UxSurface,
+} from '@/src/lib/uxTelemetry';
 
 export type NavigationRouteName =
   | 'portfolio'
@@ -266,7 +271,9 @@ function completeNavigationPhase(
     ...properties,
     elapsed_ms: elapsedMs,
   }));
-  const threshold = phase === 'route_commit' ? 750 : 1_500;
+  const threshold = phase === 'route_commit'
+    ? UX_THRESHOLDS.routePaintMs
+    : UX_THRESHOLDS.contentReadyMs;
   if (elapsedMs >= threshold) {
     trackUxSlowEvent({
       sourceEvent: 'navigation_performance',
