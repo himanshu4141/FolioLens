@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -12,12 +12,17 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useConfirmDialog } from '@/src/hooks/useDialog';
 import Svg, { G, Line as SvgLine, Path as SvgPath, Text as SvgText } from 'react-native-svg';
-import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ClearLensCard, ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
+import {
+  RevealSection,
+  StatusChip,
+  ToolResultHero,
+  ToolTitleBlock,
+} from '@/src/components/clearLens/tools/kit';
 import {
   ClearLensFonts,
   ClearLensRadii,
-  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
@@ -35,12 +40,7 @@ import {
 } from '@/src/utils/goalPlanner';
 import { formatCurrency } from '@/src/utils/formatting';
 
-type TabKey = 'estimate' | 'scenarios';
-
-const TAB_OPTIONS: { value: TabKey; label: string }[] = [
-  { value: 'estimate', label: 'Best Estimate' },
-  { value: 'scenarios', label: 'Scenarios' },
-];
+const RETURN_PRESETS: GoalReturnPreset[] = ['cautious', 'balanced', 'growth'];
 
 export function ClearLensGoalSummaryScreen() {
   useTrackInsightViewed('goal_summary');
@@ -57,7 +57,6 @@ export function ClearLensGoalSummaryScreen() {
     })),
   );
   const showConfirm = useConfirmDialog();
-  const [tab, setTab] = useState<TabKey>('estimate');
 
   const goal = goals.find((g) => g.id === id);
 
@@ -105,44 +104,102 @@ export function ClearLensGoalSummaryScreen() {
   }
 
   const presetLabel = goal.returnPreset.charAt(0).toUpperCase() + goal.returnPreset.slice(1);
+  const presetRate = returnAssumptions[goal.returnPreset];
+  const targetYear = new Date(goal.targetDate).getFullYear();
+  const roundedYears = Math.round(years);
+
+  const heroSubtitle = plan.onTrack
+    ? (goal.currentMonthly > 0
+        ? `Your ₹${formatCurrency(goal.currentMonthly)}/mo covers this`
+        : 'On track to reach this goal')
+    : `₹${formatCurrency(Math.abs(plan.gap))}/mo gap vs your current ₹${formatCurrency(goal.currentMonthly)}/mo`;
 
   return (
     <ClearLensScreen>
-      <ClearLensHeader
-        title={goal.name}
-        onPressBack={() => router.back()}
-      />
+      <ClearLensHeader onPressBack={() => router.back()} />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Tab toggle */}
-        <View style={styles.tabRow}>
-          <ClearLensSegmentedControl
-            options={TAB_OPTIONS}
-            selected={tab}
-            onChange={setTab}
-          />
-        </View>
+        <ToolTitleBlock
+          eyebrow="Goal Planner"
+          title={goal.name}
+          subtitle={years > 0 ? `${roundedYears}-year goal · target by ${targetYear}` : 'Goal overdue'}
+        />
 
-        {tab === 'estimate' ? (
-          <EstimateTab
-            goal={{ targetAmount: goal.targetAmount, currentMonthly: goal.currentMonthly }}
-            plan={plan}
-            series={series}
-            years={years}
-            presetLabel={presetLabel}
-            presetRate={returnAssumptions[goal.returnPreset]}
-            chartWidth={chartWidth}
+        <ToolResultHero
+          label="Required monthly SIP"
+          value={`₹${formatCurrency(plan.requiredMonthly)}/mo`}
+          subtitle={heroSubtitle}
+          chip={
+            <StatusChip tone={plan.onTrack ? 'mint' : 'amber'} onDark>
+              {plan.onTrack ? 'On track' : 'Gap'}
+            </StatusChip>
+          }
+        />
+
+        {/* Key numbers */}
+        <ClearLensCard style={styles.cardNoPad}>
+          <Row label="Target corpus" value={formatCurrency(goal.targetAmount)} />
+          <RowDivider />
+          <Row label="Timeline" value={years > 0 ? `${Math.round(years)} years` : 'Overdue'} />
+          <RowDivider />
+          <Row label="Required monthly" value={formatCurrency(plan.requiredMonthly)} highlight />
+          <RowDivider />
+          <Row
+            label={plan.onTrack ? 'Surplus' : 'Gap'}
+            value={formatCurrency(Math.abs(plan.gap))}
+            tone={plan.onTrack ? 'positive' : 'negative'}
           />
-        ) : (
-          <ScenariosTab
-            planInput={planInput}
-            rates={rates}
-            returnAssumptions={returnAssumptions}
-          />
+          <RowDivider />
+          <View style={styles.revealWrap}>
+            <RevealSection label="See the assumptions">
+              <Row label="Return assumed" value={`${presetRate}% p.a. (${presetLabel})`} />
+            </RevealSection>
+          </View>
+        </ClearLensCard>
+
+        {/* Projection chart */}
+        {series.length > 1 && (
+          <ClearLensCard style={styles.cardNoPad}>
+            <Text style={styles.cardTitle}>Projected path</Text>
+            <View style={styles.chartLegend}>
+              <LegendDot color={tokens.colors.emerald} label="Corpus" />
+              <LegendDot color={tokens.colors.textTertiary} label="Invested" dashed />
+            </View>
+            <GoalProjectionChart
+              points={series}
+              chartWidth={chartWidth - ClearLensSpacing.md * 2}
+            />
+          </ClearLensCard>
         )}
+
+        {/* Other scenarios */}
+        <ClearLensCard style={styles.cardNoPad}>
+          <Text style={styles.cardTitle}>Other scenarios</Text>
+          <Text style={styles.sectionLabel}>Required SIP across return scenarios</Text>
+          {RETURN_PRESETS.map((preset, idx) => {
+            const input: GoalPlanInput = { ...planInput, returnPreset: preset };
+            const result = computeGoalPlan(input, rates);
+            const label = preset.charAt(0).toUpperCase() + preset.slice(1);
+            const rate = returnAssumptions[preset];
+            return (
+              <View key={preset}>
+                {idx > 0 && <RowDivider />}
+                <ScenarioRow
+                  label={label}
+                  rate={rate}
+                  requiredMonthly={result.requiredMonthly}
+                  isSelected={preset === planInput.returnPreset}
+                />
+              </View>
+            );
+          })}
+          <RowDivider />
+          <Text style={[styles.sectionLabel, styles.sectionLabelSpaced]}>What if you delay by 2 years?</Text>
+          <DelayRows planInput={planInput} rates={rates} />
+        </ClearLensCard>
 
         <View style={styles.actionRows}>
           <TouchableOpacity
@@ -170,127 +227,8 @@ export function ClearLensGoalSummaryScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Best Estimate tab
+// Sub-components
 // ---------------------------------------------------------------------------
-
-function EstimateTab({
-  goal,
-  plan,
-  series,
-  years,
-  presetLabel,
-  presetRate,
-  chartWidth,
-}: {
-  goal: { targetAmount: number; currentMonthly: number };
-  plan: ReturnType<typeof computeGoalPlan>;
-  series: ProjectionPoint[];
-  years: number;
-  presetLabel: string;
-  presetRate: number;
-  chartWidth: number;
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const gapAbs = Math.abs(plan.gap);
-
-  return (
-    <>
-      {/* Status banner */}
-      <View style={[styles.banner, plan.onTrack ? styles.bannerGreen : styles.bannerAmber]}>
-        <Ionicons
-          name={plan.onTrack ? 'checkmark-circle' : 'alert-circle'}
-          size={20}
-          color={plan.onTrack ? tokens.colors.positive : tokens.colors.warning}
-        />
-        <Text style={[styles.bannerText, plan.onTrack ? styles.bannerTextGreen : styles.bannerTextAmber]}>
-          {plan.onTrack
-            ? `You are on track — investing ₹${formatCurrency(plan.requiredMonthly)}/mo is enough`
-            : `Invest ₹${formatCurrency(plan.requiredMonthly)}/mo to reach your goal`}
-        </Text>
-      </View>
-
-      {/* Key numbers */}
-      <View style={styles.card}>
-        <Row label="Target corpus" value={formatCurrency(goal.targetAmount)} />
-        <RowDivider />
-        <Row label="Timeline" value={years > 0 ? `${Math.round(years)} years` : 'Overdue'} />
-        <RowDivider />
-        <Row label="Return assumed" value={`${presetRate}% p.a. (${presetLabel})`} />
-        <RowDivider />
-        <Row label="Required monthly" value={formatCurrency(plan.requiredMonthly)} highlight />
-        <RowDivider />
-        <Row
-          label={plan.onTrack ? 'Surplus' : 'Gap'}
-          value={formatCurrency(gapAbs)}
-          tone={plan.onTrack ? 'positive' : 'negative'}
-        />
-      </View>
-
-      {/* Projection chart */}
-      {series.length > 1 && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Projected path</Text>
-          <View style={styles.chartLegend}>
-            <LegendDot color={tokens.colors.emerald} label="Corpus" />
-            <LegendDot color={tokens.colors.navy} label="Invested" dashed />
-          </View>
-          <GoalProjectionChart
-            points={series}
-            chartWidth={chartWidth - ClearLensSpacing.md * 2}
-          />
-        </View>
-      )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Scenarios tab
-// ---------------------------------------------------------------------------
-
-function ScenariosTab({
-  planInput,
-  rates,
-  returnAssumptions,
-}: {
-  planInput: GoalPlanInput;
-  rates: Record<GoalReturnPreset, number>;
-  returnAssumptions: { cautious: number; balanced: number; growth: number };
-}) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const presets: GoalReturnPreset[] = ['cautious', 'balanced', 'growth'];
-
-  return (
-    <>
-      <Text style={styles.sectionLabel}>How does the required SIP change across return scenarios?</Text>
-      <View style={styles.card}>
-        {presets.map((preset, idx) => {
-          const input: GoalPlanInput = { ...planInput, returnPreset: preset };
-          const result = computeGoalPlan(input, rates);
-          const label = preset.charAt(0).toUpperCase() + preset.slice(1);
-          const rate = returnAssumptions[preset];
-          return (
-            <View key={preset}>
-              {idx > 0 && <RowDivider />}
-              <ScenarioRow
-                label={label}
-                rate={rate}
-                requiredMonthly={result.requiredMonthly}
-                isSelected={preset === planInput.returnPreset}
-              />
-            </View>
-          );
-        })}
-      </View>
-
-      {/* Delay scenario */}
-      <Text style={styles.sectionLabel}>What if you delay by 2 years?</Text>
-      <DelayScenarioCard planInput={planInput} rates={rates} />
-    </>
-  );
-}
 
 function ScenarioRow({
   label,
@@ -323,7 +261,7 @@ function ScenarioRow({
   );
 }
 
-function DelayScenarioCard({
+function DelayRows({
   planInput,
   rates,
 }: {
@@ -339,7 +277,7 @@ function DelayScenarioCard({
   const extraPerMonth = Math.max(0, delayed.requiredMonthly - base.requiredMonthly);
 
   return (
-    <View style={styles.card}>
+    <View>
       <Row label="Current monthly (base)" value={formatCurrency(base.requiredMonthly)} />
       <RowDivider />
       <Row label="Monthly if delayed 2 years" value={formatCurrency(delayed.requiredMonthly)} />
@@ -348,10 +286,6 @@ function DelayScenarioCard({
     </View>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Shared sub-components
-// ---------------------------------------------------------------------------
 
 function Row({
   label,
@@ -421,9 +355,6 @@ function GoalProjectionChart({
   chartWidth: number;
 }) {
   const tokens = useClearLensTokens();
-  // `invested` is rendered as a baseline reference line. `c.navy` flips to
-  // near-white in dark, which collides with the corpus colour we want to lead
-  // with — use the dark-stable hero surface tinted text colour instead.
   const investedStroke = tokens.colors.textTertiary;
   const chartHeight = 180;
   const plotTop = 12;
@@ -550,52 +481,29 @@ function makeStyles(tokens: ClearLensTokens) {
     ...ClearLensTypography.body,
     color: cl.textTertiary,
   },
-  tabRow: {
-    paddingBottom: ClearLensSpacing.xs,
-  },
-  sectionLabel: {
-    ...ClearLensTypography.bodySmall,
-    color: cl.textSecondary,
-    marginTop: ClearLensSpacing.xs,
-  },
-  banner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: ClearLensSpacing.xs,
-    padding: ClearLensSpacing.sm,
-    borderRadius: ClearLensRadii.md,
-    borderWidth: 1,
-  },
-  bannerGreen: {
-    backgroundColor: cl.positiveBg,
-    borderColor: cl.positive,
-  },
-  bannerAmber: {
-    backgroundColor: cl.warningBg,
-    borderColor: cl.amber,
-  },
-  bannerText: {
-    ...ClearLensTypography.bodySmall,
-    flex: 1,
-    lineHeight: 18,
-  },
-  bannerTextGreen: { color: cl.positive },
-  bannerTextAmber: { color: cl.warning },
-
-  card: {
-    backgroundColor: cl.surface,
-    borderRadius: ClearLensRadii.lg,
-    borderWidth: 1,
-    borderColor: cl.border,
-    ...ClearLensShadow,
+  cardNoPad: {
+    padding: 0,
     overflow: 'hidden',
-    paddingVertical: ClearLensSpacing.xs,
   },
   cardTitle: {
     ...ClearLensTypography.h3,
     color: cl.navy,
     paddingHorizontal: ClearLensSpacing.md,
+    paddingTop: ClearLensSpacing.md,
     paddingBottom: ClearLensSpacing.xs,
+  },
+  sectionLabel: {
+    ...ClearLensTypography.bodySmall,
+    color: cl.textSecondary,
+    paddingHorizontal: ClearLensSpacing.md,
+    paddingBottom: ClearLensSpacing.xs,
+  },
+  sectionLabelSpaced: {
+    paddingTop: ClearLensSpacing.sm,
+  },
+  revealWrap: {
+    paddingHorizontal: ClearLensSpacing.md,
+    paddingVertical: ClearLensSpacing.xs,
   },
 
   row: {

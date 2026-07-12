@@ -3,12 +3,13 @@ import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
-import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ClearLensCard, ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
+import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { ToolsPreviewBanner } from '@/src/components/clearLens/ToolsPreviewBanner';
+import { StatusChip, ToolTitleBlock } from '@/src/components/clearLens/tools/kit';
 import {
   ClearLensFonts,
   ClearLensRadii,
-  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
@@ -40,6 +41,7 @@ export function ClearLensGoalPlannerScreen() {
       <ClearLensScreen>
         <ClearLensHeader onPressBack={() => router.back()} />
         <View style={styles.emptyOuter}>
+          <ToolTitleBlock eyebrow="Goal Planner" title="Your financial goals" />
           <ToolsPreviewBanner message="Add a goal to see the required monthly SIP. Sign up to save it to your account." />
           <View style={styles.emptyContainer}>
             <View style={styles.emptyIcon}>
@@ -54,6 +56,7 @@ export function ClearLensGoalPlannerScreen() {
               <Text style={styles.addButtonText}>Add your first goal</Text>
             </TouchableOpacity>
           </View>
+          <PortfolioDisclaimer />
         </View>
       </ClearLensScreen>
     );
@@ -68,18 +71,24 @@ export function ClearLensGoalPlannerScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          <View style={styles.previewBannerWrap}>
-            <ToolsPreviewBanner message="Add goals to see the required monthly SIP. Sign up to save them to your account." />
-          </View>
+          <>
+            <ToolTitleBlock eyebrow="Goal Planner" title="Your financial goals" />
+            <View style={styles.previewBannerWrap}>
+              <ToolsPreviewBanner message="Add goals to see the required monthly SIP. Sign up to save them to your account." />
+            </View>
+          </>
         }
         renderItem={({ item }) => (
           <GoalCard goal={item} rates={rates} />
         )}
         ListFooterComponent={
-          <TouchableOpacity style={styles.addRowButton} onPress={handleAdd} activeOpacity={0.8}>
-            <Ionicons name="add-circle-outline" size={18} color={tokens.colors.emerald} />
-            <Text style={styles.addRowText}>Add another goal</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity style={styles.addRowButton} onPress={handleAdd} activeOpacity={0.8}>
+              <Ionicons name="add-circle-outline" size={18} color={tokens.colors.emerald} />
+              <Text style={styles.addRowText}>Add another goal</Text>
+            </TouchableOpacity>
+            <PortfolioDisclaimer />
+          </>
         }
       />
     </ClearLensScreen>
@@ -111,38 +120,37 @@ function GoalCard({
   const presetLabel = goal.returnPreset.charAt(0).toUpperCase() + goal.returnPreset.slice(1);
 
   return (
-    <TouchableOpacity
-      style={styles.card}
-      activeOpacity={0.75}
-      onPress={() => router.push(`/tools/goal-planner/${goal.id}`)}
-    >
-      <View style={styles.cardHeader}>
-        <View style={styles.cardTitleRow}>
-          <Text style={styles.goalName} numberOfLines={1}>{goal.name}</Text>
-          <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
-        </View>
-        <View style={styles.tagRow}>
-          <View style={[styles.tag, plan.onTrack ? styles.tagGreen : styles.tagAmber]}>
-            <Text style={[styles.tagText, plan.onTrack ? styles.tagTextGreen : styles.tagTextAmber]}>
-              {plan.onTrack ? 'On track' : 'Needs attention'}
-            </Text>
+    <ClearLensCard style={styles.goalCard}>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={() => router.push(`/tools/goal-planner/${goal.id}`)}
+      >
+        <View style={styles.cardHeader}>
+          <View style={styles.cardTitleRow}>
+            <Text style={styles.goalName} numberOfLines={1}>{goal.name}</Text>
+            <Ionicons name="chevron-forward" size={16} color={tokens.colors.textTertiary} />
           </View>
-          <Text style={styles.metaText}>{presetLabel} · {years > 0 ? `${Math.round(years)}y` : 'Overdue'}</Text>
+          <View style={styles.tagRow}>
+            <StatusChip tone={plan.onTrack ? 'mint' : 'amber'}>
+              {plan.onTrack ? 'On track' : 'Needs attention'}
+            </StatusChip>
+            <Text style={styles.metaText}>{presetLabel} · {years > 0 ? `${Math.round(years)}y` : 'Overdue'}</Text>
+          </View>
         </View>
-      </View>
 
-      <View style={styles.cardMetrics}>
-        <Metric label="Target" value={formatCurrency(goal.targetAmount)} />
-        <View style={styles.divider} />
-        <Metric label="Monthly needed" value={formatCurrency(plan.requiredMonthly)} />
-        <View style={styles.divider} />
-        <Metric
-          label={plan.onTrack ? 'Surplus' : 'Gap'}
-          value={formatCurrency(Math.abs(plan.gap))}
-          tone={plan.onTrack ? 'positive' : 'negative'}
-        />
-      </View>
-    </TouchableOpacity>
+        <View style={styles.cardMetrics}>
+          <Metric label="Target" value={formatCurrency(goal.targetAmount)} />
+          <View style={styles.divider} />
+          <Metric label="Monthly needed" value={formatCurrency(plan.requiredMonthly)} />
+          <View style={styles.divider} />
+          <Metric
+            label={plan.onTrack ? 'Surplus' : 'Gap'}
+            value={formatCurrency(Math.abs(plan.gap))}
+            tone={plan.onTrack ? 'positive' : 'negative'}
+          />
+        </View>
+      </TouchableOpacity>
+    </ClearLensCard>
   );
 }
 
@@ -169,7 +177,7 @@ function makeStyles(tokens: ClearLensTokens) {
   emptyOuter: {
     flex: 1,
     paddingHorizontal: ClearLensSpacing.md,
-    paddingTop: ClearLensSpacing.sm,
+    paddingTop: ClearLensSpacing.xs,
     gap: ClearLensSpacing.sm,
   },
   emptyContainer: {
@@ -214,7 +222,6 @@ function makeStyles(tokens: ClearLensTokens) {
     fontSize: 15,
     color: cl.textOnDark,
   },
-
   listContent: {
     paddingHorizontal: ClearLensSpacing.md,
     paddingTop: ClearLensSpacing.xs,
@@ -224,12 +231,8 @@ function makeStyles(tokens: ClearLensTokens) {
   previewBannerWrap: {
     paddingBottom: ClearLensSpacing.sm,
   },
-  card: {
-    backgroundColor: cl.surface,
-    borderRadius: ClearLensRadii.lg,
-    borderWidth: 1,
-    borderColor: cl.border,
-    ...ClearLensShadow,
+  goalCard: {
+    padding: 0,
     overflow: 'hidden',
   },
   cardHeader: {
@@ -253,19 +256,6 @@ function makeStyles(tokens: ClearLensTokens) {
     alignItems: 'center',
     gap: ClearLensSpacing.sm,
   },
-  tag: {
-    paddingHorizontal: ClearLensSpacing.xs,
-    paddingVertical: 2,
-    borderRadius: ClearLensRadii.sm,
-  },
-  tagGreen: { backgroundColor: cl.positiveBg },
-  tagAmber: { backgroundColor: cl.warningBg },
-  tagText: {
-    fontFamily: ClearLensFonts.semiBold,
-    fontSize: 11,
-  },
-  tagTextGreen: { color: cl.positive },
-  tagTextAmber: { color: cl.warning },
   metaText: {
     ...ClearLensTypography.caption,
     color: cl.textTertiary,
