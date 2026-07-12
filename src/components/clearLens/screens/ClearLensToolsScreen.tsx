@@ -7,6 +7,7 @@ import {
   ClearLensHeader,
   ClearLensScreen,
 } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ToolTitleBlock } from '@/src/components/clearLens/tools/kit';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useToolsFeatureFlags } from '@/src/hooks/useToolsFeatureFlags';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
@@ -135,13 +136,11 @@ export function ClearLensToolsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.titleBlock}>
-          <Text style={styles.eyebrow}>Tools</Text>
-          <Text style={styles.title}>Plan, project, and explore</Text>
-          <Text style={styles.subtitle}>
-            Tools that help you plan future contributions, set goals, and understand fund mechanics.
-          </Text>
-        </View>
+        <ToolTitleBlock
+          eyebrow="Tools"
+          title="Plan, project, and explore"
+          subtitle="Tools that help you plan future contributions, set goals, and understand fund mechanics."
+        />
 
         {sections.map((section) => (
           <View key={section.label} style={styles.section}>
@@ -221,23 +220,6 @@ function makeStyles(tokens: ClearLensTokens) {
     paddingTop: ClearLensSpacing.xs,
     paddingBottom: ClearLensSpacing.xxl,
     gap: ClearLensSpacing.lg,
-  },
-  titleBlock: {
-    gap: 4,
-    paddingHorizontal: ClearLensSpacing.xs,
-  },
-  eyebrow: {
-    ...ClearLensTypography.label,
-    color: cl.emerald,
-    textTransform: 'uppercase',
-  },
-  title: {
-    ...ClearLensTypography.h1,
-    color: cl.navy,
-  },
-  subtitle: {
-    ...ClearLensTypography.body,
-    color: cl.textSecondary,
   },
   section: {
     gap: ClearLensSpacing.sm,

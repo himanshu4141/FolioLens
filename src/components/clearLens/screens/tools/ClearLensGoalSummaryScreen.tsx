@@ -85,7 +85,7 @@ export function ClearLensGoalSummaryScreen() {
   const plan = computeGoalPlan(planInput, rates);
   const series = buildGoalProjectionSeries(planInput, plan.requiredMonthly, rates);
 
-  const chartWidth = windowWidth - ClearLensSpacing.md * 2;
+  const chartWidth = Math.min(windowWidth, 960) - ClearLensSpacing.md * 2;
 
   function confirmDelete() {
     const goalId = goal!.id;

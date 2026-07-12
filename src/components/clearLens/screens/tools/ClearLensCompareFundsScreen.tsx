@@ -11,7 +11,6 @@
  */
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Animated,
   ScrollView,
   StyleSheet,
   Text,
@@ -22,6 +21,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { ClearLensHeader, ClearLensScreen } from '@/src/components/clearLens/ClearLensPrimitives';
+import { RevealSection, ToolTitleBlock } from '@/src/components/clearLens/tools/kit';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { UniversalFundPicker } from '@/src/components/clearLens/UniversalFundPicker';
 import { ToolsPreviewSampleCard } from '@/src/components/clearLens/ToolsPreviewSampleCard';
@@ -681,103 +681,51 @@ function NumbersReveal({
   tokens: ClearLensTokens;
 }) {
   const cl = tokens.colors;
-  const [open, setOpen] = useState(false);
-  const chevronAnim = useRef(new Animated.Value(0)).current;
-
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    Animated.timing(chevronAnim, {
-      toValue: next ? 1 : 0,
-      duration: 200,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const chevronRotate = chevronAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '180deg'],
-  });
-
   const mutedColor = dark ? cl.textOnDarkMuted : cl.textTertiary;
-  const dividerColor = dark ? 'rgba(255,255,255,0.12)' : cl.borderLight;
 
   return (
-    <View>
-      <TouchableOpacity
-        onPress={toggle}
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingTop: 6,
-          minHeight: 40,
-        }}
-        accessibilityRole="button"
-        accessibilityLabel={open ? 'Hide the numbers' : 'See the numbers'}
-        accessibilityState={{ expanded: open }}
-      >
-        <Text
-          style={{
-            fontSize: 11,
-            fontFamily: ClearLensFonts.bold,
-            letterSpacing: 0.5,
-            textTransform: 'uppercase',
-            color: mutedColor,
-          }}
-        >
-          {open ? 'Hide the numbers' : 'See the numbers'}
-        </Text>
-        <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
-          <Ionicons name="chevron-down" size={14} color={mutedColor} />
-        </Animated.View>
-      </TouchableOpacity>
-
-      {open ? (
-        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: dividerColor, gap: 8 }}>
-          {/* Badge header row */}
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <View style={{ width: 80 }} />
-            {funds.map((f) => (
-              <View key={f.code} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
-                <Text
-                  style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, color: mutedColor }}
-                  numberOfLines={1}
-                >
-                  {fundDisplayName(f.scheme)}
-                </Text>
-              </View>
-            ))}
+    <RevealSection label="See the numbers" dark={dark}>
+      {/* Badge header row */}
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ width: 80 }} />
+        {funds.map((f) => (
+          <View key={f.code} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+            <Text
+              style={{ fontSize: 10, fontFamily: ClearLensFonts.bold, color: mutedColor }}
+              numberOfLines={1}
+            >
+              {fundDisplayName(f.scheme)}
+            </Text>
           </View>
-          {/* Data rows */}
-          {rows.map((row) => (
-            <View key={row.label} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-              <Text
-                style={{ width: 80, fontSize: 10, fontFamily: ClearLensFonts.medium, color: mutedColor }}
-                numberOfLines={2}
-              >
-                {row.label}
-              </Text>
-              {row.cells.map((cell, i) => (
-                <Text
-                  key={i}
-                  style={{
-                    flex: 1,
-                    fontSize: 12,
-                    fontFamily: ClearLensFonts.bold,
-                    color: dark ? cl.textOnDark : cl.navy,
-                    fontVariant: ['tabular-nums'],
-                  }}
-                >
-                  {cell}
-                </Text>
-              ))}
-            </View>
+        ))}
+      </View>
+      {/* Data rows */}
+      {rows.map((row) => (
+        <View key={row.label} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <Text
+            style={{ width: 80, fontSize: 10, fontFamily: ClearLensFonts.medium, color: mutedColor }}
+            numberOfLines={2}
+          >
+            {row.label}
+          </Text>
+          {row.cells.map((cell, i) => (
+            <Text
+              key={i}
+              style={{
+                flex: 1,
+                fontSize: 12,
+                fontFamily: ClearLensFonts.bold,
+                color: dark ? cl.textOnDark : cl.navy,
+                fontVariant: ['tabular-nums'],
+              }}
+            >
+              {cell}
+            </Text>
           ))}
         </View>
-      ) : null}
-    </View>
+      ))}
+    </RevealSection>
   );
 }
 
@@ -1858,94 +1806,66 @@ function TopHoldingsReveal({
   tokens: ClearLensTokens;
 }) {
   const cl = tokens.colors;
-  const [open, setOpen] = useState(false);
-  const chevronAnim = useRef(new Animated.Value(0)).current;
-
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    Animated.timing(chevronAnim, { toValue: next ? 1 : 0, duration: 200, useNativeDriver: true }).start();
-  };
-  const chevronRotate = chevronAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
 
   return (
-    <View>
-      <TouchableOpacity
-        onPress={toggle}
-        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 6, minHeight: 40 }}
-        accessibilityRole="button"
-        accessibilityLabel={open ? 'Hide top 5 holdings' : 'See top 5 holdings'}
-        accessibilityState={{ expanded: open }}
-      >
-        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, letterSpacing: 0.5, textTransform: 'uppercase', color: cl.textTertiary }}>
-          {open ? 'Hide top 5 holdings' : 'See top 5 holdings'}
+    <RevealSection label="See top 5 holdings" openLabel="Hide top 5 holdings">
+      {/* Legend for the shared highlight. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: cl.mint50, borderWidth: 1, borderColor: cl.emerald }} />
+        <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
+          Shared with another fund
         </Text>
-        <Animated.View style={{ transform: [{ rotate: chevronRotate }] }}>
-          <Ionicons name="chevron-down" size={14} color={cl.textTertiary} />
-        </Animated.View>
-      </TouchableOpacity>
+      </View>
 
-      {open ? (
-        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: cl.borderLight, gap: 14 }}>
-          {/* Legend for the shared highlight. */}
+      {fundData.map((f, i) => (
+        <View key={f.code} style={{ gap: 6 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: cl.mint50, borderWidth: 1, borderColor: cl.emerald }} />
-            <Text style={{ fontSize: 10, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary }}>
-              Shared with another fund
+            <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, color: cl.navy, flex: 1 }} numberOfLines={1}>
+              {fundDisplayName(f.scheme)}
             </Text>
           </View>
-
-          {fundData.map((f, i) => (
-            <View key={f.code} style={{ gap: 6 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <FundBadge letter={f.badgeLetter} color={f.badgeColor} size={16} radius={4} />
-                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.bold, color: cl.navy, flex: 1 }} numberOfLines={1}>
-                  {fundDisplayName(f.scheme)}
-                </Text>
-              </View>
-              {top5[i].length === 0 ? (
-                <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, paddingLeft: 22 }}>
-                  Holdings not available yet.
-                </Text>
-              ) : (
-                <View style={{ gap: 4, paddingLeft: 22 }}>
-                  {top5[i].map((h) => {
-                    const isShared = sharedKeys.has(keyOf(h));
-                    return (
-                      <View
-                        key={h.isin || h.name}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                          paddingVertical: 4,
-                          paddingHorizontal: 8,
-                          borderRadius: ClearLensRadii.sm,
-                          backgroundColor: isShared ? cl.mint50 : 'transparent',
-                          borderWidth: isShared ? 1 : 0,
-                          borderColor: isShared ? cl.emerald : 'transparent',
-                        }}
-                      >
-                        <Text
-                          style={{ flex: 1, fontSize: 12, fontFamily: isShared ? ClearLensFonts.bold : ClearLensFonts.semiBold, color: cl.navy }}
-                          numberOfLines={1}
-                        >
-                          {h.name}
-                        </Text>
-                        <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}>
-                          {h.pctOfNav != null ? `${h.pctOfNav.toFixed(1)}%` : '—'}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
+          {top5[i].length === 0 ? (
+            <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.medium, color: cl.textTertiary, paddingLeft: 22 }}>
+              Holdings not available yet.
+            </Text>
+          ) : (
+            <View style={{ gap: 4, paddingLeft: 22 }}>
+              {top5[i].map((h) => {
+                const isShared = sharedKeys.has(keyOf(h));
+                return (
+                  <View
+                    key={h.isin || h.name}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      paddingVertical: 4,
+                      paddingHorizontal: 8,
+                      borderRadius: ClearLensRadii.sm,
+                      backgroundColor: isShared ? cl.mint50 : 'transparent',
+                      borderWidth: isShared ? 1 : 0,
+                      borderColor: isShared ? cl.emerald : 'transparent',
+                    }}
+                  >
+                    <Text
+                      style={{ flex: 1, fontSize: 12, fontFamily: isShared ? ClearLensFonts.bold : ClearLensFonts.semiBold, color: cl.navy }}
+                      numberOfLines={1}
+                    >
+                      {h.name}
+                    </Text>
+                    <Text style={{ fontSize: 11, fontFamily: ClearLensFonts.semiBold, color: cl.textTertiary, fontVariant: ['tabular-nums'] }}>
+                      {h.pctOfNav != null ? `${h.pctOfNav.toFixed(1)}%` : '—'}
+                    </Text>
+                  </View>
+                );
+              })}
             </View>
-          ))}
+          )}
         </View>
-      ) : null}
-    </View>
+      ))}
+    </RevealSection>
   );
 }
 
@@ -2322,13 +2242,11 @@ export function ClearLensCompareFundsScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.titleBlock}>
-            <Text style={styles.eyebrow}>Compare funds</Text>
-            <Text style={styles.title}>Side-by-side on the metrics that matter</Text>
-            <Text style={styles.subtitle}>
-              Returns, risk, cost, holdings — across up to {MAX_FUNDS} funds at once.
-            </Text>
-          </View>
+          <ToolTitleBlock
+            eyebrow="Compare funds"
+            title="Side-by-side on the metrics that matter"
+            subtitle={`Returns, risk, cost, holdings — across up to ${MAX_FUNDS} funds at once.`}
+          />
           <ToolsPreviewSampleCard
             bannerMessage="A sample comparison of HDFC Mid-Cap vs HDFC Hybrid Equity. Sign up to compare any two funds with their real history."
             heroLabel="HDFC Mid-Cap vs HDFC Hybrid Equity"
@@ -2541,18 +2459,6 @@ function makeStyles(tokens: ClearLensTokens) {
     },
     helperText: { ...ClearLensTypography.body, color: cl.textTertiary, textAlign: 'center' },
     emptyTitle: { ...ClearLensTypography.h2, color: cl.navy, textAlign: 'center' },
-    titleBlock: {
-      gap: 4,
-      paddingHorizontal: ClearLensSpacing.xs,
-      paddingVertical: ClearLensSpacing.sm,
-    },
-    eyebrow: {
-      ...ClearLensTypography.label,
-      color: cl.emerald,
-      textTransform: 'uppercase',
-    },
-    title: { ...ClearLensTypography.h1, color: cl.navy },
-    subtitle: { ...ClearLensTypography.body, color: cl.textSecondary },
     disclaimer: {
       fontSize: 11,
       fontFamily: ClearLensFonts.medium,
