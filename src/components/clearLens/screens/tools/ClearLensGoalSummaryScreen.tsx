@@ -268,8 +268,6 @@ function DelayRows({
   planInput: GoalPlanInput;
   rates: Record<GoalReturnPreset, number>;
 }) {
-  const tokens = useClearLensTokens();
-  const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const delayedYears = Math.max(0, planInput.years - 2);
   const delayedInput: GoalPlanInput = { ...planInput, years: delayedYears };
   const base = computeGoalPlan(planInput, rates);
