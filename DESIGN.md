@@ -6,7 +6,9 @@ Clear Lens is the only FolioLens interface. It is a calm mobile-first system for
 
 The system is responsive: the same Clear Lens tokens, primitives, and screens render on phones, mobile web, iOS, Android, and a purpose-built desktop web shell at viewports ≥ 1024 px. Native binaries always render mobile.
 
-It also ships in two colour schemes — **light** (the original palette) and **dark** (added during PR #97) — picked at Settings → Preferences → Appearance (light / dark / follow system). The legacy Classic mode has been retired.
+It also ships in two colour schemes — **light** and **dark** — picked at
+Settings → Preferences → Appearance (light / dark / follow system). The legacy
+Classic mode has been retired.
 
 ## Principles
 
@@ -69,7 +71,7 @@ Shared Clear Lens primitives live under `src/components/clearLens/`:
 - `ClearLensCard`
 - `ClearLensPill`
 - `ClearLensSegmentedControl`
-- `FundLensLogo`
+- `FolioLensLogo`
 
 Primary screens should compose these primitives before adding screen-specific styles.
 
@@ -132,7 +134,7 @@ Pick the tier by content density. Reading-style screens (single-column lists, ch
 **Out-of-shell exceptions (not aligned to the two-tier scheme):**
 
 - **Auth** ([app/auth/index.tsx](app/auth/index.tsx)) — pre-login, no sidebar. The 920 px width is the rounded hero-plus-form card centered on a navy background, not a content column inside the shell. Tier mismatch is intentional and visually less jarring because the user hasn't entered the shell yet.
-- **Onboarding wizard** ([DesktopFormFrame.tsx](src/components/responsive/DesktopFormFrame.tsx), default `maxWidth: 720`) — still legacy. The 720 px form column predates the two-tier scheme and won't be aligned in this pass; expected to be redesigned wholesale in the next onboarding revamp.
+- **Onboarding / import wizard** ([DesktopFormFrame.tsx](src/components/responsive/DesktopFormFrame.tsx), default `maxWidth: 720`) — intentionally uses a narrower form column inside the desktop shell because the flow is step-based and input-heavy rather than a reading/list screen.
 
 Layout rules:
 
@@ -171,4 +173,4 @@ The largest product-level divergence is that live portfolio data remains authori
 - `npm test -- --runInBand`
 - `EXPO_PUBLIC_SUPABASE_URL=https://example.supabase.co EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_dummy npm run export:web`
 - Browser pass on local Expo web with the demo auth shortcut
-- Screenshot pass for Portfolio, Portfolio Insights, Your Funds, Fund Detail, Money Trail, Leaderboard, Wealth Journey, Tools, Goal Planner, Settings, import, PDF upload, overflow menu, sort sheet, and modal states
+- Screenshot pass for Portfolio, Portfolio Insights, Your Funds, Fund Detail, Money Trail, Wealth Journey, Tools, Goal Planner, Compare Funds, Past SIP Check, Direct vs Regular, Settings, import, PDF upload, overflow menu, sort sheet, and modal states

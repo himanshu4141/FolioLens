@@ -1,160 +1,117 @@
-# FundLens — Technical Discovery
+# FolioLens — Technical Discovery
 
-This document captures the outcome of the technical discovery session. It records the decisions made, the reasoning behind them, and the key findings from research. No implementation has started yet.
+This is the current technical map for FolioLens data sources, ingestion, and
+financial-data constraints. It is a living reference, not a pre-build discovery
+snapshot. Prefer this doc over archived plans when deciding how the app obtains or
+stores fund data today.
+
+For cache ownership and invalidation rules, read
+[docs/architecture/cache-surfaces.md](./architecture/cache-surfaces.md). For
+deployment/runtime wiring, read [docs/INFRASTRUCTURE.md](./INFRASTRUCTURE.md).
 
 ---
 
-## Tech Stack Decisions
+## Current stack decisions
 
-| Layer | Decision | Reasoning |
+| Layer | Decision | Current rationale |
 |---|---|---|
-| **Frontend** | Expo (React Native) + TypeScript | Familiar React ecosystem, native widgets on Android/iOS, single codebase covers Android + iOS + iPad + macOS + Web. New Architecture (stable 2024) closes performance gap with Flutter. |
-| **Backend** | Supabase (Postgres + Edge Functions) | Lightweight, handles DB + auth + scheduled jobs. Fits a personal-scale app. No separate Python microservice needed. |
-| **NAV data** | mfapi.in | Free, JSON, no auth, 9000+ schemes, historical NAV going back years. Sourced from AMFI. |
-| **Index data** | `yfinance` (Python, server-side) | Free, sufficient for daily EOD fetch. Must be server-side — NSE direct calls fail in browser due to CORS. Fallback chain required (see below). |
-| **Benchmark mapping** | SEBI category lookup table (hardcoded) | mfapi.in and AMFI flat file contain no benchmark data. Using `scheme_category` from mfapi.in + hardcoded SEBI category-to-benchmark table covers ~80% of funds deterministically. |
-| **Holdings / composition** | OpenFolio-Data (primary, official) → mfdata.in (backup) → SEBI category rules (fallback) | Our own [OpenFolio-Data](https://github.com/himanshu4141/OpenFolio-Data) service parses AMCs' SEBI-mandated monthly portfolio disclosures into an authed REST API (`X-API-Key`). It gives truthful, ISIN-bearing equity **and** debt holdings, sectors, asset mix, and cap split — mfdata.in has null ISINs and corrupted debt data, so it's demoted to backup. FolioLens stays HTTP-only and reads its own Postgres at request time; a monthly cron (`openfolio-sync`, 15th) syncs into `fund_portfolio_composition` as `source='official'`. The old AMFI ISIN→cap classifier (`stock_market_cap` table + `sync-stock-market-cap` cron) was retired in 2026-06-08 — OpenFolio's `cap_mix` field supersedes it. |
-| **CAS import** | CASParser.in — email forwarding (primary) | User forwards their CAMS CAS email to a dedicated CASParser.in inbox. User-initiated, no persistent access, no credential sharing. 0.2 credits per parse (50 refreshes/month on free tier). Lower friction than QR for ongoing refreshes. |
-| **CAS parsing** | CASParser.in API | Supabase Edge Functions are Deno (TypeScript only) — no Python runtime. CASParser.in handles parsing and keeps the entire backend on Supabase. Gmail OAuth feature explicitly not used. |
-| **XIRR calculation** | Client-side TypeScript | Standard algorithm, no external dependency needed. Accounts for every SIP instalment timing. |
+| Frontend | Expo React Native + TypeScript + Expo Router | One codebase covers Android, iOS, mobile web, and desktop web. Desktop is a responsive shell over the same route tree. |
+| Backend | Supabase Postgres + Edge Functions | Fits the current app size and keeps auth, data, cron, storage, and functions in one operational surface. Provider boundaries are explicit in `src/lib/{auth,functions,storage,data}/`. |
+| Web/API router | Vercel | Hosts the Expo web app, CAS PDF parser relay, Resend inbound router, feedback notifier, and freshness alerts. |
+| Product/ops telemetry | PostHog | Privacy-safe product, import, cache, sync, and UX timing events. No autocapture or session replay by default. |
+| NAV data | OpenFolio first, mfapi.in fallback | OpenFolio gives incremental plan-keyed NAV via `/v1/nav/{scheme_code}`. mfapi.in remains the fallback for gaps/outages. App clients never call mfapi directly. |
+| Index data | Server-side index sync | `sync-index` fetches benchmark closes into `index_history` using NSE TRI first, EODHD fallback, and Yahoo Finance for legacy price-return symbols. Browser-side index fetches remain out of scope. |
+| Fund metadata | OpenFolio metadata first, mfdata fallback | `sync-fund-meta` and `universe-backfill` populate `scheme_master`; mfdata only fills unresolved fields where OpenFolio does not provide a value. |
+| Holdings/composition | OpenFolio official rows first, mfdata/category fallback | Official AMC-disclosure-derived rows use `source='official'`. New mfdata backup rows use `source='category_fallback'`; legacy `source='amfi'` rows can still exist and are ranked between official and category fallback. |
+| CAS import | Detailed CAS PDF + Resend inbound forwarding | Users upload a detailed CAS PDF or forward CAS emails to their per-user `cas-...@foliolens.in` inbox. No Gmail OAuth or broker credential access. |
+| XIRR/financial calculations | Client-side TypeScript | Calculations run in deterministic utility modules with tests; persisted results are cache outputs, not sources of truth. |
 
 ---
 
-## Architecture Overview
+## Architecture overview
 
+```text
+Expo app (native + web)
+  ├─ Supabase Auth
+  ├─ Supabase Data API through src/lib/data/* repos
+  ├─ Supabase Edge Functions through src/lib/functions
+  ├─ React Query + Zustand + AsyncStorage/localStorage + native SQLite
+  └─ PostHog telemetry facade
+
+Supabase
+  ├─ Postgres: user data, transactions, NAV/index history, scheme metadata, composition
+  ├─ Edge Functions: sync, import, freshness, feedback, on-demand hydration
+  ├─ Storage: feedback attachments + static snapshots
+  └─ pg_cron/pg_net: scheduled sync/audit jobs
+
+Vercel
+  ├─ Expo web app
+  ├─ Resend inbound router
+  ├─ CAS parser relay
+  ├─ feedback/freshness email endpoints
+  └─ production deploy gate
 ```
-Expo App (React Native)
-    │
-    └── Supabase (Postgres + Edge Functions)
-          ├── DB: funds, nav_history, index_history, transactions
-          ├── Daily cron: fetch NAVs from mfapi.in
-          ├── Daily cron: fetch index data via yfinance
-          └── CAS webhook: receive parsed JSON from CASParser.in → store transactions
-```
 
 ---
 
-## Data Sources
+## Data sources
 
-### Mutual Fund NAVs — mfapi.in
+### Mutual-fund NAVs
 
-- **Base URL**: `https://api.mfapi.in`
-- **Key endpoints**:
-  - `GET /mf/search?query={name}` — search schemes
-  - `GET /mf/{scheme_code}` — full NAV history
-  - `GET /mf/{scheme_code}/latest` — latest NAV only
-- **Cost**: Free, no auth
-- **Update frequency**: Daily after 9 PM IST
-- **Coverage**: 9000+ schemes, 20M+ historical records
-- **Caching strategy**: Daily cron on Supabase Edge Function stores NAVs in DB — app never calls mfapi.in directly
+- **Primary:** OpenFolio `/v1/nav/{scheme_code}` with incremental `since=`.
+- **Fallback:** mfapi.in `/mf/{scheme_code}`.
+- **Writers:** `sync-nav` for held funds and `fetch-fund-nav` for non-held funds selected in Compare/Past SIP/Fund Detail flows.
+- **Client ownership:** native SQLite is the durable raw-history cache; React Query persists only bounded rendered outputs and small supporting lookups.
+- **Coverage proof:** native reads must not treat a recent slice as full history unless the SQLite `sync_state` coverage row proves the lower bound. See the C1 notes in the cache inventory.
 
-### Benchmark Index Data — yfinance
+### Benchmark/index history
 
-- **Symbols**:
-  - Nifty 50: `^NSEI`
-  - Nifty Midcap 150: `^NSEMDCP150`
-  - Nifty Smallcap 250: `^NSEMDCP250` (verify symbol)
-- **Library**: `yfinance` (Python) via Supabase Edge Function
-- **CORS note**: All index data must be fetched server-side and cached in DB
-- **Known issue**: `^NSEMDCP150` is less reliable than `^NSEI` on Yahoo Finance — can return stale or empty data
-- **Cron timing**: Run after 10:30 UTC (4:00 PM IST) to ensure EOD bar is finalised
-- **Fallback chain**:
-  1. `yfinance` (primary)
-  2. Stooq via pandas-datareader for Nifty 50 (`https://stooq.com/q/d/l/?s=^nsei&i=d`)
-  3. EODHD free tier (20 calls/day) for Midcap/Smallcap indices where yfinance is unreliable
-- **Validation required**: Check returned DataFrame is non-empty, date matches expected trading day, value is within sane range
+- **Table:** `index_history`.
+- **Writer:** `sync-index`.
+- **Source priority:** NSE direct TRI endpoint > EODHD > Yahoo Finance > unknown.
+- **Snapshots:** `regenerate-index-snapshots` writes public JSON snapshots for fast client reads; hooks fall back to paginated PostgREST when the snapshot is absent or malformed.
+- **Constraint:** all index data is fetched server-side. Do not add browser-side NSE/Yahoo fetches.
 
-### Benchmark Mapping — SEBI Category Lookup
+### Scheme metadata
 
-Neither mfapi.in nor AMFI's flat NAV file contain benchmark data. The mapping is derived from:
+- **Table:** `scheme_master`.
+- **Writers:** `sync-fund-meta`, `universe-backfill`, and `fetch-fund-snapshot`.
+- **Primary fields:** OpenFolio `/v1/metadata` writes family identity, plan/option type, AUM, period returns, risk ratios, risk label, benchmark, manager, and related B1 fields.
+- **Fallback:** mfdata fills unresolved fields only. Guard utilities such as `src/utils/mfdataGuards.ts` prevent junk text from reaching the UI.
+- **Catalog scope:** `universe-backfill` walks the active AMFI universe so Compare/Past SIP can search funds that no current user holds.
 
-1. **`scheme_category` field from mfapi.in** (e.g., `"Equity Scheme - Large Cap Fund"`)
-2. **Hardcoded SEBI category-to-benchmark table** (from SEBI's 2017 Categorization circular, TRI mandated since Feb 2018)
+### Holdings and portfolio composition
 
-Standard mappings:
+- **Table:** `fund_portfolio_composition`.
+- **Source precedence:** `official > amfi > category_fallback > category_rules`.
+- **Primary:** OpenFolio official AMC disclosures (`source='official'`) synced monthly and hydrated on demand for selected funds.
+- **Backup:** mfdata holdings (`source='category_fallback'`) with guards for corrupted debt/equity payloads.
+- **Last resort:** SEBI-category rules (`source='category_rules'`) for broad asset/cap approximations. UI must disclose category-derived data.
+- **Selector:** `src/utils/compositionSource.ts` is the app-side source-of-truth for ranking rows; Deno functions mirror that ranking.
 
-| Category | Benchmark |
-|---|---|
-| Large Cap | Nifty 100 TRI |
-| Mid Cap | Nifty Midcap 150 TRI |
-| Small Cap | Nifty Smallcap 250 TRI |
-| Large & Mid Cap | Nifty LargeMidcap 250 TRI |
-| Flexi Cap | Nifty 500 TRI |
-| Multi Cap | Nifty 500 Multicap 50:25:25 TRI |
-| ELSS | Nifty 500 TRI (heterogeneous — may need per-fund override) |
-| Index Fund (Nifty 50) | Nifty 50 TRI |
-| Liquid | Nifty Liquid Index TRI |
+### CAS import
 
-**Stability**: Benchmarks rarely change — only during SEBI regulatory events (~2-3 times per decade industry-wide). Safe to treat as stable within a regulatory era. Store with a `valid_from` date.
+FolioLens supports two practical CAS paths:
 
-**Edge cases**: ELSS and thematic/sectoral funds are heterogeneous — category default may not be accurate. Override with per-fund data scraped from Value Research Online as needed.
+1. **PDF upload** — user uploads a detailed CAMS/KFintech/MFCentral/CDSL/NSDL statement. The app sends it to `parse-cas-pdf`, which relays to the Vercel parser and imports through `_shared/import-cas.ts`.
+2. **Email forwarding** — user forwards the CAS email to a per-user Resend inbound address. The Vercel inbound router verifies the Resend event, resolves the target inbox, fetches the full email/attachments when needed, then calls `cas-webhook-resend`.
 
-### Holdings / Composition — OpenFolio-Data (primary), mfdata.in (backup)
+Repeated imports are additive. Duplicate transactions are skipped; newly seen
+transactions update downstream sync/invalidation paths.
 
-**Source**: [OpenFolio-Data](https://github.com/himanshu4141/OpenFolio-Data) — our own Python data product (separate repo, deployed on GCP `asia-south1`) that parses AMCs' SEBI-mandated monthly portfolio disclosures into a clean dataset + an authed REST API.
+Rejected approaches remain rejected:
 
-**Why we built it**: no reliable free holdings API exists. mfdata.in (the prior source) returns **null ISINs** on the free tier (so cap-split can never be real from it), holdings totals exceeding 100%, and corrupted `debt_holdings`. Official AMC disclosures are the only trustworthy, ISIN-bearing source. Decision record: `docs/research/2026-05-29-holdings-source-openfolio-data.md`. Integration: `docs/plans/openfolio-holdings-integration.md`.
-
-**Contract** (`v2.0.0`, pinned against the live API): `GET /v1/composition?page=&page_size=&updated_since=&amc=&top=` (bulk, paginated `{count,page,page_size,items[]}`) and `GET /v1/schemes/{scheme_id}/composition` (single — `scheme_id` resolves a **family_id, any plan code, or any plan ISIN**; malformed → 404). Auth via `X-API-Key` header (`/health` is open). Identity is the **family** (the shared portfolio): each item carries `family_id` (`OF-`+12hex) + `plans: [{plan_code, plan_name, isins[]}]` (every plan of the family, each with its own code + ISIN(s)) — there is no top-level `scheme_code`/`isin`. Each composition also carries asset mix (equity/arbitrage/debt/cash/other + derivatives memo), cap mix (large/mid/small/unclassified), sectors, top holdings, debt holdings (ISIN, rating, maturity, YTM), and provenance (`disclosure_date`, `source_url`).
-
-**Integration**: FolioLens stays HTTP-only and reads its own Postgres at request time — no runtime dependency on the external API. The `openfolio-sync` edge function (monthly cron, 15th) pages the bulk endpoint and, for each family, writes one `source='official'` row per **held** plan code it covers (matched against the active `fund` table — AMFI plan code primary, plan ISIN secondary), so every plan variant a CAS could reference is pre-seeded from one call. Funds nobody holds are hydrated **on-demand** by `fetch-fund-snapshot` (official-first) when viewed in Compare / Fund Detail. Precedence: `official` > `category_fallback` (mfdata: real holdings, SEBI-default cap) > `category_rules`. The single edge-side owner of the base URL + key is `supabase/functions/_shared/openfolio.ts` (secrets `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY`); the app-side wrapper is `src/lib/data/composition.ts`.
-
-**Mapping notes**: `arbitrage_pct` folds into `equity_pct`; `cap_mix` maps 1:1 (% of NAV), nulls preserved (never zero-filled) — OpenFolio supplies real Large/Mid/Small from its own ISIN→cap classification. A `disclosure_date` guard rejects any future/garbage date (`[2000-01-01, today]`) so a leaked bond-maturity date can't win the most-recent-date tie-break.
-
-### CAS Import — CASParser.in Email Forwarding
-
-**Primary flow — email forwarding:**
-
-CASParser.in provides a dedicated inbox per user. The user forwards their CAMS CAS email to that address. CASParser.in parses it and delivers structured JSON to a Supabase webhook.
-
-1. User taps "Refresh transactions" in app
-2. App shows their dedicated CASParser.in forwarding address
-3. User finds their CAMS CAS email (auto-sent monthly by CAMS) and forwards it
-4. CASParser.in parses and POSTs to our Supabase webhook
-5. Supabase stores updated transaction history
-
-**Why email forwarding over alternatives:**
-
-| Option | Privacy | Friction | Credits |
-|---|---|---|---|
-| Gmail OAuth | ❌ Persistent inbox access | Low | 0.2/parse |
-| ~~MFcentral QR~~ | ~~✅ User-controlled~~ | ~~High (redirect → OTP → QR → upload)~~ | ~~1/parse~~ |
-| PDF upload | ✅ User-controlled | Medium (download + upload) | 1/parse |
-| **Email forwarding** | ✅ **User-initiated, no persistent access** | **Low (one forward)** | **0.2/parse** |
-
-**Fallback flow — PDF upload:**
-For first import (before a CAMS monthly email arrives), or if email forwarding fails:
-- Manual PDF: download CAS from camsonline.com → upload in-app → sent to CASParser.in
-
-> MFcentral QR flow removed (March 2026) — high friction (OTP + redirect + QR scan) with no meaningful advantage over PDF upload. Email sync + PDF covers all practical cases.
-
-**CASParser.in pricing**: Free tier — 10 credits/month. Email parsing costs 0.2 credits (50 refreshes/month). PDF parsing costs 1 credit (10 parses/month).
+- **No Gmail OAuth** — persistent inbox access is unnecessary and privacy-hostile.
+- **No broker/demat credential integration** — outside current trust and support scope.
+- **No direct MFcentral partner API** — requires partner registration and operational commitments.
+- **No self-hosted Python parser in Supabase Edge Functions** — Edge Functions are Deno; Python parsing belongs at the Vercel parser boundary.
 
 ---
 
-## What CAS Contains
+## Financial-data constraints
 
-Each CAS includes:
-- All folios across CAMS + KFintech RTAs
-- Full transaction history (SIP instalments, lump sums, STPs, redemptions, switches)
-- Current units and NAV per scheme
-- Cost of investment
-
-This gives us everything needed to compute XIRR accurately for SIP investors.
-
----
-
-## Key Constraints & Decisions Not To Revisit
-
-- **No Gmail OAuth** — rejected on privacy grounds. CASParser.in's Gmail feature explicitly not used.
-- **No direct MFcentral integration** — requires AMFI partner registration, not feasible for a personal app.
-- **No MFcentral QR flow** — removed March 2026. High friction (OTP → redirect → QR scan) relative to PDF upload, which achieves the same outcome with less ceremony.
-- **No Account Aggregator** — requires SEBI RIA license, ₹5-25L cost, 5-10 month implementation. Not viable.
-- **No self-hosted casparser** — Supabase Edge Functions are Deno (TypeScript only), no Python runtime. CASParser.in avoids needing a separate microservice.
-- **Index data must be server-side** — CORS blocks browser-side NSE API calls.
-
----
-
-## Open Questions
-
-All open questions from initial discovery have been resolved. None remain.
+- **Wrong numbers are worse than slow screens.** Cache, sync, and refactor work over financial inputs needs golden-equivalence fixtures plus garbage-in fixtures for incomplete/corrupt upstream data.
+- **Do not make caches authoritative.** Durable source ownership is explicit: Supabase tables, native SQLite raw inputs, and static snapshots each own different layers. React Query output caches are accelerators.
+- **Do not add unbounded client persistence.** Raw daily histories and large transaction arrays must stay out of React Query persistence unless the cache inventory is updated with a size and invalidation argument.
+- **Keep provider boundaries.** Client code uses `authClient`, `functionsClient`, `storageClient`, and table repos under `src/lib/data/`; direct `supabase` imports outside those wrappers are not allowed.
+- **Use server-side observability for silent failures.** Sync/import/freshness functions should emit low-cardinality PostHog events or logs that allow failures to be found without user reports.
