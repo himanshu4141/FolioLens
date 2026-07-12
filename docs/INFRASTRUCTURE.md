@@ -32,8 +32,8 @@ The web app at `https://app.foliolens.in` runs the same Expo Router code, export
 | `app.foliolens.in` | Vercel (PROD project: `foliolens`) | Production web app |
 | `foliolens-dev.vercel.app` | Vercel (DEV project: `foliolens-dev`) | Dev web app + PR previews |
 | `<*>.vercel.app` | Vercel (DEV project) | Per-PR preview URLs |
-| `cas-<token>@foliolens.in` | Resend Inbound → Vercel router → PROD Supabase (M2 incoming) | Production per-user CAS forwarding inbox |
-| `cas-dev-<token>@foliolens.in` | Resend Inbound → Vercel router → DEV Supabase (M2 incoming) | Dev / preview per-user CAS forwarding inbox |
+| `cas-<token>@foliolens.in` | Resend Inbound → Vercel router → PROD Supabase | Production per-user CAS forwarding inbox |
+| `cas-dev-<token>@foliolens.in` | Resend Inbound → Vercel router → DEV Supabase | Dev / preview per-user CAS forwarding inbox |
 | `hello@foliolens.in`, `support@foliolens.in`, `privacy@foliolens.in`, `security@foliolens.in` | Resend Inbound → Vercel router | Human-facing aliases forwarded to the owner Gmail |
 | `noreply@foliolens.in` | Resend SMTP / API (PROD) | Magic-link + transactional email — prod |
 | `noreply-dev@foliolens.in` | Resend SMTP / API (DEV) | Magic-link + transactional email — dev |
@@ -63,8 +63,8 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 - **Auth** — magic-link + Google OAuth. PKCE flow on native. JWT-based sessions stored client-side.
 - **Database** — `user_profile`, `cas_import`, `cas_inbound_session`, `fund_portfolio_composition`, `nav_history`, `index_history`, `scheme_master`, `user_feedback`, plus per-user views (e.g. `fund`).
 - **Edge Functions** — listed below.
-- **Storage** — currently one bucket: `user-feedback-attachments` (private, 10 MB cap, image MIME types only).
-- **pg_cron** — scheduled NAV / index / fund-meta sync jobs (see Edge Functions table).
+- **Storage** — `user-feedback-attachments` (private, 10 MB cap, image MIME types only) and `static-snapshots` (public index-history snapshots).
+- **pg_cron** — scheduled sync, retention, snapshot, and freshness jobs (see Edge Functions table).
 
 
 ### Edge Functions
@@ -73,24 +73,32 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | Function | Trigger | Purpose | Status |
 |---------|---------|---------|--------|
 | `parse-cas-pdf` | Native upload from app | Forwards a binary PDF to the Vercel-hosted Python parser, then runs `_shared/import-cas.ts` | Active |
-| `cas-webhook` | CASParser inbound-email webhook | Receives parsed CAS payload from CASParser and imports it | **Deprecated, replaced by `cas-webhook-resend`** (still on disk while M2.6 retires call sites) |
-| `cas-webhook-resend` | Vercel inbound router | Receives Resend-signed CAS webhook payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, calls Vercel parser, imports | M2 (PR #93) |
-| `request-cas` | App "Sync portfolio" tap | Triggers KFintech CAS email via CASParser API | **Deprecated**, retired in M2.6 |
-| `create-inbound-session` | First onboarding | Creates a per-user CASParser inbound mailbox | **Deprecated**, retired in M2.6 |
+| `cas-webhook-resend` | Vercel inbound router | Receives FolioLens-signed CAS payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, calls the Vercel parser, imports | Active |
+| `delete-account` | Settings → account deletion | Deletes app/user data and then removes the Supabase auth user via admin APIs | Active |
 | `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | OpenFolio-first (`since=` incremental), mfapi fallback — for every active held scheme | Active |
-| `sync-index` | pg_cron (hourly) | Pulls benchmark index closes from yahoo finance | Active |
+| `sync-index` | pg_cron (hourly weekdays) | Pulls benchmark closes into `index_history` using NSE TRI first, EODHD backup, and Yahoo Finance for legacy price-return symbols | Active |
 | `fetch-fund-nav` | On-demand (client POST, no auth required) | Backfills NAV history for any scheme not held by the user — used by Compare Funds and Past SIP Check. Source ladder mirrors `sync-nav`: (1) 3-day freshness short-circuit; (2) OpenFolio `/v1/nav/{code}?since=<latest_local_date>` — incremental on warm re-hydrations, full history on first sync; (3) mfapi.in full history on OF 404/error/empty-first-sync. Stamps `scheme_master.nav_backfilled_at` on every successful hydration. | Active |
+| `fetch-fund-snapshot` | On-demand (client POST, no auth required) | Hydrates metadata + composition for a selected fund not already fresh in local tables. OpenFolio official composition is first, mfdata category fallback is backup. | Active |
 | `nav-retention` | pg_cron weekly (Sundays 03:00 UTC / 08:30 IST) | Deletes `nav_history` rows for schemes that are not held by any active `user_fund` **and** whose `scheme_master.nav_backfilled_at` is NULL or older than 90 days. Batched deletes (≤ 100 k rows per run). See "Runbook: NAV retention" below. | Active |
 | `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
-| `universe-backfill` | GitHub Actions (monthly 16th @ 01:00 UTC) + frequent cron (every 15 min) + manual `workflow_dispatch` | Bulk-syncs OpenFolio composition + metadata for **full active AMFI universe** (~37,595 schemes), not just held funds. Metadata phase writes `family_name`, `plan_type`, `option_type`, `of_family_id` (OF family identity), plus AUM, returns, B1 fields. Chunks invocations (~2 pages per run), cursor state + done markers in `app_config`. Monthly refresh triggered on 16th @ 01:00 UTC (after OpenFolio's 13–15th publish window); pg_cron writes `universe_backfill_refresh_due` marker on 15th @ 23:00 UTC to signal a fresh cycle. On each monthly trigger, clears done-markers and rebuilds the full universe (phase=both, force=true). When complete, clears the refresh marker so the frequent cron can short-circuit. Frequent cron (every 15 min) resumes in-progress backfills (no cost if already done) or detects stalled cursors. Retracts NULL fields when upstream reports non-value statuses to propagate P4 corrections. Supports `force=true` for manual re-runs. | OP-1, P4 |
-| `sync-fund-portfolios` | pg_cron (daily, 02:10 UTC) | **Backup** holdings source: mfdata.in portfolio composition → `source='amfi'` (now outranked by `official`). category_rules sentinel rows updated daily. | Active |
+| `universe-backfill` | GitHub Actions (monthly 16th @ 01:00 UTC, hourly resume on the 16th–17th) + manual `workflow_dispatch` | Bulk-syncs OpenFolio composition + metadata for the full active AMFI universe, not just held funds. Cursor state + done markers live in `app_config`; the pg_cron marker on the 15th @ 23:00 UTC starts a fresh monthly cycle. | Active |
+| `sync-fund-portfolios` | pg_cron (daily, 02:10 UTC) | Backup holdings source: mfdata.in portfolio composition → `source='category_fallback'`; category-rules sentinel rows updated daily. Legacy `source='amfi'` rows can still be read and ranked by the selector. | Active |
 | `sync-fund-meta` | pg_cron (daily) | Refreshes held-fund scheme metadata from OF `/v1/metadata` (AUM, expense ratio, risk, family_name, plan_type, option_type, of_family_id) then fills any remaining unresolved B1 fields from mfdata.in. OF values take precedence; mfdata only writes fields still NULL after the OF pass. | Active |
+| `regenerate-index-snapshots` | pg_cron (weekdays 14:00 UTC) | Regenerates public JSON index-history snapshots in `static-snapshots` after index sync. | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
-| `freshness-check` | pg_cron (daily at 08:00 UTC, `freshness-check-daily`) | Daily audit of silent failures: checks held NAV age, cron job failures, backfill cursor staleness, OpenFolio health, and composition age. Sends consolidated alert via Resend router on failure. See "Runbook: Freshness check" below. | Active |
+| `freshness-check` | pg_cron daily + monthly | Daily audit of silent failures plus monthly OpenFolio coverage reconciliation. Sends consolidated alert via Resend router on failure. See "Runbook: Freshness check" below. | Active |
 | `demo-signup` | In-app "Try with sample data" sheet (pre-auth) | Captures email + marketing consent + UTM/referrer attribution into `public.demo_signup`. Idempotent on email — re-submissions bump `signup_count` instead of erroring. Service-role insert path; RLS on the table denies direct client writes. | Active |
+| `seed-scheme-master` | Manual/admin | Seeds or repairs `scheme_master` from a controlled payload. Not part of normal user flows. | Active |
 
 
-All cron-triggered functions are deployed with `--no-verify-jwt` because pg_cron has no JWT to send: `sync-nav`, `sync-index`, `nav-retention`, `openfolio-sync`, `sync-fund-portfolios`, `sync-fund-meta`, and `freshness-check`. `notify-feedback` is deployed the same way so the DB trigger can call it without needing a service-role key embedded in the SQL function. `demo-signup` is also deployed `--no-verify-jwt` because the caller (auth screen) has no session yet — the function is the public API boundary and validates payloads itself. `fetch-fund-nav` is deployed `--no-verify-jwt` so the client can call it without a session JWT when picking non-held funds.
+The deploy workflows deploy Edge Functions with `--no-verify-jwt`; public/private
+access is enforced inside each function. This is required for pg_cron/pg_net
+callers (`sync-nav`, `sync-index`, `nav-retention`, `openfolio-sync`,
+`sync-fund-portfolios`, `sync-fund-meta`, `regenerate-index-snapshots`,
+`freshness-check`, `notify-feedback`) because they do not send a user JWT. It is
+also intentional for public app boundaries such as `demo-signup`,
+`fetch-fund-nav`, and `fetch-fund-snapshot`, which validate their own payloads and
+use service-role access only server-side.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -118,11 +126,23 @@ Each Supabase project needs the row populated **once**, via the Dashboard SQL Ed
 
 Re-running is safe; the `ON CONFLICT` upsert overwrites the existing value. If the row is missing the call sites' `NULL || '/sync-nav'` evaluates to NULL and `net.http_post` errors loudly — the intended failure mode, since silently calling the wrong project's edge functions is worse than failing loudly.
 
-All current pg_net call sites — the cron schedules (`sync-nav-hourly`, `sync-index-hourly`, `sync-portfolio-composition-daily`, `sync-fund-meta-daily`, `openfolio-composition-monthly`), the `regenerate-index-snapshots-daily` cron, and the `notify_feedback_inserted` trigger function — use this `public.app_config_get('supabase_functions_base_url')` lookup. Any new pg_net call site added going forward should follow the same pattern rather than hardcoding a project ref.
+All current pg_net call sites — `sync-nav-hourly`, `sync-index-hourly`,
+`sync-portfolio-composition-daily`, `sync-fund-meta-daily`,
+`openfolio-composition-monthly`, `regenerate-index-snapshots-daily`,
+`nav-retention-weekly`, `freshness-check-daily`, `freshness-check-monthly`,
+`universe-backfill-monthly-refresh-marker`, and the `notify_feedback_inserted`
+trigger function — use this `public.app_config_get('supabase_functions_base_url')`
+lookup. Any new pg_net call site added going forward should follow the same
+pattern rather than hardcoding a project ref.
 
 > **Note (2026-06-10):** Migration `20260528000000_sync_nav_bimodal_schedule.sql` introduced a regression by using `current_setting('app.supabase_functions_base_url')` instead of `public.app_config_get()`, causing every `sync-nav-hourly` run to fail with `unrecognized configuration parameter`. Fixed by `20260610000000_fix_sync_nav_cron_app_config.sql`.
 
-`notify-feedback` follows the same Issue #107 architecture as `cas-webhook-resend`: Resend secrets stay at the router boundary, not on Supabase. **No new Supabase env vars are required** — the function reuses `FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT` (both already set for `cas-webhook-resend`). An optional `ROUTER_FEEDBACK_NOTIFY_URL` can override the default `https://app.foliolens.in/api/feedback-notify` for local testing.
+`notify-feedback` follows the same router-boundary architecture as
+`cas-webhook-resend`: Resend secrets stay on Vercel, not on Supabase. **No new
+Supabase env vars are required** — the function reuses
+`FOLIOLENS_INBOUND_ROUTER_SECRET` and `NOTIFY_ENVIRONMENT`. An optional
+`ROUTER_FEEDBACK_NOTIFY_URL` can override the default
+`https://app.foliolens.in/api/feedback-notify` for local testing.
 
 The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`, `MAIL_FORWARD_TO` (founder inbox), and `MAIL_FORWARD_FROM` (verified sender) env vars — same ones that already power human-alias forwarding and CAS import notifications. **No new Vercel env vars are required.**
 
@@ -139,7 +159,8 @@ The Vercel side (`api/feedback-notify.py`) reuses the existing `RESEND_API_KEY`,
 
 Because the ledger recorded both entries with the same version, the first file's DDL never executed, leaving the columns in production despite the migration being marked "applied." This is a **silent data corruption risk**: the schema diverges from the source of truth without raising an alarm during deploy.
 
-**The guard.** Starting with commit [HASH], a new CI check (`scripts/check-migration-versions.mjs`, wired into `supabase-validate.yml`) runs on every PR that touches migrations:
+**The guard.** `scripts/check-migration-versions.mjs` is wired into
+`supabase-validate.yml` and runs on every PR that touches migrations:
 
 1. **Duplicate version check**: fails if any two `.sql` files in `supabase/migrations/` share the same version prefix (e.g., `20260610000000_foo.sql` + `20260610000000_bar.sql`).
 2. **Backfill check** (`--check-branch` flag): fails if a PR introduces a new migration with version ≤ the max version on `origin/main`. This prevents accidentally adding old migrations that should live on a feature branch.
@@ -411,7 +432,7 @@ Single Resend account on the verified domain `foliolens.in`. Used for two purpos
 
 
 1. **Outbound** — Supabase Auth's SMTP setting points at `smtp.resend.com:465` and uses a Resend SMTP key. Two different Resend "addresses" / sender names are configured per Supabase project so dev and prod emails don't blur: DEV sends as `FolioLens Dev <noreply-dev@foliolens.in>`, PROD sends as `FolioLens <noreply@foliolens.in>`.
-2. **Inbound** (M2) — Resend owns the apex MX records for `foliolens.in` and POSTs every `email.received` event to `https://app.foliolens.in/api/resend-inbound-router`. The Vercel router verifies the Resend Svix signature, forwards human aliases to the owner Gmail, and forwards CAS messages to the matching Supabase project:
+2. **Inbound** — Resend owns the apex MX records for `foliolens.in` and POSTs every `email.received` event to `https://app.foliolens.in/api/resend-inbound-router`. The Vercel router verifies the Resend Svix signature, forwards human aliases to the owner Gmail, and forwards CAS messages to the matching Supabase project:
    - `cas-dev-<token>@foliolens.in` → DEV `cas-webhook-resend`
    - `cas-<token>@foliolens.in` → PROD `cas-webhook-resend`
 
@@ -529,7 +550,11 @@ Two OAuth Web Client IDs live in **a single Google Cloud project**. Each has the
 | FolioLens | `https://ohcaaioabjvzewfysqgh.supabase.co/auth/v1/callback` |
 
 
-The OAuth consent screen is in **Testing** mode with External user type. The "App name" is set to `FolioLens` but Google still falls back to showing the Supabase host on the consent screen until brand verification is complete (blocked on having published privacy / terms pages on `foliolens.in`).
+The OAuth consent screen is in **Testing** mode with External user type. The
+"App name" is set to `FolioLens`, but Google may still show the Supabase host on
+the consent screen until brand verification is complete. Keep the support email,
+privacy URL, and terms URL in the Google console aligned with the live marketing
+site before requesting verification.
 
 
 ## GitHub Actions workflows
@@ -541,12 +566,15 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 | Workflow | Trigger | What it does |
 |---------|---------|---|
 | `pr-preview.yml` | PR open / commit, or manual branch dispatch | typecheck + lint + tests + EAS update to `foliolens-pr` (DEV Supabase). PR runs comment OTA IDs on the PR; manual pre-PR runs write IDs to the Actions job summary. |
+| `cache-shape-check.yml` | PR touching tracked cache-shape files | Requires a React Query buster bump or `[cache-shape-stable]` in the PR title. |
 | `supabase-validate.yml` | PR commit (only when `supabase/**` changes) | Spins up local Supabase, replays migrations, lints `public` schema. Read-only. |
 | `main-deploy.yml` | Push to `main` | typecheck + lint + tests + EAS update to `foliolens-main` (DEV Supabase). |
 | `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions and pushes migrations to DEV Supabase. |
 | `supabase-deploy-prod.yml` | `workflow_dispatch` only (manual button) | Validates parity, deploys functions, pushes migrations to PROD Supabase. |
 | `production-release.yml` | Tag push `v*` (also `workflow_dispatch`) | typecheck + lint + tests + EAS update to `foliolens-production` + Vercel prod deploy via CLI. |
-| `sync-amfi-portfolios.yml` | Monthly cron + manual dispatch | Runs `scripts/sync-amfi-portfolios.mjs` against DEV and PROD in parallel matrix jobs. |
+| `universe-backfill.yml` | Monthly cron, hourly resume window, manual dispatch | Invokes the `universe-backfill` Edge Function against DEV/PROD to sync OpenFolio composition and metadata for the active universe. |
+| `program-label-sync.yml` | Label definition change on `main`, or manual dispatch | Creates/updates labels used by multi-agent program PRs. |
+| `program-convergence-gate.yml` | Pull request events | Enforces SHA-pinned dual-review convergence for `program/` implementation PRs. |
 
 
 ### What does **not** trigger automatically
@@ -576,11 +604,11 @@ All secrets are stored in **GitHub Actions repository secrets**.
 | `EXPO_PUBLIC_SUPABASE_URL_PROD` | production-release | PROD Supabase URL |
 | `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_DEV` / `_PROD` | same as above | anon keys |
 | `EXPO_PUBLIC_APP_BASE_URL_DEV` / `_PROD` | same as above | `foliolens-dev.vercel.app` / `app.foliolens.in` |
-| `SUPABASE_SECRET_KEY_DEV` / `_PROD` | `sync-amfi-portfolios.yml` | Service-role keys for server-to-server access |
+| `SUPABASE_SECRET_KEY_DEV` / `_PROD` | `universe-backfill.yml` | Service-role keys for server-to-server access |
 | `VERCEL_TOKEN` | `production-release.yml` | Personal access token from Vercel → Account → Tokens |
 | `VERCEL_ORG_ID` | `production-release.yml` | `team_HeMWH6xlqe2BOC0NpT85uZPV` |
 | `VERCEL_PROJECT_ID_PROD` | `production-release.yml` | `prj_mjY4K0rYmgNhoGMyJ5oC9xMLcTAi` |
-| `POSTHOG_PROJECT_KEY` | `pr-preview.yml`, `main-deploy.yml`, `production-release.yml`, `sync-amfi-portfolios.yml` | Same client project token across native OTA channels and server-side sync. OTA workflows pass it only at bundle time; no secret value is committed. Optional server-side sync telemetry no-ops if unset, while app data lifecycle correctness remains independent of this key. |
+| `POSTHOG_PROJECT_KEY` | `pr-preview.yml`, `main-deploy.yml`, `production-release.yml` | Same client project token across native OTA channels. OTA workflows pass it only at bundle time; no secret value is committed. Server-side telemetry uses the Supabase Edge Function secret of the same name. |
 
 `POSTHOG_HOST` is a GitHub Actions repository variable, not a secret. Every native OTA workflow passes it as `EXPO_PUBLIC_POSTHOG_HOST`; the checked-in fallback remains the SDK's US host, while this repository's configured value selects the project's EU ingest endpoint.
 
@@ -593,7 +621,7 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `APP_BASE_URL` | `https://foliolens-dev.vercel.app` | `https://app.foliolens.in` |
 | `CAS_PARSER_SHARED_SECRET` | shared with the Vercel Python parser | same |
 | `EODHD_API_KEY` | only set if EOD-style index data needed | same |
-| `FOLIOLENS_INBOUND_ROUTER_SECRET` | Issue #107: HMAC shared with the Vercel router for inbound CAS handoff + outbound notification callback | same |
+| `FOLIOLENS_INBOUND_ROUTER_SECRET` | HMAC shared with the Vercel router for inbound CAS handoff + outbound notification callback | same |
 | `ROUTER_NOTIFY_URL` | (optional) Vercel cas-import-notify endpoint, defaults to `https://app.foliolens.in/api/cas-import-notify` | same |
 | `NOTIFY_ENVIRONMENT` | `dev` — picks the dev Resend template + dev From address at the router | `prod` — picks the prod Resend template + prod From address |
 | `VERCEL_PROTECTION_BYPASS_TOKEN` | only when Vercel protection is enabled | same |
@@ -603,7 +631,9 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `OPENFOLIO_API_BASE` | OpenFolio-Data REST API base URL (the GCP Cloud Run URL). Read by `openfolio-sync` + `fetch-fund-snapshot` via `_shared/openfolio.ts`. Same value dev + prod (one API serves both). Falls back to `OPENFOLIO_API_BASE_URL` if that name is used instead. | same |
 | `OPENFOLIO_API_KEY` | OpenFolio-Data `X-API-Key`. Same value dev + prod. | same |
 
-**Removed in Issue #107**: `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`, `RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, and `RESEND_NOTIFICATION_FROM` no longer live on Supabase. After deploying this PR, delete those four secrets from both DEV and PROD Supabase project dashboards. They moved to the Vercel project (see "Inbound router" section below).
+**Do not set on Supabase**: `RESEND_INBOUND_SECRET`, `RESEND_API_KEY`,
+`RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID`, and `RESEND_NOTIFICATION_FROM` belong
+on the Vercel router boundary, not in Supabase Edge Function secrets.
 
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-provided by Supabase to every Edge Function — never set them manually.
@@ -616,7 +646,7 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 |----------|---------|
 | `RESEND_API_KEY` | Reads received email content / attachments, sends forwarded human-alias mail, sends CAS import status emails (post-#107 — Supabase no longer holds this secret) |
 | `RESEND_INBOUND_ROUTER_SECRET` | Resend Svix webhook signing secret for `email.received` |
-| `FOLIOLENS_INBOUND_ROUTER_SECRET` | HMAC shared with both Supabase webhooks for inbound CAS handoff + outbound notification callback (see Issue #107) |
+| `FOLIOLENS_INBOUND_ROUTER_SECRET` | HMAC shared with both Supabase webhooks for inbound CAS handoff + outbound notification callback |
 | `MAIL_FORWARD_TO` | Owner Gmail destination for `hello@`, `support@`, `privacy@`, and `security@` |
 | `MAIL_FORWARD_FROM` | Verified Resend sender used when forwarding aliases, e.g. `FolioLens Mail <noreply@foliolens.in>` |
 | `SUPABASE_DEV_FUNCTION_URL` | DEV `cas-webhook-resend` endpoint |
@@ -673,8 +703,8 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 | Supabase Dashboard → both projects → Auth → Providers → Google | Enable, paste the matching Google Cloud OAuth Client ID + Secret |
 | Supabase Dashboard → both projects → Functions → Secrets | Set per-project secrets from the table above |
 | Resend Dashboard → Domains → `foliolens.in` | DKIM, SPF, DMARC verified; sender addresses configured |
-| Resend Dashboard → Receiving / Webhooks (M2) | Enable receiving on `foliolens.in`, point `email.received` at `https://app.foliolens.in/api/resend-inbound-router`, copy the Svix signing secret |
-| Google Cloud Console → OAuth consent screen | App name + support email + privacy / terms URLs (TODO once landing-page legal pages are live) |
+| Resend Dashboard → Receiving / Webhooks | Enable receiving on `foliolens.in`, point `email.received` at `https://app.foliolens.in/api/resend-inbound-router`, copy the Svix signing secret |
+| Google Cloud Console → OAuth consent screen | App name, support email, privacy URL, and terms URL aligned with the live marketing site |
 | Cloudflare → DNS for `foliolens.in` | A / AAAA records for apex (landing page) + CNAME for `app` → Vercel + Resend outbound TXT/DKIM/SPF + Resend inbound MX records |
 | Vercel → `foliolens` project → Settings → Git | Disconnected from GitHub. Re-connecting accidentally would resume auto-deploys on every push and break the manual-only release gate. |
 | Vercel → both projects → Settings → Domains | DEV: `foliolens-dev.vercel.app` (auto). PROD: `app.foliolens.in` (custom). |
@@ -687,10 +717,9 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 
 - **PostHog** — single pane for product events and operational health, fed from every surface that runs FolioLens code:
   - **Client (native + web)**: onboarding funnel events `onboarding_started` / `onboarding_step_completed` / `onboarding_completed` / `portfolio_imported` plus the redesign-era decision / failure / design-validation events (`onboarding_skip_clicked`, `onboarding_pdf_picker_dismissed`, `onboarding_path_chosen`, `portfolio_import_failed`, `onboarding_password_override_used`, `onboarding_app_family_selected`, `onboarding_portal_opened`, `onboarding_auto_refresh_setup_completed`, `onboarding_done_nudge_clicked`); plus `insight_viewed` / `app_started` / `app_returned` plus `$exception` from uncaught errors. Per-event dimensions documented in `docs/plans/phase-6-cas-onboarding/00-onboarding-redesign.md` → "Analytics Events". Gated by `EXPO_PUBLIC_POSTHOG_KEY`.
-  - **Client UX performance**: explicit low-cardinality production timing events `navigation_performance`, `ux_screen_ready`, `ux_slow_event`, `ux_js_stall`, and `ux_cache_health`. These intentionally avoid autocapture/session replay and never include fund IDs, transaction IDs, route pathnames, or financial values. Dashboard by `surface`, `readiness`, `source_event`, `platform`, `app_version`, and `eas_update_id`; alert on p95 `ux_screen_ready.elapsed_ms`, sustained `ux_slow_event` spikes grouped by `source_event`, and `ux_cache_health.blob_size_bucket = 5MB+`.
+  - **Client UX performance**: explicit low-cardinality timing and cache-health events `navigation_performance`, `ux_screen_ready`, `ux_interaction_latency`, `ux_slow_event`, `ux_js_stall`, `ux_cache_health`, `perf_mark`, `persister_restore_completed`, and `persister_restore_failed`. These intentionally avoid autocapture/session replay and never include fund IDs, transaction IDs, route pathnames, or financial values. Dashboard by `surface`, `readiness`, `source_event`, `platform`, `app_version`, and `eas_update_id`; alert on p95 `ux_screen_ready.elapsed_ms`, sustained `ux_slow_event` spikes grouped by `source_event`, and `ux_cache_health.blob_size_bucket = 5MB+`.
   - **Supabase Edge Functions**: `cas_parse_success` / `cas_parse_failed` (parse-cas-pdf), `cas_inbound_imported` / `cas_inbound_failed` / `cas_inbound_crashed` (cas-webhook-resend), `sync_completed` / `sync_failed` per cron job. Direct HTTP capture from the function — no JSR dep, no cold-start hit. Server env: `POSTHOG_PROJECT_KEY`, `POSTHOG_HOST`, `APP_ENVIRONMENT`.
   - **Vercel Python parser**: `cas_parser_python_outcome` with `outcome ∈ {success, wrong_password, holdings_only, exception}`. Reads `EXPO_PUBLIC_POSTHOG_KEY` / `EXPO_PUBLIC_POSTHOG_HOST` from the same Vercel project env vars that the Expo web build inlines, so a single setting powers both consumers. (`APP_ENVIRONMENT` stays non-prefixed since there's no Expo equivalent.)
-  - **GitHub Actions AMFI sync**: `amfi_sync_completed` with `outcome ∈ {success, failure}` and a `workflow_run_url` so a failed monthly sync can be triaged in two clicks. Closes the alerting gap from the readiness audit.
 - **Vercel Speed Insights + Web Analytics** — Web Vitals (LCP / INP / CLS) per-route and infrastructure-side page views for the Vercel-served web build. Complements PostHog (which captures user-journey events but not Web Vitals).
 - **Supabase Logs** — Auth, Edge Function, and Database logs viewable in the dashboard. Auth log level is set to "errors only" by default; set to "info" temporarily when debugging sign-in flows.
 - **Vercel Logs** — only the dev project receives meaningful traffic; prod logs are sparse since the app is mostly RN with thin web shell.
@@ -717,4 +746,4 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 - Multi-region failover — single-region Supabase + Vercel is sufficient at this volume
 - Read-replica / staging tier — DEV serves both purposes today
 - App store submission — internal-distribution APKs are the channel for beta; iOS TestFlight submission is queued behind paid Apple Developer setup
-- MFCentral OAuth integration — separate Phase 6 milestone, requires a partner agreement
+- MFCentral OAuth integration — requires a partner agreement and is outside the current architecture

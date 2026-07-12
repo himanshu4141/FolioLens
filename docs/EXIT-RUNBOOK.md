@@ -18,9 +18,9 @@ listed below.
 | **Database** | Low | Plain Postgres 17 + `uuid-ossp` + RLS. The only `auth.*` references are (a) `auth.uid()` inside RLS policies and (b) the two sync triggers between `auth.users` and `public.app_user`. All user-owned FKs point at `public.app_user(id)`, not `auth.users(id)`. |
 | **Data API** | Medium | All `.from(...)` reads/writes go through `src/lib/data/<table>.ts`. No other module imports `supabase` for data access. |
 | **Auth** | High | All `supabase.auth.*` calls go through `authClient` (`src/lib/auth/index.ts`). OAuth redirect URLs live in the Supabase dashboard. JWT shape comes from supabase-auth and is baked into RLS via `auth.uid()`. |
-| **Edge Functions** | Medium | 11 functions in `supabase/functions/` (Deno runtime). All client invocations go through `functionsClient` (`src/lib/functions/index.ts`). |
+| **Edge Functions** | Medium | Deno functions in `supabase/functions/`. All client invocations go through `functionsClient` (`src/lib/functions/index.ts`). Cron/webhook/public functions enforce their own server-side boundary because deploy workflows use `--no-verify-jwt`. |
 | **Storage** | Low | One private bucket (`user-feedback-attachments`) + one public bucket (`static-snapshots`). All client access goes through `storageClient` (`src/lib/storage/index.ts`). |
-| **pg_cron + pg_net** | Medium | 4 scheduled jobs. Target URLs read from `public.app_config` table, so they're already parameterised. (`sync-stock-market-cap` was removed in 2026-06-01; `stock_market_cap` table dropped 2026-06-08.) |
+| **pg_cron + pg_net** | Medium | Scheduled sync/audit jobs target Edge Functions through `public.app_config_get('supabase_functions_base_url')`, so URLs are already parameterised. GitHub Actions owns the longer-running universe backfill. |
 | **Realtime / Vault / RPC** | None | Not used. Keep it that way. |
 
 ## Order of operations (least → most coupled)
@@ -43,10 +43,9 @@ stuff first so each subsequent step has fewer dependencies to chase.
 ### 2. Cron jobs (~1 day)
 
 Replace pg_cron with GitHub Actions cron (we already use it for
-`sync-amfi-portfolios.yml`) or Vercel/Cloudflare cron.
+`universe-backfill.yml`) or Vercel/Cloudflare cron.
 
-For each of the 4 scheduled jobs in
-`supabase/migrations/20260513000001_app_config_table.sql`:
+For each scheduled job in the current migrations:
 
 - Take the URL the job hits via `app_config_get('supabase_functions_base_url')`.
 - Set up an equivalent scheduled trigger pointing at the
@@ -56,10 +55,17 @@ For each of the 4 scheduled jobs in
 Schedules to preserve:
 - `sync-nav-hourly` — `30 0,2,4,6,8,10,12,13,14,15,16,17,18,19,20,21,22,23 * * *` (bimodal: hourly through the EOD publish window 6 PM → 6 AM IST, every 2h during the day 8 AM → 5 PM IST, 7 days)
 - `sync-index-hourly` — `5 * * * 1-5`
-- `sync-portfolio-composition-hourly` — `10 * * * *`
+- `sync-portfolio-composition-daily` — `10 2 * * *`
 - `openfolio-composition-monthly` — `30 1 15 * *`
 - `sync-fund-meta-daily` — `0 2 * * *`
 - `regenerate-index-snapshots-daily` — `0 14 * * 1-5`
+- `nav-retention-weekly` — `0 3 * * 0`
+- `freshness-check-daily` — `0 8 * * *`
+- `freshness-check-monthly` — `0 2 1 * *`
+- `universe-backfill-monthly-refresh-marker` — `0 23 15 * *`
+
+GitHub Actions schedule to preserve:
+- `universe-backfill.yml` — monthly start on the 16th @ 01:00 UTC and hourly resume window on the 16th–17th.
 
 (`sync-stock-market-cap-monthly` was removed when the AMFI ISIN→cap classifier was retired in favour of OpenFolio's `cap_mix`.)
 
@@ -85,30 +91,33 @@ The portable part. Most of the work is operational, not code.
 
 ### 4. Edge Functions → portable handlers (~1–2 weeks)
 
-11 functions to port. Vercel handlers are the obvious target — the team
-already runs the CAS router, parse-cas-pdf, and feedback-notify there
-(see `app.foliolens.in/api/...`). Deno-specific imports become npm
-imports; `Deno.serve` becomes a Vercel handler.
+Vercel handlers are the obvious target — the team already runs the CAS router,
+parser boundary, feedback notifier, and freshness alert endpoints there (see
+`app.foliolens.in/api/...`). Deno-specific imports become npm imports;
+`Deno.serve` becomes a Vercel/Cloudflare handler.
 
 The functions, roughly ordered by simplicity:
 
-1. `notify-feedback` — already a thin HMAC-signed relay to the Vercel router.
-2. `delete-account` — calls auth admin API. Replace the admin call with
-   the new provider's equivalent.
-3. `fetch-fund-nav` — calls mfapi.in, writes nav_history.
-4. `fetch-fund-snapshot` — OpenFolio-Data first, then mfdata.in; writes scheme_master + composition.
-5. `sync-nav` — paginated mfapi.in for held schemes.
-6. `sync-index` — three index sources (NSE / EODHD / Yahoo).
-7. `sync-fund-meta` — mfdata.in with 7-day staleness window.
-8. `sync-fund-portfolios` — SEBI rules + mfdata.in (`amfi`, backup source).
-9. `openfolio-sync` — OpenFolio-Data bulk API → `official` composition rows. Base URL + key live in `_shared/openfolio.ts`; the app-side twin is `src/lib/data/composition.ts`.
-10. `regenerate-index-snapshots` — writes to the new bucket from step 1.
-11. `cas-webhook-resend` — HMAC-signed inbound webhook from the Vercel router.
-12. `parse-cas-pdf` — relay to the Vercel Python parser; already mostly
-    just forwarding.
+1. `notify-feedback` — thin HMAC-signed relay to the Vercel router.
+2. `demo-signup` — public pre-auth insert boundary.
+3. `delete-account` — calls auth admin API. Replace the admin call with the new provider's equivalent.
+4. `parse-cas-pdf` — relay to the Vercel Python parser; already mostly forwarding.
+5. `cas-webhook-resend` — HMAC-signed inbound webhook from the Vercel router.
+6. `fetch-fund-nav` — OpenFolio/mfapi NAV hydration for non-held picks.
+7. `fetch-fund-snapshot` — OpenFolio-first metadata/composition hydration, mfdata fallback.
+8. `sync-nav` — OpenFolio/mfapi incremental sync for held schemes.
+9. `sync-index` — NSE / EODHD / Yahoo index sources.
+10. `sync-fund-meta` — OpenFolio metadata first, mfdata fallback.
+11. `sync-fund-portfolios` — mfdata backup composition + category-rule sentinels.
+12. `openfolio-sync` — OpenFolio-Data bulk API → `official` composition rows.
+13. `universe-backfill` — full active-universe OpenFolio metadata/composition backfill.
+14. `regenerate-index-snapshots` — writes public index snapshots to storage.
+15. `nav-retention` — prunes old non-held NAV histories.
+16. `freshness-check` — daily silent-failure audit + monthly upstream coverage reconciliation.
+17. `seed-scheme-master` — manual/admin scheme-master seeding or repair.
 
-Update `src/lib/functions/index.ts` to point at the new endpoints. All
-8 call sites are inside that module's `invoke()` — no other code change.
+Update `src/lib/functions/index.ts` to point at the new endpoints. Consumer code
+should stay on the wrapper.
 
 ### 5. Data API ⇆ DB (~1 week if step 6 done first)
 
@@ -172,7 +181,7 @@ Two reversible spikes that prove the runbook is honest:
 1. **Port the simplest Edge Function to Vercel.** `notify-feedback` is
    a thin relay. Spike a Vercel handler in a throwaway branch; confirm
    no Deno-specific shims are needed. Time-box: half a day. Output:
-   "all 11 functions are portable in N days" or "here are the blockers".
+   "all Edge Functions are portable in N days" or "here are the blockers".
 
 2. **Replay a `supabase db dump` against a fresh Postgres 17 container.**
    Spin up Docker Postgres, restore the dump, replay all migrations

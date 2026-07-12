@@ -75,7 +75,9 @@ Shows portfolio-level composition derived from shared scheme composition data:
 - top holdings, paginated 10 per page up to the top 30 names
 - AMFI disclosure date, stale state, bootstrap sync, and missing-data states
 
-Category-rule fallback renders immediately. AMFI-backed data upgrades the screen when available.
+Category-rule fallback renders immediately. Official OpenFolio composition data
+upgrades the screen when available; mfdata-backed fallback rows remain clearly
+disclosed as category-derived where cap mix is approximate.
 
 ### 3. Your Funds
 
@@ -118,7 +120,7 @@ Shows CAS-derived transaction history:
 - filter bottom sheet for date preset/custom range, transaction type, direction, AMC, fund, amount range, and hidden/reversed inclusion
 - active filter chips and clear-filters action
 - clean transaction rows with type, fund, date, amount, and status
-- full-screen transaction detail with folio, units, NAV, optional details, and how FundLens uses the transaction
+- full-screen transaction detail with folio, units, NAV, optional details, and how FolioLens uses the transaction
 - CSV export for the currently visible filtered and sorted list
 - empty/no-results/error states
 
@@ -157,7 +159,7 @@ On desktop the hub and all its sub-pages (Account, Preferences, Data sync, Portf
 
 ### 8. Tools Hub
 
-Stack route (`/tools`). Clear Lens only — not a bottom tab in this phase.
+Stack route (`/tools`). Clear Lens only — not a bottom tab.
 
 Entry points:
 
@@ -166,16 +168,16 @@ Entry points:
 
 Includes:
 
-- Featured section — Wealth Journey card (always available, navigates to `/(tabs)/wealth-journey`)
-- Plan section — Goal Planner card (coming soon, behind `toolsFlags.goalPlanner`)
-- Compare section — Compare Funds card (coming soon, behind `toolsFlags.compareFunds`)
-- Explore section — Past SIP Check card (coming soon, behind `toolsFlags.pastSipCheck`)
-- Cost & Fees section — Direct vs Regular Impact card (coming soon, behind `toolsFlags.directVsRegular`)
-- Coming-soon cards are visually muted and non-tappable
-- Available tool cards navigate to their respective routes (routes added per milestone)
+- Featured section — Wealth Journey card, navigating to `/(tabs)/wealth-journey`
+- Plan section — Goal Planner
+- Compare section — Compare Funds
+- Explore section — Past SIP Check
+- Cost & Fees section — Direct vs Regular Impact
 - Disclaimer footer — "All results are estimates…"
 
-Feature flags live in `appStore.toolsFlags`. All flags default to `false`. Each is flipped to `true` when the corresponding tool milestone ships.
+Tool availability is controlled by `appStore.toolsFlags`. All four tool flags
+default to `true` today and act as in-app kill switches; cards become muted and
+non-tappable only if a flag is explicitly disabled.
 
 ### 8a. Compare Funds (`/tools/compare-funds`)
 
@@ -219,6 +221,42 @@ After selection the screen shows:
 - NAV history sparklines (3-year trailing, aligned to a common base of 100).
 
 All comparison data comes from `scheme_master`, `nav_history`, and `fund_portfolio_composition` via React Query (in-memory only — these queries are not in `PERSIST_ALLOWLIST`).
+
+### 8b. Goal Planner (`/tools/goal-planner`)
+
+Stack route under Tools Hub. Uses persisted return assumptions from Settings and
+persisted `goals` in the Zustand app store.
+
+Includes:
+
+- saved-goal list with create/edit paths
+- target amount/date, lump-sum, monthly contribution, and return-preset inputs
+- conservative default assumptions shared with Wealth Journey
+- summary screen showing required monthly SIP, projected corpus, and shortfall/surplus context
+
+### 8c. Past SIP Check (`/tools/past-sip-check`)
+
+Stack route under Tools Hub. Simulates what a recurring SIP would have grown to
+for a selected fund and window.
+
+Includes:
+
+- fund picker backed by the shared scheme catalog
+- SIP amount and start/end controls
+- month-end NAV simulation through `src/utils/pastSipCheck.ts`
+- result cards and growth-path chart
+
+### 8d. Direct vs Regular Impact (`/tools/direct-vs-regular`)
+
+Stack route under Tools Hub. Estimates the long-term cost difference between
+direct and regular plans.
+
+Includes:
+
+- amount, years, return, and expense-ratio inputs
+- direct-vs-regular projected corpus comparison
+- fee drag / opportunity-cost context
+- plain-language caveat that outputs are estimates, not advice
 
 ### 9. Onboarding / Import CAS
 
