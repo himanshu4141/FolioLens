@@ -11,11 +11,11 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
-import { ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ClearLensCard, ClearLensHeader, ClearLensScreen, ClearLensSegmentedControl } from '@/src/components/clearLens/ClearLensPrimitives';
+import { ToolTitleBlock } from '@/src/components/clearLens/tools/kit';
 import {
   ClearLensFonts,
   ClearLensRadii,
-  ClearLensShadow,
   ClearLensSpacing,
   ClearLensTypography,
   type ClearLensTokens,
@@ -98,11 +98,12 @@ export function ClearLensCreateGoalScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.titleBlock}>
-            <Text style={styles.eyebrow}>Goal Planner</Text>
-            <Text style={styles.title}>{isEditing ? 'Edit goal' : 'New goal'}</Text>
-          </View>
-          <View style={styles.card}>
+          <ToolTitleBlock
+            eyebrow="Goal Planner"
+            title={isEditing ? 'Edit goal' : 'New goal'}
+          />
+
+          <ClearLensCard style={styles.formCard}>
             <InputRow label="Goal name">
               <TextInput
                 style={styles.textInput}
@@ -173,7 +174,7 @@ export function ClearLensCreateGoalScreen() {
                 You can change these percentages in Settings → Preferences.
               </Text>
             </View>
-          </View>
+          </ClearLensCard>
 
           <TouchableOpacity
             style={[styles.saveButton, !isValid && styles.saveButtonDisabled]}
@@ -232,25 +233,8 @@ function makeStyles(tokens: ClearLensTokens) {
     paddingBottom: ClearLensSpacing.xxl,
     gap: ClearLensSpacing.md,
   },
-  titleBlock: {
-    gap: 4,
-    paddingHorizontal: ClearLensSpacing.xs,
-  },
-  eyebrow: {
-    ...ClearLensTypography.label,
-    color: cl.emerald,
-    textTransform: 'uppercase',
-  },
-  title: {
-    ...ClearLensTypography.h1,
-    color: cl.navy,
-  },
-  card: {
-    backgroundColor: cl.surface,
-    borderRadius: ClearLensRadii.lg,
-    borderWidth: 1,
-    borderColor: cl.border,
-    ...ClearLensShadow,
+  formCard: {
+    padding: 0,
     overflow: 'hidden',
   },
   inputRow: {
