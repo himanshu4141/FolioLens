@@ -1,1 +1,1 @@
-/Users/hyadav/code/personal/FundLens/AGENTS.md
+AGENTS.md

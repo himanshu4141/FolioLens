@@ -6,6 +6,12 @@ import {
   type PerfSpanId,
 } from '@/src/lib/perfMark';
 import { isSyncInFlight } from '@/src/lib/performanceRuntimeState';
+import {
+  trackUxSlowEvent,
+  UX_THRESHOLDS,
+  type UxCacheState,
+  type UxSurface,
+} from '@/src/lib/uxTelemetry';
 
 export type NavigationRouteName =
   | 'portfolio'
@@ -265,6 +271,19 @@ function completeNavigationPhase(
     ...properties,
     elapsed_ms: elapsedMs,
   }));
+  const threshold = phase === 'route_commit'
+    ? UX_THRESHOLDS.routePaintMs
+    : UX_THRESHOLDS.contentReadyMs;
+  if (elapsedMs >= threshold) {
+    trackUxSlowEvent({
+      sourceEvent: 'navigation_performance',
+      surface: navigation.toRoute as UxSurface,
+      metric: 'elapsed_ms',
+      valueMs: elapsedMs,
+      threshold,
+      cacheState: navigation.context.cache_state as UxCacheState | undefined,
+    });
+  }
 }
 
 function cleanupExpiredNavigations(now = Date.now()): void {

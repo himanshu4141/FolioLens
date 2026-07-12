@@ -37,6 +37,7 @@ import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
 import { isAuthSessionInvalidError } from '@/src/lib/authError';
+import { trackUxCacheHealth } from '@/src/lib/uxTelemetry';
 
 // Bump this when a query's row shape changes or a migration backfills
 // history rows. Persisted entries are discarded on next start.
@@ -206,6 +207,19 @@ export interface PersistedClientMetrics {
   byKeyPrefix: PersistedQueryPrefixSummary[];
 }
 
+export function estimatePersistedBlobBytes(
+  serializedChars: number,
+  platformOS: typeof Platform.OS = Platform.OS,
+): number {
+  if (!Number.isFinite(serializedChars) || serializedChars < 0) return 0;
+  // AsyncStorage's native SQLite payload is UTF-8-ish for our mostly ASCII JSON,
+  // so chars are a close byte proxy there. Web AsyncStorage uses localStorage,
+  // where browser quota is effectively UTF-16 code units (~2 bytes each), so
+  // scale before bucketing/alerting to catch quota pressure before writes fail.
+  const multiplier = platformOS === 'web' ? 2 : 1;
+  return Math.round(serializedChars * multiplier);
+}
+
 export function summarizePersistedClient(client: PersistedClient): PersistedClientMetrics {
   const serialized = JSON.stringify(client);
   const byPrefix = new Map<string, { count: number; serializedChars: number }>();
@@ -229,7 +243,12 @@ export function summarizePersistedClient(client: PersistedClient): PersistedClie
 }
 
 function prefixSummaryForAnalytics(metrics: PersistedClientMetrics): Record<string, number> {
-  return Object.fromEntries(metrics.byKeyPrefix.map((entry) => [entry.prefix, entry.serializedChars]));
+  return Object.fromEntries(
+    metrics.byKeyPrefix.map((entry) => [
+      entry.prefix,
+      estimatePersistedBlobBytes(entry.serializedChars),
+    ]),
+  );
 }
 
 function serializePersistedClient(client: PersistedClient): string {
@@ -310,7 +329,7 @@ const basePersister = createAsyncStoragePersister({
 async function readBlobSize(): Promise<number | null> {
   try {
     const raw = await AsyncStorage.getItem(PERSIST_KEY);
-    return raw == null ? null : raw.length;
+    return raw == null ? null : estimatePersistedBlobBytes(raw.length);
   } catch {
     return null;
   }
@@ -334,12 +353,19 @@ export const persister = {
       const restoreDurationMs = Date.now() - startedAt;
       if (restored) {
         const metrics = summarizePersistedClient(restored);
+        const blobSizeBytes = estimatePersistedBlobBytes(metrics.serializedChars);
         analytics.track('persister_restore_completed', {
           buster: restored.buster ?? __BUSTER__,
           restore_duration_ms: restoreDurationMs,
-          blob_size_bytes: metrics.serializedChars,
+          blob_size_bytes: blobSizeBytes,
           query_count: metrics.queryCount,
           query_prefix_bytes: prefixSummaryForAnalytics(metrics),
+        });
+        trackUxCacheHealth({
+          cacheState: 'restored',
+          blobSizeBytes,
+          queryCount: metrics.queryCount,
+          buster: restored.buster ?? __BUSTER__,
         });
       } else {
         analytics.track('persister_restore_completed', {
@@ -348,6 +374,12 @@ export const persister = {
           blob_size_bytes: 0,
           query_count: 0,
           query_prefix_bytes: {},
+        });
+        trackUxCacheHealth({
+          cacheState: 'empty',
+          blobSizeBytes: 0,
+          queryCount: 0,
+          buster: __BUSTER__,
         });
       }
       return restored;

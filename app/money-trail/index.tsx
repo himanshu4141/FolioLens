@@ -25,6 +25,7 @@ import {
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
 import { useMoneyTrail } from '@/src/hooks/useMoneyTrail';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import { ResponsiveRouteFrame, useIsDesktop } from '@/src/components/responsive';
 import { useAppStore } from '@/src/store/appStore';
 import {
@@ -963,6 +964,19 @@ export default function MoneyTrailScreen() {
   // (ClearLensPortfolioScreen.tsx:947).
   const isRestoring = useIsRestoring();
   const showFirstLoad = isRestoring || isLoading || data === undefined;
+  const coldStartRef = useRef(data === undefined);
+  const restoredFromPersistedCacheRef = useRef(isRestoring);
+  useEffect(() => {
+    if (isRestoring) restoredFromPersistedCacheRef.current = true;
+  }, [isRestoring]);
+  let uxCacheState: 'restored' | 'network' | 'warm' | 'empty' = 'empty';
+  if (restoredFromPersistedCacheRef.current) {
+    uxCacheState = 'restored';
+  } else if (coldStartRef.current) {
+    uxCacheState = 'network';
+  } else if (data) {
+    uxCacheState = 'warm';
+  }
   const transactions = useMemo(() => data?.transactions ?? [], [data?.transactions]);
 
   useEffect(() => {
@@ -975,6 +989,12 @@ export default function MoneyTrailScreen() {
     () => applyMoneyTrailControls(transactions, filters, deferredQuery, sortBy),
     [deferredQuery, filters, sortBy, transactions],
   );
+  useUxScreenReady('money_trail', !showFirstLoad && !isError, {
+    coldStart: coldStartRef.current,
+    cacheState: uxCacheState,
+    rowCount: visibleTransactions.length,
+    transactionCount: transactions.length,
+  });
   // Hero summary should reflect the *scope* of what's being viewed (date
   // range + optional fund focus), not drill-down list filters. Otherwise
   // selecting "Investment" filter zeroes out the Money Out tile and makes

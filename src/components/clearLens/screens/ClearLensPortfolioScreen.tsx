@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -42,6 +42,7 @@ import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { navStaleness, type TimeWindow } from '@/src/utils/navUtils';
 import { useSession } from '@/src/hooks/useSession';
 import { BENCHMARK_OPTIONS, useAppStore } from '@/src/store/appStore';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import { BENCHMARK_DISCLOSURE } from '@/src/utils/benchmarkSymbolMap';
 import { MoneyTrailPreviewCard } from '@/src/components/clearLens/MoneyTrailPreviewCard';
 import { PortfolioDisclaimer } from '@/src/components/clearLens/PortfolioDisclaimer';
@@ -1008,6 +1009,19 @@ export function ClearLensPortfolioScreenMobile() {
   // 0.5–1s flicker window.
   const isRestoring = useIsRestoring();
   const showFirstLoad = isRestoring || isLoading || data === undefined;
+  const coldStartRef = useRef(data === undefined);
+  const restoredFromPersistedCacheRef = useRef(isRestoring);
+  useEffect(() => {
+    if (isRestoring) restoredFromPersistedCacheRef.current = true;
+  }, [isRestoring]);
+  let uxCacheState: 'restored' | 'network' | 'warm' | 'empty' = 'empty';
+  if (restoredFromPersistedCacheRef.current) {
+    uxCacheState = 'restored';
+  } else if (coldStartRef.current) {
+    uxCacheState = 'network';
+  } else if (data) {
+    uxCacheState = 'warm';
+  }
   const fundCards = useMemo(() => data?.fundCards ?? [], [data?.fundCards]);
   const summary = data?.summary ?? null;
   // The chart needs every fund the user has ever transacted in, not just the
@@ -1067,6 +1081,12 @@ export function ClearLensPortfolioScreenMobile() {
   );
   const { data: moneyTrailData, isLoading: moneyTrailLoading } = useMoneyTrail({
     enabled: isFocused,
+  });
+  useUxScreenReady('portfolio', !showFirstLoad && !isError, {
+    coldStart: coldStartRef.current,
+    cacheState: uxCacheState,
+    fundCount: fundCards.length,
+    transactionCount: moneyTrailData?.transactions.length,
   });
 
   function openSettings() {

@@ -14,6 +14,7 @@ import { useFundDetail, useFundNavHistory } from '@/src/hooks/useFundDetail';
 import { useCachedFundCard } from '@/src/hooks/usePortfolio';
 import { useSession } from '@/src/hooks/useSession';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import type { FundRef } from '@/src/hooks/usePortfolioTimeline';
 import { formatXirr } from '@/src/utils/xirr';
 import { formatCurrency } from '@/src/utils/formatting';
@@ -103,6 +104,12 @@ function ClearLensFundDetailScreen() {
     [data],
   );
   const chartsReady = usePerformanceChartReadiness(isFocused, activeTab);
+  const fundDetailReadyForTelemetry =
+    entryState === 'ready' && (activeTab !== 'performance' || chartsReady);
+  useUxScreenReady('fund_detail', fundDetailReadyForTelemetry, {
+    cacheState: data ? 'warm' : cachedFund ? 'restored' : 'unknown',
+    rowCount: navHistory.length,
+  });
 
   if (entryState === 'loading') {
     return (

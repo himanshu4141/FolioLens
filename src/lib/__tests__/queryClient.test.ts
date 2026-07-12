@@ -22,6 +22,7 @@ import {
   PERSIST_MAX_AGE_MS,
   PERSIST_SAFE_MAX_CHARS,
   __BUSTER__,
+  estimatePersistedBlobBytes,
   queryClient,
   retryPersistedClient,
   shouldPersistQueryKey,
@@ -102,6 +103,12 @@ describe('persister config constants', () => {
 });
 
 describe('summarizePersistedClient()', () => {
+  it('estimates persisted blob bytes using web localStorage UTF-16 semantics', () => {
+    expect(estimatePersistedBlobBytes(2_400_000, 'web')).toBe(4_800_000);
+    expect(estimatePersistedBlobBytes(2_400_000, 'ios')).toBe(2_400_000);
+    expect(estimatePersistedBlobBytes(-1, 'web')).toBe(0);
+  });
+
   it('reports total size, query count, and per-prefix serialized bytes', () => {
     const stateFor = (data: string) => ({
       data,

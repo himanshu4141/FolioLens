@@ -27,6 +27,7 @@ import { usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
 import { useTrackInsightViewed } from '@/src/hooks/useTrackInsightViewed';
 import { usePortfolioInsights } from '@/src/hooks/usePortfolioInsights';
 import { useSession } from '@/src/hooks/useSession';
+import { useUxScreenReady } from '@/src/hooks/useUxTelemetry';
 import { useAppStore } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
@@ -724,6 +725,11 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
       }
     });
   }, [benchmarkXirr, deferredSearchQuery, fundCards, sortBy]);
+  useUxScreenReady('funds', !isLoading && !!data, {
+    cacheState: data ? 'warm' : 'empty',
+    fundCount: fundCards.length,
+    rowCount: sortedFunds.length,
+  });
 
   useEffect(() => {
     if (!didAutoExpand.current && sortedFunds.length > 0) {
