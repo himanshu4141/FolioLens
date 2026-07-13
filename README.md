@@ -146,6 +146,9 @@ The `production` profile remains an internal-distribution APK for direct
 install testing. The `production-store` profile builds an Android App Bundle
 for Google Play, submits to the internal track as a draft, and uses
 `in.foliolens.app`.
+Every upload in a native train keeps the same Android `versionName`
+(`0.0.7` for this train) while EAS auto-increments Play's required
+`versionCode` for `production-store` AABs.
 
 JS-only changes flow as OTA updates. Native module/config changes require a rebuild.
 

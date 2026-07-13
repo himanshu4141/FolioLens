@@ -480,6 +480,12 @@ Android build profiles:
 sideloaded builds used the previous Android namespace and must be uninstalled
 before installing the Play Store build.
 
+Each `production-store` upload in a native train keeps the same Android
+`versionName` (for example `0.0.7`) while EAS auto-increments the Play-required
+Android `versionCode`. Bump `app.config.js`'s `version` only when a native/config
+fingerprint change requires a new native train, then build a fresh
+`production-store` AAB before relying on tag-triggered production OTAs.
+
 Build-time env vars (the `EXPO_PUBLIC_*` ones baked into the JS bundle) come from **expo.dev → Project → Environment Variables**, scoped to one of three EAS environments:
 
 
@@ -589,7 +595,7 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 | `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions and pushes migrations to DEV Supabase. |
 | `supabase-deploy-prod.yml` | `workflow_dispatch` only (manual button) | Validates parity, deploys functions, pushes migrations to PROD Supabase. |
 | `production-release.yml` | Tag push `v*` (also `workflow_dispatch`) | typecheck + lint + tests + EAS update to `foliolens-production` + Vercel prod deploy via CLI. |
-| `play-store-submit.yml` | `workflow_dispatch` only (manual button) | Validates the Android `production-store` config, then builds a new AAB or submits a supplied EAS build ID to Play internal testing as a draft. |
+| `play-store-submit.yml` | `workflow_dispatch` only (manual button) | Validates the Android `production-store` config and selected EAS build, then builds a new AAB or submits a supplied EAS build ID to Play internal testing as a draft. |
 | `universe-backfill.yml` | Monthly cron, hourly resume window, manual dispatch | Invokes the `universe-backfill` Edge Function against DEV/PROD to sync OpenFolio composition and metadata for the active universe. |
 | `program-label-sync.yml` | Label definition change on `main`, or manual dispatch | Creates/updates labels used by multi-agent program PRs. |
 | `program-convergence-gate.yml` | Pull request events | Enforces SHA-pinned dual-review convergence for `program/` implementation PRs. |

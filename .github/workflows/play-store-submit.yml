@@ -91,6 +91,32 @@ jobs:
           print("production-store Android config is valid")
           PY
 
+      - name: Compute expected production-store fingerprint
+        id: expected-fingerprint
+        run: |
+          set -euo pipefail
+          eas fingerprint:generate \
+            --build-profile "$EAS_BUILD_PROFILE" \
+            --platform android \
+            --json \
+            --non-interactive | tee /tmp/eas-fingerprint-output.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          text = Path("/tmp/eas-fingerprint-output.json").read_text()
+          start = text.find("{")
+          if start == -1:
+              raise SystemExit("Could not find JSON object in fingerprint output")
+
+          payload = json.loads(text[start:])
+          hash_value = payload.get("hash")
+          if not hash_value:
+              raise SystemExit(f"Fingerprint output did not include a hash: {payload!r}")
+
+          print(f"hash={hash_value}")
+          PY
+
       - name: Write Play service account key
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -178,6 +204,62 @@ jobs:
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "Selected EAS build: $build_id"
 
+      - name: Validate selected EAS build
+        id: selected-build
+        env:
+          SELECTED_BUILD_ID: ${{ steps.eas-build.outputs.build_id }}
+          EXPECTED_FINGERPRINT: ${{ steps.expected-fingerprint.outputs.hash }}
+        run: |
+          set -euo pipefail
+          eas build:view "$SELECTED_BUILD_ID" --json | tee /tmp/eas-build-view-output.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          text = Path("/tmp/eas-build-view-output.json").read_text()
+          start = text.find("{")
+          if start == -1:
+              raise SystemExit("Could not find JSON object in eas build:view output")
+
+          build = json.loads(text[start:])
+          selected_build_id = os.environ["SELECTED_BUILD_ID"]
+          expected_fingerprint = os.environ["EXPECTED_FINGERPRINT"]
+          archive_url = (
+              build.get("artifacts", {}).get("applicationArchiveUrl")
+              or build.get("artifacts", {}).get("buildUrl")
+              or ""
+          )
+          fingerprint_hash = build.get("fingerprint", {}).get("hash") or build.get("runtimeVersion")
+
+          checks = {
+              "id": (build.get("id"), selected_build_id),
+              "platform": (str(build.get("platform", "")).lower(), "android"),
+              "status": (str(build.get("status", "")).lower(), "finished"),
+              "buildProfile": (build.get("buildProfile"), os.environ["EAS_BUILD_PROFILE"]),
+              "distribution": (str(build.get("distribution", "")).lower(), "store"),
+              "channel": (build.get("channel"), os.environ["EXPECTED_CHANNEL"]),
+              "appVersion": (build.get("appVersion"), os.environ["EXPECTED_APP_VERSION"]),
+              "fingerprint": (fingerprint_hash, expected_fingerprint),
+          }
+          failures = [
+              f"{name}: expected {expected!r}, got {actual!r}"
+              for name, (actual, expected) in checks.items()
+              if actual != expected
+          ]
+          if ".aab" not in archive_url.lower():
+              failures.append(f"artifact: expected an Android App Bundle (.aab), got {archive_url!r}")
+
+          if failures:
+              raise SystemExit("Selected EAS build is not safe to submit:\n" + "\n".join(failures))
+
+          print(f"app_build_version={build.get('appBuildVersion', '')}")
+          print(f"runtime_version={build.get('runtimeVersion', '')}")
+          print(f"fingerprint_hash={fingerprint_hash}")
+          print(f"git_commit_hash={build.get('gitCommitHash', '')}")
+          print(f"artifact_url={archive_url}")
+          PY
+
       - name: Submit Android build to Play internal testing
         run: |
           eas submit \
@@ -195,6 +277,11 @@ jobs:
             echo "- EAS build ID: \`${{ steps.eas-build.outputs.build_id }}\`"
             echo "- Profile: \`production-store\`"
             echo "- Application ID: \`in.foliolens.app\`"
+            echo "- App version: \`0.0.7\`"
+            echo "- Version code: \`${{ steps.selected-build.outputs.app_build_version }}\`"
+            echo "- Runtime version: \`${{ steps.selected-build.outputs.runtime_version }}\`"
+            echo "- Fingerprint: \`${{ steps.selected-build.outputs.fingerprint_hash }}\`"
+            echo "- Build commit: \`${{ steps.selected-build.outputs.git_commit_hash }}\`"
             echo "- Track: \`internal\`"
             echo "- Release status: \`draft\`"
           } >> "$GITHUB_STEP_SUMMARY"
