@@ -129,7 +129,7 @@ Export measurements:
 ## Exact Android Evidence
 
 - Device: physical Pixel 8a (`akita`), Android 16 / API 36.
-- App/channel: `com.foliolens.app.prpreview`, channel `foliolens-pr`.
+- App/channel: `in.foliolens.app.prpreview`, channel `foliolens-pr`.
 - Runtime implementation: `38df543dac7d17604c9c47983136d2d676e11bce`.
 - PR-preview workflow: green run `29140822276`.
 - Android OTA/update ID: `019f4f99-506f-74a9-92ee-4bc0ea601c25`.

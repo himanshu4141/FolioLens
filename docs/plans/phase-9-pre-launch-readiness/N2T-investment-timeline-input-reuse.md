@@ -187,7 +187,7 @@ Validation before physical Android evidence:
 
 Pre-review Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98ad0eb95` (superseded by the portfolio-validity correction and retained only as diagnostic history):
 
-- Pixel 8a, Android 16; `com.foliolens.app.mainpreview`, channel `foliolens-main`, runtime/app `0.0.4`;
+- Pixel 8a, Android 16; `in.foliolens.app.mainpreview`, channel `foliolens-main`, runtime/app `0.0.4`;
 - Android main-preview OTA `019f2233-058f-774c-bfc7-d310fa931633` (About showed `019f2233-058…`);
 - before measurement, the support-only local-cache reset confirmed 566 local/server transactions, then rebuilt 566 transaction, 51,902 NAV, and 22,325 index rows with `error_count: 0`; this deliberately invalidated timeline outputs and prepared inputs;
 - interaction sequence: select one benchmark to build each window's prepared input, then select two different benchmarks for the same window. The reset also invalidated index snapshots, so the first Nifty 50/Nifty 100 switches at 3M were treated as one-time index warm-up; the repeated-switch acceptance set begins after all three canonical snapshots are fresh.
@@ -203,7 +203,7 @@ Pre-review Android evidence at implementation `afd6a804b18e14c0f47ad44e34ca71d98
 
 The steady-state repeated-switch set was `20, 50, 29, 35, 36, 36, 31, 21, 38, 38` ms: p95 50 ms, below the 300 ms target. The 3Y benchmark-only interaction improved from the 4.830–5.919 second baseline to 21–31 ms (more than 99% lower). Every warm row reported `input_cache_hit: true`, `index_cache_hit: true`, and zero valuation-cache misses. The cold numbers are reported separately: they include preparation of the window-specific input after a full local-cache rebuild, and show that SQLite NAV read/repair remains the dominant first-request cost, especially for 3Y. Logcat contained zero nested-transaction, invalid-rollback, `SQLITE_BUSY`, or `SQLITE_LOCKED` errors.
 
-Final corrected-head Android evidence used implementation `d6a6c50bdfdc7a2e51a1c69fc993c08ff999de2e`, Android main-preview OTA `019f22af-85ef-73e3-85b4-bd10beca0b26` (group `07d18ff0-dc46-46a7-8789-5f0c5ab60fef`), and the same Pixel 8a / Android 16 / `com.foliolens.app.mainpreview` / `foliolens-main` / runtime `0.0.4` target. EAS reported the exact Git commit and About displayed `019f22af-85e…` after three clean process restarts. The support reset again rebuilt the full local cache before measurement, and the final matrix was:
+Final corrected-head Android evidence used implementation `d6a6c50bdfdc7a2e51a1c69fc993c08ff999de2e`, Android main-preview OTA `019f22af-85ef-73e3-85b4-bd10beca0b26` (group `07d18ff0-dc46-46a7-8789-5f0c5ab60fef`), and the same Pixel 8a / Android 16 / `in.foliolens.app.mainpreview` / `foliolens-main` / runtime `0.0.4` target. EAS reported the exact Git commit and About displayed `019f22af-85e…` after three clean process restarts. The support reset again rebuilt the full local cache before measurement, and the final matrix was:
 
 | Window | Cold total | tx / NAV / index rows | Points / evaluation dates | Benchmark-switch totals | Cache result |
 |---|---:|---:|---:|---:|---|

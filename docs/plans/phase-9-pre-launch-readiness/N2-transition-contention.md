@@ -168,7 +168,7 @@ Validation completed before native evidence:
 - Android production export passed: 1,747 modules and a 6.2 MB Hermes bundle.
 - `git diff --check` passed.
 
-Final Android physical evidence used a Pixel 8a running Android 16 with package `com.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The tested Android OTA was `019f1efd-dc42-77b7-b9b0-0de0c66a5236` (group `5adc058d-e794-4b62-a920-fcf58acc8e60`) at implementation head `d88d12713e98a23dbf3e3cf310d564452ad30428`. The About screen independently showed channel `foliolens-main` and OTA prefix `019f1efd-dc4…` after three clean process restarts.
+Final Android physical evidence used a Pixel 8a running Android 16 with package `in.foliolens.app.mainpreview`, app version/runtime `0.0.4`, and channel `foliolens-main`. The tested Android OTA was `019f1efd-dc42-77b7-b9b0-0de0c66a5236` (group `5adc058d-e794-4b62-a920-fcf58acc8e60`) at implementation head `d88d12713e98a23dbf3e3cf310d564452ad30428`. The About screen independently showed channel `foliolens-main` and OTA prefix `019f1efd-dc4…` after three clean process restarts.
 
 Measured evidence:
 

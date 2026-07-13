@@ -152,7 +152,7 @@ Automated validation completed on 2026-07-03:
 
 Pre-review native Android acceptance completed on 2026-07-03 for the freeze/focus portion:
 
-- Device/build: Pixel 8a, Android 16 / API 36, `com.foliolens.app.prpreview` version `0.0.4`.
+- Device/build: Pixel 8a, Android 16 / API 36, `in.foliolens.app.prpreview` version `0.0.4`.
 - Exact artifact: Android PR-preview OTA `019f2537-a8a5-7c3f-806e-715a8bf5cd47`; About displayed prefix `019f2537-a8a…`. The OTA was published from docs-only head `52e62b913eef3535113f7d3a92ef66e61e7a8727` and contains measured implementation `d6b96971378eaa6719a3171f3a2d573a5b8aa811` unchanged.
 - Settings → About: route commit `93 ms`, post-interaction usable `109 ms`, `sync_in_flight:false`. The complete fresh log contained zero `query:portfolio`, `query:timeline`, `query:moneyTrail`, or `query:wealthJourney` completions and zero relevant SQLite/sync errors.
 - Funds → Fund Detail cold target-cache sample: route commit `116 ms`, post-interaction usable `126 ms`, `cache_state:cold`, `sync_in_flight:false`, six active queries, 20 funds, and 566 transactions. Only visible Fund Detail-owned reads followed (`query:fundDetail`, scheme metadata, NAV history, and its one-fund timeline); hidden Portfolio, Money Trail, and Wealth Journey query counts remained zero, with zero relevant SQLite/sync errors.

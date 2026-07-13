@@ -74,7 +74,7 @@ Use `useShallow` for components that need multiple Zustand values and primitive 
 
 ## Initial Native Acceptance Evidence (superseded by code review)
 
-Android acceptance ran on a paired Pixel 8a running Android 16 with the PR-preview package `com.foliolens.app.prpreview`. The measured implementation is `1b940695`; the exact Android OTA is `019f2fe5-d91d-7218-b57c-c977bfbb3a9a`. About showed channel `foliolens-pr`, prefix `019f2fe5-d91…`, version `0.0.4`, and the 5 Jul 2026 update date.
+Android acceptance ran on a paired Pixel 8a running Android 16 with the PR-preview package `in.foliolens.app.prpreview`. The measured implementation is `1b940695`; the exact Android OTA is `019f2fe5-d91d-7218-b57c-c977bfbb3a9a`. About showed channel `foliolens-pr`, prefix `019f2fe5-d91…`, version `0.0.4`, and the 5 Jul 2026 update date.
 
 - Settings to About committed in 79 ms and became post-interaction usable in 86 ms. The sample was idle (`sync_in_flight=false`) with 6 active queries, 20 funds, and 566 transactions.
 - Funds to Fund Detail was a cold target: route commit 50 ms and post-interaction usable 69 ms, also with `sync_in_flight=false`, 6 active queries, 20 funds, and 566 transactions. The useful hero rendered for DSP US Specific Equity Omni FoF with current value, invested amount, daily move, XIRR, and tabs; the local full-history NAV read then completed from SQLite.
