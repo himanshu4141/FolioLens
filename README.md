@@ -141,6 +141,13 @@ eas build --profile production   --platform android  # tagged release build
 
 JS-only changes flow as OTA updates. Native module/config changes require a rebuild.
 
+Runtime compatibility is managed by Expo fingerprinting. Do not bump
+`app.config.js`'s `version` for a JS-only release tag; that value is part of the
+native train and changing it changes the fingerprint. For example, after the
+`0.0.6` fingerprint cutover build, a later `v0.0.7` tag can publish an OTA to
+the installed `0.0.6` binary only if the app config/native fingerprint is
+unchanged.
+
 ---
 
 ## Auth: magic link + Google

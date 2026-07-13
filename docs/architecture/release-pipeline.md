@@ -5,6 +5,7 @@ Three GitHub-triggered workflows shape the release path. The contract:
 - **Every PR** runs CI checks + publishes an EAS Update to the `foliolens-pr` channel + Vercel auto-creates a preview URL.
 - **Every push to `main`** publishes an EAS Update to the `foliolens-main` channel (DEV Supabase) + Vercel auto-deploys `foliolens-dev`.
 - **Production deploys are gated on a `v*` git tag.** Tagging triggers EAS publish to `foliolens-production` channel + Vercel CLI deploy to the prod project + a GitHub release.
+- **Native production builds are separate from production OTA tags.** The app uses Expo fingerprint runtime versions. A new native build is required when the fingerprint changes; a JS-only release tag can ship OTA to the existing production build when the fingerprint is unchanged.
 
 Production database migrations and edge-function deploys are NOT automatic on tag — those run via `supabase-deploy-prod.yml` workflow_dispatch as a deliberate operator step.
 
@@ -28,7 +29,7 @@ graph TB
     pr_w["pr-preview.yml<br/>──────────────<br/>• checks (typecheck/lint/test)<br/>• supabase-validate<br/>• EAS publish to foliolens-pr"]
     main_w["main-deploy.yml<br/>──────────────<br/>• checks<br/>• EAS publish to foliolens-main"]
     sup_dev_w["supabase-deploy-dev.yml<br/>──────────────<br/>(triggered by changes under supabase/**)<br/>• functions deploy<br/>• db push (DEV)"]
-    prod_w["production-release.yml<br/>──────────────<br/>• checks (incl. tag↔app.config version match)<br/>• EAS publish to foliolens-production<br/>• vercel deploy --prod<br/>• gh release create"]
+    prod_w["production-release.yml<br/>──────────────<br/>• checks<br/>• EAS publish to foliolens-production<br/>• vercel deploy --prod<br/>• gh release create"]
     sup_prod_w["supabase-deploy-prod.yml<br/>──────────────<br/>workflow_dispatch only (manual)<br/>• functions deploy (PROD)<br/>• db push (PROD)"]
   end
 
@@ -126,10 +127,10 @@ sequenceDiagram
   participant V as Vercel
   participant Rel as GitHub Releases
 
-  Op->>Op: bump version in app.config.js
+  Op->>Op: if fingerprint changed:<br/>bump native app version + create EAS build
   Op->>Op: git tag v0.0.3 && git push --tags
   GH->>Prod: trigger (refs/tags/v*)
-  Prod->>Prod: checks job<br/>verifies tag == app.config.js version
+  Prod->>Prod: checks job
   Prod->>EAS: publish to foliolens-production<br/>(PROD Supabase URL embedded)
   Prod->>V: vercel deploy --prod<br/>(via VERCEL_TOKEN, foliolens project)
   Prod->>Rel: gh release create v0.0.3<br/>--generate-notes --verify-tag
@@ -145,14 +146,36 @@ sequenceDiagram
 | `foliolens-main` | `preview-main` | DEV | `foliolens-dev` (production) | Internal APK / TestFlight; tracks main branch |
 | `foliolens-production` | `production` | PROD | `foliolens` (production) | TestFlight + Play Internal; tag-gated |
 
-Three separate native binaries with distinct bundle IDs, schemes, and OAuth client IDs. `eas update` only ships JS — anything that changes native deps requires a new EAS build.
+Three separate native binaries with distinct bundle IDs, schemes, and OAuth client IDs. `eas update` only ships JS; anything that changes native deps, Expo plugins, app identifiers, app icons/splash assets, native-facing app config, or the native app version requires a new EAS build.
+
+## Runtime version policy
+
+`app.config.js` uses `runtimeVersion: { policy: 'fingerprint' }`. EAS calculates a runtime fingerprint from the app's native surface and only serves an OTA update to a binary with the same runtime. This avoids the old `appVersion` problem where every marketing-version bump created a new runtime and stranded installed devices.
+
+The operational rule is:
+
+1. For a native release train, bump `app.config.js`'s `version`, build a new binary, distribute/install it, then tag the production release.
+2. For a later JS-only production release, create a new git tag but leave `app.config.js`'s `version` unchanged. Installed devices on the current native train will receive the OTA because the fingerprint is unchanged.
+3. Before every production tag, compare the current local fingerprint to the latest successful production build. If the fingerprint changed, cut a new native build before publishing the tag.
+
+Useful fingerprint check:
+
+    current_fp="$(npx fingerprint fingerprint:generate --platform android | jq -r '.hash')"
+    latest_prod_build="$(
+      eas build:list --platform android --status finished --limit 20 --json |
+        jq -r '.[] | select(.buildProfile=="production") | [.appVersion, .runtimeVersion, .fingerprint.hash, .gitCommitHash[0:8], .id] | @tsv' |
+        head -1
+    )"
+    printf 'current fingerprint: %s\nlatest production build: %s\n' "$current_fp" "$latest_prod_build"
+
+If `current_fp` differs from the latest production build's fingerprint hash, the release needs a new native build. If it matches, a tag-triggered OTA release can reach that installed binary.
 
 ## Why production is tag-gated
 
 Before this branching scheme was set up, every push to `main` auto-deployed the web app to production Vercel. Two real bugs in 2026 (one was the Phase 8 TRI cutover, one was the inbound webhook architecture) shipped to prod within minutes of merging because the gate was implicit ("don't merge until you're confident"). Tag-gating makes the gate explicit and the ship moment intentional. The `vX.Y.Z` tag now has to be:
 
 1. Pushed deliberately
-2. Match `app.config.js` version (the `verify-tag` step in `production-release.yml`)
+2. Be checked against the latest production build fingerprint before tagging
 3. Followed by a manual `supabase-deploy-prod.yml` dispatch if the release includes migrations (backed up beforehand)
 
-If something needs to ship to prod without a tag (emergency hotfix), `production-release.yml` also accepts `workflow_dispatch` and the version-match check is skipped on dispatch runs.
+If something needs to ship to prod without a tag, `production-release.yml` also accepts `workflow_dispatch`; use it only for emergency hotfixes because it bypasses the explicit release-tag audit trail.
