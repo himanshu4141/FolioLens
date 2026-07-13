@@ -474,6 +474,10 @@ Build-time env vars (the `EXPO_PUBLIC_*` ones baked into the JS bundle) come fro
 - `preview` env → DEV Supabase + `https://foliolens-dev.vercel.app`
 - `development` env → DEV Supabase + local dev server URLs
 
+Each `eas.json` build profile pins its EAS `environment` explicitly. Keep this
+even for internal-distribution production builds; otherwise EAS may infer the
+`preview` environment and bake DEV values into a production-channel binary.
+
 
 GitHub Actions overrides these for OTA updates by passing the workflow's `_PROD` or `_DEV` GitHub secrets at runtime — that way OTA bundles always land with values matching the channel they ship to.
 

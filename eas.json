@@ -7,6 +7,7 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "environment": "development",
       "channel": "development",
       "env": {
         "APP_VARIANT": "development",
@@ -15,6 +16,7 @@
     },
     "preview-main": {
       "distribution": "internal",
+      "environment": "preview",
       "channel": "foliolens-main",
       "env": {
         "APP_VARIANT": "preview-main",
@@ -26,6 +28,7 @@
     },
     "preview-pr": {
       "distribution": "internal",
+      "environment": "preview",
       "channel": "foliolens-pr",
       "env": {
         "APP_VARIANT": "preview-pr",
@@ -37,6 +40,7 @@
     },
     "production": {
       "distribution": "internal",
+      "environment": "production",
       "channel": "foliolens-production",
       "env": {
         "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "false"
