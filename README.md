@@ -134,6 +134,7 @@ npm run gen:types
 Three review/release flavours share one Expo project:
 
 ```bash
+npm ci
 eas build --profile preview-pr   --platform android  # rolling PR review build
 eas build --profile preview-main --platform android  # stable beta build
 eas build --profile production   --platform android  # tagged release build
@@ -147,6 +148,10 @@ native train and changing it changes the fingerprint. For example, after the
 `0.0.6` fingerprint cutover build, a later `v0.0.7` tag can publish an OTA to
 the installed `0.0.6` binary only if the app config/native fingerprint is
 unchanged.
+
+Run native builds from a clean dependency install (`npm ci`). EAS compares the
+runtime fingerprint generated locally with the fingerprint generated on the
+remote builder; stale `node_modules` can make the build fail before compilation.
 
 ---
 
