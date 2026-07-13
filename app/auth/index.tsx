@@ -16,6 +16,7 @@ import * as WebBrowser from 'expo-web-browser';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { authClient } from '@/src/lib/auth';
 import { canShowDevAuthShortcut, getDevAuthCredentials } from '@/src/lib/devAuth';
+import { isReviewerAccessEmail } from '@/src/lib/reviewerAccess';
 import { useAppStore } from '@/src/store/appStore';
 import { DemoSignupSheet } from '@/src/components/clearLens/DemoSignupSheet';
 import { featureFlags } from '@/src/lib/featureFlags';
@@ -57,13 +58,26 @@ export default function SignInScreen() {
   const { layout } = useResponsiveLayout();
   const isDesktop = layout === 'desktop';
   const [email, setEmail] = useState('');
-  const [loadingMode, setLoadingMode] = useState<'magic' | 'google' | 'demo' | 'preview' | null>(null);
+  const [reviewerPassword, setReviewerPassword] = useState('');
+  const [loadingMode, setLoadingMode] = useState<
+    'magic' | 'google' | 'demo' | 'preview' | 'reviewer' | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [showMagicLinkInfo, setShowMagicLinkInfo] = useState(false);
   const [demoSheetOpen, setDemoSheetOpen] = useState(false);
   const showDevAuthShortcut = canShowDevAuthShortcut();
+  const isReviewerAccess = isReviewerAccessEmail(email);
   const enterPreviewMode = useAppStore((s) => s.enterPreviewMode);
   const oauth = useOAuthCompletion();
+  const formSubtitle = isReviewerAccess
+    ? 'Enter the reviewer password to access the seeded portfolio.'
+    : "Enter your email — we'll send a secure link. No password needed.";
+
+  function handleEmailChange(value: string) {
+    setEmail(value);
+    setError(null);
+    if (!isReviewerAccessEmail(value)) setReviewerPassword('');
+  }
 
   function handlePreview() {
     setError(null);
@@ -103,6 +117,33 @@ export default function SignInScreen() {
     }
 
     router.push(`/auth/confirm?email=${encodeURIComponent(email.trim())}`);
+  }
+
+  async function handleReviewerSignIn() {
+    const reviewerEmail = email.trim();
+    if (!isReviewerAccessEmail(reviewerEmail)) {
+      setError('Please enter the reviewer email address.');
+      return;
+    }
+
+    if (!reviewerPassword) {
+      setError('Please enter the reviewer password.');
+      return;
+    }
+
+    setError(null);
+    setLoadingMode('reviewer');
+
+    const { error } = await authClient.signInWithPassword({
+      email: reviewerEmail,
+      password: reviewerPassword,
+    });
+
+    setLoadingMode(null);
+
+    if (error) {
+      setError(error.message);
+    }
   }
 
   async function handleGoogleSignIn() {
@@ -216,7 +257,7 @@ export default function SignInScreen() {
           <View style={[styles.formPanel, isDesktop && styles.formPanelDesktop]}>
             <Text style={styles.formTitle}>Sign in</Text>
             <Text style={styles.formSubtitle}>
-              Enter your email — we&apos;ll send a secure link. No password needed.
+              {formSubtitle}
             </Text>
 
             <TextInput
@@ -224,71 +265,97 @@ export default function SignInScreen() {
               placeholder="you@example.com"
               placeholderTextColor={cl.textTertiary}
               value={email}
-              onChangeText={(v) => { setEmail(v); setError(null); }}
+              onChangeText={handleEmailChange}
               keyboardType="email-address"
               autoCapitalize="none"
               autoComplete="email"
               autoCorrect={false}
               editable={!loadingMode}
               returnKeyType="send"
-              onSubmitEditing={handleSendMagicLink}
+              onSubmitEditing={isReviewerAccess ? handleReviewerSignIn : handleSendMagicLink}
             />
+
+            {isReviewerAccess && (
+              <TextInput
+                style={[styles.input, error ? styles.inputError : null]}
+                placeholder="Reviewer password"
+                placeholderTextColor={cl.textTertiary}
+                value={reviewerPassword}
+                onChangeText={(v) => {
+                  setReviewerPassword(v);
+                  setError(null);
+                }}
+                autoCapitalize="none"
+                autoComplete="current-password"
+                autoCorrect={false}
+                editable={!loadingMode}
+                secureTextEntry
+                returnKeyType="go"
+                onSubmitEditing={handleReviewerSignIn}
+              />
+            )}
 
             {error && <Text style={styles.errorText}>{error}</Text>}
 
             <TouchableOpacity
               style={[styles.button, loadingMode !== null && styles.buttonDisabled]}
-              onPress={handleSendMagicLink}
+              onPress={isReviewerAccess ? handleReviewerSignIn : handleSendMagicLink}
               disabled={loadingMode !== null}
               activeOpacity={0.85}
             >
-              {loadingMode === 'magic' ? (
+              {loadingMode === 'magic' || loadingMode === 'reviewer' ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.buttonText}>Send secure link →</Text>
+                <Text style={styles.buttonText}>
+                  {isReviewerAccess ? 'Sign in with password' : 'Send secure link →'}
+                </Text>
               )}
             </TouchableOpacity>
 
-            <View style={styles.dividerRow}>
-              <View style={styles.divider} />
-              <Text style={styles.dividerText}>or</Text>
-              <View style={styles.divider} />
-            </View>
+            {!isReviewerAccess && (
+              <>
+                <View style={styles.dividerRow}>
+                  <View style={styles.divider} />
+                  <Text style={styles.dividerText}>or</Text>
+                  <View style={styles.divider} />
+                </View>
 
-            <TouchableOpacity
-              style={[styles.googleButton, loadingMode !== null && styles.buttonDisabled]}
-              onPress={handleGoogleSignIn}
-              disabled={loadingMode !== null}
-              activeOpacity={0.85}
-            >
-              {loadingMode === 'google' ? (
-                <ActivityIndicator color={cl.textSecondary} />
-              ) : (
-                <>
-                  <GoogleIcon size={20} />
-                  <Text style={styles.googleButtonText}>Continue with Google</Text>
-                </>
-              )}
-            </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.googleButton, loadingMode !== null && styles.buttonDisabled]}
+                  onPress={handleGoogleSignIn}
+                  disabled={loadingMode !== null}
+                  activeOpacity={0.85}
+                >
+                  {loadingMode === 'google' ? (
+                    <ActivityIndicator color={cl.textSecondary} />
+                  ) : (
+                    <>
+                      <GoogleIcon size={20} />
+                      <Text style={styles.googleButtonText}>Continue with Google</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
 
-            {featureFlags.previewMode && (
-              <TouchableOpacity
-                style={[styles.previewButton, loadingMode !== null && styles.buttonDisabled]}
-                onPress={handlePreview}
-                disabled={loadingMode !== null}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityLabel="Preview the app with sample data without signing up"
-              >
-                {loadingMode === 'preview' ? (
-                  <ActivityIndicator color={cl.textSecondary} />
-                ) : (
-                  <Text style={styles.previewButtonText}>Try with sample data — early access list</Text>
+                {featureFlags.previewMode && (
+                  <TouchableOpacity
+                    style={[styles.previewButton, loadingMode !== null && styles.buttonDisabled]}
+                    onPress={handlePreview}
+                    disabled={loadingMode !== null}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel="Preview the app with sample data without signing up"
+                  >
+                    {loadingMode === 'preview' ? (
+                      <ActivityIndicator color={cl.textSecondary} />
+                    ) : (
+                      <Text style={styles.previewButtonText}>Try with sample data — early access list</Text>
+                    )}
+                  </TouchableOpacity>
                 )}
-              </TouchableOpacity>
+              </>
             )}
 
-            {showDevAuthShortcut && (
+            {!isReviewerAccess && showDevAuthShortcut && (
               <>
                 <View style={styles.devDividerRow}>
                   <View style={styles.devDivider} />
@@ -315,17 +382,19 @@ export default function SignInScreen() {
               </>
             )}
 
-            <TouchableOpacity
-              style={styles.infoToggle}
-              onPress={() => setShowMagicLinkInfo((v) => !v)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.infoToggleText}>
-                {showMagicLinkInfo ? '▲' : '▼'} What is a magic link?
-              </Text>
-            </TouchableOpacity>
+            {!isReviewerAccess && (
+              <TouchableOpacity
+                style={styles.infoToggle}
+                onPress={() => setShowMagicLinkInfo((v) => !v)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.infoToggleText}>
+                  {showMagicLinkInfo ? '▲' : '▼'} What is a magic link?
+                </Text>
+              </TouchableOpacity>
+            )}
 
-            {showMagicLinkInfo && (
+            {!isReviewerAccess && showMagicLinkInfo && (
               <View style={styles.infoBox}>
                 <Text style={styles.infoBoxText}>
                   A magic link is a one-time, expiring link we email you. Tap it to sign in

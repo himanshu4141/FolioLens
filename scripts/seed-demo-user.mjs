@@ -21,8 +21,15 @@ const DEMO_PASSWORD =
   '';
 const DEMO_PAN = process.env.DEV_DEMO_PAN ?? 'ABCDE1234F';
 const DEMO_KFINTECH_EMAIL = process.env.DEV_DEMO_KFINTECH_EMAIL ?? 'demo-import@example.com';
-const DEMO_INBOUND_EMAIL = 'demo-inbound@fundlens.local';
-const DEMO_INBOUND_ID = 'demo-inbound-session';
+const DEMO_INBOUND_EMAIL = process.env.DEV_DEMO_INBOUND_EMAIL ?? 'demo-inbound@fundlens.local';
+const DEMO_INBOUND_ID = process.env.DEV_DEMO_INBOUND_ID ?? 'demo-inbound-session';
+const SEED_USER_LABEL = process.env.SEED_USER_LABEL ?? 'Demo';
+const SEED_USER_USAGE_HINT =
+  process.env.SEED_USER_USAGE_HINT ?? 'Use the local dev auth shortcut to sign in.';
+const SEED_USER_METADATA_ROLE = process.env.SEED_USER_METADATA_ROLE ?? 'demo';
+const SEED_USER_METADATA_KIND = process.env.SEED_USER_METADATA_KIND?.trim() ?? '';
+const SEED_USER_METADATA_SEEDED_BY =
+  process.env.SEED_USER_METADATA_SEEDED_BY ?? 'scripts/seed-demo-user.mjs';
 
 if (!SUPABASE_URL || !DEMO_EMAIL || !DEMO_PASSWORD) {
   console.error(
@@ -98,8 +105,21 @@ async function main() {
     await seedTransactions(publicSupabase, user.id, funds);
   }
 
-  console.log(`Demo user ready: ${DEMO_EMAIL}`);
-  console.log('Use the local dev auth shortcut to sign in.');
+  console.log(`${SEED_USER_LABEL} user ready: ${DEMO_EMAIL}`);
+  if (SEED_USER_USAGE_HINT) console.log(SEED_USER_USAGE_HINT);
+}
+
+function seedUserMetadata() {
+  const metadata = {
+    role: SEED_USER_METADATA_ROLE,
+    seeded_by: SEED_USER_METADATA_SEEDED_BY,
+  };
+
+  if (SEED_USER_METADATA_KIND) {
+    metadata.kind = SEED_USER_METADATA_KIND;
+  }
+
+  return metadata;
 }
 
 function loadLocalEnv(filePath) {
@@ -136,7 +156,7 @@ async function getOrCreateDemoUserWithServiceRole() {
         {
           password: DEMO_PASSWORD,
           email_confirm: true,
-          user_metadata: { role: 'demo', seeded_by: 'scripts/seed-demo-user.mjs' },
+          user_metadata: seedUserMetadata(),
         },
       );
 
@@ -152,7 +172,7 @@ async function getOrCreateDemoUserWithServiceRole() {
     email: DEMO_EMAIL,
     password: DEMO_PASSWORD,
     email_confirm: true,
-    user_metadata: { role: 'demo', seeded_by: 'scripts/seed-demo-user.mjs' },
+    user_metadata: seedUserMetadata(),
   });
 
   if (error) throw error;

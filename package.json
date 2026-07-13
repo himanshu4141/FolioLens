@@ -12,6 +12,7 @@
     "export:web": "expo export --platform web",
     "gen:types": "supabase gen types typescript --linked > src/types/database.types.ts",
     "seed:demo": "node scripts/seed-demo-user.mjs",
+    "seed:reviewer": "node scripts/seed-reviewer-user.mjs",
     "test": "jest"
   },
   "dependencies": {

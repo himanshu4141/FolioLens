@@ -718,6 +718,54 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 
 There is **no** automatic prod release. Tagging is the explicit human-in-the-loop gate.
 
+### Play Store reviewer accounts
+
+Google Play review needs reusable credentials that land on a portfolio with
+seeded data. The production app stays passwordless for normal users; a password
+field appears only after one of the allowlisted reviewer emails is entered on
+the auth screen.
+
+Before submitting a Play Store build, generate strong one-off passwords in the
+password manager, then seed both reviewer accounts against PROD:
+
+```bash
+SUPABASE_URL=https://ohcaaioabjvzewfysqgh.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=<prod service-role key> \
+REVIEWER_SEED_TARGET=production \
+REVIEWER_EMAIL=play-review@foliolens.in \
+REVIEWER_PASSWORD=<generated password> \
+REVIEWER_KIND=portfolio \
+npm run seed:reviewer
+
+SUPABASE_URL=https://ohcaaioabjvzewfysqgh.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=<prod service-role key> \
+REVIEWER_SEED_TARGET=production \
+REVIEWER_EMAIL=play-review-delete@foliolens.in \
+REVIEWER_PASSWORD=<generated password> \
+REVIEWER_KIND=delete-test \
+npm run seed:reviewer
+```
+
+`npm run seed:reviewer` refuses to run against the PROD Supabase URL unless
+`REVIEWER_SEED_TARGET=production` is present. It resets only the target
+reviewer user's app rows, reuses the synthetic portfolio generator, confirms
+the auth user, and prints row counts without printing the password.
+
+Use these Play Console sign-in detail sets when possible:
+
+- **Seeded portfolio reviewer**
+  - Username: `play-review@foliolens.in`
+  - Password: the generated portfolio reviewer password
+  - Info: `Enter the username first. A password field appears only for this review account. Enter the password and tap Sign in with password. Do not use magic link or Google. This account contains seeded mutual-fund data for Portfolio, Funds, Money Trail, Insights, Tools, and Settings.`
+- **Account deletion test**
+  - Username: `play-review-delete@foliolens.in`
+  - Password: the generated deletion-test password
+  - Info: `Enter the username first; the password field appears. Use this account only if you need to test Settings > Account > Delete account, because deletion removes the account. The main seeded portfolio account should remain intact for app review.`
+
+Rerun the matching seed command if a reviewer account is deleted or if its
+portfolio data is changed during review. Never commit reviewer passwords or put
+them in GitHub Actions logs.
+
 
 ## Manual prerequisites that live outside the repo
 
