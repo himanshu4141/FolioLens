@@ -143,7 +143,7 @@ The focused suite must prove canonical prefetch keys, parallel dispatch, warm/co
 
 ## Exact-Head Android Evidence
 
-- Device: physical Google Pixel 8a (`akita`), Android PR-preview application `com.foliolens.app.prpreview`.
+- Device: physical Google Pixel 8a (`akita`), Android PR-preview application `in.foliolens.app.prpreview`.
 - Runtime implementation: `aba8b6f4e36860f7e79d9c35c350f9c4393fda87`.
 - Channel: `foliolens-pr`.
 - Android OTA: `019f39eb-e71e-710d-8c14-c1ca2cc57430`.

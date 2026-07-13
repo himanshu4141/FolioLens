@@ -1,0 +1,204 @@
+name: Play Store Submit
+
+on:
+  workflow_dispatch:
+    inputs:
+      eas_build_id:
+        description: Optional EAS Android build ID to submit instead of building a new AAB
+        required: false
+        type: string
+      clear_cache:
+        description: Clear EAS build cache when creating a new AAB
+        required: false
+        default: false
+        type: boolean
+      message:
+        description: Optional EAS build message when creating a new AAB
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: play-store-submit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-submit-android:
+    name: Build and submit Android AAB
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      EAS_BUILD_PROFILE: production-store
+      EXPECTED_APP_VERSION: 0.0.7
+      EXPECTED_ANDROID_PACKAGE: in.foliolens.app
+      EXPECTED_CHANNEL: foliolens-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Run tests
+        run: npm test -- --coverage --ci
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Validate production-store Android config
+        run: |
+          set -euo pipefail
+          eas config --profile "$EAS_BUILD_PROFILE" --platform android --json | tee /tmp/eas-config-output.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          text = Path("/tmp/eas-config-output.json").read_text()
+          start = text.find("{")
+          if start == -1:
+              raise SystemExit("Could not find JSON object in eas config output")
+
+          payload = json.loads(text[start:])
+          app_config = payload.get("appConfig", {})
+          build_profile = payload.get("buildProfile", {})
+          android = app_config.get("android", {})
+
+          checks = {
+              "version": (app_config.get("version"), os.environ["EXPECTED_APP_VERSION"]),
+              "android.package": (android.get("package"), os.environ["EXPECTED_ANDROID_PACKAGE"]),
+              "distribution": (build_profile.get("distribution"), "store"),
+              "channel": (build_profile.get("channel"), os.environ["EXPECTED_CHANNEL"]),
+              "buildType": (build_profile.get("buildType"), "app-bundle"),
+          }
+
+          failures = [
+              f"{name}: expected {expected!r}, got {actual!r}"
+              for name, (actual, expected) in checks.items()
+              if actual != expected
+          ]
+          if failures:
+              raise SystemExit("Invalid production-store config:\n" + "\n".join(failures))
+
+          print("production-store Android config is valid")
+          PY
+
+      - name: Write Play service account key
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret is required" >&2
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > play-store-key.json
+          python3 -m json.tool play-store-key.json >/dev/null
+
+      - name: Use supplied EAS build ID
+        id: supplied-build
+        if: ${{ inputs.eas_build_id != '' }}
+        run: echo "build_id=${{ inputs.eas_build_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build production-store Android AAB
+        id: created-build
+        if: ${{ inputs.eas_build_id == '' }}
+        env:
+          CLEAR_CACHE: ${{ inputs.clear_cache }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+          message="${INPUT_MESSAGE:-Play Store Android ${GITHUB_REF_NAME} ${GITHUB_SHA::7}}"
+          args=(
+            eas build
+            --platform android
+            --profile "$EAS_BUILD_PROFILE"
+            --non-interactive
+            --wait
+            --json
+            --message "$message"
+          )
+          if [ "$CLEAR_CACHE" = "true" ]; then
+            args+=(--clear-cache)
+          fi
+
+          "${args[@]}" | tee /tmp/eas-build-output.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          text = Path("/tmp/eas-build-output.json").read_text()
+          starts = [idx for idx in (text.find("{"), text.find("[")) if idx != -1]
+          if not starts:
+              raise SystemExit("Could not find JSON payload in eas build output")
+
+          payload = json.loads(text[min(starts):])
+          if isinstance(payload, list):
+              builds = payload
+          elif isinstance(payload, dict) and isinstance(payload.get("builds"), list):
+              builds = payload["builds"]
+          elif isinstance(payload, dict):
+              builds = [payload]
+          else:
+              raise SystemExit(f"Unexpected eas build payload type: {type(payload).__name__}")
+
+          android_builds = [
+              build for build in builds
+              if str(build.get("platform", "")).lower() in {"android", ""}
+          ]
+          build = android_builds[-1] if android_builds else builds[-1]
+          build_id = build.get("id")
+          status = str(build.get("status", "")).lower()
+
+          if not build_id:
+              raise SystemExit(f"EAS build output did not include an id: {build!r}")
+          if status and status not in {"finished", "finished_with_warnings"}:
+              raise SystemExit(f"EAS build {build_id} did not finish successfully: {status}")
+
+          print(f"build_id={build_id}")
+          PY
+
+      - name: Select build ID
+        id: eas-build
+        run: |
+          set -euo pipefail
+          build_id="${{ steps.supplied-build.outputs.build_id || steps.created-build.outputs.build_id }}"
+          if [ -z "$build_id" ]; then
+            echo "No EAS build ID was produced" >&2
+            exit 1
+          fi
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "Selected EAS build: $build_id"
+
+      - name: Submit Android build to Play internal testing
+        run: |
+          eas submit \
+            --platform android \
+            --profile "$EAS_BUILD_PROFILE" \
+            --id "${{ steps.eas-build.outputs.build_id }}" \
+            --non-interactive \
+            --wait
+
+      - name: Write job summary
+        run: |
+          {
+            echo "### Play Store submission"
+            echo ""
+            echo "- EAS build ID: \`${{ steps.eas-build.outputs.build_id }}\`"
+            echo "- Profile: \`production-store\`"
+            echo "- Application ID: \`in.foliolens.app\`"
+            echo "- Track: \`internal\`"
+            echo "- Release status: \`draft\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove Play service account key
+        if: always()
+        run: rm -f play-store-key.json

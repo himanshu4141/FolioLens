@@ -43,7 +43,21 @@
       "environment": "production",
       "channel": "foliolens-production",
       "env": {
+        "APP_VARIANT": "production",
         "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "false"
+      }
+    },
+    "production-store": {
+      "distribution": "store",
+      "environment": "production",
+      "channel": "foliolens-production",
+      "autoIncrement": true,
+      "env": {
+        "APP_VARIANT": "production",
+        "EXPO_PUBLIC_FEATURE_PREVIEW_MODE": "false"
+      },
+      "android": {
+        "buildType": "app-bundle"
       }
     }
   },
@@ -53,9 +67,12 @@
         "appleId": "$EXPO_APPLE_ID",
         "ascAppId": "$EXPO_ASC_APP_ID",
         "appleTeamId": "$EXPO_APPLE_TEAM_ID"
-      },
+      }
+    },
+    "production-store": {
       "android": {
         "serviceAccountKeyPath": "./play-store-key.json",
+        "applicationId": "in.foliolens.app",
         "track": "internal",
         "releaseStatus": "draft"
       }

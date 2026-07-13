@@ -461,11 +461,24 @@ Single expo.dev account. One project (`fa824fc9-9add-418b-8959-eeeeb693b7b5`, sl
 
 | Variant | Scheme | Bundle ID | EAS channel |
 |---------|--------|-----------|-------------|
-| `production` | `foliolens://` | `com.foliolens.app` | `foliolens-production` |
-| `preview-main` | `foliolens-main://` | `com.foliolens.app.preview-main` | `foliolens-main` |
-| `preview-pr` | `foliolens-pr://` | `com.foliolens.app.preview-pr` | `foliolens-pr` |
-| `development` | `foliolens-dev://` | `com.foliolens.app.dev` | `development` |
+| `production` | `foliolens://` | `in.foliolens.app` | `foliolens-production` |
+| `preview-main` | `foliolens-main://` | `in.foliolens.app.mainpreview` | `foliolens-main` |
+| `preview-pr` | `foliolens-pr://` | `in.foliolens.app.prpreview` | `foliolens-pr` |
+| `development` | `foliolens-dev://` | `in.foliolens.app.dev` | `development` |
 
+
+Android build profiles:
+
+| Profile | Distribution | Android artifact | Intended use |
+|---------|--------------|------------------|--------------|
+| `production` | internal | APK | Tagged production-channel smoke build / direct install |
+| `production-store` | store | AAB | Google Play internal testing upload for `in.foliolens.app` |
+| `preview-main` | internal | APK | Stable DEV beta install |
+| `preview-pr` | internal | APK | PR evidence install |
+
+`0.0.7` is the first Play Store / `in.foliolens.*` native train. Older
+sideloaded builds used the previous Android namespace and must be uninstalled
+before installing the Play Store build.
 
 Build-time env vars (the `EXPO_PUBLIC_*` ones baked into the JS bundle) come from **expo.dev → Project → Environment Variables**, scoped to one of three EAS environments:
 
@@ -576,6 +589,7 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 | `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions and pushes migrations to DEV Supabase. |
 | `supabase-deploy-prod.yml` | `workflow_dispatch` only (manual button) | Validates parity, deploys functions, pushes migrations to PROD Supabase. |
 | `production-release.yml` | Tag push `v*` (also `workflow_dispatch`) | typecheck + lint + tests + EAS update to `foliolens-production` + Vercel prod deploy via CLI. |
+| `play-store-submit.yml` | `workflow_dispatch` only (manual button) | Validates the Android `production-store` config, then builds a new AAB or submits a supplied EAS build ID to Play internal testing as a draft. |
 | `universe-backfill.yml` | Monthly cron, hourly resume window, manual dispatch | Invokes the `universe-backfill` Edge Function against DEV/PROD to sync OpenFolio composition and metadata for the active universe. |
 | `program-label-sync.yml` | Label definition change on `main`, or manual dispatch | Creates/updates labels used by multi-agent program PRs. |
 | `program-convergence-gate.yml` | Pull request events | Enforces SHA-pinned dual-review convergence for `program/` implementation PRs. |
@@ -587,6 +601,7 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 - Production EAS update — only on `v*` tag push
 - Production Vercel deploy — only on `v*` tag push (project is disconnected from GitHub)
 - Production Supabase migration / function deploy — only via `workflow_dispatch`
+- Play Store native submission — only via `workflow_dispatch`
 
 
 This three-way gate is deliberate. A bad commit on `main` updates DEV but cannot touch any production user.
@@ -613,6 +628,7 @@ All secrets are stored in **GitHub Actions repository secrets**.
 | `VERCEL_ORG_ID` | `production-release.yml` | `team_HeMWH6xlqe2BOC0NpT85uZPV` |
 | `VERCEL_PROJECT_ID_PROD` | `production-release.yml` | `prj_mjY4K0rYmgNhoGMyJ5oC9xMLcTAi` |
 | `POSTHOG_PROJECT_KEY` | `pr-preview.yml`, `main-deploy.yml`, `production-release.yml` | Same client project token across native OTA channels. OTA workflows pass it only at bundle time; no secret value is committed. Server-side telemetry uses the Supabase Edge Function secret of the same name. |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | `play-store-submit.yml` | Raw Google Play service-account JSON with access to the `in.foliolens.app` Play Console app. The workflow writes it to ignored `play-store-key.json` for EAS Submit. |
 
 `POSTHOG_HOST` is a GitHub Actions repository variable, not a secret. Every native OTA workflow passes it as `EXPO_PUBLIC_POSTHOG_HOST`; the checked-in fallback remains the SDK's US host, while this repository's configured value selects the project's EU ingest endpoint.
 
@@ -687,7 +703,11 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 4. `production-release.yml` ships:
    - JS bundle to the `foliolens-production` EAS channel
    - Web app to the `foliolens` Vercel project (`app.foliolens.in`)
-5. Beta users on the `production` Android APK pull the OTA on next launch
+5. For a new Android native/store train, manually run `play-store-submit.yml`
+   from the Actions tab. Use a supplied EAS build ID to submit an already-built
+   AAB, or leave it empty to build and submit a fresh `production-store` AAB.
+6. Beta users on the `production` Android APK or Play internal testing build
+   pull same-fingerprint OTA updates on next launch.
 
 
 There is **no** automatic prod release. Tagging is the explicit human-in-the-loop gate.
@@ -714,6 +734,7 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 | Vercel → both projects → Settings → Domains | DEV: `foliolens-dev.vercel.app` (auto). PROD: `app.foliolens.in` (custom). |
 | Vercel → `foliolens` project → Environment Variables | Set `RESEND_API_KEY`, `RESEND_INBOUND_ROUTER_SECRET`, `MAIL_FORWARD_TO`, `MAIL_FORWARD_FROM`, `SUPABASE_DEV_FUNCTION_URL`, `SUPABASE_PROD_FUNCTION_URL` for the production router |
 | expo.dev → Environment Variables | DEV / preview / production envs each have their `EXPO_PUBLIC_*` values |
+| Google Play Console | App exists with package name `in.foliolens.app`; linked service account has release permissions; its JSON key is stored in GitHub as `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` |
 
 
 ## Observability
@@ -749,5 +770,5 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 
 - Multi-region failover — single-region Supabase + Vercel is sufficient at this volume
 - Read-replica / staging tier — DEV serves both purposes today
-- App store submission — internal-distribution APKs are the channel for beta; iOS TestFlight submission is queued behind paid Apple Developer setup
+- iOS App Store / TestFlight submission — queued behind paid Apple Developer setup
 - MFCentral OAuth integration — requires a partner agreement and is outside the current architecture

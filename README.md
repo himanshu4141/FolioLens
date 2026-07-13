@@ -129,7 +129,7 @@ npm run gen:types
 
 ---
 
-## Android APKs
+## Android builds
 
 Three review/release flavours share one Expo project:
 
@@ -138,20 +138,32 @@ npm ci
 eas build --profile preview-pr   --platform android  # rolling PR review build
 eas build --profile preview-main --platform android  # stable beta build
 eas build --profile production   --platform android  # tagged release build
+eas build --profile production-store --platform android  # Play Store AAB
+eas submit --profile production-store --platform android --id <eas-build-id>
 ```
+
+The `production` profile remains an internal-distribution APK for direct
+install testing. The `production-store` profile builds an Android App Bundle
+for Google Play, submits to the internal track as a draft, and uses
+`in.foliolens.app`.
 
 JS-only changes flow as OTA updates. Native module/config changes require a rebuild.
 
 Runtime compatibility is managed by Expo fingerprinting. Do not bump
 `app.config.js`'s `version` for a JS-only release tag; that value is part of the
-native train and changing it changes the fingerprint. For example, after the
-`0.0.6` fingerprint cutover build, a later `v0.0.7` tag can publish an OTA to
-the installed `0.0.6` binary only if the app config/native fingerprint is
+native train and changing it changes the fingerprint. `0.0.7` is the first
+Play Store / `in.foliolens.*` native train; later JS-only tags can publish an
+OTA to installed `0.0.7` binaries only if the app config/native fingerprint is
 unchanged.
+
+Pre-`0.0.7` sideloaded Android builds used a different package namespace.
+Users on those builds should uninstall before installing the Play Store build.
 
 Run native builds from a clean dependency install (`npm ci`). EAS compares the
 runtime fingerprint generated locally with the fingerprint generated on the
 remote builder; stale `node_modules` can make the build fail before compilation.
+Local Play Store submits read an ignored `play-store-key.json`; the GitHub
+workflow writes that file from the `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` secret.
 
 ---
 
@@ -181,6 +193,7 @@ dashboard config live in [docs/INFRASTRUCTURE.md](./docs/INFRASTRUCTURE.md#googl
 | Push to `main` | `main-deploy.yml` | typecheck + lint + tests + EAS update to `foliolens-main` |
 | Push to `main` touching Supabase files | `supabase-deploy-dev.yml` | deploy Edge Functions + push migrations to DEV |
 | Manual dispatch | `supabase-deploy-prod.yml` | deploy Edge Functions + push migrations to PROD |
+| Manual dispatch | `play-store-submit.yml` | build/submit the Android `production-store` AAB to Play internal testing as a draft |
 | Monthly/manual | `universe-backfill.yml` | backfill OpenFolio composition/metadata for the active AMFI universe |
 | Tag `v*` push | `production-release.yml` | EAS update to `foliolens-production` + Vercel production deploy |
 

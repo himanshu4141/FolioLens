@@ -2,26 +2,26 @@ const VARIANTS = {
   production: {
     appName: 'FolioLens',
     scheme: 'foliolens',
-    iosBundleIdentifier: 'com.foliolens.app',
-    androidPackage: 'com.foliolens.app',
+    iosBundleIdentifier: 'in.foliolens.app',
+    androidPackage: 'in.foliolens.app',
   },
   development: {
     appName: 'FolioLens Dev',
     scheme: 'foliolens-dev',
-    iosBundleIdentifier: 'com.foliolens.app.dev',
-    androidPackage: 'com.foliolens.app.dev',
+    iosBundleIdentifier: 'in.foliolens.app.dev',
+    androidPackage: 'in.foliolens.app.dev',
   },
   'preview-main': {
     appName: 'FolioLens Main',
     scheme: 'foliolens-main',
-    iosBundleIdentifier: 'com.foliolens.app.mainpreview',
-    androidPackage: 'com.foliolens.app.mainpreview',
+    iosBundleIdentifier: 'in.foliolens.app.mainpreview',
+    androidPackage: 'in.foliolens.app.mainpreview',
   },
   'preview-pr': {
     appName: 'FolioLens PR',
     scheme: 'foliolens-pr',
-    iosBundleIdentifier: 'com.foliolens.app.prpreview',
-    androidPackage: 'com.foliolens.app.prpreview',
+    iosBundleIdentifier: 'in.foliolens.app.prpreview',
+    androidPackage: 'in.foliolens.app.prpreview',
   },
 };
 
@@ -38,7 +38,7 @@ module.exports = ({ config }) => {
     ...config,
     name: variantConfig.appName,
     slug: 'foliolens',
-    version: '0.0.6',
+    version: '0.0.7',
     scheme: variantConfig.scheme,
     orientation: 'portrait',
     icon: './assets/images/icon.png',
