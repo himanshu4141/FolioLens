@@ -147,17 +147,17 @@ install testing. The `production-store` profile builds an Android App Bundle
 for Google Play, submits to the internal track as a draft, and uses
 `in.foliolens.app`.
 Every upload in a native train keeps the same Android `versionName`
-(`0.0.7` for this train) while EAS auto-increments Play's required
+(`0.0.8` for the current train) while EAS auto-increments Play's required
 `versionCode` for `production-store` AABs.
 
 JS-only changes flow as OTA updates. Native module/config changes require a rebuild.
 
 Runtime compatibility is managed by Expo fingerprinting. Do not bump
 `app.config.js`'s `version` for a JS-only release tag; that value is part of the
-native train and changing it changes the fingerprint. `0.0.7` is the first
-Play Store / `in.foliolens.*` native train; later JS-only tags can publish an
-OTA to installed `0.0.7` binaries only if the app config/native fingerprint is
-unchanged.
+native train and changing it changes the fingerprint. `0.0.7` was the first
+Play Store / `in.foliolens.*` native train; `0.0.8` is the current reviewer
+access train. Later JS-only tags can publish an OTA to installed `0.0.8`
+binaries only if the app config/native fingerprint is unchanged.
 
 Pre-`0.0.7` sideloaded Android builds used a different package namespace.
 Users on those builds should uninstall before installing the Play Store build.

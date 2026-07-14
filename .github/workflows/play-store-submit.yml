@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 120
     env:
       EAS_BUILD_PROFILE: production-store
-      EXPECTED_APP_VERSION: 0.0.7
+      EXPECTED_APP_VERSION: 0.0.8
       EXPECTED_ANDROID_PACKAGE: in.foliolens.app
       EXPECTED_CHANNEL: foliolens-production
     steps:
@@ -277,7 +277,7 @@ jobs:
             echo "- EAS build ID: \`${{ steps.eas-build.outputs.build_id }}\`"
             echo "- Profile: \`production-store\`"
             echo "- Application ID: \`in.foliolens.app\`"
-            echo "- App version: \`0.0.7\`"
+            echo "- App version: \`0.0.8\`"
             echo "- Version code: \`${{ steps.selected-build.outputs.app_build_version }}\`"
             echo "- Runtime version: \`${{ steps.selected-build.outputs.runtime_version }}\`"
             echo "- Fingerprint: \`${{ steps.selected-build.outputs.fingerprint_hash }}\`"
