@@ -120,6 +120,7 @@ function runSyntheticPortfolioSeeder(config) {
       SEED_USER_METADATA_ROLE: 'reviewer',
       SEED_USER_METADATA_KIND: config.reviewerKind,
       SEED_USER_METADATA_SEEDED_BY: 'scripts/seed-reviewer-user.mjs',
+      SEED_GLOBAL_REFERENCE_DATA: 'false',
     },
     stdio: 'inherit',
   });

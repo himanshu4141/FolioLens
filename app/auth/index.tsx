@@ -290,6 +290,7 @@ export default function SignInScreen() {
                 autoCorrect={false}
                 editable={!loadingMode}
                 secureTextEntry
+                accessibilityLabel="Reviewer password"
                 returnKeyType="go"
                 onSubmitEditing={handleReviewerSignIn}
               />
