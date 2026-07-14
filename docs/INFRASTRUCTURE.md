@@ -718,6 +718,69 @@ On the PROD Vercel project (`foliolens`), the inbound router needs these product
 
 There is **no** automatic prod release. Tagging is the explicit human-in-the-loop gate.
 
+### Play Store reviewer accounts
+
+Google Play review needs reusable credentials that land on a portfolio with
+seeded data. The production app stays passwordless for normal users; a password
+field appears only after one of the allowlisted reviewer emails is entered on
+the auth screen. Those reviewer emails ship in the client bundle and docs, so
+the generated password is the only access barrier.
+
+Before submitting a Play Store build, verify the PROD project prerequisites:
+
+- Supabase Auth email/password sign-in is enabled for PROD.
+- Supabase Auth rate limiting is enabled for password sign-in attempts.
+- PROD already has live reference data for reviewer seed funds and benchmarks:
+  `scheme_master` rows plus `nav_history` for schemes `118955`, `119218`, and
+  `120599`; `index_history` for `^NSEI`, `^NIFTY100`, `^BSESN`, `^NIFTY500`,
+  and `^NIFTYLMI250`; and current `fund_portfolio_composition` rows from the
+  normal OpenFolio/mfdata pipeline. The reviewer seeder deliberately does not
+  write these shared tables in PROD. If NAV history is missing, it fails safely
+  instead of synthesizing global data.
+
+Generate strong one-off passwords in the password manager, then seed both
+reviewer accounts against PROD:
+
+```bash
+SUPABASE_URL=https://ohcaaioabjvzewfysqgh.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=<prod service-role key> \
+REVIEWER_SEED_TARGET=production \
+REVIEWER_EMAIL=play-review@foliolens.in \
+REVIEWER_PASSWORD=<generated password> \
+REVIEWER_KIND=portfolio \
+npm run seed:reviewer
+
+SUPABASE_URL=https://ohcaaioabjvzewfysqgh.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=<prod service-role key> \
+REVIEWER_SEED_TARGET=production \
+REVIEWER_EMAIL=play-review-delete@foliolens.in \
+REVIEWER_PASSWORD=<generated password> \
+REVIEWER_KIND=delete-test \
+npm run seed:reviewer
+```
+
+`npm run seed:reviewer` refuses to run against the PROD Supabase URL unless
+`REVIEWER_SEED_TARGET=production` is present. It resets only the target
+reviewer user's app rows, confirms the auth user, and prints row counts without
+printing the password. The command always runs the portfolio seeder in
+user-scoped-only mode: it writes `user_profile`, `cas_inbound_session`,
+`user_fund`, and `transaction`, while only reading shared reference tables.
+
+Use these Play Console sign-in detail sets when possible:
+
+- **Seeded portfolio reviewer**
+  - Username: `play-review@foliolens.in`
+  - Password: the generated portfolio reviewer password
+  - Info: `Enter the username first. A password field appears only for this review account. Enter the password and tap Sign in with password. Do not use magic link or Google. This account contains seeded mutual-fund data for Portfolio, Funds, Money Trail, Insights, Tools, and Settings.`
+- **Account deletion test**
+  - Username: `play-review-delete@foliolens.in`
+  - Password: the generated deletion-test password
+  - Info: `Enter the username first; the password field appears. Use this account only if you need to test Settings > Account > Delete account, because deletion removes the account. The main seeded portfolio account should remain intact for app review.`
+
+Rerun the matching seed command if a reviewer account is deleted or if its
+portfolio data is changed during review. Never commit reviewer passwords or put
+them in GitHub Actions logs.
+
 
 ## Manual prerequisites that live outside the repo
 
