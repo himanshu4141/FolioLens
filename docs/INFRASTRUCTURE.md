@@ -476,12 +476,13 @@ Android build profiles:
 | `preview-main` | internal | APK | Stable DEV beta install |
 | `preview-pr` | internal | APK | PR evidence install |
 
-`0.0.7` is the first Play Store / `in.foliolens.*` native train. Older
-sideloaded builds used the previous Android namespace and must be uninstalled
-before installing the Play Store build.
+`0.0.7` was the first Play Store / `in.foliolens.*` native train, and `0.0.8`
+is the current reviewer-access train. Older sideloaded builds used the previous
+Android namespace and must be uninstalled before installing the Play Store
+build.
 
 Each `production-store` upload in a native train keeps the same Android
-`versionName` (for example `0.0.7`) while EAS auto-increments the Play-required
+`versionName` (for example `0.0.8`) while EAS auto-increments the Play-required
 Android `versionCode`. Bump `app.config.js`'s `version` only when a native/config
 fingerprint change requires a new native train, then build a fresh
 `production-store` AAB before relying on tag-triggered production OTAs.

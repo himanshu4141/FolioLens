@@ -38,7 +38,7 @@ module.exports = ({ config }) => {
     ...config,
     name: variantConfig.appName,
     slug: 'foliolens',
-    version: '0.0.7',
+    version: '0.0.8',
     scheme: variantConfig.scheme,
     orientation: 'portrait',
     icon: './assets/images/icon.png',
