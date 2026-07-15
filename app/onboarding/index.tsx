@@ -561,10 +561,11 @@ function OnboardingWizard() {
         )}
       </View>
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      {/* Only the Identity step wraps itself in a KeyboardAvoidingView — it's
+          the only step with text inputs. Keeping the input-less steps outside
+          a KAV is what lets them use elastic sticky footers without the
+          flicker that a padding-mode KAV + elastic ScrollView content causes. */}
+      <View style={styles.flex}>
         {draft.step === 'welcome' && (
           <WelcomeStep
             onPickPdf={handlePdfPicked}
@@ -642,7 +643,7 @@ function OnboardingWizard() {
             tokens={tokens}
           />
         )}
-      </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -863,14 +864,19 @@ function IdentityStep({
   }
 
   return (
-    // NOTE: this step deliberately uses `scrollBody` (no `flexGrow: 1`) and a
-    // fixed footer gap instead of the shared `scroll` + elastic `footerSpace`
-    // (flex: 1) pinning used elsewhere. On this step the content height lands
-    // almost exactly at the viewport height, and an elastic spacer inside a
-    // `flexGrow` ScrollView wrapped in a padding-mode KeyboardAvoidingView
-    // produces a self-sustaining measure→pad→redistribute→measure loop: the
-    // "Unlock my statement" button visibly flickers up and down. Removing the
-    // elastic child makes the content height deterministic and stops the loop.
+    // Identity is the only onboarding step with text inputs, so it owns the
+    // KeyboardAvoidingView (the other steps render outside one — see
+    // OnboardingWizard — which is what keeps their elastic sticky footers
+    // stable). It also uses `scrollBody` (no `flexGrow: 1`) and a fixed footer
+    // gap instead of the shared `scroll` + elastic `footerSpace` (flex: 1)
+    // pinning: an elastic spacer inside a `flexGrow` ScrollView wrapped in a
+    // padding-mode KeyboardAvoidingView produces a self-sustaining
+    // measure→pad→redistribute→measure loop that visibly flickers the
+    // "Unlock my statement" button. A deterministic content height stops it.
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
     <ScrollView
       contentContainerStyle={styles.scrollBody}
       keyboardShouldPersistTaps="handled"
@@ -1072,6 +1078,7 @@ function IdentityStep({
         }
       />
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
