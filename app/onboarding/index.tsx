@@ -863,8 +863,16 @@ function IdentityStep({
   }
 
   return (
+    // NOTE: this step deliberately uses `scrollBody` (no `flexGrow: 1`) and a
+    // fixed footer gap instead of the shared `scroll` + elastic `footerSpace`
+    // (flex: 1) pinning used elsewhere. On this step the content height lands
+    // almost exactly at the viewport height, and an elastic spacer inside a
+    // `flexGrow` ScrollView wrapped in a padding-mode KeyboardAvoidingView
+    // produces a self-sustaining measure→pad→redistribute→measure loop: the
+    // "Unlock my statement" button visibly flickers up and down. Removing the
+    // elastic child makes the content height deterministic and stops the loop.
     <ScrollView
-      contentContainerStyle={styles.scroll}
+      contentContainerStyle={styles.scrollBody}
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
@@ -1030,7 +1038,7 @@ function IdentityStep({
         </View>
       ) : null}
 
-      <View style={styles.footerSpace} />
+      <View style={styles.identityFooterGap} />
       {reviewMode ? (
         <PrimaryButton label="Done" onPress={onDone} styles={styles} cl={cl} />
       ) : (
@@ -1702,6 +1710,22 @@ function makeStyles(tokens: ClearLensTokens) {
       paddingBottom: ClearLensSpacing.xxl,
       gap: ClearLensSpacing.md,
       flexGrow: 1,
+    },
+    // Identity step only. Same padding/gap as `scroll` but without `flexGrow`
+    // so the content height is its natural height rather than being stretched
+    // to the (KeyboardAvoidingView-driven, sub-pixel-unstable) viewport height.
+    // See the note on IdentityStep's ScrollView for why the elastic layout
+    // caused the "Unlock my statement" button to flicker.
+    scrollBody: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      gap: ClearLensSpacing.md,
+    },
+    // Fixed breathing room above the Identity step's action button. Replaces
+    // the elastic `footerSpace` (flex: 1) so nothing inside the ScrollView
+    // reacts to KeyboardAvoidingView frame changes.
+    identityFooterGap: {
+      height: ClearLensSpacing.lg,
     },
     brandRow: {
       flexDirection: 'row',
