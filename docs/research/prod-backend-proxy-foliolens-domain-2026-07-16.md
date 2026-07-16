@@ -38,7 +38,7 @@ reachable at its `*.supabase.co` host and the proxy adds no authentication.
 | Commit analysed | `50384afe184ad408f0a8a41cec927253ac89d5a5` |
 | Commit date | 2026-07-16 |
 | Analysis date | 2026-07-16 |
-| Chosen approach | Reverse proxy on a first-party host (human-owner decision: stay on the Supabase free tier; the paid Custom Domain add-on was declined) |
+| Chosen approach | Reverse proxy on a first-party host, **Cloudflare Worker** substrate (human-owner decisions: stay on the Supabase free tier — the paid Custom Domain add-on was declined; Cloudflare confirmed as the proxy substrate) |
 | Surfaces covered | Client backend transport: PostgREST (`rest/v1`), Auth/GoTrue (`auth/v1`), Edge Functions (`functions/v1`), Storage (`storage/v1`); auth redirect/OAuth config; build-time env wiring; dev/prod inference |
 | Static checks | `npm run typecheck` and `npm run lint` are green on the analysed commit (docs-only research PR adds no code) |
 | Out of scope | Dev environment transport (may adopt the same proxy later for parity, not required); server-to-server backend calls (Resend router → Edge Functions, `notify-feedback`, freshness alerts, pg_cron/pg_net, universe-backfill); any change to RLS, keys, or the data model |
@@ -72,7 +72,7 @@ native builds, not a local run.
 | 7 | Server-to-server backend calls are out of scope and must stay direct | P1 scope | Confirmed | Avoids re-routing non-user-visible traffic through a public hop |
 | 8 | The origin routes by hostname; the proxy must rewrite to `<ref>.supabase.co`, not forward the public Host | P0 | Strong | The single most likely way to break routing |
 | 9 | This is presentation / exit-readiness, not a security boundary | P2 | Confirmed | Docs must not overstate what the proxy protects |
-| 10 | DNS/substrate prerequisite: confirm the zone controls `api.foliolens.in` (Cloudflare Worker vs Vercel rewrite) | P2 prerequisite | Candidate | Determines the proxy substrate; verify in D1 |
+| 10 | DNS prerequisite: confirm the Cloudflare zone controls `api.foliolens.in` and bind the Worker route | P2 prerequisite | Candidate | Substrate is Cloudflare (confirmed); verify zone control in D1 |
 | 11 | Free-tier edge capacity/limits | P2 | Candidate | Beta volume is low; monitor after cutover |
 
 ---
@@ -393,9 +393,10 @@ maintains.
 
 ---
 
-## 10. DNS / substrate prerequisite — P2 (verify in D1)
+## 10. DNS zone prerequisite for the Cloudflare Worker — P2 (verify in D1)
 
-**Status: Candidate. Confirm before committing to a substrate.**
+**Status: Candidate. Confirm the zone controls the subdomain before D1 binds the
+Worker route.**
 
 `docs/INFRASTRUCTURE.md` states DNS for `foliolens.in` "lives at the registrar",
 Cloudflare "proxies the apex", and `app.foliolens.in` passes through **unproxied** to
@@ -405,11 +406,12 @@ partial/registrar-bound, the fallback substrate is a proxy on Vercel (a rewrite/
 function on a dedicated host) — at the cost of Vercel execution budget and mixing the
 API proxy into the SPA project.
 
-**Recommended substrate: Cloudflare Worker** (Cloudflare already fronts the domain;
-Workers free tier ≈ 100k req/day; keeps the proxy off Vercel's budget and out of the
-disconnected prod SPA project). D1 verifies zone control first and falls back to
-Vercel only if blocked. Final substrate is a human-owner confirmation during report
-review.
+**Substrate: Cloudflare Worker (confirmed by the human owner).** Cloudflare already
+fronts the domain, the Workers free tier ≈ 100k req/day, and it keeps the proxy off
+Vercel's budget and out of the disconnected prod SPA project. D1 still verifies that
+the Cloudflare zone controls `api.foliolens.in` (and `api-dev.foliolens.in`) and binds
+the Worker route; if zone control turns out to be blocked at the registrar, that is a
+human-owner escalation, not a silent switch to another substrate.
 
 ### Acceptance criteria
 
@@ -480,16 +482,17 @@ Scope: add a thin reverse proxy that maps exactly the client-facing prefixes
     unused, finding 2).
   - Structure the code so the routing/mapping/caching decisions are PURE functions
     unit-tested with the repo's existing Jest, with a thin runtime entry
-    (Cloudflare Worker recommended; wrangler config included). Put the proxy under
+    (Cloudflare Worker — the confirmed substrate; wrangler config included). Put the proxy under
     a new top-level dir (e.g. workers/api-proxy/) excluded from the app tsconfig if
     it needs runtime-specific types, per the AGENTS.md Edge-Function-style rule.
 Non-goals: no change to any src/ app code; no prod deploy; no client env change;
 no server-to-server re-routing (finding 7).
 
-Infra: FIRST verify the DNS/zone question in finding 10 (does the Cloudflare zone
-control api-dev.foliolens.in?). If blocked, fall back to a Vercel-hosted proxy and
-record the substrate decision on the control PR. Deploy the proxy to
-api-dev.foliolens.in → DEV Supabase (imkgazlrxtlhkfptkzjc).
+Infra: the substrate is a Cloudflare Worker (confirmed). FIRST verify the DNS/zone
+question in finding 10 (does the Cloudflare zone control api-dev.foliolens.in?); if
+zone control is blocked at the registrar, escalate to the human owner rather than
+switching substrate. Deploy the proxy to api-dev.foliolens.in → DEV Supabase
+(imkgazlrxtlhkfptkzjc).
 
 Validation: npm run typecheck; npm run lint; npm test -- --runInBand; git diff
 --check; plus the proxy's own unit tests (path mapping, header/CORS handling,
