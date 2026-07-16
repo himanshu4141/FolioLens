@@ -46,12 +46,13 @@ async function handlePublicStorageGet(
   const originResponse = await fetch(originRequest);
 
   if (isCacheableResponse(originResponse)) {
+    const cacheHeaders = new Headers(originResponse.headers);
+    cacheHeaders.set('Cache-Control', storageCacheControlHeader());
     const forCache = new Response(originResponse.clone().body, {
       status: originResponse.status,
       statusText: originResponse.statusText,
-      headers: originResponse.headers,
+      headers: cacheHeaders,
     });
-    forCache.headers.set('Cache-Control', storageCacheControlHeader());
     ctx.waitUntil(cache.put(cacheKey, forCache));
   }
 

@@ -64,6 +64,12 @@ describe('applyCorsHeaders', () => {
     expect(await result.text()).toBe('{"ok":true}');
   });
 
+  it('sets a marker header proving the Worker produced this response (vs. a zone-level cache serving it unseen)', () => {
+    const origin = new Response(null, { status: 204 });
+    const result = applyCorsHeaders(origin);
+    expect(result.headers.get('x-foliolens-api-proxy')).toBe('1');
+  });
+
   it('preserves an existing distinct Access-Control-Allow-Origin by overriding to the permissive value', () => {
     const origin = new Response(null, {
       status: 204,

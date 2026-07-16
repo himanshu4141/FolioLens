@@ -47,6 +47,11 @@ export function buildPreflightHeaders(requestHeaders: Headers): Headers {
 export function applyCorsHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set('Access-Control-Allow-Origin', '*');
+  // Marker proving this exact response was produced by this Worker (as
+  // opposed to Cloudflare's zone-level HTTP cache serving a copy without
+  // invoking the script at all) — useful for diagnosing cache behaviour
+  // live, and harmless to leave in permanently.
+  headers.set('X-FolioLens-Api-Proxy', '1');
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
