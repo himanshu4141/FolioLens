@@ -1,4 +1,9 @@
-import { applyCorsHeaders, buildForwardedRequestHeaders, buildPreflightHeaders } from '../src/headers';
+import {
+  applyCorsHeaders,
+  buildForwardedRequestHeaders,
+  buildPreflightHeaders,
+  buildPublicStorageForwardedHeaders,
+} from '../src/headers';
 
 describe('buildForwardedRequestHeaders', () => {
   it('forwards Authorization, apikey, and Content-Type unchanged', () => {
@@ -38,6 +43,23 @@ describe('buildForwardedRequestHeaders', () => {
     expect(forwarded.has('cf-connecting-ip')).toBe(false);
     expect(forwarded.has('cf-ray')).toBe(false);
     expect(forwarded.get('authorization')).toBe('Bearer token');
+  });
+});
+
+describe('buildPublicStorageForwardedHeaders', () => {
+  it('carries no caller-supplied header at all — not Authorization, apikey, Cookie, or conditional-request headers', () => {
+    // This function deliberately takes no request argument: the cacheable
+    // public-storage path must never forward anything caller-supplied,
+    // since the cache key (finding 6) ignores headers and a
+    // header-dependent response could otherwise leak to a different
+    // caller (round-1 review finding).
+    const headers = buildPublicStorageForwardedHeaders();
+    expect(headers.has('authorization')).toBe(false);
+    expect(headers.has('apikey')).toBe(false);
+    expect(headers.has('cookie')).toBe(false);
+    expect(headers.has('if-none-match')).toBe(false);
+    expect(headers.has('if-modified-since')).toBe(false);
+    expect(headers.get('accept')).toBe('application/json');
   });
 });
 

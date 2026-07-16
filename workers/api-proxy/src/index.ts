@@ -11,7 +11,12 @@
  * pattern as `supabase/functions/` for Deno.
  */
 import { isCacheableResponse, cacheKeyFor, storageCacheControlHeader } from './cache';
-import { applyCorsHeaders, buildForwardedRequestHeaders, buildPreflightHeaders } from './headers';
+import {
+  applyCorsHeaders,
+  buildForwardedRequestHeaders,
+  buildPreflightHeaders,
+  buildPublicStorageForwardedHeaders,
+} from './headers';
 import { buildOriginUrl } from './originUrl';
 import { isPublicStorageGet, matchRoute } from './router';
 
@@ -24,7 +29,6 @@ export interface Env {
 }
 
 async function handlePublicStorageGet(
-  request: Request,
   env: Env,
   ctx: ExecutionContext,
   url: URL,
@@ -40,7 +44,12 @@ async function handlePublicStorageGet(
   const originUrl = buildOriginUrl(env.SUPABASE_ORIGIN, url.pathname, url.search);
   const originRequest = new Request(originUrl, {
     method: 'GET',
-    headers: buildForwardedRequestHeaders(request.headers),
+    // Deliberately not the caller's own headers — see
+    // buildPublicStorageForwardedHeaders's doc comment: this path is
+    // cached by object path alone, so nothing caller-supplied (auth,
+    // cookies, conditional-request headers) may influence the cached
+    // response.
+    headers: buildPublicStorageForwardedHeaders(),
     redirect: 'manual',
   });
   const originResponse = await fetch(originRequest);
@@ -92,7 +101,7 @@ export default {
     }
 
     if (isPublicStorageGet(request.method, url.pathname)) {
-      return handlePublicStorageGet(request, env, ctx, url);
+      return handlePublicStorageGet(env, ctx, url);
     }
 
     return proxyRequest(request, env, url);

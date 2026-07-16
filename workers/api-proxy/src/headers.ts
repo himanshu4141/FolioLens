@@ -23,6 +23,23 @@ export function buildForwardedRequestHeaders(requestHeaders: Headers): Headers {
 }
 
 /**
+ * Forwarded headers for the cacheable public-storage-GET path only. This
+ * path is cached at the edge keyed by object path alone (finding 6) — the
+ * cached response is later served to ANY caller, regardless of what
+ * headers that caller sent. Forwarding a caller's Authorization/apikey/
+ * Cookie (or a conditional-request header like If-None-Match, whose
+ * response — e.g. a bodyless 304 — also depends on what that specific
+ * caller already had cached) would let one request's header-dependent
+ * response get cached and replayed to a completely different caller. This
+ * object is public and needs no credentials, so nothing caller-supplied
+ * is forwarded at all — matching the plain `Accept` header the client's
+ * own direct fetch already sends (`useIndexSnapshot.ts`).
+ */
+export function buildPublicStorageForwardedHeaders(): Headers {
+  return new Headers({ Accept: 'application/json' });
+}
+
+/**
  * CORS response headers for a preflight OPTIONS request. Echoes the
  * browser's requested headers when present (so any current or future
  * Supabase client header works without a proxy allowlist edit); falls
