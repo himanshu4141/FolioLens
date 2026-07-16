@@ -36,14 +36,20 @@ export function getInboxEnvironment(): InboxEnvironment {
   if (explicit === 'dev' || explicit === 'prod') return explicit;
 
   const variant = Constants.expoConfig?.extra?.appVariant;
-  if (variant && variant !== 'production') return 'dev';
+  if (variant === 'production') return 'prod';
+  if (variant) return 'dev';
 
+  const appBaseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? '';
+  if (appBaseUrl) return appBaseUrl.includes('app.foliolens.in') ? 'prod' : 'dev';
+
+  // Last-resort fallback, only reachable when none of the signals above
+  // are present. Once the backend base is a foliolens.in proxy host
+  // (api.foliolens.in / api-dev.foliolens.in) neither project ref
+  // substring ever appears here, so this is a legacy safety net, not a
+  // signal either environment should rely on going forward.
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
   if (supabaseUrl.includes(DEV_SUPABASE_PROJECT_REF)) return 'dev';
   if (supabaseUrl.includes(PROD_SUPABASE_PROJECT_REF)) return 'prod';
-
-  const appBaseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? '';
-  if (appBaseUrl && !appBaseUrl.includes('app.foliolens.in')) return 'dev';
 
   return 'prod';
 }

@@ -103,6 +103,60 @@ describe('getInboxEnvironment', () => {
     process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://ohcaaioabjvzewfysqgh.supabase.co';
     expect(getInboxEnvironment()).toBe('prod');
   });
+
+  // Backend-proxy program (D2): once the client points at api(-dev).foliolens.in,
+  // neither project ref substring ever appears in EXPO_PUBLIC_SUPABASE_URL —
+  // env resolution must not rely on that host containing a supabase.co ref.
+
+  it('resolves prod via explicit inbound env when the backend base is the proxy host', () => {
+    process.env.EXPO_PUBLIC_INBOUND_ENV = 'prod';
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api.foliolens.in';
+    expect(getInboxEnvironment()).toBe('prod');
+  });
+
+  it('resolves dev via explicit inbound env when the backend base is the dev proxy host', () => {
+    process.env.EXPO_PUBLIC_INBOUND_ENV = 'dev';
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
+    expect(getInboxEnvironment()).toBe('dev');
+  });
+
+  it('resolves prod via appVariant=production when the backend base is the proxy host (no ref substring present)', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: { appVariant: 'production' } };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api.foliolens.in';
+    expect(getInboxEnvironment()).toBe('prod');
+  });
+
+  it('resolves dev via a non-production appVariant when the backend base is the dev proxy host (no ref substring present)', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: { appVariant: 'preview-main' } };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
+    expect(getInboxEnvironment()).toBe('dev');
+  });
+
+  it('resolves prod via app base URL when variant is unset and the backend base is the proxy host', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: {} };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api.foliolens.in';
+    process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://app.foliolens.in';
+    expect(getInboxEnvironment()).toBe('prod');
+  });
+
+  it('resolves dev via app base URL when variant is unset and the backend base is the dev proxy host', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: {} };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
+    process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://foliolens-dev.vercel.app';
+    expect(getInboxEnvironment()).toBe('dev');
+  });
+
+  it('never needs the ref-substring fallback once appVariant or app base URL is present', () => {
+    // Sanity check on ordering: a dev ref embedded in the URL must not
+    // override a positive prod signal from variant/app-base-url.
+    (Constants as MockConstants).expoConfig = { extra: { appVariant: 'production' } };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://imkgazlrxtlhkfptkzjc.supabase.co';
+    expect(getInboxEnvironment()).toBe('prod');
+  });
 });
 
 describe('isValidInboxToken', () => {
@@ -149,6 +203,20 @@ describe('formatInboxAddress', () => {
   it('throws on invalid tokens so UI never renders a broken address', () => {
     expect(() => formatInboxAddress('a2b3c4d5')).toThrow();
     expect(() => formatInboxAddress('NOPE')).toThrow();
+  });
+
+  it('renders the prod address with a prod base of api.foliolens.in', () => {
+    process.env.EXPO_PUBLIC_INBOUND_ENV = 'prod';
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api.foliolens.in';
+    delete process.env.EXPO_PUBLIC_INBOUND_DOMAIN;
+    expect(formatInboxAddress('A2B3C4D5')).toBe('cas-A2B3C4D5@foliolens.in');
+  });
+
+  it('renders the dev address with a dev base of api-dev.foliolens.in', () => {
+    process.env.EXPO_PUBLIC_INBOUND_ENV = 'dev';
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
+    delete process.env.EXPO_PUBLIC_INBOUND_DOMAIN;
+    expect(formatInboxAddress('A2B3C4D5')).toBe('cas-dev-A2B3C4D5@foliolens.in');
   });
 });
 
