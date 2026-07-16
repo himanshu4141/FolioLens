@@ -561,10 +561,11 @@ function OnboardingWizard() {
         )}
       </View>
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      {/* Only the Identity step wraps itself in a KeyboardAvoidingView — it's
+          the only step with text inputs. Keeping the input-less steps outside
+          a KAV is what lets them use elastic sticky footers without the
+          flicker that a padding-mode KAV + elastic ScrollView content causes. */}
+      <View style={styles.flex}>
         {draft.step === 'welcome' && (
           <WelcomeStep
             onPickPdf={handlePdfPicked}
@@ -642,7 +643,7 @@ function OnboardingWizard() {
             tokens={tokens}
           />
         )}
-      </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -863,8 +864,21 @@ function IdentityStep({
   }
 
   return (
+    // Identity is the only onboarding step with text inputs, so it owns the
+    // KeyboardAvoidingView (the other steps render outside one — see
+    // OnboardingWizard — which is what keeps their elastic sticky footers
+    // stable). It also uses `scrollBody` (no `flexGrow: 1`) and a fixed footer
+    // gap instead of the shared `scroll` + elastic `footerSpace` (flex: 1)
+    // pinning: an elastic spacer inside a `flexGrow` ScrollView wrapped in a
+    // padding-mode KeyboardAvoidingView produces a self-sustaining
+    // measure→pad→redistribute→measure loop that visibly flickers the
+    // "Unlock my statement" button. A deterministic content height stops it.
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
     <ScrollView
-      contentContainerStyle={styles.scroll}
+      contentContainerStyle={styles.scrollBody}
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
@@ -1030,7 +1044,7 @@ function IdentityStep({
         </View>
       ) : null}
 
-      <View style={styles.footerSpace} />
+      <View style={styles.identityFooterGap} />
       {reviewMode ? (
         <PrimaryButton label="Done" onPress={onDone} styles={styles} cl={cl} />
       ) : (
@@ -1064,6 +1078,7 @@ function IdentityStep({
         }
       />
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -1702,6 +1717,22 @@ function makeStyles(tokens: ClearLensTokens) {
       paddingBottom: ClearLensSpacing.xxl,
       gap: ClearLensSpacing.md,
       flexGrow: 1,
+    },
+    // Identity step only. Same padding/gap as `scroll` but without `flexGrow`
+    // so the content height is its natural height rather than being stretched
+    // to the (KeyboardAvoidingView-driven, sub-pixel-unstable) viewport height.
+    // See the note on IdentityStep's ScrollView for why the elastic layout
+    // caused the "Unlock my statement" button to flicker.
+    scrollBody: {
+      paddingHorizontal: ClearLensSpacing.md,
+      paddingBottom: ClearLensSpacing.xxl,
+      gap: ClearLensSpacing.md,
+    },
+    // Fixed breathing room above the Identity step's action button. Replaces
+    // the elastic `footerSpace` (flex: 1) so nothing inside the ScrollView
+    // reacts to KeyboardAvoidingView frame changes.
+    identityFooterGap: {
+      height: ClearLensSpacing.lg,
     },
     brandRow: {
       flexDirection: 'row',
