@@ -10,12 +10,13 @@ the vendor, and the internal API layout (`rest/v1`, `auth/v1`, `storage/v1`,
 production we want every backend call the app makes to originate from a
 `foliolens.in` host.
 
-**Conclusion.** The primary fix is a **thin reverse proxy on a first-party host
-(`api.foliolens.in`) that forwards the four client-facing Supabase path prefixes
-to the Supabase origin**, plus repointing the production build's single backend
-base URL at that host. It is **not** a rewrite of the app's data/auth/storage
-layers, **not** a migration off Supabase, and **not** a new security control. The
-app already funnels every backend hostname through one build-time variable
+**Conclusion.** The primary fix is a **thin reverse proxy on first-party hosts —
+`api.foliolens.in` for production and `api-dev.foliolens.in` for the DEV-Supabase-backed
+builds — that forwards the four client-facing Supabase path prefixes to the matching
+Supabase origin**, plus repointing each build's single backend base URL at the host
+for its environment. It is **not** a rewrite of the app's data/auth/storage layers,
+**not** a migration off Supabase, and **not** a new security control. The app already
+funnels every backend hostname through one build-time variable
 (`EXPO_PUBLIC_SUPABASE_URL`), auth is bearer-token rather than cookie-based, and
 Realtime is unused — so the client-side change is small and the real work is
 standing up and verifying the edge proxy. Two residuals cannot be removed by a
@@ -24,8 +25,15 @@ the Google→GoTrue OAuth **provider callback leg** and the JWT `iss` claim, bot
 which stay on `*.supabase.co` on the hosted plan without Supabase's paid Custom
 Domain feature (explicitly declined for cost).
 
-This is a presentation / exit-readiness change. Row-Level Security and the public
-publishable key remain the only security boundary; the Supabase project stays
+**Motivation.** The driver is **user trust in the website**, not security: a visitor
+who opens DevTools on `app.foliolens.in` should see backend calls to a first-party
+`foliolens.in` host, not a raw vendor host. Both environments are put behind the proxy
+so this holds everywhere the app runs and so the proxy path is exercised continuously
+in dev before prod depends on it. Auth is a **one-time** flow per sign-in, so the
+transient `supabase.co` OAuth callback leg is an acceptable residual.
+
+This is a presentation / trust / exit-readiness change. Row-Level Security and the
+public publishable key remain the only security boundary; the Supabase project stays
 reachable at its `*.supabase.co` host and the proxy adds no authentication.
 
 ---
@@ -40,8 +48,9 @@ reachable at its `*.supabase.co` host and the proxy adds no authentication.
 | Analysis date | 2026-07-16 |
 | Chosen approach | Reverse proxy on a first-party host, **Cloudflare Worker** substrate (human-owner decisions: stay on the Supabase free tier — the paid Custom Domain add-on was declined; Cloudflare confirmed as the proxy substrate) |
 | Surfaces covered | Client backend transport: PostgREST (`rest/v1`), Auth/GoTrue (`auth/v1`), Edge Functions (`functions/v1`), Storage (`storage/v1`); auth redirect/OAuth config; build-time env wiring; dev/prod inference |
+| Environments in scope | **Both** — production builds → `api.foliolens.in` → PROD Supabase; all DEV-Supabase-backed builds (dev, `preview-pr`, `preview-main`, Vercel dev project + PR previews) → `api-dev.foliolens.in` → DEV Supabase (dev parity, human-owner decision) |
 | Static checks | `npm run typecheck` and `npm run lint` are green on the analysed commit (docs-only research PR adds no code) |
-| Out of scope | Dev environment transport (may adopt the same proxy later for parity, not required); server-to-server backend calls (Resend router → Edge Functions, `notify-feedback`, freshness alerts, pg_cron/pg_net, universe-backfill); any change to RLS, keys, or the data model |
+| Out of scope | Server-to-server backend calls (Resend router → Edge Functions, `notify-feedback`, freshness alerts, pg_cron/pg_net, universe-backfill) — not user-visible, stay direct; any change to RLS, keys, or the data model |
 
 ### Evidence standard
 
@@ -257,6 +266,13 @@ day-to-day use, so both are compatible with the stated goal ("backend calls the 
 makes originate from `foliolens.in`"). They are the price of declining the paid
 Custom Domain add-on and must be recorded as known residuals.
 
+**Why this is acceptable (human-owner rationale).** The program's driver is user
+trust in the clean, everyday first-party request view, not hiding the vendor. Auth is
+a **one-time flow per sign-in**: the `supabase.co` callback leg appears only during
+that transient hop, not in the steady-state traffic a curious visitor sees, and the
+`iss` claim surfaces only if someone deliberately decodes a bearer token. Both are
+accepted as residuals rather than reasons to buy the Custom Domain add-on.
+
 ### Required fix
 
 1. Add `https://api.foliolens.in/auth/v1/callback` to the Supabase Auth **Redirect
@@ -381,9 +397,12 @@ The proxy changes the hostname the app talks to; it does not add authentication 
 does not hide the project (the `*.supabase.co` host remains reachable and is still
 named in the JWT `iss` and the OAuth callback leg). Security continues to rest on RLS
 + the publishable key, exactly as today (`docs/EXIT-RUNBOOK.md` posture). The benefit
-is branding/presentation and a cleaner exit-readiness seam (a first-party host we
-control the DNS for), consistent with the wrapper-boundary strategy the repo already
-maintains.
+is **user trust and presentation** — a visitor inspecting the site sees first-party
+`foliolens.in` backend calls rather than a raw vendor host — plus a cleaner
+exit-readiness seam (a first-party host we control the DNS for), consistent with the
+wrapper-boundary strategy the repo already maintains. Putting **both** environments
+behind the proxy also means dev/preview builds exercise the exact production transport
+path continuously, so the prod cutover is not the first real use.
 
 ### Required fix / Acceptance criteria
 
@@ -432,15 +451,17 @@ or Vercel is a straightforward upgrade.
 ## Recommended implementation order
 
 Sequenced per the program's rule: prove/instrument the reversible edge first,
-land the client correctness fix, verify auth before touching prod, then cut over
-under a human gate, then verify in the field and document.
+land the client correctness fix, cut **dev** over to the proxy while verifying auth
+end-to-end, then cut **prod** over under a human gate, then verify in the field and
+document. Dev goes first (parity) so the exact production transport path runs
+continuously in dev/preview before prod depends on it.
 
 | Queue | Milestone | Scope | Why this position |
 |---:|---|---|---|
-| 1 | **D1 — Edge proxy Worker + DEV proxy host** | Commit the reverse-proxy (pure, unit-tested mapping + thin runtime entry) and its config; deploy to `api-dev.foliolens.in` → DEV Supabase; prove all four surfaces + caching + origin pinning. | Reversible, ships nothing to prod, de-risks everything downstream. The "instrument first" analog. |
-| 2 | **D2 — Client base single-sourcing + dev/prod inference hardening** | Single-source the backend base; make prod env explicit (`EXPO_PUBLIC_INBOUND_ENV`); demote the `*.supabase.co` ref check; add the no-hardcoded-host guard; update `.env.example` + tests. | Correctness fix that must land before any URL flip so inbox/env stay correct. Independent of D1. |
-| 3 | **D3 — Auth/OAuth allowlist + end-to-end auth verification through the proxy** | Add the proxy host to Supabase Redirect URLs + Google Authorized redirect URIs; verify magic-link + Google sign-in with the base pointed at the DEV proxy on web and a native preview build; document residuals. | Depends on D1 (host exists) and D2 (robust inference). Proves the riskiest surface before prod. |
-| 4 | **D4 — Production cutover** | Deploy the Worker to `api.foliolens.in` → PROD Supabase; flip prod `EXPO_PUBLIC_SUPABASE_URL` (+ `EXPO_PUBLIC_INBOUND_ENV=prod`) in EAS `production` env, GitHub `_PROD` secrets, and the prod Vercel project; ship via the tag release path. | The actual switch. Human-gated (matches the repo's explicit prod-release gate). Depends on D3 green. |
+| 1 | **D1 — Edge proxy Worker + DEV proxy host** | Commit the reverse-proxy (pure, unit-tested mapping + thin runtime entry) and its config; deploy the Cloudflare Worker to `api-dev.foliolens.in` → DEV Supabase; prove all four surfaces + caching + origin pinning. | Reversible, ships nothing to prod, de-risks everything downstream. The "instrument first" analog. |
+| 2 | **D2 — Client base single-sourcing + dev/prod inference hardening** | Single-source the backend base; make **each** env explicit (`EXPO_PUBLIC_INBOUND_ENV` for dev and prod); demote the `*.supabase.co` ref check; add the no-hardcoded-host guard; update `.env.example` + tests. | Correctness fix that must land before any URL flip so inbox/env stay correct in both environments. Independent of D1. |
+| 3 | **D3 — Dev cutover + auth/OAuth allowlist + end-to-end auth verification** | Add both proxy hosts to Supabase Redirect URLs + Google Authorized redirect URIs; flip the DEV-Supabase-backed build envs (GitHub `_DEV` secret, EAS `preview`/`development` env, Vercel dev project) to `api-dev.foliolens.in` + `EXPO_PUBLIC_INBOUND_ENV=dev`; verify magic-link + Google sign-in on dev web (`foliolens-dev.vercel.app`) and a native preview build; document residuals. | Depends on D1 (host exists) + D2 (robust inference). Dev cutover is the low-risk full rehearsal of D4 and turns on continuous parity. |
+| 4 | **D4 — Production cutover** | Deploy the Worker to `api.foliolens.in` → PROD Supabase; flip prod `EXPO_PUBLIC_SUPABASE_URL` (+ `EXPO_PUBLIC_INBOUND_ENV=prod`) in EAS `production` env, GitHub `_PROD` secrets, and the prod Vercel project; ship via the tag release path. | The prod switch, now a repeat of the proven D3 dev cutover. Human-gated (matches the repo's explicit prod-release gate). Depends on D3 green. |
 | 5 | **D5 — Field verification + docs + exit criterion** | Capture prod web + native network evidence that all app-originated backend calls target `*.foliolens.in`; update `INFRASTRUCTURE.md` (domain map, secrets), `EXIT-RUNBOOK.md`, `.env.example`; record residuals. | Closes the program against the reported symptom. |
 
 **Independent tracks:** D1 (infra/edge) and D2 (client code) touch disjoint files and
@@ -519,24 +540,29 @@ Scope:
   1. Keep the backend base URL single-sourced (finding 1). Add a test/guard that no
      client request URL is built from a literal supabase.co host.
   2. Make the environment explicit rather than inferred from the backend host
-     (finding 3): honour EXPO_PUBLIC_INBOUND_ENV first (already supported), add
-     appVariant === 'production' as a positive prod signal, and demote the
-     *.supabase.co project-ref substring check to a last-resort fallback.
+     (finding 3), for BOTH environments (dev parity): honour EXPO_PUBLIC_INBOUND_ENV
+     first (already supported), add appVariant === 'production' as a positive prod
+     signal, and demote the *.supabase.co project-ref substring check to a
+     last-resort fallback. After this, neither a prod base of api.foliolens.in nor a
+     dev base of api-dev.foliolens.in relies on the host containing a supabase.co ref.
   3. Update casInboxToken.test.ts to cover a prod base of https://api.foliolens.in
-     with EXPO_PUBLIC_INBOUND_ENV=prod asserting cas-<TOKEN>@foliolens.in, and keep
-     the dev case (cas-dev-<TOKEN>@foliolens.in) passing.
+     with EXPO_PUBLIC_INBOUND_ENV=prod asserting cas-<TOKEN>@foliolens.in, AND a dev
+     base of https://api-dev.foliolens.in with EXPO_PUBLIC_INBOUND_ENV=dev asserting
+     cas-dev-<TOKEN>@foliolens.in.
   4. Update .env.example to document EXPO_PUBLIC_SUPABASE_URL pointing at the proxy
-     in prod and EXPO_PUBLIC_INBOUND_ENV.
-Non-goals: no infra; no prod env values changed here (only .env.example docs); no
-transport code changes to the direct-fetch sites (they already read the base var).
+     host per environment (api.foliolens.in / api-dev.foliolens.in) and the explicit
+     EXPO_PUBLIC_INBOUND_ENV.
+Non-goals: no infra; no EAS/Vercel/GitHub env values changed here (only .env.example
+docs; the real console flips are D3 for dev and D4 for prod); no transport code
+changes to the direct-fetch sites (they already read the base var).
 
 Validation: npm run typecheck; npm run lint; npm test -- --runInBand (run the full
 suite — this touches shared utils); git diff --check. Evidence: the new/updated
-casInboxToken tests passing for both prod-via-proxy and dev; the no-hardcoded-host
+casInboxToken tests passing for prod-via-proxy AND dev-via-proxy; the no-hardcoded-host
 guard passing.
 ```
 
-### D3 — Auth/OAuth allowlist + end-to-end auth verification through the proxy
+### D3 — Dev cutover + auth/OAuth allowlist + end-to-end auth verification
 
 ```
 You are the Execution owner implementing milestone D3 of the "Backend Domain
@@ -546,28 +572,43 @@ DESCRIPTION, and this report's findings 4 and 5 via
 
 Depends on: D1 (api-dev.foliolens.in live) and D2 (merged). Read before starting:
 src/lib/auth/index.ts, src/lib/oauthCompletion.ts, app/auth/index.tsx,
-app/auth/callback.tsx, app/auth/confirm.tsx, src/utils/appScheme.ts,
-docs/INFRASTRUCTURE.md ("Google OAuth", "Manual prerequisites"), .env.example.
+app/auth/callback.tsx, app/auth/confirm.tsx, src/utils/appScheme.ts, eas.json,
+docs/INFRASTRUCTURE.md ("Google OAuth", "Vercel projects", "Expo / EAS",
+"Secrets matrix", "Manual prerequisites"), .env.example.
 
-Scope (mostly config + verification + docs — minimal or no src changes):
-  1. Human-owner console steps, captured as a runbook edit: add
-     https://api.foliolens.in/auth/v1/callback (and the api-dev host for testing)
-     to the Supabase Auth Redirect URLs allowlist and to the Google Cloud OAuth
-     client's Authorized redirect URIs (finding 5).
-  2. Verify magic-link sign-in and Google sign-in complete end-to-end with
-     EXPO_PUBLIC_SUPABASE_URL pointed at the DEV proxy, on web AND a native preview
-     build (foliolens-pr channel) — capture exact-SHA native evidence per
-     docs/INFRASTRUCTURE.md "Daily flow".
-  3. Document the two accepted residuals (Google→GoTrue callback leg on
+This milestone is the DEV cutover (dev parity) plus the auth verification that
+de-risks the prod cutover in D4. It is mostly console/config + verification + docs,
+with minimal or no src changes.
+
+Scope:
+  1. Human-owner console steps, captured as a runbook edit: add BOTH
+     https://api.foliolens.in/auth/v1/callback and
+     https://api-dev.foliolens.in/auth/v1/callback to the Supabase Auth Redirect
+     URLs allowlist (dev + prod projects respectively) and to the matching Google
+     Cloud OAuth client's Authorized redirect URIs (finding 5).
+  2. Dev cutover — flip every DEV-Supabase-backed build to the dev proxy:
+     GitHub secret EXPO_PUBLIC_SUPABASE_URL_DEV → https://api-dev.foliolens.in;
+     EAS `preview` and `development` environment vars → same, plus
+     EXPO_PUBLIC_INBOUND_ENV=dev; Vercel DEV project (foliolens-dev)
+     EXPO_PUBLIC_SUPABASE_URL → same. Do NOT touch any production/_PROD surface
+     (that is D4).
+  3. Verify magic-link sign-in and Google sign-in complete end-to-end on the DEV
+     proxy: on dev web (foliolens-dev.vercel.app) AND a native preview build
+     (foliolens-pr channel) — capture exact-SHA native evidence per
+     docs/INFRASTRUCTURE.md "Daily flow". Also spot-check a REST read, a functions
+     invoke, the CAS upload path, and a public snapshot GET all landing on
+     api-dev.foliolens.in.
+  4. Document the two accepted residuals (Google→GoTrue callback leg on
      supabase.co; JWT iss) in docs/INFRASTRUCTURE.md.
-Non-goals: no prod cutover; no change to redirect *targets* (app.foliolens.in /
-foliolens:// schemes are unchanged — they point at the app, not the API).
+Non-goals: no prod cutover or any _PROD/production env change (D4); no change to
+redirect *targets* (app.foliolens.in / foliolens-dev.vercel.app / foliolens*://
+schemes are unchanged — they point at the app, not the API).
 
 Validation: npm run typecheck; npm run lint; npm test -- --runInBand; git diff
 --check. Evidence (exact SHA): magic-link and Google sign-in succeeding against the
-proxied base on web and on the foliolens-pr Android build (device, channel, update
-ID, SHA); a Network capture showing the app's auth/token/authorize calls on the
-proxy host, with the residual callback leg noted.
+dev proxy on dev web and on the foliolens-pr Android build (device, channel, update
+ID, SHA); a Network capture showing the app's auth/token/authorize + REST/functions/
+storage calls on api-dev.foliolens.in, with the residual callback leg noted.
 ```
 
 ### D4 — Production cutover
@@ -584,6 +625,10 @@ docs/INFRASTRUCTURE.md ("Secrets matrix", "Vercel projects", "Expo / EAS",
 "Branching, merging, releasing", "What does not trigger automatically"), eas.json,
 app.config.js.
 
+By this point dev is already on api-dev.foliolens.in (D3) and the prod
+api.foliolens.in redirect URIs are already allowlisted in Supabase + Google (D3),
+so D4 is the proven dev cutover repeated on the production surfaces.
+
 Scope (human-gated production change — the executor prepares and documents; the
 human owner presses the production buttons per the repo's explicit prod gate):
   1. Deploy the proxy Worker to api.foliolens.in → PROD Supabase
@@ -594,8 +639,8 @@ human owner presses the production buttons per the repo's explicit prod gate):
      project env vars.
   3. Ship via the tag-release path (production-release.yml) so the production EAS
      channel and app.foliolens.in Vercel deploy pick up the new base.
-Non-goals: do not touch dev transport; do not re-route server-to-server calls;
-do not change RLS/keys.
+Non-goals: do not change the already-cut-over dev transport; do not re-route
+server-to-server calls; do not change RLS/keys.
 
 Validation: confirm the release workflow is green; confirm the prod web app and a
 production-channel native build boot, authenticate, and load a portfolio.
@@ -624,11 +669,14 @@ Scope:
      the public index snapshot — targets a *.foliolens.in host, with the two
      documented residuals (OAuth provider callback leg; JWT iss) explicitly listed
      as expected exceptions.
-  2. Update docs: INFRASTRUCTURE.md "Domain map" (add api.foliolens.in and the
-     proxy substrate), the secrets/manual-prereqs sections, the server-to-server
-     scope note (finding 7), and the "not a security boundary" framing (finding 9);
+  2. Update docs: INFRASTRUCTURE.md "Domain map" (add BOTH api.foliolens.in and
+     api-dev.foliolens.in and the Cloudflare Worker substrate), the
+     secrets/manual-prereqs sections, the server-to-server scope note (finding 7),
+     and the "not a security boundary / user-trust" framing (finding 9);
      EXIT-RUNBOOK.md (the proxy seam); .env.example.
-Non-goals: no new transport code; no scope creep into dev or server-to-server.
+Non-goals: no new transport code; no re-routing of server-to-server calls. (Dev is
+already cut over and verified in D3; the exit criterion here is the PRODUCTION
+capture.)
 
 Validation: npm run typecheck; npm run lint; npm test -- --runInBand; git diff
 --check. Evidence: the production Network captures (web + native, exact build/SHA)
@@ -696,3 +744,22 @@ listed residuals — is recorded in this report.
   is the appropriate analog to a garbage-in fixture for a transport cache. If any
   milestone later grows to derive/store financial values at the edge, it must add
   golden-equivalence **and** garbage-in fixtures before merge.
+
+---
+
+## Amendments (research/review phase)
+
+Decisions taken by the human owner while reviewing this report, before program start:
+
+- **2026-07-16 — Substrate: Cloudflare Worker (confirmed).** The reverse proxy runs
+  as a Cloudflare Worker (Cloudflare already fronts the domain; free Workers tier;
+  off Vercel's budget). D1 verifies the Cloudflare zone controls `api(-dev).foliolens.in`
+  and escalates to the human owner if the registrar blocks it, rather than switching
+  substrate.
+- **2026-07-16 — Dev parity added.** Dev is no longer out of scope: both environments
+  go behind the proxy — production → `api.foliolens.in`, all DEV-Supabase-backed builds
+  → `api-dev.foliolens.in`. Rationale (human owner): the driver is user trust in a
+  clean first-party request view, not security, and auth is a one-time flow so the
+  `supabase.co` OAuth callback leg is an accepted residual. This makes D3 a full DEV
+  cutover (not just a proving-ground verification), so D4's prod cutover repeats an
+  already-proven path, and D2's explicit-env fix covers both environments.
