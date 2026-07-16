@@ -152,9 +152,15 @@ HTTP only.
 
 ### Acceptance criteria
 
-- Each of the four surfaces is exercised end-to-end through the proxy against DEV
-  Supabase (D1 evidence): a REST select returns rows; `getSession`/token refresh
-  succeeds; a `functionsClient.invoke` returns; a public storage GET returns JSON.
+- **D1 evidence (transport reachability of all four surfaces):** through the proxy
+  against DEV Supabase, each mapped surface is reached end-to-end — a REST call
+  reaches PostgREST (RLS enforced), `/auth/v1` reaches GoTrue, a `/functions/v1`
+  invoke reaches the Functions runtime, and a public storage GET returns JSON and is
+  edge-cached on the second hit.
+- **Deferred to D3 (amended 2026-07-16):** the full signed-in round-trip —
+  `getSession` + a forced token refresh and an authenticated, row-returning REST
+  read — is verified in D3, which performs real end-to-end auth through the proxy and
+  cannot pass without it. See finding 4 and the Amendments section.
 - A request to a non-mapped path (e.g. `/realtime/v1`) is rejected by the proxy.
 
 ---
@@ -236,8 +242,11 @@ through the proxy like any other.
 
 ### Acceptance criteria
 
-- Through the proxy: `authClient.getSession()` + a forced token refresh succeed,
-  and an authenticated REST read returns the user's rows (RLS enforced as today).
+- Through the proxy (**D3 evidence — deferred from D1, amended 2026-07-16**):
+  `authClient.getSession()` + a forced token refresh succeed, and an authenticated
+  REST read returns the user's rows (RLS enforced as today). D1 proves the auth and
+  REST surfaces are *reachable* through the proxy (GoTrue config returned; RLS
+  permission denial on an anon read); the signed-in round-trip is closed in D3.
 - On the web build, a cross-origin preflight to `api.foliolens.in` succeeds and the
   subsequent request carries the expected CORS headers.
 
@@ -497,8 +506,11 @@ Scope: add a thin reverse proxy that maps exactly the client-facing prefixes
   - Answer CORS preflight (OPTIONS) and pass through CORS response headers so the
     web origin app.foliolens.in can call the proxy cross-origin (finding 4).
   - Edge-cache GET /storage/v1/object/public/* keyed by full object path with a
-    stale-while-revalidate TTL comparable to today's; no auth on that path
-    (finding 6).
+    stale-while-revalidate TTL comparable to today's. This path must NOT forward
+    caller credentials: strip Authorization/apikey/Cookie (and Range) before both
+    the origin fetch and the cache put, and cache only status===200 (never a 206
+    partial), so no credentialed or partial body is ever stored under the shared
+    path key (finding 6; D1 review round 1).
   - Return 404 for any non-mapped path (no open relay; no WebSocket — Realtime is
     unused, finding 2).
   - Structure the code so the routing/mapping/caching decisions are PURE functions
@@ -517,10 +529,14 @@ switching substrate. Deploy the proxy to api-dev.foliolens.in → DEV Supabase
 
 Validation: npm run typecheck; npm run lint; npm test -- --runInBand; git diff
 --check; plus the proxy's own unit tests (path mapping, header/CORS handling,
-origin pinning, cache-key correctness). Evidence (record exact commit SHA):
-against api-dev.foliolens.in show a REST select returning rows, getSession + a
-forced token refresh, a functionsClient.invoke response, a public storage GET that
-is edge-cached on the second hit, and a rejected non-mapped path.
+origin pinning, cache-key correctness, credential-strip on the cache path, and a
+206-never-cached test). Evidence (record exact commit SHA): against
+api-dev.foliolens.in show each mapped surface reached through the proxy — a REST
+call reaching PostgREST (RLS enforced), a /auth/v1 call reaching GoTrue, a
+/functions/v1 invoke reaching the Functions runtime, a public storage GET that is
+edge-cached on the second hit, and a rejected non-mapped path. The full signed-in
+round-trip (getSession + forced refresh + authenticated row read) is deferred to
+D3 (amended 2026-07-16).
 ```
 
 ### D2 — Client base single-sourcing + dev/prod inference hardening
@@ -597,7 +613,11 @@ Scope:
      (foliolens-pr channel) — capture exact-SHA native evidence per
      docs/INFRASTRUCTURE.md "Daily flow". Also spot-check a REST read, a functions
      invoke, the CAS upload path, and a public snapshot GET all landing on
-     api-dev.foliolens.in.
+     api-dev.foliolens.in. **Carries the D1-deferred auth transport proof (amended
+     2026-07-16):** with the real signed-in DEV session from this flow, explicitly
+     capture getSession + a forced token refresh and an authenticated, row-returning
+     REST read through api-dev.foliolens.in at the review head — the round-trip D1
+     could not exercise without credentials.
   4. Document the two accepted residuals (Google→GoTrue callback leg on
      supabase.co; JWT iss) in docs/INFRASTRUCTURE.md.
 Non-goals: no prod cutover or any _PROD/production env change (D4); no change to
@@ -763,3 +783,14 @@ Decisions taken by the human owner while reviewing this report, before program s
   `supabase.co` OAuth callback leg is an accepted residual. This makes D3 a full DEV
   cutover (not just a proving-ground verification), so D4's prod cutover repeats an
   already-proven path, and D2's explicit-env fix covers both environments.
+- **2026-07-16 — D1 auth-evidence deferred to D3 (during execution — D1 review
+  round 1).** D1's acceptance originally asked for a signed-in `getSession` + forced
+  refresh and a row-returning authenticated REST read through the proxy. The executor
+  cannot mint a real DEV session without test credentials or the service-role key —
+  which an auto-mode safety check correctly refused to self-authorize. Human-owner
+  decision: **defer** that full-session verification to D3 (the explicit
+  end-to-end-auth milestone, which exercises exactly this through the proxy and cannot
+  pass without it). D1 still proves all four surfaces are *reachable* through the proxy
+  (GoTrue config returned, RLS enforcement on an anon read, a live `/functions/v1`
+  invoke, storage MISS→HIT caching) and must still fix the two D1-review cache-path
+  defects — credential/`Range` stripping and 206-never-cached — before it converges.
