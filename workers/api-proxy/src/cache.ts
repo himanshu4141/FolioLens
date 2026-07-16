@@ -24,7 +24,13 @@ export function storageCacheControlHeader(): string {
   return `public, max-age=${STORAGE_EDGE_CACHE_TTL_SECONDS}, stale-while-revalidate=${STORAGE_STALE_WHILE_REVALIDATE_SECONDS}`;
 }
 
-/** Only cache successful responses — an origin 404/error is never stored. */
+/**
+ * Only cache a plain, full-object 200 — never an origin 404/error, and
+ * never a 206 Partial Content. `response.ok` is true for both 200 and
+ * 206, but a 206 body is a byte-range slice; caching it under the
+ * full-object cache key (path-only, finding 6) would let a subsequent
+ * full-object request be served a truncated body (review round 1).
+ */
 export function isCacheableResponse(response: Response): boolean {
-  return response.ok;
+  return response.status === 200;
 }

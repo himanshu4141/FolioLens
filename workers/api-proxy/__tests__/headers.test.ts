@@ -59,6 +59,10 @@ describe('buildPublicStorageForwardedHeaders', () => {
     expect(headers.has('cookie')).toBe(false);
     expect(headers.has('if-none-match')).toBe(false);
     expect(headers.has('if-modified-since')).toBe(false);
+    // A forwarded Range would let a byte-range request produce a 206
+    // that gets cached under the full-object key (round-1 review finding,
+    // paired with cache.ts's isCacheableResponse now excluding 206 too).
+    expect(headers.has('range')).toBe(false);
     expect(headers.get('accept')).toBe('application/json');
   });
 });

@@ -36,4 +36,14 @@ describe('isCacheableResponse', () => {
   it('is false for a 404, so a miss is never cached (fallback path stays live)', () => {
     expect(isCacheableResponse(new Response(null, { status: 404 }))).toBe(false);
   });
+
+  it('is false for a 206 Partial Content, even though response.ok is true for it', () => {
+    // Review round 1 (Claude): response.ok is true for both 200 and 206.
+    // A 206 body is a byte-range slice — caching it under the full-object
+    // path-only key would serve a truncated body to a later full-object
+    // request. Confirm the underlying assumption this guards against:
+    const partial = new Response('partial-bytes', { status: 206 });
+    expect(partial.ok).toBe(true);
+    expect(isCacheableResponse(partial)).toBe(false);
+  });
 });
