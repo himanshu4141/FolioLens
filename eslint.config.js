@@ -8,7 +8,7 @@ const tsPlugin = tsConfig ? { '@typescript-eslint': tsConfig.plugins['@typescrip
 module.exports = defineConfig([
   ...expoConfig,
   {
-    ignores: ['node_modules/', 'dist/', '.expo/', 'supabase/functions/', '.claude/', 'foliolens-clear-lens/', '.worktrees/', 'scripts/build-icons.mjs'],
+    ignores: ['node_modules/', 'dist/', '.expo/', 'supabase/functions/', 'workers/api-proxy/', '.claude/', 'foliolens-clear-lens/', '.worktrees/', 'scripts/build-icons.mjs'],
   },
   {
     plugins: tsPlugin,

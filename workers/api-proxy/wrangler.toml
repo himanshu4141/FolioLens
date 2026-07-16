@@ -1,0 +1,28 @@
+name = "foliolens-api-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+# account_id intentionally omitted here — set it in `.wrangler/config.toml`
+# (gitignored) or pass `--account-id` on the CLI / in the deploy secret, per
+# environment operator. Never commit an account ID alongside a token.
+
+# DEV — the only environment D1 deploys. Routes api-dev.foliolens.in to the
+# DEV Supabase project (imkgazlrxtlhkfptkzjc). All DEV-Supabase-backed app
+# builds (dev, preview-pr, preview-main, Vercel dev + PR previews) will be
+# repointed at this host in D3, not here — D1 stands the proxy up and
+# proves it; it does not flip any client env var.
+[env.dev]
+name = "foliolens-api-proxy-dev"
+routes = [{ pattern = "api-dev.foliolens.in/*", zone_name = "foliolens.in" }]
+
+[env.dev.vars]
+SUPABASE_ORIGIN = "https://imkgazlrxtlhkfptkzjc.supabase.co"
+
+# PRODUCTION — declared now so D4 is a repeat of this exact config against
+# api.foliolens.in, but NOT deployed by D1 (non-goal: no prod deploy).
+[env.production]
+name = "foliolens-api-proxy-production"
+routes = [{ pattern = "api.foliolens.in/*", zone_name = "foliolens.in" }]
+
+[env.production.vars]
+SUPABASE_ORIGIN = "https://ohcaaioabjvzewfysqgh.supabase.co"

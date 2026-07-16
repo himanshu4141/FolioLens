@@ -11,6 +11,7 @@ const config = {
     '<rootDir>/supabase/functions/_shared/**/*.test.ts',
     '<rootDir>/supabase/functions/**/__tests__/**/*.test.ts',
     '<rootDir>/scripts/__tests__/**/*.test.ts',
+    '<rootDir>/workers/api-proxy/__tests__/**/*.test.ts',
   ],
   moduleNameMapper: {
     '^@expo/vector-icons/Ionicons$': '<rootDir>/__mocks__/@expo/vector-icons/Ionicons.ts',
