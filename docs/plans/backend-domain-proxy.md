@@ -127,7 +127,9 @@ Status: **in progress** on `program/D3-dev-cutover-auth`. Completed so far:
 - Confirmed via a Vercel redeploy that the dev web bundle now constructs its Supabase client, storage URLs, and Edge Function URLs against `https://api-dev.foliolens.in` (bundle hash changed; zero occurrences of the raw DEV project host remain, versus four occurrences of the proxy host at the exact `createClient(...)` call site and the storage/functions URL builders).
 - Completed D1's deferred full-session verification (see Validation below): a throwaway test user, created and later fully deleted, proved `getSession`-equivalent, forced token refresh, and an authenticated RLS-scoped REST read all work correctly through `api-dev.foliolens.in`.
 
-Still open: an actual interactive magic-link and/or Google sign-in click-through on dev web (`foliolens-dev.vercel.app`) and a native preview build, plus native exact-SHA evidence via a `preview-pr`/`preview-main` EAS Update triggered by this milestone's own PR. Depends on D1 (merged) and D2 (merged).
+Native exact-SHA OTA evidence was captured by manually dispatching `pr-preview.yml` on this milestone's branch (`workflow_dispatch` runs the full pipeline even on a docs-only diff, unlike the automatic PR trigger, which skips the build): published to the `foliolens-pr` channel at commit `fd841557` — iOS update `019f6d88-5c06-7abe-a7ef-582ee0fed6fd`, Android update `019f6d88-5c06-7008-b712-7a1dfd03dfd2` — built with the `preview` EAS environment's now-updated `EXPO_PUBLIC_SUPABASE_URL`.
+
+Still open, deferred by explicit human-owner instruction (2026-07-17): the actual interactive magic-link/Google sign-in click-through on dev web and applying the above OTA update on a physical `preview-pr` device. The owner cannot test right now and will do so "when program completes" rather than blocking D3. **This does not block D3's merge** — the API-level evidence above (D1's deferred verification) already proves the proxy/auth/RLS chain is correct end-to-end with a real session, and the web/native artifacts are confirmed statically wired to the proxy host. **It does block D4** (production cutover): D4's own risk mitigation depends on D3 having proven this exact configuration on dev first with a real interactive session, so D4 should not begin until the owner completes this click-through (or explicitly waives it). Depends on D1 (merged) and D2 (merged).
 
 ### D4 — Production cutover
 
@@ -192,6 +194,7 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - 2026-07-16 (D3): Human owner authorized using the `SUPABASE_ACCESS_TOKEN` already present in the execution sandbox (scoped to the DEV project) to additively update the DEV project's Auth Redirect URLs allowlist — an explicit, narrow authorization for one specific write, following the same escalate-before-touching-live-infra protocol as D1's Cloudflare DNS record.
 - 2026-07-16 (D3): Human owner authorized creating a throwaway test user via the public signup endpoint (anon key only) to complete D1's deferred full-session verification, on the condition that the user and any rows it creates are deleted afterward. Done; verified cleaned up.
 - 2026-07-16 (D3): Google OAuth client redirect URIs, the GitHub `_DEV` secret, the EAS `preview`/`development` environment variables, and the Vercel `foliolens-dev` project variable were all updated by the human owner directly (console/dashboard access this execution sandbox does not have), plus a manual Vercel redeploy to bake the new value into the live dev site.
+- 2026-07-17 (D3): Human owner cannot test the interactive magic-link/Google sign-in click-through right now and will do so "when program completes." Executor's decision: this defers the click-through but does not block D3's merge (the API-level session evidence already proves the auth/RLS chain end-to-end), and does not proceed to D4 until it lands — D4's own mitigation explicitly relies on D3 having proven this exact configuration interactively on dev first. Recorded here rather than silently reinterpreted; open for the owner to overrule if they'd rather D4 proceed in parallel.
 
 ## Progress
 
@@ -202,7 +205,8 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - [x] D3 — DEV Supabase Auth Redirect URLs allowlist updated (additive, via Management API).
 - [x] D3 — Google OAuth client, GitHub secret, EAS environments, Vercel dev project all flipped to `api-dev.foliolens.in` (human owner); Vercel dev redeployed and confirmed.
 - [x] D3 — D1's deferred full-session verification (`getSession`, forced refresh, authenticated REST read) completed and cleaned up.
-- [ ] D3 — interactive magic-link / Google sign-in click-through and native preview-build evidence.
-- [ ] D3 — open the D3 PR, update this ExecPlan's status to Merged once done.
-- [ ] D4 — production cutover (human-gated).
+- [x] D3 — native exact-SHA OTA evidence captured (`foliolens-pr` channel, commit `fd841557`, iOS `019f6d88-5c06-7abe…`, Android `019f6d88-5c06-7008…`).
+- [x] D3 — PR #283 opened; docs-only diff; validation green (typecheck/lint/100 suites/2019 tests).
+- [ ] D3 — interactive magic-link / Google sign-in click-through (deferred by owner to program completion; does not block D3's merge, does block D4).
+- [ ] D4 — production cutover (human-gated; blocked on the deferred D3 click-through above).
 - [ ] D5 — production field evidence; documentation closeout; program exit criterion evaluated.
