@@ -120,7 +120,14 @@ Commands:
 
 Acceptance criteria: magic-link and Google sign-in both succeed on dev web and a native preview build with the base pointed at the proxy (exact-SHA native evidence: device, channel, OTA/update ID); a Network capture shows auth/token/authorize plus REST/functions/storage calls landing on `api-dev.foliolens.in`, with the two residuals (the OAuth provider-callback leg, the JWT `iss`) noted as expected exceptions; a forced `/auth/v1/token?grant_type=refresh_token` and a row-returning `/rest/v1` read both succeed through the proxy with a real session.
 
-Status: not started. Depends on D1 (merge) and D2 (merged).
+Status: **in progress** on `program/D3-dev-cutover-auth`. Completed so far:
+
+- Added `https://api-dev.foliolens.in/auth/v1/callback` to the DEV Supabase project's Auth Redirect URLs allowlist, additively, via the Supabase Management API (a `SUPABASE_ACCESS_TOKEN` already present in the execution sandbox, scoped to the DEV project only — used only after explicit human-owner confirmation, the same protocol as D1's Cloudflare DNS record).
+- Human owner added the matching entry to the `FolioLens-Dev` Google OAuth client's Authorized redirect URIs, updated the GitHub secret `EXPO_PUBLIC_SUPABASE_URL_DEV`, and updated `EXPO_PUBLIC_SUPABASE_URL` in both the `preview` and `development` EAS environments and the Vercel `foliolens-dev` project, all to `https://api-dev.foliolens.in`.
+- Confirmed via a Vercel redeploy that the dev web bundle now constructs its Supabase client, storage URLs, and Edge Function URLs against `https://api-dev.foliolens.in` (bundle hash changed; zero occurrences of the raw DEV project host remain, versus four occurrences of the proxy host at the exact `createClient(...)` call site and the storage/functions URL builders).
+- Completed D1's deferred full-session verification (see Validation below): a throwaway test user, created and later fully deleted, proved `getSession`-equivalent, forced token refresh, and an authenticated RLS-scoped REST read all work correctly through `api-dev.foliolens.in`.
+
+Still open: an actual interactive magic-link and/or Google sign-in click-through on dev web (`foliolens-dev.vercel.app`) and a native preview build, plus native exact-SHA evidence via a `preview-pr`/`preview-main` EAS Update triggered by this milestone's own PR. Depends on D1 (merged) and D2 (merged).
 
 ### D4 — Production cutover
 
@@ -159,6 +166,10 @@ D1 evidence (commit `dae503e`, live against `api-dev.foliolens.in`): 99 suites /
 
 D2 evidence (commit `0f3790a1`, merged as `252e8c0`): 96 suites / 1983 tests passed. New `casInboxToken` tests covered both proxy hosts via explicit env, app variant alone, and app base URL alone. The no-hardcoded-host guard passed.
 
+D3 evidence, part 1 (deferred D1 full-session verification, live against `api-dev.foliolens.in`): a throwaway user was created via `POST /auth/v1/signup` (publishable/anon key only, DEV project has `mailer_autoconfirm` on) — `200`, session returned immediately. `GET /auth/v1/user` with the issued access token — `200`, correct user id/email/`aud`. `POST /auth/v1/token?grant_type=refresh_token` — `200`, new access and refresh tokens issued, access token confirmed rotated (not equal to the original). `GET /rest/v1/user_profile?select=user_id` with the refreshed access token — `200`, `[]` (no profile row for this throwaway user, which is the correct RLS-scoped result). Negative control: the same REST read with a syntactically-invalid bearer token — `401`, `PGRST301 "JWT cryptographic operation failed"`, proving auth is genuinely enforced through the proxy rather than bypassed. Cleanup: the test user was deleted via the Supabase Management API's SQL endpoint (`delete from auth.users where id = ...`, scoped to the exact created id); the `public.app_user` mirror row was confirmed cascaded away (`count = 0`) via the same endpoint. No service-role key was used anywhere in this sequence.
+
+D3 evidence, part 2 (web cutover, static): after the human owner redeployed the Vercel `foliolens-dev` project, the site's main JS bundle hash changed and its `createClient(...)` call, storage URL builder, and Edge Function URL builder all construct against `https://api-dev.foliolens.in` (grep-confirmed; zero remaining occurrences of the raw DEV project host in the bundle). An in-sandbox attempt to drive an actual browser (Playwright + the pre-installed Chromium) through this session's HTTPS proxy failed for all HTTPS destinations, including a plain `https://example.com` control request (`net::ERR_CONNECTION_RESET`) — a sandbox networking limitation unrelated to the proxy Worker itself, so live interactive sign-in evidence (magic link / Google click-through) is left for the human owner or a native/browser environment outside this sandbox.
+
 ## Risks And Mitigations
 
 - Risk: a proxy bug turns the Worker into an open relay to an attacker-chosen host. Mitigation: origin URL construction is plain string concatenation against a pinned constant, never from the request, unit-tested against protocol-relative and embedded-absolute-URL smuggling attempts.
@@ -177,13 +188,21 @@ D2 evidence (commit `0f3790a1`, merged as `252e8c0`): 96 suites / 1983 tests pas
 - 2026-07-16 (D1): declined to use a discovered Supabase service-role-equivalent key to mint a throwaway signed-in test session. Narrowed D1's auth/REST evidence to reachability only as a result, and deferred the full signed-in-session round-trip to D3 by a recorded control-PR decision.
 - 2026-07-16 (D1 review round 1): fixed a credential-leak-into-cache defect (found independently by both reviewers) and a `206`-cached-as-full-object defect (found by the Claude reviewer), and closed a `/functions/v1` live-evidence gap; both reviewers converged at the resulting head (`dae503e`).
 - 2026-07-16: **Human owner blocked D1's merge despite a green dual-review gate**, on the grounds that a change of this size warranted its own ExecPlan from the start. This document is that plan, created after D1/D2 implementation, to govern review of the remaining work and stand as the durable record of what shipped and why.
+- 2026-07-16: Human owner reviewed this ExecPlan, approved it ("go ahead, merge the PR and move on to next... this commit for just the doc which looks good"), and judged that a docs-only commit re-affirmed by both already-converged reviewers did not need a fresh review round. PR #281 merged as `94eda60`.
+- 2026-07-16 (D3): Human owner authorized using the `SUPABASE_ACCESS_TOKEN` already present in the execution sandbox (scoped to the DEV project) to additively update the DEV project's Auth Redirect URLs allowlist — an explicit, narrow authorization for one specific write, following the same escalate-before-touching-live-infra protocol as D1's Cloudflare DNS record.
+- 2026-07-16 (D3): Human owner authorized creating a throwaway test user via the public signup endpoint (anon key only) to complete D1's deferred full-session verification, on the condition that the user and any rows it creates are deleted afterward. Done; verified cleaned up.
+- 2026-07-16 (D3): Google OAuth client redirect URIs, the GitHub `_DEV` secret, the EAS `preview`/`development` environment variables, and the Vercel `foliolens-dev` project variable were all updated by the human owner directly (console/dashboard access this execution sandbox does not have), plus a manual Vercel redeploy to bake the new value into the live dev site.
 
 ## Progress
 
 - [x] D1 — build the Worker, verify DNS/zone control, deploy to `api-dev.foliolens.in`, collect live evidence.
 - [x] D1 — address review round 1 (credential-leak-into-cache, `206` cache-poisoning, `/functions/v1` evidence gap); both reviewers converged at `dae503e`.
-- [ ] D1 — human-owner sign-off on this ExecPlan, then merge PR #281.
+- [x] D1 — human-owner sign-off on this ExecPlan, then merge PR #281. Merged as `94eda60`.
 - [x] D2 — harden `getInboxEnvironment()`, add the no-hardcoded-host guard, document `.env.example`; merged as `252e8c0`.
-- [ ] D3 — Supabase/Google OAuth allowlist updates; DEV cutover; end-to-end auth verification (including D1's deferred session round-trip).
+- [x] D3 — DEV Supabase Auth Redirect URLs allowlist updated (additive, via Management API).
+- [x] D3 — Google OAuth client, GitHub secret, EAS environments, Vercel dev project all flipped to `api-dev.foliolens.in` (human owner); Vercel dev redeployed and confirmed.
+- [x] D3 — D1's deferred full-session verification (`getSession`, forced refresh, authenticated REST read) completed and cleaned up.
+- [ ] D3 — interactive magic-link / Google sign-in click-through and native preview-build evidence.
+- [ ] D3 — open the D3 PR, update this ExecPlan's status to Merged once done.
 - [ ] D4 — production cutover (human-gated).
 - [ ] D5 — production field evidence; documentation closeout; program exit criterion evaluated.

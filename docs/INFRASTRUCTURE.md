@@ -565,13 +565,19 @@ Keep the build-time default `false` in prod so a missing or misconfigured PostHo
 ## Google OAuth
 
 
-Two OAuth Web Client IDs live in **a single Google Cloud project**. Each has the matching Supabase callback as its only Authorized Redirect URI:
+Two OAuth Web Client IDs live in **a single Google Cloud project**. The Supabase
+callback (GoTrue's own external URL, fixed to `*.supabase.co` without the paid
+Custom Domain add-on — an accepted residual of the Backend Domain Proxy program,
+see `docs/plans/backend-domain-proxy.md`) is each client's original Authorized
+Redirect URI. Since D3, each client also lists the matching `foliolens.in` proxy
+host's `/auth/v1/callback`, added defensively so a proxied `authorize` request and
+any redirect back through the proxy are accepted too:
 
 
-| Client | Authorized redirect URI |
+| Client | Authorized redirect URIs |
 |--------|--------------------------|
-| FolioLens-Dev | `https://imkgazlrxtlhkfptkzjc.supabase.co/auth/v1/callback` |
-| FolioLens | `https://ohcaaioabjvzewfysqgh.supabase.co/auth/v1/callback` |
+| FolioLens-Dev | `https://imkgazlrxtlhkfptkzjc.supabase.co/auth/v1/callback`, `https://api-dev.foliolens.in/auth/v1/callback` |
+| FolioLens | `https://ohcaaioabjvzewfysqgh.supabase.co/auth/v1/callback`, `https://api.foliolens.in/auth/v1/callback` (added in D4) |
 
 
 The OAuth consent screen is in **Testing** mode with External user type. The
