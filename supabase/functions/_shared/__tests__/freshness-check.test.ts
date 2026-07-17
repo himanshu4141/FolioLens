@@ -154,6 +154,7 @@ describe('checkOpenFolioHealth', () => {
       status: 'ok',
       db_schemes: 2000,
       latest_disclosure_date: '2026-06-11',
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(true);
@@ -171,6 +172,7 @@ describe('checkOpenFolioHealth', () => {
       status: 'error',
       db_schemes: 2000,
       latest_disclosure_date: '2026-06-11',
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(false);
@@ -182,6 +184,7 @@ describe('checkOpenFolioHealth', () => {
       status: 'ok',
       db_schemes: 1500,
       latest_disclosure_date: '2026-06-11',
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(false);
@@ -194,6 +197,7 @@ describe('checkOpenFolioHealth', () => {
       status: 'ok',
       db_schemes: 2000,
       latest_disclosure_date: futureDate.toISOString().split('T')[0],
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(false);
@@ -206,6 +210,7 @@ describe('checkOpenFolioHealth', () => {
       status: 'ok',
       db_schemes: 2000,
       latest_disclosure_date: today,
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(true);
@@ -219,9 +224,21 @@ describe('checkOpenFolioHealth', () => {
       status: 'ok',
       db_schemes: 2000,
       latest_disclosure_date: yesterday,
+      db_nav_latest: '2026-06-10',
     };
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(true);
+  });
+
+  it('returns ok=false when db_nav_latest is missing', () => {
+    const response: OpenFolioHealthResponse = {
+      status: 'ok',
+      db_schemes: 2000,
+      latest_disclosure_date: '2026-06-11',
+    };
+    const result = checkOpenFolioHealth(response, now);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('db_nav_latest');
   });
 });
 

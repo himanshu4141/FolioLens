@@ -14,6 +14,7 @@ import {
   type NavSeries,
   type OpenFolioComposition,
   type OpenFolioCompositionPage,
+  type OpenFolioHealth,
   type SchemeFamily,
   type SchemeListPage,
   type SchemeMatch,
@@ -393,6 +394,27 @@ describe('createOpenFolioClient', () => {
       })) as unknown as typeof fetch;
     const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'k', fetchImpl, timeoutMs: 5 });
     await expect(client.getComposition(1)).rejects.toThrow(/aborted/);
+  });
+
+  it('getHealth calls /health with X-API-Key and returns the freshness body', async () => {
+    const health: OpenFolioHealth = {
+      status: 'ok',
+      db_schemes: 1815,
+      latest_disclosure_date: '2026-07-13',
+      db_nav_rows: 37027038,
+      db_nav_latest: '2026-07-16',
+      db_nav_status: 'ok',
+      db_build_date: '2026-07-13',
+      db_freshness: 'ok',
+    };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, health)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(client.getHealth()).resolves.toEqual(health);
+
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/health');
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('KEY');
   });
 });
 

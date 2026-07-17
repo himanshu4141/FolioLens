@@ -157,6 +157,7 @@ export interface OpenFolioHealthResponse {
   status?: string;
   db_schemes?: number;
   latest_disclosure_date?: string;
+  db_nav_latest?: string | null;
 }
 
 export function checkOpenFolioHealth(
@@ -197,11 +198,15 @@ export function checkOpenFolioHealth(
     }
   }
 
+  if (!response.db_nav_latest) {
+    issues.push('db_nav_latest is missing.');
+  }
+
   if (issues.length === 0) {
     return {
       name,
       ok: true,
-      detail: `OpenFolio healthy: status=${response.status}, db_schemes=${response.db_schemes}, latest_disclosure_date=${response.latest_disclosure_date}.`,
+      detail: `OpenFolio healthy: status=${response.status}, db_schemes=${response.db_schemes}, latest_disclosure_date=${response.latest_disclosure_date}, db_nav_latest=${response.db_nav_latest}.`,
     };
   }
 

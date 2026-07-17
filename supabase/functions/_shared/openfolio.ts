@@ -337,6 +337,22 @@ export interface ListSchemesArgs {
   page?: number;
   pageSize?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Health API types
+// GET /health → OpenFolioHealth
+// ---------------------------------------------------------------------------
+
+export interface OpenFolioHealth {
+  status?: string;
+  db_schemes?: number;
+  latest_disclosure_date?: string | null;
+  db_nav_rows?: number;
+  db_nav_latest?: string | null;
+  db_nav_status?: string | null;
+  db_build_date?: string | null;
+  db_freshness?: string | null;
+}
 // ---------------------------------------------------------------------------
 // OpenFolio credentials + request paths
 // ---------------------------------------------------------------------------
@@ -438,6 +454,10 @@ export function openFolioSchemesPath(args: ListSchemesArgs = {}): string {
     page: args.page,
     page_size: args.pageSize,
   })}`;
+}
+
+export function openFolioHealthPath(): string {
+  return '/health';
 }
 // END OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
 
@@ -696,6 +716,8 @@ export interface OpenFolioClient {
   getNavLatest(schemeCode: number): Promise<NavLatestEntry | null>;
   /** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
   listNav(args?: ListNavArgs): Promise<NavBulkPage>;
+  /** API/data freshness summary. Used by sync jobs as a cheap upstream gate. */
+  getHealth(): Promise<OpenFolioHealth>;
   /** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
   getMetadata(schemeCode: number): Promise<FundMetadata | null>;
   /** Bulk paginated metadata — all schemes, optionally filtered by updated_since. */
@@ -760,6 +782,10 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
       const path = openFolioNavListPath(args);
       const { body } = await request(path);
       return body as NavBulkPage;
+    },
+    async getHealth() {
+      const { body } = await request(openFolioHealthPath());
+      return body as OpenFolioHealth;
     },
     async getMetadata(schemeCode) {
       const { body } = await request(openFolioMetadataPath(schemeCode));

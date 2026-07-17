@@ -1,4 +1,8 @@
-import { buildSchemeLatestMap, SINCE_MAP_PAGE_SIZE } from '../nav-since-map';
+import {
+  buildSchemeLatestMap,
+  evaluateOpenFolioNavFreshnessGate,
+  SINCE_MAP_PAGE_SIZE,
+} from '../nav-since-map';
 
 // ---------------------------------------------------------------------------
 // buildSchemeLatestMap — first-occurrence-per-scheme semantics
@@ -92,6 +96,79 @@ describe('buildSchemeLatestMap', () => {
     expect(map.size).toBe(2);
     expect(map.has(1)).toBe(true);
     expect(map.has(2)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateOpenFolioNavFreshnessGate
+// ---------------------------------------------------------------------------
+
+describe('evaluateOpenFolioNavFreshnessGate', () => {
+  it('skips only when every held scheme is current through OpenFolio latest NAV', () => {
+    const result = evaluateOpenFolioNavFreshnessGate(
+      [100, 200],
+      new Map([
+        [100, '2026-07-16'],
+        [200, '2026-07-17'],
+      ]),
+      '2026-07-16',
+    );
+
+    expect(result.shouldSkip).toBe(true);
+    expect(result.localMinLatestDate).toBe('2026-07-16');
+    expect(result.missingSchemeCount).toBe(0);
+    expect(result.staleSchemeCount).toBe(0);
+    expect(result.currentSchemeCount).toBe(2);
+    expect(result.syncSchemeCount).toBe(0);
+    expect(result.syncSchemeCodes).toEqual([]);
+  });
+
+  it('syncs only held schemes missing local NAV history', () => {
+    const result = evaluateOpenFolioNavFreshnessGate(
+      [100, 200],
+      new Map([[100, '2026-07-16']]),
+      '2026-07-16',
+    );
+
+    expect(result.shouldSkip).toBe(false);
+    expect(result.missingSchemeCount).toBe(1);
+    expect(result.staleSchemeCount).toBe(0);
+    expect(result.currentSchemeCount).toBe(1);
+    expect(result.syncSchemeCount).toBe(1);
+    expect(result.syncSchemeCodes).toEqual([200]);
+  });
+
+  it('syncs only held schemes that lag OpenFolio latest NAV', () => {
+    const result = evaluateOpenFolioNavFreshnessGate(
+      [100, 200],
+      new Map([
+        [100, '2026-07-16'],
+        [200, '2026-07-15'],
+      ]),
+      '2026-07-16',
+    );
+
+    expect(result.shouldSkip).toBe(false);
+    expect(result.missingSchemeCount).toBe(0);
+    expect(result.staleSchemeCount).toBe(1);
+    expect(result.localMinLatestDate).toBe('2026-07-15');
+    expect(result.currentSchemeCount).toBe(1);
+    expect(result.syncSchemeCount).toBe(1);
+    expect(result.syncSchemeCodes).toEqual([200]);
+  });
+
+  it('does not skip when OpenFolio health has no valid db_nav_latest date', () => {
+    const result = evaluateOpenFolioNavFreshnessGate(
+      [100],
+      new Map([[100, '2026-07-16']]),
+      null,
+    );
+
+    expect(result.shouldSkip).toBe(false);
+    expect(result.upstreamLatestDate).toBeNull();
+    expect(result.reason).toMatch(/valid db_nav_latest/);
+    expect(result.syncSchemeCount).toBe(1);
+    expect(result.syncSchemeCodes).toEqual([100]);
   });
 });
 
