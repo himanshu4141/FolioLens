@@ -170,6 +170,32 @@ export interface NavBulkPage {
   items: NavBulkItem[];
 }
 
+export interface NavDeltaSchemeRequest {
+  scheme_code: number;
+  /** Inclusive local watermark for this scheme. Null requests the full available series. */
+  since?: string | null;
+}
+
+export interface NavDeltaRequest {
+  schemes: NavDeltaSchemeRequest[];
+  max_points_per_scheme?: number;
+}
+
+export interface NavDeltaLatest {
+  scheme_code: number;
+  date: string;
+}
+
+/** Response from POST /v1/nav/delta — selected-scheme NAV rows + latest dates. */
+export interface NavDeltaResponse {
+  requested: number;
+  matched: number;
+  items: NavBulkItem[];
+  latest: NavDeltaLatest[];
+  missing_scheme_codes: number[];
+  truncated_scheme_codes: number[];
+}
+
 /** Args for the per-scheme series endpoint. */
 export interface GetNavSeriesArgs {
   /** Lower bound — ISO date YYYY-MM-DD. */
@@ -432,6 +458,10 @@ export function openFolioNavListPath(args: ListNavArgs = {}): string {
     page: args.page,
     page_size: args.pageSize,
   })}`;
+}
+
+export function openFolioNavDeltaPath(): string {
+  return '/v1/nav/delta';
 }
 
 export function openFolioMetadataPath(schemeCode: number): string {
@@ -716,6 +746,8 @@ export interface OpenFolioClient {
   getNavLatest(schemeCode: number): Promise<NavLatestEntry | null>;
   /** Bulk paginated NAV — one latest entry per scheme, filtered by date/since. */
   listNav(args?: ListNavArgs): Promise<NavBulkPage>;
+  /** Bulk NAV deltas for selected schemes with per-scheme watermarks. */
+  getNavDelta(request: NavDeltaRequest): Promise<NavDeltaResponse>;
   /** API/data freshness summary. Used by sync jobs as a cheap upstream gate. */
   getHealth(): Promise<OpenFolioHealth>;
   /** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
@@ -741,13 +773,23 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? 20_000;
 
-  async function request(path: string): Promise<{ status: number; body: unknown }> {
+  async function request(
+    path: string,
+    options: { method?: string; body?: unknown } = {},
+  ): Promise<{ status: number; body: unknown }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const headers: Record<string, string> = {
+      'X-API-Key': config.apiKey,
+      Accept: 'application/json',
+    };
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     try {
       const res = await fetchImpl(`${config.baseUrl}${path}`, {
+        method: options.method,
         signal: controller.signal,
-        headers: { 'X-API-Key': config.apiKey, Accept: 'application/json' },
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       });
       const status = res.status;
       if (status === 404) return { status, body: null };
@@ -782,6 +824,16 @@ export function createOpenFolioClient(config: OpenFolioClientConfig): OpenFolioC
       const path = openFolioNavListPath(args);
       const { body } = await request(path);
       return body as NavBulkPage;
+    },
+    async getNavDelta(deltaRequest) {
+      const { status, body } = await request(openFolioNavDeltaPath(), {
+        method: 'POST',
+        body: deltaRequest,
+      });
+      if (status === 404 || body === null) {
+        throw new Error('OpenFolio nav delta endpoint not found');
+      }
+      return body as NavDeltaResponse;
     },
     async getHealth() {
       const { body } = await request(openFolioHealthPath());
