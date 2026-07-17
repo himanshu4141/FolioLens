@@ -3,6 +3,7 @@ import {
   buildForwardedRequestHeaders,
   buildPreflightHeaders,
   buildPublicStorageForwardedHeaders,
+  stripUpstreamIdentifyingHeaders,
 } from '../src/headers';
 
 describe('buildForwardedRequestHeaders', () => {
@@ -81,6 +82,40 @@ describe('buildPreflightHeaders', () => {
   });
 });
 
+describe('stripUpstreamIdentifyingHeaders', () => {
+  it('removes the Supabase project ref and gateway/runtime identifiers', () => {
+    const input = new Headers({
+      'sb-project-ref': 'ohcaaioabjvzewfysqgh',
+      'sb-gateway-mode': 'direct',
+      'sb-gateway-version': '1',
+      'sb-request-id': '019f70cf-dd15-78d5-9383-1d490d83ca6f',
+      'x-sb-edge-region': 'us-east-1',
+      'x-served-by': 'supabase-edge-runtime',
+      'x-deno-execution-id': 'a4497d2d-33fe-4ebf-8d46-9557f9ce7fae',
+      'content-type': 'application/json',
+    });
+    const stripped = stripUpstreamIdentifyingHeaders(input);
+    expect(stripped.has('sb-project-ref')).toBe(false);
+    expect(stripped.has('sb-gateway-mode')).toBe(false);
+    expect(stripped.has('sb-gateway-version')).toBe(false);
+    expect(stripped.has('sb-request-id')).toBe(false);
+    expect(stripped.has('x-sb-edge-region')).toBe(false);
+    expect(stripped.has('x-served-by')).toBe(false);
+    expect(stripped.has('x-deno-execution-id')).toBe(false);
+    expect(stripped.get('content-type')).toBe('application/json');
+  });
+
+  it('drops Set-Cookie entirely — auth is bearer-token PKCE, not cookie-based, so the app never reads one', () => {
+    const input = new Headers();
+    input.append(
+      'set-cookie',
+      '__cf_bm=abc123; HttpOnly; SameSite=None; Secure; Path=/; Domain=supabase.co',
+    );
+    const stripped = stripUpstreamIdentifyingHeaders(input);
+    expect(stripped.has('set-cookie')).toBe(false);
+  });
+});
+
 describe('applyCorsHeaders', () => {
   it('sets Access-Control-Allow-Origin on the response regardless of the origin response', async () => {
     const origin = new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -103,5 +138,20 @@ describe('applyCorsHeaders', () => {
     });
     const result = applyCorsHeaders(origin);
     expect(result.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('strips Supabase-identifying headers from the final response (D5 field verification finding)', () => {
+    const origin = new Response(null, {
+      status: 200,
+      headers: {
+        'sb-project-ref': 'ohcaaioabjvzewfysqgh',
+        'sb-gateway-version': '1',
+        'x-served-by': 'supabase-edge-runtime',
+      },
+    });
+    const result = applyCorsHeaders(origin);
+    expect(result.headers.has('sb-project-ref')).toBe(false);
+    expect(result.headers.has('sb-gateway-version')).toBe(false);
+    expect(result.headers.has('x-served-by')).toBe(false);
   });
 });

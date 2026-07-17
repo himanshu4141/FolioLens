@@ -45,3 +45,27 @@ export const CORS_DEFAULT_ALLOWED_HEADERS =
   'authorization, apikey, content-type, x-client-info, prefer, range, x-upsert';
 export const CORS_ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS';
 export const CORS_MAX_AGE_SECONDS = 86400;
+
+// Response headers the Supabase origin (GoTrue/PostgREST/Storage/Edge
+// Functions) sets on every response, that name the vendor and/or the exact
+// project ref in plaintext (D5 field verification finding: visible in
+// DevTools' default Headers view, no JWT decoding needed — unlike the three
+// documented residuals, which only surface during a one-time auth flow).
+// Stripped before the response reaches the client so the proxy actually
+// delivers on the program's presentation/trust goal.
+export const UPSTREAM_IDENTIFYING_RESPONSE_HEADERS = [
+  'sb-project-ref',
+  'sb-gateway-mode',
+  'sb-gateway-version',
+  'sb-request-id',
+  'x-sb-edge-region',
+  'x-served-by',
+  'x-deno-execution-id',
+];
+
+// Auth is bearer-token PKCE, not cookie-based (see ExecPlan Assumptions), so
+// the app never reads a cookie the proxy origin sets. The only Set-Cookie
+// seen in practice is Cloudflare's own bot-management cookie for the
+// origin's zone (`Domain=supabase.co`) — dropped entirely rather than
+// rewritten, since there is no first-party replacement the client needs.
+export const STRIP_SET_COOKIE = true;
