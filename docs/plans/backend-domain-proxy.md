@@ -141,6 +141,16 @@ Commands: confirm `production-release.yml` is green; smoke-test the production w
 
 Acceptance criteria: the production release workflow run succeeds; production web and a production-channel build authenticate and load a portfolio with no regression. Any user-facing regression (auth, imports, snapshots) stops this milestone and opens a correctness interrupt rather than proceeding.
 
+Status: **in progress** on `program/D4-prod-cutover`. Scope note (owner decision, 2026-07-17, recorded during D3 review): the PROD Google OAuth client redirect URI and the PROD Supabase Auth Redirect URLs allowlist entry — originally D3 scope per the research report — are deferred to this milestone, to be done together with the rest of D4's production-console changes rather than staged ahead of them ("do all the prod related changes in one go during prod deployment").
+
+Completed so far (Worker deployment only — no client env vars changed, no production traffic yet):
+
+- Created the `api.foliolens.in` placeholder DNS record (proxied `A` record → `192.0.2.1`, same documentation-range-IP pattern as D1's dev record — the Workers Route intercepts before this IP is ever dereferenced), with explicit owner confirmation that the Worker deploy could proceed separately from the batched console changes.
+- Deployed `env.production` (`workers/api-proxy/wrangler.toml`, already declared since D1, unchanged) via `wrangler deploy --env production`. Live-verified: a non-mapped path (`/admin`) returns `404`; `/auth/v1/settings` reaches real PROD GoTrue (`401 "No API key found in request"` — the correct GoTrue error for a request without an `apikey` header, proving this is genuinely GoTrue and not a generic error page); the `X-FolioLens-Api-Proxy` marker header is present, confirming the Worker itself handled the request.
+- No client (web or native) points at `api.foliolens.in` yet, so this deployment carries zero production traffic — it exists so D4's actual cutover has nothing left to stand up, only config to flip.
+
+Still open, awaiting the human owner: the batched PROD console changes (Google OAuth client `FolioLens`, PROD Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` environment, Vercel prod project), then shipping via the tag-release gate.
+
 Status: not started. Human-gated — the executor prepares and stages every step, then the human owner presses the actual production buttons (tag push / workflow dispatch), per this repo's existing prod-release gate.
 
 ### D5 — Field verification + docs + exit criterion
@@ -200,6 +210,7 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - 2026-07-17: Confirmed with the owner that the Android/native device-evidence waiver already recorded on control PR #280 ("not a blocking acceptance requirement for D3 or the remaining program") is intended to cover interactive web sign-in too, not just native. **D4 prep is therefore not blocked** on the deferred click-through; the actual production cutover still requires the owner's explicit go-ahead through the existing human-gated release process.
 - 2026-07-17 (D3 review, Codex thread on `docs/INFRASTRUCTURE.md`): Codex flagged that D3's milestone prompt calls for adding **both** the DEV and PROD proxy callback URLs to the Supabase allowlists and Google OAuth clients, but only DEV was done. **Human owner scope amendment:** "happy to defer to later and do all the prod related changes in one go during prod deployment" — the PROD callback/allowlist addition moves from D3 to D4, done together with D4's other production-console changes rather than ahead of them. `docs/INFRASTRUCTURE.md`'s OAuth table reworded so it cannot be read as claiming the PROD side is already done.
 - 2026-07-17 (D3 review, Codex thread on this file): Codex flagged that the first full-session verification pass proved only an *empty* RLS-scoped REST read (`200 []`, no profile row existed for that throwaway user), not an actual row-returning read as the carried D1/D3 acceptance criteria require. Fixed properly rather than amending the acceptance bar down: a second throwaway user got a seeded `user_profile` row (via the Management API, as the fixture setup — not part of what's being verified) and then a `GET /rest/v1/user_profile` through the proxy with that user's own JWT returned exactly that one row. Cleaned up the same way as before.
+- 2026-07-17 (D4): Human owner confirmed the Worker deployment (DNS record + `wrangler deploy --env production`) could proceed separately from and ahead of the batched PROD console changes, since it carries no production traffic until a client is actually pointed at `api.foliolens.in`. Created the placeholder DNS record and deployed; live-verified reachable and correctly routed to PROD Supabase.
 
 ## Progress
 
@@ -213,6 +224,9 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - [x] D3 — native exact-SHA OTA evidence captured (`foliolens-pr` channel, commit `fd841557`, iOS `019f6d88-5c06-7abe…`, Android `019f6d88-5c06-7008…`).
 - [x] D3 — PR #283 opened; docs-only diff; validation green (typecheck/lint/100 suites/2019 tests).
 - [x] D3 — row-returning RLS-scoped REST read captured (Codex review finding), closing the carried D1/D3 REST acceptance criterion.
-- [ ] D3 — interactive magic-link / Google sign-in click-through (deferred by owner to program completion; does not block D3's merge or D4 prep, per the confirmed device-evidence waiver).
-- [ ] D4 — production cutover (human-gated; prep may proceed, actual cutover needs the owner's explicit go-ahead).
+- [x] D3 — merged as `9045365` (PR #283). Both reviewers converged at `467117b` after two round-1 fixes.
+- [ ] D3/D4 — interactive magic-link / Google sign-in click-through (deferred by owner to program completion; does not block D3's merge or D4 prep, per the confirmed device-evidence waiver).
+- [x] D4 — `api.foliolens.in` DNS record created; `env.production` Worker deployed and live-verified (reachable, correctly routed to PROD Supabase, zero production traffic yet).
+- [ ] D4 — batched PROD console changes (Google OAuth client, Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` env, Vercel prod project) — awaiting the human owner, to be done together per their scope decision.
+- [ ] D4 — ship via `production-release.yml`; smoke-test production web + a production-channel native build.
 - [ ] D5 — production field evidence; documentation closeout; program exit criterion evaluated.
