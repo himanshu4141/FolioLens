@@ -149,11 +149,18 @@ Completed so far (Worker deployment only — no client env vars changed, no prod
 
 - Created the `api.foliolens.in` placeholder DNS record (proxied `A` record → `192.0.2.1`, same documentation-range-IP pattern as D1's dev record — the Workers Route intercepts before this IP is ever dereferenced), with explicit owner confirmation that the Worker deploy could proceed separately from the batched console changes.
 - Deployed `env.production` (`workers/api-proxy/wrangler.toml`, already declared since D1, unchanged) via `wrangler deploy --env production`. Live-verified: a non-mapped path (`/admin`) returns `404`; `/auth/v1/settings` reaches real PROD GoTrue (`401 "No API key found in request"` — the correct GoTrue error for a request without an `apikey` header, proving this is genuinely GoTrue and not a generic error page); the `X-FolioLens-Api-Proxy` marker header is present, confirming the Worker itself handled the request.
-- No client (web or native) points at `api.foliolens.in` yet, so this deployment carries zero production traffic — it exists so D4's actual cutover has nothing left to stand up, only config to flip.
 
-Still open, awaiting the human owner: the batched PROD console changes (Google OAuth client `FolioLens`, PROD Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` environment, Vercel prod project), then shipping via the tag-release gate.
+**Batched PROD console changes completed by the human owner (2026-07-17):**
 
-Status: not started. Human-gated — the executor prepares and stages every step, then the human owner presses the actual production buttons (tag push / workflow dispatch), per this repo's existing prod-release gate.
+- Google OAuth client `FolioLens` (PROD): added `https://api.foliolens.in/auth/v1/callback` to Authorized redirect URIs, additively (the existing `*.supabase.co` callback stays — accepted residual).
+- PROD Supabase project (`ohcaaioabjvzewfysqgh`) Auth Redirect URLs allowlist: added `https://api.foliolens.in/auth/v1/callback`, additively. Done directly by the owner via the Supabase Dashboard — this execution sandbox's `SUPABASE_ACCESS_TOKEN` is scoped to the DEV project only, so unlike D3 this write could not be made by the executor.
+- GitHub secret `EXPO_PUBLIC_SUPABASE_URL_PROD` → `https://api.foliolens.in`.
+- EAS `production` environment: `EXPO_PUBLIC_SUPABASE_URL` → `https://api.foliolens.in`, `EXPO_PUBLIC_INBOUND_ENV` → `prod`.
+- Vercel `foliolens` (PROD) project: `EXPO_PUBLIC_SUPABASE_URL` → `https://api.foliolens.in`, `EXPO_PUBLIC_INBOUND_ENV` → `prod`. No redeploy needed yet — the PROD Vercel project is disconnected from GitHub and only deploys via `production-release.yml` on a tag push, so this value takes effect on the next release rather than immediately.
+
+Not independently verified by the executor: none of the five changes above are readable through this sandbox's access (no PROD-scoped Supabase Management API token, no GitHub secret read access, no EAS/Vercel console access) — recorded on the owner's confirmation, same evidentiary basis as the equivalent D3 console changes.
+
+Still open: the actual production release (tag push / `production-release.yml` dispatch) and post-release smoke test. Human-gated — the executor prepares and stages every step, then the human owner presses the actual production buttons, per this repo's existing prod-release gate.
 
 ### D5 — Field verification + docs + exit criterion
 
@@ -216,6 +223,7 @@ D3 evidence, part 3 (real interactive click-through, owner-performed, 2026-07-17
 - 2026-07-17 (D3 review, Codex thread on this file): Codex flagged that the first full-session verification pass proved only an *empty* RLS-scoped REST read (`200 []`, no profile row existed for that throwaway user), not an actual row-returning read as the carried D1/D3 acceptance criteria require. Fixed properly rather than amending the acceptance bar down: a second throwaway user got a seeded `user_profile` row (via the Management API, as the fixture setup — not part of what's being verified) and then a `GET /rest/v1/user_profile` through the proxy with that user's own JWT returned exactly that one row. Cleaned up the same way as before.
 - 2026-07-17 (D4): Human owner confirmed the Worker deployment (DNS record + `wrangler deploy --env production`) could proceed separately from and ahead of the batched PROD console changes, since it carries no production traffic until a client is actually pointed at `api.foliolens.in`. Created the placeholder DNS record and deployed; live-verified reachable and correctly routed to PROD Supabase.
 - 2026-07-17 (post-D3-merge): Human owner completed the deferred interactive click-through on both dev web and a native `foliolens-pr` build; DevTools confirmed the full session (including the PKCE token exchange) routes through `api-dev.foliolens.in`. This surfaced a third accepted residual — the magic-link email's verification link stays on `*.supabase.co` — now documented in Assumptions alongside the original two (OAuth provider-callback leg, JWT `iss`).
+- 2026-07-17 (D4): Human owner completed all five batched PROD console changes (Google OAuth client, PROD Supabase Auth allowlist, GitHub `_PROD` secret, EAS `production` environment, Vercel PROD project) directly — the executor could not make the Supabase allowlist write itself, since its Management API token is scoped to the DEV project only. Recorded on the owner's confirmation; not independently re-verified by the executor. Only the actual release trigger (tag push / `production-release.yml`) remains, still human-gated.
 
 ## Progress
 
@@ -232,6 +240,6 @@ D3 evidence, part 3 (real interactive click-through, owner-performed, 2026-07-17
 - [x] D3 — merged as `9045365` (PR #283). Both reviewers converged at `467117b` after two round-1 fixes.
 - [x] D3/D4 — interactive magic-link / Google sign-in click-through completed by the human owner (2026-07-17, post-merge); both dev web and native (`foliolens-pr`) confirmed routing the full session through `api-dev.foliolens.in`.
 - [x] D4 — `api.foliolens.in` DNS record created; `env.production` Worker deployed and live-verified (reachable, correctly routed to PROD Supabase, zero production traffic yet).
-- [ ] D4 — batched PROD console changes (Google OAuth client, Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` env, Vercel prod project) — awaiting the human owner, to be done together per their scope decision.
+- [x] D4 — batched PROD console changes (Google OAuth client, Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` env, Vercel prod project) completed by the human owner (2026-07-17).
 - [ ] D4 — ship via `production-release.yml`; smoke-test production web + a production-channel native build.
 - [ ] D5 — production field evidence; documentation closeout; program exit criterion evaluated.

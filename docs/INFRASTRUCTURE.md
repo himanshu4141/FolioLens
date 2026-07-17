@@ -572,17 +572,16 @@ Proxy program, see `docs/plans/backend-domain-proxy.md`; the other two are the
 JWT `iss` claim and the magic-link email's verification link) is each client's
 original Authorized Redirect URI. As of D3, the **DEV** client also lists the matching `foliolens.in`
 proxy host's `/auth/v1/callback`, added defensively so a proxied `authorize`
-request and any redirect back through the proxy are accepted too. The **PROD**
-client's proxy callback URI has **not** been added yet — the human owner deferred
-it, along with the matching Supabase Auth allowlist entry on the PROD project, to
-be done together with the rest of D4's production-console changes rather than
-ahead of them (recorded in the ExecPlan's Decision Log, D3 review thread):
+request and any redirect back through the proxy are accepted too. As of D4, the
+**PROD** client lists its matching proxy callback the same way, added by the
+human owner together with the rest of D4's batched production-console changes
+(recorded in the ExecPlan's Decision Log):
 
 
 | Client | Authorized redirect URIs |
 |--------|--------------------------|
 | FolioLens-Dev | `https://imkgazlrxtlhkfptkzjc.supabase.co/auth/v1/callback`, `https://api-dev.foliolens.in/auth/v1/callback` (added D3) |
-| FolioLens | `https://ohcaaioabjvzewfysqgh.supabase.co/auth/v1/callback` only — `https://api.foliolens.in/auth/v1/callback` is **not yet added**; planned for D4 |
+| FolioLens | `https://ohcaaioabjvzewfysqgh.supabase.co/auth/v1/callback`, `https://api.foliolens.in/auth/v1/callback` (added D4) |
 
 
 The OAuth consent screen is in **Testing** mode with External user type. The
