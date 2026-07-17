@@ -20,7 +20,7 @@ A research report (`docs/research/prod-backend-proxy-foliolens-domain-2026-07-16
 - The Supabase Custom Domain add-on (which would remove the need for a proxy entirely) is explicitly declined for cost by the human owner; this plan is scoped to the free-tier reverse-proxy approach instead.
 - Realtime is unused (confirmed in `docs/EXIT-RUNBOOK.md`) and stays that way, so the proxy never needs WebSocket support.
 - Auth is bearer-token PKCE, not cookie-based (confirmed in `src/lib/supabase.ts`), so the proxy never needs to rewrite cookies or a cookie domain.
-- Two residuals cannot be removed by a plain host proxy on the free tier and are accepted rather than fixed: the Google→GoTrue OAuth **provider callback leg** (registered with Google as `https://<project-ref>.supabase.co/auth/v1/callback`) and the JWT `iss` claim (`https://<project-ref>.supabase.co/auth/v1`) both stay on `*.supabase.co`.
+- Three residuals cannot be removed by a plain host proxy on the free tier and are accepted rather than fixed: the Google→GoTrue OAuth **provider callback leg** (registered with Google as `https://<project-ref>.supabase.co/auth/v1/callback`), the JWT `iss` claim (`https://<project-ref>.supabase.co/auth/v1`), and the **magic-link email's verification link** (GoTrue builds `{{ .ConfirmationURL }}` from its own `GOTRUE_API_EXTERNAL_URL`, which is fixed to `*.supabase.co` without the paid Custom Domain add-on) — all three stay on `*.supabase.co`.
 
 ## Definitions
 
@@ -42,13 +42,13 @@ A research report (`docs/research/prod-backend-proxy-foliolens-domain-2026-07-16
 - Add a Cloudflare Worker reverse proxy (`workers/api-proxy/`) mapping exactly the four client-facing Supabase path prefixes (`/auth/v1`, `/rest/v1`, `/storage/v1`, `/functions/v1`) to a pinned Supabase origin, for both environments (dev parity: DEV-Supabase-backed builds get `api-dev.foliolens.in`, production gets `api.foliolens.in`).
 - Harden the one client-side environment-inference function (`getInboxEnvironment()`, used to render the CAS forwarding-address local-part) so it no longer depends on the backend host containing a `supabase.co` project-ref substring, since a proxy host never contains one.
 - Cut both environments over: point every DEV-Supabase-backed build (dev, `preview-pr`, `preview-main`, Vercel dev + PR previews) at `api-dev.foliolens.in` first, then production (`app.foliolens.in` + the prod native channel) at `api.foliolens.in`, each verified with real sign-in evidence before the next one proceeds.
-- Update `docs/INFRASTRUCTURE.md`, `docs/EXIT-RUNBOOK.md`, and `.env.example` to reflect the new domain map and the two accepted residuals.
+- Update `docs/INFRASTRUCTURE.md`, `docs/EXIT-RUNBOOK.md`, and `.env.example` to reflect the new domain map and the three accepted residuals.
 
 ## Out of Scope
 
 - Any change to RLS, API keys, the database schema, or anything that changes what data a request can access. This program only changes the hostname the app talks to; it is a presentation/trust change, not a new security control.
 - Server-to-server backend calls: the Resend inbound router calling `cas-webhook-resend`, every pg_cron/pg_net job, and `universe-backfill.yml`. None of these ever appear in a user's browser or app, so re-routing them through the public proxy would add a hop with no user-facing benefit and would widen blast radius. They keep calling `*.supabase.co` directly.
-- Removing the Google OAuth provider-callback leg or the JWT `iss` claim from `*.supabase.co`. Neither is achievable without Supabase's paid Custom Domain add-on, which is declined for cost. Both are documented as accepted residuals, not defects for this plan to fix later.
+- Removing the Google OAuth provider-callback leg, the JWT `iss` claim, or the magic-link email's verification link from `*.supabase.co`. None of the three is achievable without Supabase's paid Custom Domain add-on, which is declined for cost. All three are documented as accepted residuals, not defects for this plan to fix later.
 - Realtime / WebSocket support in the proxy — the app does not use Realtime.
 
 ## Approach
@@ -68,7 +68,7 @@ Cutover is staged and reversible: D1 stands up and proves the DEV proxy in isola
 
 ## Alternatives Considered
 
-- **Supabase Custom Domain (paid add-on)** would remove the need for a proxy and both residuals entirely. Declined for cost by the human owner; this plan is the free-tier alternative.
+- **Supabase Custom Domain (paid add-on)** would remove the need for a proxy and all three residuals entirely. Declined for cost by the human owner; this plan is the free-tier alternative.
 - **Vercel-hosted proxy** (a rewrite/edge function on the existing SPA project) was the fallback substrate if the Cloudflare zone turned out not to control the `foliolens.in` subdomain. Not needed — a DNS lookup confirmed Cloudflare already controls the zone.
 - **Scoping the proxy to production only** (leaving dev/preview builds talking to Supabase directly) was rejected: the human owner wants both environments behind the proxy so the exact production transport path is exercised continuously in dev/preview, rather than the production cutover being the first real use of the proxy.
 - **Keeping the environment-inference fallback order as-is** (ref-substring checked before app-base-URL) was rejected because it would leave dev/prod detection for the CAS forwarding address dependent on a signal — the Supabase project ref — that stops existing the moment the backend host becomes a proxy host.
@@ -118,7 +118,7 @@ Commands:
     npm run typecheck && npm run lint
     npm test -- --runInBand
 
-Acceptance criteria: magic-link and Google sign-in both succeed on dev web and a native preview build with the base pointed at the proxy (exact-SHA native evidence: device, channel, OTA/update ID); a Network capture shows auth/token/authorize plus REST/functions/storage calls landing on `api-dev.foliolens.in`, with the two residuals (the OAuth provider-callback leg, the JWT `iss`) noted as expected exceptions; a forced `/auth/v1/token?grant_type=refresh_token` and a row-returning `/rest/v1` read both succeed through the proxy with a real session.
+Acceptance criteria: magic-link and Google sign-in both succeed on dev web and a native preview build with the base pointed at the proxy (exact-SHA native evidence: device, channel, OTA/update ID); a Network capture shows auth/token/authorize plus REST/functions/storage calls landing on `api-dev.foliolens.in`, with the three residuals (the OAuth provider-callback leg, the JWT `iss`, the magic-link email verification link) noted as expected exceptions; a forced `/auth/v1/token?grant_type=refresh_token` and a row-returning `/rest/v1` read both succeed through the proxy with a real session.
 
 Status: **in progress** on `program/D3-dev-cutover-auth`. Completed so far:
 
@@ -130,6 +130,8 @@ Status: **in progress** on `program/D3-dev-cutover-auth`. Completed so far:
 Native exact-SHA OTA evidence was captured by manually dispatching `pr-preview.yml` on this milestone's branch (`workflow_dispatch` runs the full pipeline even on a docs-only diff, unlike the automatic PR trigger, which skips the build): published to the `foliolens-pr` channel at commit `fd841557` — iOS update `019f6d88-5c06-7abe-a7ef-582ee0fed6fd`, Android update `019f6d88-5c06-7008-b712-7a1dfd03dfd2` — built with the `preview` EAS environment's now-updated `EXPO_PUBLIC_SUPABASE_URL`.
 
 Still open, deferred by explicit human-owner instruction (2026-07-17): the actual interactive magic-link/Google sign-in click-through on dev web and applying the above OTA update on a physical `preview-pr` device. The owner cannot test right now and will do so "when program completes" rather than blocking D3. **This does not block D3's merge** — the API-level evidence above (D1's deferred verification, including a genuine row-returning RLS-scoped REST read — see Validation) already proves the proxy/auth/RLS chain is correct end-to-end with a real session, and the web/native artifacts are confirmed statically wired to the proxy host. Confirmed with the owner (2026-07-17) that the existing Android/native device-evidence waiver on control PR #280 ("not a blocking acceptance requirement for D3 or the remaining program") is intended to cover interactive web sign-in too, not just native — so **it also does not block D4.** D4 prep may proceed; the actual production cutover still requires the owner's explicit go-ahead through the repo's existing human-gated release process (tag push / workflow dispatch), same as always. Depends on D1 (merged) and D2 (merged).
+
+**Update (2026-07-17, post-merge):** the human owner completed the deferred click-through — see Validation, D3 evidence part 3. Both dev web and the native `foliolens-pr` OTA build signed in successfully, with DevTools confirming the PKCE token exchange and all subsequent REST/functions calls landed on `api-dev.foliolens.in`. This also surfaced the third accepted residual named in Assumptions: the magic-link email's own verification link stays on the raw `*.supabase.co` host.
 
 ### D4 — Production cutover
 
@@ -157,7 +159,7 @@ Status: not started. Human-gated — the executor prepares and stages every step
 
 Scope: capture production-surface evidence (web plus a production-channel native build) that every app-originated backend request — REST, auth, functions including the CAS PDF upload, and the public index snapshot — targets a `*.foliolens.in` host; update `docs/INFRASTRUCTURE.md` (domain map, secrets, server-to-server scope note, "not a security boundary" framing), `docs/EXIT-RUNBOOK.md`, and `.env.example`.
 
-Expected outcome: the originally reported symptom (a raw Supabase host visible in production DevTools) is closed, with the two residuals explicitly documented as accepted exceptions.
+Expected outcome: the originally reported symptom (a raw Supabase host visible in production DevTools) is closed, with the three residuals explicitly documented as accepted exceptions.
 
 Commands: none beyond the repo validation checklist; this milestone is evidence capture and documentation.
 
@@ -184,13 +186,15 @@ D3 evidence, part 1b (row-returning REST read — closes a Codex review finding 
 
 D3 evidence, part 2 (web cutover, static): after the human owner redeployed the Vercel `foliolens-dev` project, the site's main JS bundle hash changed and its `createClient(...)` call, storage URL builder, and Edge Function URL builder all construct against `https://api-dev.foliolens.in` (grep-confirmed; zero remaining occurrences of the raw DEV project host in the bundle). An in-sandbox attempt to drive an actual browser (Playwright + the pre-installed Chromium) through this session's HTTPS proxy failed for all HTTPS destinations, including a plain `https://example.com` control request (`net::ERR_CONNECTION_RESET`) — a sandbox networking limitation unrelated to the proxy Worker itself, so live interactive sign-in evidence (magic link / Google click-through) is left for the human owner or a native/browser environment outside this sandbox.
 
+D3 evidence, part 3 (real interactive click-through, owner-performed, 2026-07-17, post-merge): the human owner signed in via magic link on both dev web (`foliolens-dev.vercel.app`) and a native `foliolens-pr` build. DevTools Network capture on web confirmed `POST /auth/v1/token?grant_type=pkce` returning `200`, and all subsequent REST calls (portfolio, transactions, funds) landing on `api-dev.foliolens.in` with a real portfolio rendering correctly — closing the last deferred piece of D3's acceptance criteria on both surfaces. This also surfaced a third residual not previously named explicitly: the magic-link email itself contains a verification link on the raw `*.supabase.co` host, not the proxy. This is expected, not a defect — GoTrue builds that link from its own `GOTRUE_API_EXTERNAL_URL`, which only the paid Custom Domain add-on (declined for cost; see Assumptions) can point at a custom host. The link's host is cosmetic: clicking it completes verification and redirects into the app via `redirect_to`, and every call from that point on — as this evidence shows — is already proxied.
+
 ## Risks And Mitigations
 
 - Risk: a proxy bug turns the Worker into an open relay to an attacker-chosen host. Mitigation: origin URL construction is plain string concatenation against a pinned constant, never from the request, unit-tested against protocol-relative and embedded-absolute-URL smuggling attempts.
 - Risk: the public-storage cache serves one caller's credentialed or partial response to a different caller. Mitigation, found during D1 review: that path forwards nothing caller-supplied at all, and only a plain `status === 200` is ever cached.
 - Risk: Cloudflare's zone-level HTTP cache serves cache hits directly, bypassing the Worker's own `caches.default` logic (confirmed live via `wrangler tail` showing zero Worker invocations on a reported cache HIT). Mitigation: the written acceptance criteria (MISS→HIT, no cross-symbol contamination, errors never cached) hold regardless of which layer serves them; the Worker's own cache logic remains correct and becomes the active layer if zone-level caching is ever bypassed for this route. Flagged for the human owner to decide whether a Cache Rule is worth adding later.
 - Risk: the CAS forwarding-address environment inference silently renders a dev address to a prod user, or the reverse, once the ref substring disappears from the backend host. Mitigation: D2 reorders the fallback chain and adds tests proving neither proxy host needs the ref substring.
-- Risk: the two accepted residuals (the OAuth provider-callback leg, the JWT `iss`) are mistaken for defects and someone attempts to "finish the job" by buying the Custom Domain add-on or otherwise routing around them. Mitigation: documented explicitly in this plan, the research report, and `docs/INFRASTRUCTURE.md`/`docs/EXIT-RUNBOOK.md` as accepted, not open.
+- Risk: the three accepted residuals (the OAuth provider-callback leg, the JWT `iss`, the magic-link email verification link) are mistaken for defects and someone attempts to "finish the job" by buying the Custom Domain add-on or otherwise routing around them. Mitigation: documented explicitly in this plan, the research report, and `docs/INFRASTRUCTURE.md`/`docs/EXIT-RUNBOOK.md` as accepted, not open.
 - Risk: D4's production cutover ships a regression to real users. Mitigation: human-gated via the repo's existing tag-release process; D3 proves the exact same configuration on dev first; any regression stops the milestone and opens a correctness interrupt instead of proceeding.
 
 ## Decision Log
@@ -211,6 +215,7 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - 2026-07-17 (D3 review, Codex thread on `docs/INFRASTRUCTURE.md`): Codex flagged that D3's milestone prompt calls for adding **both** the DEV and PROD proxy callback URLs to the Supabase allowlists and Google OAuth clients, but only DEV was done. **Human owner scope amendment:** "happy to defer to later and do all the prod related changes in one go during prod deployment" — the PROD callback/allowlist addition moves from D3 to D4, done together with D4's other production-console changes rather than ahead of them. `docs/INFRASTRUCTURE.md`'s OAuth table reworded so it cannot be read as claiming the PROD side is already done.
 - 2026-07-17 (D3 review, Codex thread on this file): Codex flagged that the first full-session verification pass proved only an *empty* RLS-scoped REST read (`200 []`, no profile row existed for that throwaway user), not an actual row-returning read as the carried D1/D3 acceptance criteria require. Fixed properly rather than amending the acceptance bar down: a second throwaway user got a seeded `user_profile` row (via the Management API, as the fixture setup — not part of what's being verified) and then a `GET /rest/v1/user_profile` through the proxy with that user's own JWT returned exactly that one row. Cleaned up the same way as before.
 - 2026-07-17 (D4): Human owner confirmed the Worker deployment (DNS record + `wrangler deploy --env production`) could proceed separately from and ahead of the batched PROD console changes, since it carries no production traffic until a client is actually pointed at `api.foliolens.in`. Created the placeholder DNS record and deployed; live-verified reachable and correctly routed to PROD Supabase.
+- 2026-07-17 (post-D3-merge): Human owner completed the deferred interactive click-through on both dev web and a native `foliolens-pr` build; DevTools confirmed the full session (including the PKCE token exchange) routes through `api-dev.foliolens.in`. This surfaced a third accepted residual — the magic-link email's verification link stays on `*.supabase.co` — now documented in Assumptions alongside the original two (OAuth provider-callback leg, JWT `iss`).
 
 ## Progress
 
@@ -225,7 +230,7 @@ D3 evidence, part 2 (web cutover, static): after the human owner redeployed the 
 - [x] D3 — PR #283 opened; docs-only diff; validation green (typecheck/lint/100 suites/2019 tests).
 - [x] D3 — row-returning RLS-scoped REST read captured (Codex review finding), closing the carried D1/D3 REST acceptance criterion.
 - [x] D3 — merged as `9045365` (PR #283). Both reviewers converged at `467117b` after two round-1 fixes.
-- [ ] D3/D4 — interactive magic-link / Google sign-in click-through (deferred by owner to program completion; does not block D3's merge or D4 prep, per the confirmed device-evidence waiver).
+- [x] D3/D4 — interactive magic-link / Google sign-in click-through completed by the human owner (2026-07-17, post-merge); both dev web and native (`foliolens-pr`) confirmed routing the full session through `api-dev.foliolens.in`.
 - [x] D4 — `api.foliolens.in` DNS record created; `env.production` Worker deployed and live-verified (reachable, correctly routed to PROD Supabase, zero production traffic yet).
 - [ ] D4 — batched PROD console changes (Google OAuth client, Supabase Auth allowlist, GitHub `_PROD` secrets, EAS `production` env, Vercel prod project) — awaiting the human owner, to be done together per their scope decision.
 - [ ] D4 — ship via `production-release.yml`; smoke-test production web + a production-channel native build.

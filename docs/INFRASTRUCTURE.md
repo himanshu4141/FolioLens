@@ -567,9 +567,10 @@ Keep the build-time default `false` in prod so a missing or misconfigured PostHo
 
 Two OAuth Web Client IDs live in **a single Google Cloud project**. The Supabase
 callback (GoTrue's own external URL, fixed to `*.supabase.co` without the paid
-Custom Domain add-on — an accepted residual of the Backend Domain Proxy program,
-see `docs/plans/backend-domain-proxy.md`) is each client's original Authorized
-Redirect URI. As of D3, the **DEV** client also lists the matching `foliolens.in`
+Custom Domain add-on — one of three accepted residuals of the Backend Domain
+Proxy program, see `docs/plans/backend-domain-proxy.md`; the other two are the
+JWT `iss` claim and the magic-link email's verification link) is each client's
+original Authorized Redirect URI. As of D3, the **DEV** client also lists the matching `foliolens.in`
 proxy host's `/auth/v1/callback`, added defensively so a proxied `authorize`
 request and any redirect back through the proxy are accepted too. The **PROD**
 client's proxy callback URI has **not** been added yet — the human owner deferred
