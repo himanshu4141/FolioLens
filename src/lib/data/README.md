@@ -38,14 +38,15 @@ A few files here wrap an **external HTTP API** rather than a Supabase table.
 They follow the same swap-point + mock-boundary principle but expose typed
 functions instead of `from()`:
 
-- `composition.ts` — the OpenFolio-Data holdings API ([docs](../../../docs/plans/openfolio-holdings-integration.md)).
+- `composition.ts` — the OpenFolio-Data holdings/NAV/health API ([docs](../../../docs/plans/openfolio-holdings-integration.md)).
   Sole app-side owner of the OpenFolio base URL + `X-API-Key` (env
-  `OPENFOLIO_API_BASE` / `OPENFOLIO_API_KEY`); exposes typed `getComposition` /
-  `listComposition`. Tests of consumers mock `@/src/lib/data/composition`, never
-  the network. NOTE: in M1–M4 the API is called server-side from edge functions
-  (Deno can't import `src/`), so the runtime client + mapping live in the Deno
-  twin `supabase/functions/_shared/openfolio.ts`; this file mirrors the same
-  contract for the app boundary.
+  `OPENFOLIO_API_BASE` / `OPENFOLIO_API_KEY`); exposes typed composition, NAV,
+  metadata, scheme-list, and health helpers. Tests of consumers mock
+  `@/src/lib/data/composition`, never the network. NOTE: the API is normally
+  called server-side from edge functions (Deno can't import `src/`), so the
+  runtime client + mapping live in the Deno twin
+  `supabase/functions/_shared/openfolio.ts`; this file mirrors the same contract
+  for the app boundary.
 
 ## Tests
 

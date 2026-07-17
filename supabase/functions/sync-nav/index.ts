@@ -20,7 +20,11 @@ import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
-import { buildSchemeLatestMap, SINCE_MAP_PAGE_SIZE } from '../_shared/nav-since-map.ts';
+import {
+  buildSchemeLatestMap,
+  evaluateOpenFolioNavFreshnessGate,
+  SINCE_MAP_PAGE_SIZE,
+} from '../_shared/nav-since-map.ts';
 
 const BATCH_SIZE = 500;
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
@@ -32,6 +36,14 @@ const OPENFOLIO_CONCURRENCY = 5;
 // Look back 45 days to find per-scheme latest nav_date — covers month-end gaps
 // and ensures we catch any missed windows even with holidays.
 const SINCE_LOOKBACK_DAYS = 45;
+
+function summarizeFreshnessGate(
+  gate: ReturnType<typeof evaluateOpenFolioNavFreshnessGate> | null,
+) {
+  if (gate === null) return null;
+  const { syncSchemeCodes: _syncSchemeCodes, ...summary } = gate;
+  return summary;
+}
 
 Deno.serve(async (req) => {
   const startedAt = Date.now();
@@ -115,6 +127,81 @@ Deno.serve(async (req) => {
   const openfolio = openfolioCreds
     ? createOpenFolioClient({ ...openfolioCreds, timeoutMs: FETCH_TIMEOUT_MS })
     : null;
+
+  // ── Cheap upstream freshness gate ─────────────────────────────────────────
+  // OpenFolio publishes its global latest NAV date on /health. If every active
+  // held scheme is already current through that date, skip the per-scheme
+  // OpenFolio fanout entirely. Missing or lagging schemes fall through to the
+  // normal source ladder, so cold starts and partial gaps still self-heal.
+  let upstreamNavLatest: string | null = null;
+  let freshnessGate: ReturnType<typeof evaluateOpenFolioNavFreshnessGate> | null = null;
+  let schemeCodesToSync = schemeCodes;
+  if (openfolio) {
+    try {
+      const health = await openfolio.getHealth();
+      upstreamNavLatest = health.db_nav_latest ?? null;
+      freshnessGate = evaluateOpenFolioNavFreshnessGate(
+        schemeCodes,
+        schemeLatest,
+        upstreamNavLatest,
+      );
+      console.log(
+        '[sync-nav] freshness gate: skip=%s upstream=%s local_min=%s missing=%d stale=%d current=%d sync=%d reason=%s',
+        freshnessGate.shouldSkip,
+        freshnessGate.upstreamLatestDate ?? 'unknown',
+        freshnessGate.localMinLatestDate ?? 'unknown',
+        freshnessGate.missingSchemeCount,
+        freshnessGate.staleSchemeCount,
+        freshnessGate.currentSchemeCount,
+        freshnessGate.syncSchemeCount,
+        freshnessGate.reason,
+      );
+
+      if (freshnessGate.shouldSkip) {
+        const elapsedMs = Date.now() - startedAt;
+        await trackServerEventAwait(
+          'sync_skipped',
+          {
+            job: 'sync-nav',
+            reason: 'openfolio_nav_freshness_gate',
+            active_schemes: schemeCodes.length,
+            schemes_processed: 0,
+            openfolio_schemes: 0,
+            mfapi_schemes: 0,
+            rows_upserted: 0,
+            errors_count: 0,
+            upstream_nav_latest: freshnessGate.upstreamLatestDate,
+            local_min_nav_date: freshnessGate.localMinLatestDate,
+            freshness_gate_current_schemes: freshnessGate.currentSchemeCount,
+            freshness_gate_sync_schemes: freshnessGate.syncSchemeCount,
+            elapsed_ms: elapsedMs,
+          },
+          'system:sync-nav',
+        );
+
+        return json({
+          success: true,
+          skipped: true,
+          skipReason: freshnessGate.reason,
+          activeSchemes: schemeCodes.length,
+          schemesProcessed: 0,
+          openfolioSchemes: 0,
+          mfapiSchemes: 0,
+          navRowsUpserted: 0,
+          upstreamNavLatest: freshnessGate.upstreamLatestDate,
+          localMinNavDate: freshnessGate.localMinLatestDate,
+          freshnessGate: summarizeFreshnessGate(freshnessGate),
+          errors: [],
+        });
+      }
+      schemeCodesToSync = freshnessGate.syncSchemeCodes;
+    } catch (err) {
+      console.warn(
+        '[sync-nav] OpenFolio health gate failed (%s) — continuing per-scheme sync',
+        (err as Error).message,
+      );
+    }
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -269,8 +356,8 @@ Deno.serve(async (req) => {
 
   // Rate-limit OpenFolio fetches — 35 parallel saturates the upstream server.
   const results: PromiseSettledResult<Awaited<ReturnType<typeof syncScheme>>>[] = [];
-  for (let i = 0; i < schemeCodes.length; i += OPENFOLIO_CONCURRENCY) {
-    const batch = schemeCodes.slice(i, i + OPENFOLIO_CONCURRENCY);
+  for (let i = 0; i < schemeCodesToSync.length; i += OPENFOLIO_CONCURRENCY) {
+    const batch = schemeCodesToSync.slice(i, i + OPENFOLIO_CONCURRENCY);
     const batchResults = await Promise.allSettled(batch.map((code) => syncScheme(code)));
     results.push(...batchResults);
   }
@@ -293,8 +380,9 @@ Deno.serve(async (req) => {
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    '[sync-nav] done — schemes=%d (openfolio=%d mfapi=%d) rows=%d errors=%d elapsed_ms=%d',
+    '[sync-nav] done — active_schemes=%d synced_schemes=%d (openfolio=%d mfapi=%d) rows=%d errors=%d elapsed_ms=%d',
     schemeCodes.length,
+    schemeCodesToSync.length,
     openfolioSchemes,
     mfapiSchemes,
     totalUpserted,
@@ -306,11 +394,17 @@ Deno.serve(async (req) => {
     errors.length > 0 && totalUpserted === 0 ? 'sync_failed' : 'sync_completed',
     {
       job: 'sync-nav',
-      schemes_processed: schemeCodes.length,
+      active_schemes: schemeCodes.length,
+      schemes_processed: schemeCodesToSync.length,
       openfolio_schemes: openfolioSchemes,
       mfapi_schemes: mfapiSchemes,
       rows_upserted: totalUpserted,
       errors_count: errors.length,
+      upstream_nav_latest: upstreamNavLatest,
+      freshness_gate_missing_schemes: freshnessGate?.missingSchemeCount ?? null,
+      freshness_gate_stale_schemes: freshnessGate?.staleSchemeCount ?? null,
+      freshness_gate_current_schemes: freshnessGate?.currentSchemeCount ?? null,
+      freshness_gate_sync_schemes: freshnessGate?.syncSchemeCount ?? null,
       elapsed_ms: elapsedMs,
     },
     'system:sync-nav',
@@ -318,10 +412,13 @@ Deno.serve(async (req) => {
 
   return json({
     success: true,
-    schemesProcessed: schemeCodes.length,
+    activeSchemes: schemeCodes.length,
+    schemesProcessed: schemeCodesToSync.length,
     openfolioSchemes,
     mfapiSchemes,
     navRowsUpserted: totalUpserted,
+    upstreamNavLatest,
+    freshnessGate: summarizeFreshnessGate(freshnessGate),
     errors,
   });
 });

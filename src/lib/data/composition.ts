@@ -338,6 +338,22 @@ export interface ListSchemesArgs {
   page?: number;
   pageSize?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Health API types
+// GET /health → OpenFolioHealth
+// ---------------------------------------------------------------------------
+
+export interface OpenFolioHealth {
+  status?: string;
+  db_schemes?: number;
+  latest_disclosure_date?: string | null;
+  db_nav_rows?: number;
+  db_nav_latest?: string | null;
+  db_nav_status?: string | null;
+  db_build_date?: string | null;
+  db_freshness?: string | null;
+}
 // ---------------------------------------------------------------------------
 // OpenFolio credentials + request paths
 // ---------------------------------------------------------------------------
@@ -440,6 +456,10 @@ export function openFolioSchemesPath(args: ListSchemesArgs = {}): string {
     page_size: args.pageSize,
   })}`;
 }
+
+export function openFolioHealthPath(): string {
+  return '/health';
+}
 // END OPENFOLIO SHARED CONTRACT (guarded — see twin-contract.test.ts)
 
 function resolveCredentials(): OpenFolioCredentials {
@@ -494,6 +514,12 @@ export async function listNav(args: ListNavArgs = {}): Promise<NavBulkPage> {
   return body as NavBulkPage;
 }
 
+/** API/data freshness summary. */
+export async function getHealth(): Promise<OpenFolioHealth> {
+  const { body } = await request<OpenFolioHealth>(openFolioHealthPath());
+  return body as OpenFolioHealth;
+}
+
 /** Full metadata (metrics + B1 fields) for one AMFI plan. Null on 404. */
 export async function getMetadata(schemeCode: number): Promise<FundMetadata | null> {
   const { body } = await request<FundMetadata>(openFolioMetadataPath(schemeCode));
@@ -521,6 +547,7 @@ export const compositionApi = {
   getNavSeries,
   getNavLatest,
   listNav,
+  getHealth,
   getMetadata,
   listMetadata,
   listSchemes,
