@@ -19,11 +19,17 @@ for its environment. It is **not** a rewrite of the app's data/auth/storage laye
 funnels every backend hostname through one build-time variable
 (`EXPO_PUBLIC_SUPABASE_URL`), auth is bearer-token rather than cookie-based, and
 Realtime is unused — so the client-side change is small and the real work is
-standing up and verifying the edge proxy. Two residuals cannot be removed by a
+standing up and verifying the edge proxy. Three residuals cannot be removed by a
 plain proxy and are accepted, documented, and out of the app's own request path:
-the Google→GoTrue OAuth **provider callback leg** and the JWT `iss` claim, both of
-which stay on `*.supabase.co` on the hosted plan without Supabase's paid Custom
-Domain feature (explicitly declined for cost).
+the Google→GoTrue OAuth **provider callback leg**, the JWT `iss` claim, and the
+**magic-link email's verification link** (surfaced during D3's real click-through),
+all of which stay on `*.supabase.co` on the hosted plan without Supabase's paid
+Custom Domain feature (explicitly declined for cost). D5 field verification found
+and fixed a fourth, more exposed issue that was **not** accepted as a residual: the
+origin's response headers (`sb-project-ref`, `sb-gateway-*`, `x-served-by`, a
+`Domain=supabase.co` `Set-Cookie`) named the vendor and exact project ref on every
+response, needing no decode step or one-time flow — see the Program exit criterion
+and Amendments sections below.
 
 **Motivation.** The driver is **user trust in the website**, not security: a visitor
 who opens DevTools on `app.foliolens.in` should see backend calls to a first-party
@@ -76,13 +82,14 @@ native builds, not a local run.
 | 2 | Exactly four client-facing surfaces are in scope; Realtime is unused (no WebSocket proxy needed) | P0 | Confirmed | Bounds the proxy's path map precisely |
 | 3 | Dev/prod inference and the CAS inbox address key off the `*.supabase.co` project-ref substring | P0 correctness | Confirmed | Silently mislabels prod as dev once the base host changes |
 | 4 | Auth is bearer-token PKCE, not cookie-based — no cookie-domain proxy problem | P0 simplifier | Confirmed | Removes the hardest class of reverse-proxy bug up front |
-| 5 | The Google OAuth provider-callback leg and JWT `iss` stay on `supabase.co` with a plain proxy | P1 residual | Strong | Sets honest expectations; defines the accepted residual |
+| 5 | The Google OAuth provider-callback leg, the JWT `iss`, and the magic-link email's verification link stay on `supabase.co` with a plain proxy | P1 residual | Strong | Sets honest expectations; defines the three accepted residuals (third found during D3's real click-through) |
 | 6 | The public storage snapshot depends on CDN stale-while-revalidate; the proxy must preserve edge caching | P1 | Confirmed | Prevents a latency regression on a hot read |
 | 7 | Server-to-server backend calls are out of scope and must stay direct | P1 scope | Confirmed | Avoids re-routing non-user-visible traffic through a public hop |
 | 8 | The origin routes by hostname; the proxy must rewrite to `<ref>.supabase.co`, not forward the public Host | P0 | Strong | The single most likely way to break routing |
 | 9 | This is presentation / exit-readiness, not a security boundary | P2 | Confirmed | Docs must not overstate what the proxy protects |
 | 10 | DNS prerequisite: confirm the Cloudflare zone controls `api.foliolens.in` and bind the Worker route | P2 prerequisite | Candidate | Substrate is Cloudflare (confirmed); verify zone control in D1 |
 | 11 | Free-tier edge capacity/limits | P2 | Candidate | Beta volume is low; monitor after cutover |
+| 12 | Origin response headers (`sb-project-ref`, `sb-gateway-*`, `x-served-by`, a `Domain=supabase.co` `Set-Cookie`) named the vendor + exact project ref on every response, unstripped | P1 defect (found D5, fixed) | Confirmed | More exposed than finding 5's residuals — no decode step, no one-time flow, visible in DevTools' default Headers view on every ordinary request |
 
 ---
 
@@ -252,11 +259,11 @@ through the proxy like any other.
 
 ---
 
-## 5. The Google OAuth callback leg and JWT `iss` stay on `supabase.co` — P1 (accepted residual)
+## 5. The Google OAuth callback leg, the JWT `iss`, and the magic-link email link stay on `supabase.co` — P1 (accepted residuals)
 
 **Status: Strong. This is the honest limit of a plain proxy; document and accept it.**
 
-Two things a plain host proxy **cannot** move to `foliolens.in` on the hosted plan:
+Three things a plain host proxy **cannot** move to `foliolens.in` on the hosted plan:
 
 1. **The Google→GoTrue provider callback.** GoTrue's external URL — the
    `redirect_uri` it hands Google, registered in Google Cloud Console as
@@ -269,18 +276,36 @@ Two things a plain host proxy **cannot** move to `foliolens.in` on the hosted pl
    `iss = https://<ref>.supabase.co/auth/v1`. The client never *requests* the `iss`
    URL, and neither RLS/`auth.uid()` nor supabase-js validate `iss` against the base
    URL, so proxying works — but a decoded bearer token still names the project.
+3. **The magic-link email's verification link** (found during D3's real
+   click-through, 2026-07-17). GoTrue builds the link from its own
+   `GOTRUE_API_EXTERNAL_URL`, fixed to `*.supabase.co` the same way as the OAuth
+   callback. Cosmetic only: clicking it completes verification and redirects into
+   the app via `redirect_to`, and every call from that point on is already proxied.
 
-Neither is an *app-originated request URL* visible in the normal Network panel of
-day-to-day use, so both are compatible with the stated goal ("backend calls the app
-makes originate from `foliolens.in`"). They are the price of declining the paid
-Custom Domain add-on and must be recorded as known residuals.
+None of the three is an *app-originated request URL* visible in the normal Network
+panel of day-to-day use, so all three are compatible with the stated goal ("backend
+calls the app makes originate from `foliolens.in`"). They are the price of declining
+the paid Custom Domain add-on and must be recorded as known residuals.
 
 **Why this is acceptable (human-owner rationale).** The program's driver is user
 trust in the clean, everyday first-party request view, not hiding the vendor. Auth is
-a **one-time flow per sign-in**: the `supabase.co` callback leg appears only during
-that transient hop, not in the steady-state traffic a curious visitor sees, and the
-`iss` claim surfaces only if someone deliberately decodes a bearer token. Both are
-accepted as residuals rather than reasons to buy the Custom Domain add-on.
+a **one-time flow per sign-in**: the `supabase.co` callback leg and the magic-link
+email link appear only during that transient flow, not in the steady-state traffic a
+curious visitor sees, and the `iss` claim surfaces only if someone deliberately
+decodes a bearer token. All three are accepted as residuals rather than reasons to
+buy the Custom Domain add-on.
+
+**Not a residual — a fixed defect (D5 field verification, 2026-07-17).** A fourth
+issue was found that does **not** belong on this list: the Supabase origin's
+*response headers* (`sb-project-ref` — the literal project ref — `sb-gateway-mode`,
+`sb-gateway-version`, `x-served-by: supabase-edge-runtime`, `x-sb-edge-region`,
+`x-deno-execution-id`, and a `Set-Cookie` scoped to `Domain=supabase.co`) were
+forwarded unstripped on **every** mapped response, on both hosts. Unlike the three
+residuals above, this needed no decode step and no one-time flow — it was visible in
+DevTools' default Headers view on every ordinary request, which is a materially
+worse exposure than any of them and was not something the program had decided to
+accept. It was fixable, so it was fixed rather than added as a fourth residual: see
+finding 12 and the Amendments section.
 
 ### Required fix
 
@@ -292,14 +317,14 @@ accepted as residuals rather than reasons to buy the Custom Domain add-on.
    the API. See `src/utils/appScheme.ts:20-24`, `app/auth/index.tsx:153-160`.)
 2. Verify magic-link sign-in and Google sign-in complete end-to-end with the base
    pointed at the proxy, on both web and a native preview build.
-3. Document both residuals in `docs/INFRASTRUCTURE.md` and this report.
+3. Document all three residuals in `docs/INFRASTRUCTURE.md` and this report.
 
 ### Acceptance criteria
 
 - Magic-link and Google sign-in both succeed with `EXPO_PUBLIC_SUPABASE_URL` set to
   the proxy host (D3 evidence, native at an exact SHA).
-- The two residuals (provider callback leg; `iss`) are written down as accepted, not
-  silently shipped.
+- All three residuals (provider callback leg; `iss`; magic-link email link) are
+  written down as accepted, not silently shipped.
 
 ---
 
@@ -417,7 +442,7 @@ path continuously, so the prod cutover is not the first real use.
 
 - `docs/INFRASTRUCTURE.md` and `docs/EXIT-RUNBOOK.md` describe the proxy as a
   transport/presentation layer, explicitly *not* a security control, and record the
-  two residuals from finding 5.
+  three residuals from finding 5.
 
 ---
 
@@ -708,8 +733,10 @@ proving the exit criterion, attached to the milestone PR.
 ## What not to do
 
 - **Do not purchase or assume the Supabase Custom Domain add-on.** The human owner
-  declined it. The plan is a proxy on the free tier; the two residuals in finding 5
-  are the accepted cost of that decision, not defects to "fix" by upgrading.
+  declined it. The plan is a proxy on the free tier; the three residuals in finding 5
+  are the accepted cost of that decision, not defects to "fix" by upgrading. (The
+  response-header leak found in D5 — finding 12 — is a different thing: it was
+  fixable without the add-on, so it was fixed rather than added as a fourth residual.)
 - **Do not proxy Realtime or add WebSocket support.** Realtime is unused and must
   stay that way (`docs/EXIT-RUNBOOK.md`). The proxy is HTTP request/response only.
 - **Do not build an open relay.** The origin is a pinned constant; never derive the
@@ -739,8 +766,9 @@ on the **production** surfaces, field evidence closes the reported symptom:
   (otp/token/authorize), Edge Function invokes including the CAS PDF upload, and the
   public index snapshot GET — targets a `*.foliolens.in` host.
 - **Accepted exceptions, listed explicitly:** the Google→GoTrue OAuth **provider
-  callback leg** and the JWT `iss` claim remain on `*.supabase.co` (finding 5); these
-  are documented residuals of the free-tier proxy approach, not failures.
+  callback leg**, the JWT `iss` claim, and the magic-link email's verification link
+  remain on `*.supabase.co` (finding 5); these are documented residuals of the
+  free-tier proxy approach, not failures.
 - **Channel/period:** captured on the live production web + native builds after D4
   ships; re-checked once after the first production auth + CAS import by a real
   session to confirm no user-facing regression.
@@ -748,6 +776,66 @@ on the **production** surfaces, field evidence closes the reported symptom:
 The control PR merges (report + final tracking table) only after this criterion is
 evaluated and its outcome — met, or explicitly accepted as partially met with the
 listed residuals — is recorded in this report.
+
+### Evaluation (D5, 2026-07-17)
+
+**Outcome: met on the request-URL dimension the reported symptom was actually
+about, with one dimension explicitly accepted as partial.**
+
+- **Request-URL dimension — met.** Live verification against production (curl, not
+  a browser — see the sandbox note below) confirmed all four mapped surfaces
+  (`/auth/v1`, `/rest/v1`, `/storage/v1`, `/functions/v1`) on `api.foliolens.in`
+  reach genuine PROD Supabase responses rather than the proxy's own `404`; an
+  unmapped path (`/admin`) correctly 404s; and the public index-snapshot storage
+  GET — `storage/v1/object/public/static-snapshots/index/nifty500tri.json`, the
+  exact object this report's opening "Reported symptom" cites — showed
+  `cf-cache-status: MISS` then `HIT` with a byte-identical body. `src/hooks/
+  useIndexSnapshot.ts` and `src/utils/casPdfUpload.ts` were re-read and confirmed
+  to derive their request URL solely from `EXPO_PUBLIC_SUPABASE_URL`, so the CAS
+  PDF upload and the public index snapshot are covered by the same single
+  choke-point evidence D4 already used, without a separate capture. The originally
+  reported symptom — a raw `ohcaaioabjvzewfysqgh.supabase.co` host visible in
+  DevTools — is closed: D4 already confirmed zero raw-host occurrences in the live
+  web bundle, and D5's live requests confirm the *server side* of that same claim
+  (the proxy, not a stale bundle assumption, is what's actually answering).
+- **Accepted exceptions — as documented, unchanged in count or shape.** All three
+  residuals in finding 5 are exactly as specified: the OAuth callback leg, the JWT
+  `iss`, and the magic-link email link. No fourth residual was added to this list —
+  see the response-header finding below, which was fixed rather than accepted.
+- **Response-header dimension — a defect found and fixed, not a residual, and not
+  part of this criterion's original wording, but material to its spirit.** D5 found
+  that every mapped response forwarded `sb-project-ref` (the literal project ref)
+  and related vendor-identifying headers unstripped, on both hosts — arguably a
+  more direct violation of "should see a first-party host, not a raw vendor host"
+  than any of the three accepted residuals, since it required no decode step or
+  one-time flow. This was fixed (`stripUpstreamIdentifyingHeaders`,
+  `workers/api-proxy/src/headers.ts`), unit-tested, and deployed + live-verified on
+  `api-dev.foliolens.in`. **The `api.foliolens.in` redeploy of this fix is the one
+  open item** — pending a Cloudflare API token for the execution sandbox (the human
+  owner is travelling and confirmed availability "in a few hours"); not a
+  regression, since the leak already existed unnoticed since D4 shipped, but the
+  exit criterion is not *fully* closed until it deploys. Tracked in PR #286 and
+  control PR #280.
+- **Channel/period — partially executed.** The "re-checked once after a real
+  production auth + CAS import by an actual user session" clause could not be
+  executed as literally written by the executor: this execution sandbox cannot
+  drive a real browser (Playwright/Chromium HTTPS requests fail here, the same
+  limitation recorded against D3) and has no physical device for a native build.
+  What substitutes: (a) live `curl` evidence against every mapped PROD path,
+  equivalent in what it proves about server-side routing to a DevTools capture,
+  just without the browser chrome; (b) the human owner's own real interactive
+  smoke test, already performed once during D4 (sign-in + portfolio load on both
+  prod web and a production-channel native build, both pass) — before this
+  milestone's header fix existed. A second owner-performed look at DevTools, after
+  the `api.foliolens.in` redeploy, would additionally show the header leak gone;
+  offered as optional confirmation, not held as a blocker on the same evidentiary
+  bar this program has applied to D3's and D4's owner-performed steps throughout.
+
+**Net:** the program's actual driver — a technically curious visitor opening
+DevTools and seeing `foliolens.in`, not `supabase.co`, in the request URLs of
+day-to-day traffic — is achieved and verified. The one remaining action item is
+operational (redeploy a header-hygiene fix to prod) rather than a gap in the
+program's design or a new unresolved finding.
 
 ---
 
@@ -794,3 +882,40 @@ Decisions taken by the human owner while reviewing this report, before program s
   (GoTrue config returned, RLS enforcement on an anon read, a live `/functions/v1`
   invoke, storage MISS→HIT caching) and must still fix the two D1-review cache-path
   defects — credential/`Range` stripping and 206-never-cached — before it converges.
+
+## Amendments (execution phase, D1–D5)
+
+This report was written before program execution and, except for the research/
+review-phase amendments above, was not updated as D1–D4 actually shipped — the
+live, detailed record of what happened lives in `docs/plans/backend-domain-proxy.md`
+(ExecPlan Validation/Decision Log/Progress) and control PR #280's tracking table and
+ledger. This section is the short cross-reference, not a duplicate, so this report's
+residual count and exit-criterion evaluation above are self-consistent with what
+actually shipped.
+
+- **D1 (merged `94eda60`, PR #281):** built and deployed as planned; the human owner
+  additionally required a PLANS.md ExecPlan before merging (a change of this size),
+  which became `docs/plans/backend-domain-proxy.md` and now governs D3–D5.
+- **D2 (merged `252e8c0`, PR #282):** hardened `getInboxEnvironment()` and added the
+  no-hardcoded-host guard test, as planned. No deviations.
+- **D3 (merged `9045365`, PR #283):** DEV cutover, plus D1's deferred full-session
+  verification (closed with a genuine row-returning RLS-scoped read after a Codex
+  review finding that the first pass only proved an empty result). The owner
+  deferred adding the PROD OAuth callback/allowlist entries from D3 to D4 ("do all
+  the prod related changes in one go during prod deployment") — a scope amendment,
+  not a defect. The owner's later real interactive click-through (post-merge)
+  surfaced the **third residual**: the magic-link email's verification link stays on
+  `*.supabase.co`. Finding 5 and this report's intro/executive-summary/"What not to
+  do" sections have been updated above to reflect three residuals, not two.
+- **D4 (merged `3fdd278`, PR #284):** the human owner batched the five PROD
+  console/env changes, then tagged and shipped `v0.0.9` directly — a real production
+  cutover, independently verified (live bundle: zero raw-host occurrences, four
+  `api.foliolens.in` occurrences) — superseding a briefly-relayed round-1 proposal to
+  rescope D4 to prep-only.
+- **D5 (in progress, PR #286):** live field verification against production (see the
+  Evaluation subsection under "Program exit criterion" above) plus the fourth,
+  **non-residual** finding — Supabase-identifying response headers forwarded
+  unstripped on every mapped response (finding 12) — found, fixed, unit-tested, and
+  deployed to `api-dev.foliolens.in`. The `api.foliolens.in` redeploy of that fix is
+  the one item still open, gated on Cloudflare credentials for the execution
+  sandbox, not on any further design or review decision.
