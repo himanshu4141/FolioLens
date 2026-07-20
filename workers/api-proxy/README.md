@@ -78,8 +78,26 @@ special Jest environment is needed).
 
 - No WebSocket / Realtime support — the app doesn't use Realtime.
 - No open relay — any path outside the four mapped prefixes 404s.
-- No cookie synthesis or stripping — auth is bearer-token PKCE, not
-  cookie-based, so there's nothing to rewrite.
+- No cookie synthesis or rewriting on the request side — auth is
+  bearer-token PKCE, not cookie-based, so the client never sends one. Any
+  `Set-Cookie` the origin returns (Cloudflare's own bot-management cookie
+  for the origin's zone) is dropped on the way out, since the app never
+  reads a cookie from the proxy host either (see "Response header hygiene"
+  below).
 - No caching of anything except public storage `GET` responses, and only
   successful (`res.ok`) ones — a miss/404 is never cached, so the
   paginated-fallback client path always sees a live origin response.
+
+## Response header hygiene
+
+Every mapped surface (auth/rest/storage/functions) returns Supabase-identifying
+response headers on every request — `sb-project-ref` (the exact project ref),
+`sb-gateway-mode`/`sb-gateway-version`, `x-served-by: supabase-edge-runtime`,
+`x-sb-edge-region`, `x-deno-execution-id`, and a `Set-Cookie` scoped to
+`Domain=supabase.co`. Found during D5 field verification: unlike the three
+documented residuals (OAuth callback leg, JWT `iss`, magic-link email link),
+these are visible in DevTools' default Headers view with no decoding step, on
+literally every response — defeating the program's presentation goal.
+`stripUpstreamIdentifyingHeaders` (`src/headers.ts`, wired into
+`applyCorsHeaders`) removes all of them before the response reaches the
+client, on both the live-fetch and cached-storage-hit paths.

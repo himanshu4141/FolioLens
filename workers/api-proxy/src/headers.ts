@@ -3,6 +3,8 @@ import {
   CORS_DEFAULT_ALLOWED_HEADERS,
   CORS_MAX_AGE_SECONDS,
   HOP_BY_HOP_REQUEST_HEADERS,
+  STRIP_SET_COOKIE,
+  UPSTREAM_IDENTIFYING_RESPONSE_HEADERS,
 } from './config';
 
 /**
@@ -57,12 +59,33 @@ export function buildPreflightHeaders(requestHeaders: Headers): Headers {
 }
 
 /**
+ * Removes response headers that name the Supabase origin directly — the
+ * exact project ref (`sb-project-ref`), gateway/runtime identifiers, and any
+ * `Set-Cookie` (Cloudflare's own bot-management cookie for the origin's
+ * zone, scoped to `Domain=supabase.co`; the app never reads a cookie from
+ * the proxy host since auth is bearer-token PKCE). Every mapped surface
+ * (auth/rest/storage/functions) sets these on every response, so without
+ * this step a visitor never even needs to decode a JWT to see the raw
+ * vendor + project ref — it's in DevTools' default Headers view.
+ */
+export function stripUpstreamIdentifyingHeaders(headers: Headers): Headers {
+  const stripped = new Headers(headers);
+  for (const name of UPSTREAM_IDENTIFYING_RESPONSE_HEADERS) {
+    stripped.delete(name);
+  }
+  if (STRIP_SET_COOKIE) {
+    stripped.delete('set-cookie');
+  }
+  return stripped;
+}
+
+/**
  * Ensures the actual (non-preflight) response carries a permissive
  * Access-Control-Allow-Origin regardless of what the origin returned, so
  * the web app can read the response cross-origin from `app.foliolens.in`.
  */
 export function applyCorsHeaders(response: Response): Response {
-  const headers = new Headers(response.headers);
+  const headers = stripUpstreamIdentifyingHeaders(response.headers);
   headers.set('Access-Control-Allow-Origin', '*');
   // Marker proving this exact response was produced by this Worker (as
   // opposed to Cloudflare's zone-level HTTP cache serving a copy without

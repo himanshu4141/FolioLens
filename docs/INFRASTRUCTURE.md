@@ -37,6 +37,61 @@ The web app at `https://app.foliolens.in` runs the same Expo Router code, export
 | `hello@foliolens.in`, `support@foliolens.in`, `privacy@foliolens.in`, `security@foliolens.in` | Resend Inbound → Vercel router | Human-facing aliases forwarded to the owner Gmail |
 | `noreply@foliolens.in` | Resend SMTP / API (PROD) | Magic-link + transactional email — prod |
 | `noreply-dev@foliolens.in` | Resend SMTP / API (DEV) | Magic-link + transactional email — dev |
+| `api.foliolens.in` | Cloudflare Worker (`workers/api-proxy`) → PROD Supabase | First-party reverse proxy for every client-originated backend call (native + web): `/auth/v1`, `/rest/v1`, `/storage/v1`, `/functions/v1` |
+| `api-dev.foliolens.in` | Cloudflare Worker (`workers/api-proxy`) → DEV Supabase | Same proxy, DEV origin — every DEV-Supabase-backed build (dev, `preview-pr`, `preview-main`, Vercel dev + PR previews) |
+
+
+All client-originated backend traffic (native + web) is single-sourced from
+`EXPO_PUBLIC_SUPABASE_URL`, which is set to the proxy host above rather than
+the raw `*.supabase.co` project host — see "Backend Domain Proxy" below.
+
+### Backend Domain Proxy
+
+Both `api.foliolens.in` and `api-dev.foliolens.in` are the same Cloudflare
+Worker (`workers/api-proxy/`), deployed once per environment
+(`wrangler deploy --env dev` / `--env production`), mapping exactly the four
+client-facing Supabase path prefixes to a pinned origin — plain string
+concatenation against a fixed `SUPABASE_ORIGIN` binding, never derived from
+the inbound request, so it cannot become an open relay. Anything outside
+those four prefixes 404s before the origin is ever contacted.
+
+**Not a security boundary.** This proxy only changes the hostname the app
+talks to — a presentation/trust change, not a new control. Row-Level
+Security and the publishable/anon key remain the only enforcement point; the
+Supabase project stays reachable at its raw `*.supabase.co` host regardless.
+
+**Server-to-server calls stay direct, on purpose.** The Resend inbound
+router calling `cas-webhook-resend`, every pg_cron/pg_net job, and
+`universe-backfill.yml` never appear in a user's browser or app, so they
+keep calling `*.supabase.co` directly rather than adding a hop through the
+public proxy for no user-facing benefit (see `SUPABASE_DEV_FUNCTION_URL` /
+`SUPABASE_PROD_FUNCTION_URL` in `.env.example`).
+
+**Three accepted residuals** (a plain host proxy on the Supabase free tier
+cannot remove any of these without the paid Custom Domain add-on, which is
+declined for cost — see `docs/plans/backend-domain-proxy.md` Assumptions):
+the Google→GoTrue OAuth **provider callback leg** (registered with Google as
+`https://<project-ref>.supabase.co/auth/v1/callback`), the JWT **`iss`**
+claim (`https://<project-ref>.supabase.co/auth/v1`), and the **magic-link
+email's verification link** (built by GoTrue's own
+`GOTRUE_API_EXTERNAL_URL`). None of the three is an app-originated request
+URL visible in day-to-day DevTools use — each surfaces only during a
+one-time auth flow or a deliberate JWT decode.
+
+**Response headers are scrubbed of vendor identity** (added during D5 field
+verification): the Supabase origin sets `sb-project-ref` (the literal
+project ref), `sb-gateway-mode`/`sb-gateway-version`, `x-served-by`,
+`x-sb-edge-region`, `x-deno-execution-id`, and a `Set-Cookie` scoped to
+`Domain=supabase.co` on every response — visible in DevTools' default
+Headers view with no decoding step, unlike the three residuals above. The
+Worker strips all of them (`stripUpstreamIdentifyingHeaders` in
+`workers/api-proxy/src/headers.ts`) before the response reaches the client.
+
+**Caching.** The public storage GET path (index-history snapshots) is
+edge-cached by object path alone, forwarding nothing caller-supplied
+(no `Authorization`, `apikey`, `Cookie`, `Range`, or conditional-request
+headers), and only a plain `status === 200` response is ever cached — never
+`206 Partial Content` or an error.
 
 
 ## The two Supabase projects
@@ -636,8 +691,9 @@ All secrets are stored in **GitHub Actions repository secrets**.
 | `SUPABASE_ACCESS_TOKEN` | All Supabase workflows | Personal access token, scoped to both projects |
 | `SUPABASE_PROJECT_REF_DEV` | dev deploy / sync workflows | `imkgazlrxtlhkfptkzjc` |
 | `SUPABASE_PROJECT_REF_PROD` | prod deploy / sync workflows | `ohcaaioabjvzewfysqgh` |
-| `EXPO_PUBLIC_SUPABASE_URL_DEV` | preview / main / dev workflows | DEV Supabase URL |
-| `EXPO_PUBLIC_SUPABASE_URL_PROD` | production-release | PROD Supabase URL |
+| `EXPO_PUBLIC_SUPABASE_URL_DEV` | preview / main / dev workflows | `https://api-dev.foliolens.in` (Backend Domain Proxy → DEV Supabase; not the raw project host) |
+| `EXPO_PUBLIC_SUPABASE_URL_PROD` | production-release | `https://api.foliolens.in` (Backend Domain Proxy → PROD Supabase; not the raw project host) |
+| `EXPO_PUBLIC_INBOUND_ENV` | EAS/Vercel environment variable, not a GitHub secret | `dev` / `prod` — explicit environment signal for the CAS forwarding-address local-part, since a proxy host has no `supabase.co` project-ref substring to infer it from (see `.env.example`) |
 | `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY_DEV` / `_PROD` | same as above | anon keys |
 | `EXPO_PUBLIC_APP_BASE_URL_DEV` / `_PROD` | same as above | `foliolens-dev.vercel.app` / `app.foliolens.in` |
 | `SUPABASE_SECRET_KEY_DEV` / `_PROD` | `universe-backfill.yml` | Service-role keys for server-to-server access |
@@ -801,15 +857,16 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 
 | Where | What |
 |-------|------|
-| Supabase Dashboard → DEV → Auth → URL Configuration | Site URL + redirect URL list (one entry per native scheme + Vercel preview wildcard) |
-| Supabase Dashboard → PROD → Auth → URL Configuration | Site URL + redirect URL list (only `foliolens://` and `app.foliolens.in/**`) |
+| Supabase Dashboard → DEV → Auth → URL Configuration | Site URL + redirect URL list (one entry per native scheme + Vercel preview wildcard), plus `https://api-dev.foliolens.in/auth/v1/callback` (Backend Domain Proxy, added D3) |
+| Supabase Dashboard → PROD → Auth → URL Configuration | Site URL + redirect URL list (only `foliolens://` and `app.foliolens.in/**`), plus `https://api.foliolens.in/auth/v1/callback` (Backend Domain Proxy, added D4) |
 | Supabase Dashboard → both projects → Auth → Email Templates → Magic Link | Paste the contents of `supabase/templates/magic_link.html`; set Subject |
 | Supabase Dashboard → both projects → Auth → Providers → Google | Enable, paste the matching Google Cloud OAuth Client ID + Secret |
 | Supabase Dashboard → both projects → Functions → Secrets | Set per-project secrets from the table above |
 | Resend Dashboard → Domains → `foliolens.in` | DKIM, SPF, DMARC verified; sender addresses configured |
 | Resend Dashboard → Receiving / Webhooks | Enable receiving on `foliolens.in`, point `email.received` at `https://app.foliolens.in/api/resend-inbound-router`, copy the Svix signing secret |
 | Google Cloud Console → OAuth consent screen | App name, support email, privacy URL, and terms URL aligned with the live marketing site |
-| Cloudflare → DNS for `foliolens.in` | A / AAAA records for apex (landing page) + CNAME for `app` → Vercel + Resend outbound TXT/DKIM/SPF + Resend inbound MX records |
+| Cloudflare → DNS for `foliolens.in` | A / AAAA records for apex (landing page) + CNAME for `app` → Vercel + Resend outbound TXT/DKIM/SPF + Resend inbound MX records + proxied placeholder `A` records for `api` and `api-dev` (Workers Routes need an existing, Cloudflare-proxied DNS record before they can fire) |
+| Cloudflare → Workers & Pages | `foliolens-api-proxy-dev` and `foliolens-api-proxy-production` (`workers/api-proxy/`), deployed via `wrangler deploy --env dev` / `--env production`, each bound to its Workers Route (`api-dev.foliolens.in/*` / `api.foliolens.in/*`) |
 | Vercel → `foliolens` project → Settings → Git | Disconnected from GitHub. Re-connecting accidentally would resume auto-deploys on every push and break the manual-only release gate. |
 | Vercel → both projects → Settings → Domains | DEV: `foliolens-dev.vercel.app` (auto). PROD: `app.foliolens.in` (custom). |
 | Vercel → `foliolens` project → Environment Variables | Set `RESEND_API_KEY`, `RESEND_INBOUND_ROUTER_SECRET`, `MAIL_FORWARD_TO`, `MAIL_FORWARD_FROM`, `SUPABASE_DEV_FUNCTION_URL`, `SUPABASE_PROD_FUNCTION_URL` for the production router |

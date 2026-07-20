@@ -22,6 +22,16 @@ listed below.
 | **Storage** | Low | One private bucket (`user-feedback-attachments`) + one public bucket (`static-snapshots`). All client access goes through `storageClient` (`src/lib/storage/index.ts`). |
 | **pg_cron + pg_net** | Medium | Scheduled sync/audit jobs target Edge Functions through `public.app_config_get('supabase_functions_base_url')`, so URLs are already parameterised. GitHub Actions owns the longer-running universe backfill. |
 | **Realtime / Vault / RPC** | None | Not used. Keep it that way. |
+| **Client transport (hostname)** | Low | Every client-originated backend call (native + web) goes through a first-party Cloudflare Worker reverse proxy (`workers/api-proxy/`, `api.foliolens.in` / `api-dev.foliolens.in`) rather than the raw `*.supabase.co` host — see the Backend Domain Proxy program (`docs/plans/backend-domain-proxy.md`, `docs/INFRASTRUCTURE.md` "Backend Domain Proxy"). Server-to-server calls (Resend inbound router, pg_cron/pg_net, `universe-backfill.yml`) intentionally stay direct. Not a security boundary — RLS + the publishable key remain the only enforcement point; this only changes the hostname the app talks to. |
+
+Because every client-originated call already flows through the first-party
+proxy host rather than the raw Supabase host, a future exit's client-side
+cutover is a single choke point twice over: flip `SUPABASE_ORIGIN` in
+`workers/api-proxy/wrangler.toml` to the new backend and redeploy the
+Worker — no app rebuild, no client env var change, no store submission.
+The steps below are about the backend swap itself (storage, cron, database,
+functions, data API, auth), not the client transport, which the proxy
+already decouples.
 
 ## Order of operations (least → most coupled)
 
