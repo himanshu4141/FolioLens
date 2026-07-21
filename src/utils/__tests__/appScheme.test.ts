@@ -3,6 +3,7 @@ import {
   getAppScheme,
   getNativeAuthOrigin,
   getNativeBridgeUrl,
+  shouldBridgeToNativeApp,
 } from '../appScheme';
 
 jest.mock('expo-constants', () => ({
@@ -91,6 +92,78 @@ describe('appScheme helpers', () => {
     expect(getNativeBridgeUrl('/auth/callback')).toBe(
       'https://app.foliolens.in/auth/callback?scheme=foliolens%20pr',
     );
+  });
+
+  describe('shouldBridgeToNativeApp', () => {
+    const IPHONE_UA =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15';
+    const DESKTOP_UA =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+
+    it('bridges a native-initiated flow (scheme marker) on mobile at the bridge host', () => {
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: IPHONE_UA,
+          currentHostname: 'app.foliolens.in',
+          hasNativeSchemeParam: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('does NOT bridge a web-initiated sign-in (no scheme) on mobile at the bridge host', () => {
+      // Regression: a mobile-web Google / magic-link callback lands on the
+      // bridge host without a `?scheme=` marker and must complete as a web
+      // session. Bouncing it to `foliolens://` stranded the visitor in the
+      // browser, unauthenticated.
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: IPHONE_UA,
+          currentHostname: 'app.foliolens.in',
+          hasNativeSchemeParam: false,
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT bridge on desktop even for a native-initiated flow', () => {
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: DESKTOP_UA,
+          currentHostname: 'app.foliolens.in',
+          hasNativeSchemeParam: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT bridge when the current host is not the configured bridge host', () => {
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: IPHONE_UA,
+          currentHostname: 'random-preview.vercel.app',
+          hasNativeSchemeParam: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('honours a dev bridge host from EXPO_PUBLIC_APP_BASE_URL', () => {
+      process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://foliolens-dev.vercel.app';
+
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: IPHONE_UA,
+          currentHostname: 'foliolens-dev.vercel.app',
+          hasNativeSchemeParam: true,
+        }),
+      ).toBe(true);
+      // ...and still refuses the web-initiated flow on that same dev host,
+      // where the web app and the native-bridge host are one and the same.
+      expect(
+        shouldBridgeToNativeApp({
+          userAgent: IPHONE_UA,
+          currentHostname: 'foliolens-dev.vercel.app',
+          hasNativeSchemeParam: false,
+        }),
+      ).toBe(false);
+    });
   });
 
 });

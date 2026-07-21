@@ -12,7 +12,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
-import { getAppScheme } from '@/src/utils/appScheme';
+import { getAppScheme, shouldBridgeToNativeApp } from '@/src/utils/appScheme';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -43,13 +43,22 @@ export default function ConfirmScreen() {
     const hash = window.location.hash;
     if (!hash || hash.length <= 1) return;
 
-    const ua = window.navigator.userAgent.toLowerCase();
-    const nativeBridgeHostname = new URL(process.env.EXPO_PUBLIC_APP_BASE_URL ?? 'https://app.foliolens.in').hostname;
-    const isNativeBridgeHost = window.location.hostname === nativeBridgeHostname;
-    if (!/iphone|ipad|ipod|android/.test(ua) || !isNativeBridgeHost) return;
+    // Bridge only a native-*initiated* magic link — one carrying the `?scheme=`
+    // marker from getNativeBridgeUrl. A web magic link opened on mobile has no
+    // scheme and must resolve as a web session (detectSessionInUrl); bouncing
+    // it to `foliolens://` would strand the visitor in the browser.
+    if (
+      !shouldBridgeToNativeApp({
+        userAgent: window.navigator.userAgent,
+        currentHostname: window.location.hostname,
+        hasNativeSchemeParam: typeof scheme === 'string' && scheme.length > 0,
+      })
+    ) {
+      return;
+    }
 
     window.location.replace(`${targetScheme}://auth/confirm${hash}`);
-  }, [targetScheme]);
+  }, [scheme, targetScheme]);
 
   async function handleResend() {
     router.replace('/auth');
