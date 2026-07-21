@@ -12,7 +12,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { useResponsiveLayout } from '@/src/components/responsive';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
-import { getAppScheme } from '@/src/utils/appScheme';
+import { getAppScheme, shouldBridgeToNativeApp } from '@/src/utils/appScheme';
 import {
   ClearLensFonts,
   ClearLensRadii,
@@ -44,12 +44,15 @@ export default function ConfirmScreen() {
     if (!hash || hash.length <= 1) return;
 
     const ua = window.navigator.userAgent.toLowerCase();
-    const nativeBridgeHostname = new URL(process.env.EXPO_PUBLIC_APP_BASE_URL ?? 'https://app.foliolens.in').hostname;
-    const isNativeBridgeHost = window.location.hostname === nativeBridgeHostname;
-    if (!/iphone|ipad|ipod|android/.test(ua) || !isNativeBridgeHost) return;
+    if (!shouldBridgeToNativeApp({
+      userAgent: ua,
+      currentHostname: window.location.hostname,
+      hasNativeSchemeParam: typeof scheme === 'string' && scheme.length > 0,
+      targetScheme,
+    })) return;
 
     window.location.replace(`${targetScheme}://auth/confirm${hash}`);
-  }, [targetScheme]);
+  }, [scheme, targetScheme]);
 
   async function handleResend() {
     router.replace('/auth');

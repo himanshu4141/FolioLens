@@ -10,7 +10,7 @@ import {
 import * as Linking from 'expo-linking';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
-import { getAppScheme } from '@/src/utils/appScheme';
+import { getAppScheme, shouldBridgeToNativeApp } from '@/src/utils/appScheme';
 import { resolveNativeOAuthCallbackUrl } from '@/src/utils/authUtils';
 import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
 import { useClearLensTokens } from '@/src/context/ThemeContext';
@@ -57,14 +57,15 @@ export default function OAuthCallbackScreen() {
   useEffect(() => {
     // ── Web path ──────────────────────────────────────────────────────────────
     if (Platform.OS === 'web') {
-      // Bridge to native app only when running at the production native-bridge
-      // host (app.foliolens.in). Preview deployments serve the web app on a
-      // different hostname — mobile visitors there should get a web session, not
-      // an app redirect.
+      // Bridge only native-tagged callbacks. A mobile web sign-in on the same
+      // host has no `scheme` marker and must complete as a web session.
       const ua = window.navigator.userAgent.toLowerCase();
-      const nativeBridgeHostname = new URL(process.env.EXPO_PUBLIC_APP_BASE_URL ?? 'https://app.foliolens.in').hostname;
-      const isNativeBridgeHost = window.location.hostname === nativeBridgeHostname;
-      if (/iphone|ipad|ipod|android/.test(ua) && isNativeBridgeHost) {
+      if (shouldBridgeToNativeApp({
+        userAgent: ua,
+        currentHostname: window.location.hostname,
+        hasNativeSchemeParam: typeof scheme === 'string' && scheme.length > 0,
+        targetScheme,
+      })) {
         // Preserve both query params and hash fragments. Supabase OAuth can
         // return either `?code=...` (PKCE) or `#access_token=...` (implicit).
         window.location.replace(
@@ -107,7 +108,7 @@ export default function OAuthCallbackScreen() {
       setState('error');
     });
     return () => { active = false; };
-  }, [callbackUrl, code, incomingUrl, oauth, oauthError, targetScheme]);
+  }, [callbackUrl, code, incomingUrl, oauth, oauthError, scheme, targetScheme]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 

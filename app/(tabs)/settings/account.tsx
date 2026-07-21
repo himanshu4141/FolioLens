@@ -20,7 +20,10 @@ import { UtilityHeader } from '@/src/components/UtilityHeader';
 import { FeedbackSheet, type FeedbackKind } from '@/src/components/FeedbackSheet';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
 import { DeleteAccountSheet } from '@/src/components/DeleteAccountSheet';
-import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
+import {
+  getNativeAuthOrigin,
+  getNativeBridgeUrl,
+} from '@/src/utils/appScheme';
 import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
 import {
   OAUTH_URL_TIMEOUT_MS,
