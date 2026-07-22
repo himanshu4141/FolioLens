@@ -1,6 +1,6 @@
 # Auth Flow — Magic Link + Google OAuth (web + native bridge)
 
-Two providers (magic-link via Supabase + Resend SMTP, and Google OAuth) × two surfaces (web + native), so four code paths. The "native bridge" is what makes magic-link emails and OAuth callbacks work in a native app where the email client and the system browser don't know about a deep-link scheme.
+Two providers (magic-link via Supabase + Resend SMTP, and Google OAuth) x two surfaces (web + native), so four code paths. The native web bridge is what makes magic-link emails and OAuth callbacks work in a native app where the email client, Google, and Supabase all need an HTTPS landing page before the installed app can receive a custom-scheme callback.
 
 ## Where things live
 
@@ -100,7 +100,7 @@ sequenceDiagram
   Browser->>Google: load consent screen
   U->>Google: approve
   Google->>Web: redirect to bridge URL with ?code=...
-  Web->>Web: detect native bridge host
+  Web->>Web: detect mobile UA, bridge host,<br/>and native scheme marker
   Web->>Browser: window.location.replace foliolens://auth/callback?code=...
   Browser-->>App: deep-link result.url
   App->>Coordinator: WebBrowser result and/or Router callback
@@ -130,9 +130,11 @@ The coordinator emits `oauth_started`, `browser_returned`, `callback_received`, 
 Native apps can't put `foliolens://` into a magic-link `redirectTo` because:
 
 - **Email clients refuse non-https URLs.** Some clients render `foliolens://` as plain text and don't make it tappable.
-- **Google OAuth's `redirect_uri` whitelist requires https** for production OAuth clients. Custom URI schemes are allowed for "installed app" flows but the consent screen UX is worse and FolioLens is one shared Google project across web + native.
+- **DEV and preview Google OAuth must preserve Supabase's HTTPS bridge.** Direct custom-scheme final redirects can be accepted at the initial authorize endpoint yet still fall back to the Supabase Site URL after the provider callback if a target is not accepted by that project/runtime configuration.
 
-So both flows use `https://app.foliolens.in/auth/{confirm,callback}` as the public landing page. The web app at that path detects `?scheme=foliolens` (added by `getNativeBridgeUrl`) plus the running platform's hostname, and `window.location.replace`s into the deep-link scheme so the native app picks it up via `Linking.useURL()`.
+So native flows use `https://app.foliolens.in/auth/{confirm,callback}` as the public landing page, with the DEV build using `https://foliolens-dev.vercel.app`. The web app at that path detects `?scheme=foliolens` (added by `getNativeBridgeUrl`) plus the running platform's hostname, validates the target scheme, and `window.location.replace`s into the deep-link scheme so the native app picks it up via `Linking.useURL()`.
+
+The backend proxy hosts (`api.foliolens.in`, `api-dev.foliolens.in`) are never valid bridge pages for `/auth/{confirm,callback}`. If `EXPO_PUBLIC_APP_BASE_URL` is accidentally populated with one of those API proxy hosts, `getNativeBridgeUrl` normalizes it back to the matching web host before building `redirectTo`; otherwise Supabase can fall back to the Site URL and leave the user authenticated only inside the browser.
 
 On a desktop browser without `?scheme=foliolens`, the same web pages serve regular auth UI (the magic-link "check your inbox" screen, or `detectSessionInUrl()` + redirect to home).
 
@@ -142,7 +144,7 @@ On a desktop browser without `?scheme=foliolens`, the same web pages serve regul
 |---|---|---|
 | `EXPO_PUBLIC_SUPABASE_URL` | Client (build-time) | GoTrue endpoint |
 | `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Client (build-time) | Anon API key |
-| `EXPO_PUBLIC_APP_BASE_URL` | Client (build-time) | Bridge host — `https://app.foliolens.in` (prod) or `https://foliolens-dev.vercel.app` (dev) |
+| `EXPO_PUBLIC_APP_BASE_URL` | Client (build-time) | Bridge host — `https://app.foliolens.in` (prod) or `https://foliolens-dev.vercel.app` (dev); API proxy hosts are normalized back to these web hosts |
 | `EXPO_PUBLIC_APP_SCHEME` | Client (build-time) | Native deep-link scheme (`foliolens`, `foliolens-main`, or `foliolens-pr`) |
 | (Supabase Dashboard) | Auth → Providers → Google | Google OAuth client id + secret per project |
 | (Supabase Dashboard) | Auth → URL Configuration | Allowed redirect URLs include `foliolens://**` and the web bridge |

@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { normalizeAppBaseOrigin } from './appScheme';
 
 /**
  * Helpers for the per-user CAS inbox address.
@@ -40,7 +41,10 @@ export function getInboxEnvironment(): InboxEnvironment {
   if (variant) return 'dev';
 
   const appBaseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? '';
-  if (appBaseUrl) return appBaseUrl.includes('app.foliolens.in') ? 'prod' : 'dev';
+  if (appBaseUrl) {
+    const normalizedAppBaseUrl = normalizeAppBaseOrigin(appBaseUrl) ?? appBaseUrl;
+    return normalizedAppBaseUrl.includes('app.foliolens.in') ? 'prod' : 'dev';
+  }
 
   // Last-resort fallback, only reachable when none of the signals above
   // are present. Once the backend base is a foliolens.in proxy host
