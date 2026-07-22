@@ -22,10 +22,7 @@ import { DemoSignupSheet } from '@/src/components/clearLens/DemoSignupSheet';
 import { featureFlags } from '@/src/lib/featureFlags';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
 import { GoogleIcon } from '@/src/components/GoogleIcon';
-import {
-  getNativeAuthOrigin,
-  getNativeBridgeUrl,
-} from '@/src/utils/appScheme';
+import { getNativeAuthOrigin, getNativeBridgeUrl } from '@/src/utils/appScheme';
 import { useOAuthCompletion } from '@/src/hooks/useOAuthCompletion';
 import {
   OAUTH_URL_TIMEOUT_MS,

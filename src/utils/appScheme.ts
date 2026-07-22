@@ -31,15 +31,18 @@ export function getNativeAuthOrigin(): string {
   return `${getAppScheme()}://`;
 }
 
-export function getNativeBridgeBaseUrl(): string {
-  const configuredBaseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? DEFAULT_NATIVE_BRIDGE_BASE_URL;
-
+export function normalizeAppBaseOrigin(configuredBaseUrl: string): string | null {
   try {
     const parsedBaseUrl = new URL(configuredBaseUrl);
     return API_PROXY_HOST_TO_WEB_BRIDGE_ORIGIN[parsedBaseUrl.hostname] ?? parsedBaseUrl.origin;
   } catch {
-    return DEFAULT_NATIVE_BRIDGE_BASE_URL;
+    return null;
   }
+}
+
+export function getNativeBridgeBaseUrl(): string {
+  const configuredBaseUrl = process.env.EXPO_PUBLIC_APP_BASE_URL ?? DEFAULT_NATIVE_BRIDGE_BASE_URL;
+  return normalizeAppBaseOrigin(configuredBaseUrl) ?? DEFAULT_NATIVE_BRIDGE_BASE_URL;
 }
 
 export function getNativeBridgeUrl(path: '/auth/confirm' | '/auth/callback'): string {

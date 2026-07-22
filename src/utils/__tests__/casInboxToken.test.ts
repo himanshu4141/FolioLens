@@ -142,11 +142,27 @@ describe('getInboxEnvironment', () => {
     expect(getInboxEnvironment()).toBe('prod');
   });
 
+  it('resolves prod via normalized app base URL when variant is unset and APP_BASE_URL is the prod proxy host', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: {} };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api.foliolens.in';
+    process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://api.foliolens.in';
+    expect(getInboxEnvironment()).toBe('prod');
+  });
+
   it('resolves dev via app base URL when variant is unset and the backend base is the dev proxy host', () => {
     delete process.env.EXPO_PUBLIC_INBOUND_ENV;
     (Constants as MockConstants).expoConfig = { extra: {} };
     process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
     process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://foliolens-dev.vercel.app';
+    expect(getInboxEnvironment()).toBe('dev');
+  });
+
+  it('resolves dev via normalized app base URL when variant is unset and APP_BASE_URL is the dev proxy host', () => {
+    delete process.env.EXPO_PUBLIC_INBOUND_ENV;
+    (Constants as MockConstants).expoConfig = { extra: {} };
+    process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://api-dev.foliolens.in';
+    process.env.EXPO_PUBLIC_APP_BASE_URL = 'https://api-dev.foliolens.in';
     expect(getInboxEnvironment()).toBe('dev');
   });
 
