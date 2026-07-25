@@ -4,7 +4,7 @@
  *
  * Source precedence (highest wins):
  *   OpenFolio /v1/nav/delta — AMFI-sourced, plan-keyed, selected schemes with
- *   per-scheme `since` watermarks in one request.
+ *   per-scheme `since` watermarks in <=500-scheme batches.
  *   OpenFolio /v1/nav/{scheme_code}?since=<last_known> — compatibility fallback
  *   while the new endpoint is rolling out.
  *   mfapi.in  /mf/{scheme_code}     — fallback when OpenFolio returns 404 or errors.
@@ -25,10 +25,12 @@ import {
   evaluateOpenFolioNavFreshnessGate,
   SINCE_MAP_PAGE_SIZE,
 } from '../_shared/nav-since-map.ts';
+import { planOpenFolioNavDeltaRouting } from '../_shared/nav-delta-routing.ts';
 
 const BATCH_SIZE = 500;
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 20_000;
+const OPENFOLIO_NAV_DELTA_SCHEME_BATCH_SIZE = 500;
 const OPENFOLIO_NAV_DELTA_MAX_POINTS = 20_000;
 // Compatibility fallback only: keep per-scheme OpenFolio request concurrency low.
 const OPENFOLIO_CONCURRENCY = 5;
@@ -229,71 +231,66 @@ Deno.serve(async (req) => {
   let openfolioDeltaRows = 0;
   let openfolioDeltaMissingSchemes = 0;
   let openfolioDeltaTruncatedSchemes = 0;
-  let allowPerSchemeOpenFolio = true;
-  let sourceLadderSchemeCodes = schemeCodesToSync;
+  const sourceLadderSchemeCodes: number[] = openfolio ? [] : [...schemeCodesToSync];
+  const perSchemeOpenFolioAllowed = new Set<number>();
 
   if (openfolio && schemeCodesToSync.length > 0) {
-    try {
-      const delta = await openfolio.getNavDelta({
-        schemes: schemeCodesToSync.map((schemeCode) => ({
-          scheme_code: schemeCode,
-          since: schemeLatest.get(schemeCode) ?? null,
-        })),
-        max_points_per_scheme: OPENFOLIO_NAV_DELTA_MAX_POINTS,
-      });
+    for (let i = 0; i < schemeCodesToSync.length; i += OPENFOLIO_NAV_DELTA_SCHEME_BATCH_SIZE) {
+      const deltaBatch = schemeCodesToSync.slice(i, i + OPENFOLIO_NAV_DELTA_SCHEME_BATCH_SIZE);
+      try {
+        const delta = await openfolio.getNavDelta({
+          schemes: deltaBatch.map((schemeCode) => ({
+            scheme_code: schemeCode,
+            since: schemeLatest.get(schemeCode) ?? null,
+          })),
+          max_points_per_scheme: OPENFOLIO_NAV_DELTA_MAX_POINTS,
+        });
 
-      openfolioDeltaUsed = true;
-      allowPerSchemeOpenFolio = false;
-      openfolioDeltaRows = delta.items.length;
-      openfolioDeltaMissingSchemes = delta.missing_scheme_codes.length;
-      openfolioDeltaTruncatedSchemes = delta.truncated_scheme_codes.length;
+        openfolioDeltaUsed = true;
+        openfolioDeltaMissingSchemes += delta.missing_scheme_codes.length;
+        openfolioDeltaTruncatedSchemes += delta.truncated_scheme_codes.length;
 
-      const matched = new Set(delta.latest.map((item) => item.scheme_code));
-      const fallback = new Set<number>([
-        ...delta.missing_scheme_codes,
-        ...delta.truncated_scheme_codes,
-      ]);
-      for (const schemeCode of schemeCodesToSync) {
-        if (!matched.has(schemeCode) && !fallback.has(schemeCode)) {
-          fallback.add(schemeCode);
+        const routing = planOpenFolioNavDeltaRouting(deltaBatch, delta);
+        for (const schemeCode of routing.omittedSchemeCodes) {
           errors.push(`scheme ${schemeCode}: OpenFolio delta omitted requested scheme`);
         }
-      }
-      sourceLadderSchemeCodes = schemeCodesToSync.filter((schemeCode) => fallback.has(schemeCode));
+        sourceLadderSchemeCodes.push(...routing.fallbackSchemeCodes);
 
-      const rows = delta.items
-        .filter((item) => matched.has(item.scheme_code) && !fallback.has(item.scheme_code))
-        .map((item) => ({
+        const rows = routing.usableItems.map((item) => ({
           scheme_code: item.scheme_code,
           nav_date: item.date,
           nav: item.nav,
         }));
-      const inserted = rows.length > 0 ? await upsertRows(rows) : 0;
-      totalUpserted += inserted;
-      openfolioSchemes += Array.from(matched).filter((schemeCode) => !fallback.has(schemeCode)).length;
+        const inserted = rows.length > 0 ? await upsertRows(rows) : 0;
+        totalUpserted += inserted;
+        openfolioDeltaRows += routing.usableItems.length;
+        openfolioSchemes += routing.openfolioSchemeCodes.length;
 
-      console.log(
-        '[sync-nav] OpenFolio delta: requested=%d matched=%d rows=%d inserted=%d missing=%d truncated=%d fallback=%d',
-        delta.requested,
-        delta.matched,
-        rows.length,
-        inserted,
-        delta.missing_scheme_codes.length,
-        delta.truncated_scheme_codes.length,
-        sourceLadderSchemeCodes.length,
-      );
-    } catch (err) {
-      console.warn(
-        '[sync-nav] OpenFolio delta failed (%s) — falling back to per-scheme OpenFolio',
-        (err as Error).message,
-      );
-      allowPerSchemeOpenFolio = true;
-      sourceLadderSchemeCodes = schemeCodesToSync;
+        console.log(
+          '[sync-nav] OpenFolio delta: requested=%d matched=%d rows=%d inserted=%d missing=%d truncated=%d fallback=%d',
+          delta.requested,
+          delta.matched,
+          routing.usableItems.length,
+          inserted,
+          delta.missing_scheme_codes.length,
+          delta.truncated_scheme_codes.length,
+          routing.fallbackSchemeCodes.length,
+        );
+      } catch (err) {
+        console.warn(
+          '[sync-nav] OpenFolio delta batch failed (%s) — falling back to per-scheme OpenFolio for %d scheme(s)',
+          (err as Error).message,
+          deltaBatch.length,
+        );
+        sourceLadderSchemeCodes.push(...deltaBatch);
+        for (const schemeCode of deltaBatch) perSchemeOpenFolioAllowed.add(schemeCode);
+      }
     }
   }
 
   async function syncScheme(
     schemeCode: number,
+    allowPerSchemeOpenFolio: boolean,
   ): Promise<{ newRows: number; source: 'openfolio' | 'mfapi'; error?: string }> {
     // ── OpenFolio (primary) ──────────────────────────────────────────────────
     if (allowPerSchemeOpenFolio && openfolio) {
@@ -428,7 +425,9 @@ Deno.serve(async (req) => {
   const results: PromiseSettledResult<Awaited<ReturnType<typeof syncScheme>>>[] = [];
   for (let i = 0; i < sourceLadderSchemeCodes.length; i += OPENFOLIO_CONCURRENCY) {
     const batch = sourceLadderSchemeCodes.slice(i, i + OPENFOLIO_CONCURRENCY);
-    const batchResults = await Promise.allSettled(batch.map((code) => syncScheme(code)));
+    const batchResults = await Promise.allSettled(
+      batch.map((code) => syncScheme(code, perSchemeOpenFolioAllowed.has(code))),
+    );
     results.push(...batchResults);
   }
 

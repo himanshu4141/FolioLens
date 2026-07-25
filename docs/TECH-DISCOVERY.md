@@ -19,7 +19,7 @@ deployment/runtime wiring, read [docs/INFRASTRUCTURE.md](./INFRASTRUCTURE.md).
 | Backend | Supabase Postgres + Edge Functions | Fits the current app size and keeps auth, data, cron, storage, and functions in one operational surface. Provider boundaries are explicit in `src/lib/{auth,functions,storage,data}/`. |
 | Web/API router | Vercel | Hosts the Expo web app, CAS PDF parser relay, Resend inbound router, feedback notifier, and freshness alerts. |
 | Product/ops telemetry | PostHog | Privacy-safe product, import, cache, sync, and UX timing events. No autocapture or session replay by default. |
-| NAV data | OpenFolio first, mfapi.in fallback | OpenFolio gives incremental plan-keyed NAV via `/v1/nav/{scheme_code}`. mfapi.in remains the fallback for gaps/outages. App clients never call mfapi directly. |
+| NAV data | OpenFolio first, mfapi.in fallback | Held-fund sync uses OpenFolio `/v1/nav/delta` in ≤500-scheme batches with per-scheme watermarks. Per-scheme OpenFolio remains the rollout/error fallback; mfapi.in remains the data-gap fallback. App clients never call mfapi directly. |
 | Index data | Server-side index sync | `sync-index` fetches benchmark closes into `index_history` using NSE TRI first, EODHD fallback, and Yahoo Finance for legacy price-return symbols. Browser-side index fetches remain out of scope. |
 | Fund metadata | OpenFolio metadata first, mfdata fallback | `sync-fund-meta` and `universe-backfill` populate `scheme_master`; mfdata only fills unresolved fields where OpenFolio does not provide a value. |
 | Holdings/composition | OpenFolio official rows first, mfdata/category fallback | Official AMC-disclosure-derived rows use `source='official'`. New mfdata backup rows use `source='category_fallback'`; legacy `source='amfi'` rows can still exist and are ranked between official and category fallback. |
@@ -58,8 +58,8 @@ Vercel
 
 ### Mutual-fund NAVs
 
-- **Primary:** OpenFolio `/v1/nav/{scheme_code}` with incremental `since=`.
-- **Fallback:** mfapi.in `/mf/{scheme_code}`.
+- **Primary:** OpenFolio `/v1/nav/delta` for held-fund sync, batched at ≤500 schemes with per-scheme incremental `since` watermarks.
+- **Fallback:** per-scheme OpenFolio `/v1/nav/{scheme_code}` for failed delta batches during rollout/outages, then mfapi.in `/mf/{scheme_code}` for gaps.
 - **Writers:** `sync-nav` for held funds and `fetch-fund-nav` for non-held funds selected in Compare/Past SIP/Fund Detail flows.
 - **Client ownership:** native SQLite is the durable raw-history cache; React Query persists only bounded rendered outputs and small supporting lookups.
 - **Coverage proof:** native reads must not treat a recent slice as full history unless the SQLite `sync_state` coverage row proves the lower bound. See the C1 notes in the cache inventory.

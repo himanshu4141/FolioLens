@@ -453,6 +453,28 @@ describe('createOpenFolioClient', () => {
       max_points_per_scheme: 20000,
     });
   });
+
+  it('getNavDelta throws when the endpoint is not available', async () => {
+    const fetchImpl = jest.fn(
+      async () => fakeResponse(404, { detail: 'not found' }),
+    ) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(
+      client.getNavDelta({ schemes: [{ scheme_code: 122639, since: '2026-07-15' }] }),
+    ).rejects.toThrow(/nav delta endpoint not found/);
+  });
+
+  it('getNavDelta throws directly on non-OK responses', async () => {
+    const fetchImpl = jest.fn(
+      async () => fakeResponse(422, { detail: 'too many schemes' }),
+    ) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(
+      client.getNavDelta({ schemes: [{ scheme_code: 122639, since: '2026-07-15' }] }),
+    ).rejects.toThrow(/HTTP 422/);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ const config = {
     'supabase/functions/_shared/openfolio.ts', // OpenFolio client + pure mapping/matching/sync core with dedicated tests
     'supabase/functions/_shared/period-returns.ts', // mfdata→canonical normalisation + merge helpers with dedicated tests
     'supabase/functions/_shared/nav-since-map.ts', // pure since-map builder with dedicated tests
+    'supabase/functions/_shared/nav-delta-routing.ts', // pure OpenFolio delta fallback routing with dedicated tests
     '!src/**/*.test.ts',
     '!src/types/**',          // pure type declarations — nothing executable to cover
     '!src/lib/supabase.ts',   // React Native + Supabase bootstrap — not runnable in Node
