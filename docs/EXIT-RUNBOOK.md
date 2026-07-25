@@ -115,7 +115,7 @@ The functions, roughly ordered by simplicity:
 5. `cas-webhook-resend` — HMAC-signed inbound webhook from the Vercel router.
 6. `fetch-fund-nav` — OpenFolio/mfapi NAV hydration for non-held picks.
 7. `fetch-fund-snapshot` — OpenFolio-first metadata/composition hydration, mfdata fallback.
-8. `sync-nav` — OpenFolio/mfapi incremental sync for held schemes.
+8. `sync-nav` — OpenFolio `/v1/nav/delta` batched incremental sync for held schemes, with per-scheme OpenFolio and mfapi fallback.
 9. `sync-index` — NSE / EODHD / Yahoo index sources.
 10. `sync-fund-meta` — OpenFolio metadata first, mfdata fallback.
 11. `sync-fund-portfolios` — mfdata backup composition + category-rule sentinels.

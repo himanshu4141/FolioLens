@@ -9,6 +9,7 @@ import {
   createOpenFolioClient,
   runOpenFolioSync,
   type CompositionRow,
+  type NavDeltaResponse,
   type NavBulkPage,
   type NavLatestEntry,
   type NavSeries,
@@ -415,6 +416,64 @@ describe('createOpenFolioClient', () => {
     const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.x/health');
     expect((init.headers as Record<string, string>)['X-API-Key']).toBe('KEY');
+  });
+
+  it('getNavDelta posts selected scheme watermarks in one OpenFolio request', async () => {
+    const response: NavDeltaResponse = {
+      requested: 2,
+      matched: 1,
+      items: [{ scheme_code: 122639, date: '2026-07-16', nav: 250.12 }],
+      latest: [{ scheme_code: 122639, date: '2026-07-16' }],
+      missing_scheme_codes: [999999],
+      truncated_scheme_codes: [],
+    };
+    const fetchImpl = jest.fn(async () => fakeResponse(200, response)) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(
+      client.getNavDelta({
+        schemes: [
+          { scheme_code: 122639, since: '2026-07-15' },
+          { scheme_code: 999999, since: null },
+        ],
+        max_points_per_scheme: 20000,
+      }),
+    ).resolves.toEqual(response);
+
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://api.x/v1/nav/delta');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('KEY');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({
+      schemes: [
+        { scheme_code: 122639, since: '2026-07-15' },
+        { scheme_code: 999999, since: null },
+      ],
+      max_points_per_scheme: 20000,
+    });
+  });
+
+  it('getNavDelta throws when the endpoint is not available', async () => {
+    const fetchImpl = jest.fn(
+      async () => fakeResponse(404, { detail: 'not found' }),
+    ) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(
+      client.getNavDelta({ schemes: [{ scheme_code: 122639, since: '2026-07-15' }] }),
+    ).rejects.toThrow(/nav delta endpoint not found/);
+  });
+
+  it('getNavDelta throws directly on non-OK responses', async () => {
+    const fetchImpl = jest.fn(
+      async () => fakeResponse(422, { detail: 'too many schemes' }),
+    ) as unknown as typeof fetch;
+    const client = createOpenFolioClient({ baseUrl: 'https://api.x', apiKey: 'KEY', fetchImpl });
+
+    await expect(
+      client.getNavDelta({ schemes: [{ scheme_code: 122639, since: '2026-07-15' }] }),
+    ).rejects.toThrow(/HTTP 422/);
   });
 });
 

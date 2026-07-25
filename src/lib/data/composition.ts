@@ -171,6 +171,32 @@ export interface NavBulkPage {
   items: NavBulkItem[];
 }
 
+export interface NavDeltaSchemeRequest {
+  scheme_code: number;
+  /** Inclusive local watermark for this scheme. Null requests the full available series. */
+  since?: string | null;
+}
+
+export interface NavDeltaRequest {
+  schemes: NavDeltaSchemeRequest[];
+  max_points_per_scheme?: number;
+}
+
+export interface NavDeltaLatest {
+  scheme_code: number;
+  date: string;
+}
+
+/** Response from POST /v1/nav/delta — selected-scheme NAV rows + latest dates. */
+export interface NavDeltaResponse {
+  requested: number;
+  matched: number;
+  items: NavBulkItem[];
+  latest: NavDeltaLatest[];
+  missing_scheme_codes: number[];
+  truncated_scheme_codes: number[];
+}
+
 /** Args for the per-scheme series endpoint. */
 export interface GetNavSeriesArgs {
   /** Lower bound — ISO date YYYY-MM-DD. */
@@ -433,6 +459,10 @@ export function openFolioNavListPath(args: ListNavArgs = {}): string {
     page: args.page,
     page_size: args.pageSize,
   })}`;
+}
+
+export function openFolioNavDeltaPath(): string {
+  return '/v1/nav/delta';
 }
 
 export function openFolioMetadataPath(schemeCode: number): string {
