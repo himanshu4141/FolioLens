@@ -27,7 +27,6 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { encodeBase64 } from 'jsr:@std/encoding/base64';
 import {
-  countParsedTransactions,
   importCASData,
   type CASParseResult,
 } from '../_shared/import-cas.ts';
@@ -36,6 +35,29 @@ import {
   isGmailForwardingVerification,
 } from '../_shared/gmail-verification.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
+import {
+  CASPreflightError,
+  assertCASPreflight,
+  auditErrorCode,
+  bucketCount,
+  buildImportCrashOutcome,
+  buildImportOutcome,
+  reasonFromAuditError,
+  safeCASFailureReason,
+  userMessageForCASFailure,
+  type CanonicalCASParseResult,
+  type CASFailureReason,
+  type CASSourceDialect,
+} from '../_shared/cas-import-contract.ts';
+
+// Supabase Edge exposes this global even though it is not part of Deno's base
+// type library.
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
+
+// The service-role client is intentionally schema-agnostic in this function;
+// generated database types are app-client types and are not imported into Deno.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ServiceClient = any;
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -166,9 +188,7 @@ function isPdfAttachment(attachment: NormalizedAttachment): boolean {
 async function downloadAttachmentBytes(attachment: NormalizedAttachment): Promise<Uint8Array> {
   const res = await fetch(attachment.download_url);
   if (!res.ok) {
-    throw new Error(
-      `Attachment download failed (${res.status}) for ${attachment.filename}`,
-    );
+    throw new Error('attachment_download_failed');
   }
   return new Uint8Array(await res.arrayBuffer());
 }
@@ -184,12 +204,12 @@ function computeCdslPassword(pan: string, dob: string): string {
 // ── Notification (router callback) ──────────────────────────────────────────────
 
 async function getAuthEmail(
-  supabase: ReturnType<typeof createClient>,
+  supabase: ServiceClient,
   userId: string,
 ): Promise<string | null> {
   const { data, error } = await supabase.auth.admin.getUserById(userId);
   if (error) {
-    console.warn('[cas-webhook-resend] auth email lookup failed: %s', error.message);
+    console.warn('[cas-webhook-resend] auth_email_lookup_failed');
     return null;
   }
   return data.user?.email ?? null;
@@ -236,22 +256,11 @@ async function sendImportNotification({
       body,
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Notify endpoint returned ${res.status}: ${text}`);
+      throw new Error('notification_endpoint_failed');
     }
-    console.log(
-      '[cas-webhook-resend] notification sent, import_id=%s, status=%s',
-      importId,
-      status,
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(
-      '[cas-webhook-resend] DROPPED notification_failed: import_id=%s, status=%s, error=%s',
-      importId,
-      status,
-      msg,
-    );
+    console.log('[cas-webhook-resend] notification_sent status=%s', status);
+  } catch {
+    console.error('[cas-webhook-resend] notification_failed status=%s', status);
   }
 }
 
@@ -261,7 +270,7 @@ async function sendImportNotification({
 // EdgeRuntime.waitUntil so we always answer the router in <1s.
 
 interface BackgroundJobArgs {
-  supabase: ReturnType<typeof createClient>;
+  supabase: ServiceClient;
   importId: string;
   userId: string;
   pan: string;
@@ -270,7 +279,7 @@ interface BackgroundJobArgs {
 }
 
 async function finalizeImportRow(
-  supabase: ReturnType<typeof createClient>,
+  supabase: ServiceClient,
   importId: string,
   status: 'success' | 'failed',
   funds: number,
@@ -287,56 +296,56 @@ async function finalizeImportRow(
     })
     .eq('id', importId);
   if (updateErr) {
-    console.error(
-      '[cas-webhook-resend] cas_import finalize failed import_id=%s: %s',
-      importId,
-      updateErr.message,
-    );
+    console.error('[cas-webhook-resend] audit_finalize_failed');
   }
 }
 
 async function processImportInBackground(args: BackgroundJobArgs) {
   const { supabase, importId, userId, pan, dob, attachments } = args;
   const authEmailPromise = getAuthEmail(supabase, userId);
+  let totalFunds = 0;
+  let totalTransactions = 0;
+  const allErrors: string[] = [];
 
   try {
-    console.log('[cas-webhook-resend] background_started import_id=%s', importId);
+    console.log('[cas-webhook-resend] background_started');
 
     const pdfAttachments = attachments.filter(isPdfAttachment);
     console.log(
-      '[cas-webhook-resend] import_id=%s, user=%s, pdf_files=%d, total_files=%d',
-      importId,
-      userId,
-      pdfAttachments.length,
-      attachments.length,
+      '[cas-webhook-resend] attachment_inventory pdf_files=%s total_files=%s',
+      bucketCount(pdfAttachments.length),
+      bucketCount(attachments.length),
     );
 
     if (pdfAttachments.length === 0) {
-      const errorMsg = 'No PDF attachments found in email';
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, [errorMsg]);
+      const reason: CASFailureReason = 'no_pdf_attachments';
+      await finalizeImportRow(supabase, importId, 'failed', 0, 0, [auditErrorCode(reason)]);
       await sendImportNotification({
         to: await authEmailPromise,
         importId,
         status: 'failed',
         funds: 0,
         transactions: 0,
-        errors: [errorMsg],
+        errors: [userMessageForCASFailure(reason)],
       });
       return;
     }
 
-    let totalFunds = 0;
-    let totalTransactions = 0;
-    const allErrors: string[] = [];
+    const parsedPayloads: CanonicalCASParseResult[] = [];
+    const dialects: CASSourceDialect[] = [];
     const cdslPassword = dob ? computeCdslPassword(pan, dob) : null;
 
+    // Phase 1 is intentionally parse + preflight only. No domain write occurs
+    // until every attachment has passed, so one corrupt statement rejects the
+    // whole inbound import instead of leaving earlier attachments persisted.
     for (const attachment of pdfAttachments) {
+      let failureReason: CASFailureReason = 'attachment_download_failed';
       try {
         const pdfBytes = await downloadAttachmentBytes(attachment);
+        failureReason = 'parser_error';
 
         const parserHeaders: Record<string, string> = {
           'Content-Type': 'application/octet-stream',
-          'x-file-name': attachment.filename,
           'x-password': pan,
           'x-parser-secret': CAS_PARSER_SHARED_SECRET,
         };
@@ -348,82 +357,106 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         const parserRes = await fetch(`${APP_BASE_URL}/api/parse-cas-pdf`, {
           method: 'POST',
           headers: parserHeaders,
-          body: pdfBytes,
+          body: pdfBytes.buffer.slice(
+            pdfBytes.byteOffset,
+            pdfBytes.byteOffset + pdfBytes.byteLength,
+          ) as ArrayBuffer,
         });
 
         const parserBody = (await parserRes.json().catch(() => ({}))) as
-          | (CASParseResult & { error?: string })
-          | { error?: string };
+          | (CASParseResult & { error?: string; reason?: string })
+          | { error?: string; reason?: string };
 
         if (!parserRes.ok) {
-          throw new Error(
-            (parserBody as { error?: string }).error ?? `Parser failed (${parserRes.status})`,
-          );
+          failureReason = safeCASFailureReason(parserBody.reason);
+          throw new Error('parser_request_rejected');
         }
 
-        const parsedResult = parserBody as CASParseResult;
-        const parsedTransactions = countParsedTransactions(parsedResult);
+        const preflight = assertCASPreflight(parserBody as CASParseResult);
+        parsedPayloads.push(preflight.parsed);
+        dialects.push(preflight.summary.dialect);
         console.log(
-          '[cas-webhook-resend] attachment parsed file=%s, raw_txns=%d',
-          attachment.filename,
-          parsedTransactions,
+          '[cas-webhook-resend] attachment_validated dialect=%s rows=%s',
+          preflight.summary.dialect,
+          preflight.summary.rows_bucket,
         );
-
-        if (parsedTransactions === 0) {
-          throw new Error(
-            'Detailed CAS required: this PDF has holdings but no transaction history. Download a Detailed CAS covering your full investment date range.',
-          );
-        }
-
-        const { fundsUpdated, transactionsAdded, errors } = await importCASData(
-          supabase,
-          userId,
-          importId,
-          parsedResult,
-        );
-
-        totalFunds += fundsUpdated;
-        totalTransactions += transactionsAdded;
-        allErrors.push(...errors);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error('[cas-webhook-resend] attachment error: %s', msg);
-        allErrors.push(msg);
+      } catch (error) {
+        const reason = error instanceof CASPreflightError ? error.reason : failureReason;
+        console.error('[cas-webhook-resend] attachment_rejected reason=%s', reason);
+        allErrors.push(auditErrorCode(reason));
       }
     }
 
-    const status: 'success' | 'failed' =
-      allErrors.length > 0 && totalFunds === 0 ? 'failed' : 'success';
+    if (allErrors.length > 0) {
+      await finalizeImportRow(supabase, importId, 'failed', 0, 0, allErrors);
+      const firstReason = reasonFromAuditError(allErrors[0]);
+      trackServerEvent(
+        'cas_inbound_failed',
+        {
+          source: 'email',
+          status: 'rejected',
+          failure_reason: firstReason,
+          attachment_failures_bucket: bucketCount(allErrors.length),
+        },
+        userId,
+      );
+      await sendImportNotification({
+        to: await authEmailPromise,
+        importId,
+        status: 'failed',
+        funds: 0,
+        transactions: 0,
+        errors: allErrors.map((code) => userMessageForCASFailure(reasonFromAuditError(code))),
+      });
+      return;
+    }
+
+    // Phase 2 begins only after the complete attachment set passed preflight.
+    for (const parsedResult of parsedPayloads) {
+      const { fundsUpdated, transactionsAdded, errors } = await importCASData(
+        supabase,
+        userId,
+        importId,
+        parsedResult,
+      );
+      totalFunds += fundsUpdated;
+      totalTransactions += transactionsAdded;
+      allErrors.push(...errors);
+    }
+
+    const firstDialect = dialects[0] ?? 'unknown_standard';
+    const dialect = dialects.every((value) => value === firstDialect)
+      ? firstDialect
+      : 'unknown_standard';
+    const outcome = buildImportOutcome({
+      source: 'email',
+      dialect,
+      fundsUpdated: totalFunds,
+      transactionsAdded: totalTransactions,
+      errors: allErrors,
+    });
+    const status = outcome.status;
 
     await finalizeImportRow(supabase, importId, status, totalFunds, totalTransactions, allErrors);
 
     console.log(
-      '[cas-webhook-resend] background_completed import_id=%s, status=%s, funds=%d, txns=%d, errors=%d',
-      importId,
+      '[cas-webhook-resend] background_completed status=%s funds=%s transactions=%s write_failures=%s',
       status,
-      totalFunds,
-      totalTransactions,
-      allErrors.length,
+      bucketCount(totalFunds),
+      bucketCount(totalTransactions),
+      bucketCount(allErrors.length),
     );
 
     trackServerEvent(
       status === 'success' ? 'cas_inbound_imported' : 'cas_inbound_failed',
-      {
-        funds_updated: totalFunds,
-        transactions_added: totalTransactions,
-        attachment_errors: allErrors.length,
-        first_error: allErrors[0]?.slice(0, 240),
-      },
+      outcome.telemetry,
       userId,
     );
 
     await sendImportNotification({
       to: await authEmailPromise,
       importId,
-      status,
-      funds: totalFunds,
-      transactions: totalTransactions,
-      errors: allErrors,
+      ...outcome.notification,
     });
 
     if (status === 'success') {
@@ -433,10 +466,7 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         .eq('user_id', userId)
         .not('cas_inbox_confirmation_url', 'is', null);
       if (clearErr) {
-        console.warn(
-          '[cas-webhook-resend] opportunistic clear failed: %s (non-fatal)',
-          clearErr.message,
-        );
+        console.warn('[cas-webhook-resend] confirmation_clear_failed');
       }
     }
 
@@ -444,42 +474,36 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       fetch(`${SUPABASE_URL}/functions/v1/sync-nav`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
-      }).catch((err) => console.error('[cas-webhook-resend] sync-nav trigger failed:', err));
+      }).catch(() => console.error('[cas-webhook-resend] sync_nav_trigger_failed'));
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(
-      '[cas-webhook-resend] CRITICAL background failure import_id=%s: %s',
-      importId,
-      msg,
-    );
+  } catch {
+    const outcome = buildImportCrashOutcome({
+      source: 'email',
+      fundsUpdated: totalFunds,
+      transactionsAdded: totalTransactions,
+    });
+    console.error('[cas-webhook-resend] background_crashed');
     trackServerEvent(
       'cas_inbound_crashed',
-      {
-        import_id: importId,
-        error_message: msg.slice(0, 240),
-      },
+      outcome.telemetry,
       userId,
     );
     try {
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, [
-        `Background processor crashed: ${msg}`,
-      ]);
+      await finalizeImportRow(
+        supabase,
+        importId,
+        outcome.audit.import_status,
+        outcome.audit.funds_updated,
+        outcome.audit.transactions_added,
+        [outcome.audit.error_message],
+      );
       await sendImportNotification({
         to: await authEmailPromise,
         importId,
-        status: 'failed',
-        funds: 0,
-        transactions: 0,
-        errors: [`Background processor crashed: ${msg}`],
+        ...outcome.notification,
       });
-    } catch (innerErr) {
-      const innerMsg = innerErr instanceof Error ? innerErr.message : String(innerErr);
-      console.error(
-        '[cas-webhook-resend] CRITICAL secondary failure import_id=%s while reporting primary failure: %s',
-        importId,
-        innerMsg,
-      );
+    } catch {
+      console.error('[cas-webhook-resend] crash_reporting_failed');
     }
   }
 }
@@ -511,11 +535,7 @@ Deno.serve(async (req) => {
 
   const token = (payload.token ?? '').toUpperCase();
   if (!token || !TOKEN_REGEX.test(token)) {
-    console.warn(
-      '[cas-webhook-resend] DROPPED no_token: recipient=%s, email_id=%s',
-      payload.recipient ?? '(none)',
-      payload.email_id ?? '(none)',
-    );
+    console.warn('[cas-webhook-resend] dropped reason=no_token');
     return Response.json({ ok: false, reason: 'no_token' });
   }
 
@@ -528,17 +548,12 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   if (profileError) {
-    console.error('[cas-webhook-resend] profile lookup error: %s', profileError.message);
+    console.error('[cas-webhook-resend] profile_lookup_failed');
     return Response.json({ ok: false, reason: 'lookup_failed' });
   }
 
   if (!profile?.user_id || !profile?.pan) {
-    console.warn(
-      '[cas-webhook-resend] DROPPED unknown_token: token=%s, recipient=%s, email_id=%s',
-      token,
-      payload.recipient ?? '(none)',
-      payload.email_id ?? '(none)',
-    );
+    console.warn('[cas-webhook-resend] dropped reason=unknown_token');
     return Response.json({ ok: false, reason: 'unknown_token' });
   }
 
@@ -551,10 +566,7 @@ Deno.serve(async (req) => {
   if (isGmailForwardingVerification(verificationView)) {
     const url = extractGmailVerificationUrl(verificationView);
     if (!url) {
-      console.warn(
-        '[cas-webhook-resend] gmail-verification email matched sender+subject but no URL found, token=%s',
-        token,
-      );
+      console.warn('[cas-webhook-resend] gmail_verification_missing_url');
       return Response.json({ ok: false, reason: 'gmail_verification_no_url' });
     }
     const { error: updateErr } = await supabase
@@ -562,28 +574,18 @@ Deno.serve(async (req) => {
       .update({ cas_inbox_confirmation_url: url })
       .eq('user_id', userId);
     if (updateErr) {
-      console.error(
-        '[cas-webhook-resend] gmail-verification url update failed: %s',
-        updateErr.message,
-      );
+      console.error('[cas-webhook-resend] gmail_verification_update_failed');
       return Response.json({ ok: false, reason: 'gmail_verification_update_failed' });
     }
-    console.log(
-      '[cas-webhook-resend] gmail-verification-captured token=%s, user=%s',
-      token,
-      userId,
-    );
+    console.log('[cas-webhook-resend] gmail_verification_captured');
     return Response.json({ ok: true, captured: 'gmail_forwarding_verification' });
   }
 
   const pdfAttachments = (payload.attachments ?? []).filter(isPdfAttachment);
   if (pdfAttachments.length === 0) {
     console.warn(
-      '[cas-webhook-resend] DROPPED no_pdfs: token=%s, recipient=%s, email_id=%s, total_files=%d',
-      token,
-      payload.recipient ?? '(none)',
-      payload.email_id ?? '(none)',
-      payload.attachments?.length ?? 0,
+      '[cas-webhook-resend] dropped reason=no_pdfs total_files=%s',
+      bucketCount(payload.attachments?.length ?? 0),
     );
     return Response.json({ ok: false, reason: 'no_pdfs' });
   }
@@ -594,23 +596,19 @@ Deno.serve(async (req) => {
       user_id: userId,
       import_source: 'email',
       import_status: 'pending',
-      raw_payload: payload as unknown as Record<string, unknown>,
     })
     .select('id')
     .single();
 
   if (importError || !importRecord) {
-    console.error('[cas-webhook-resend] cas_import insert failed: %s', importError?.message);
+    console.error('[cas-webhook-resend] audit_create_failed');
     return Response.json({ ok: false, reason: 'audit_failed' });
   }
 
   const importId = importRecord.id as string;
   console.log(
-    '[cas-webhook-resend] accepted import_id=%s, user=%s, token=%s, pdf_files=%d',
-    importId,
-    userId,
-    token,
-    pdfAttachments.length,
+    '[cas-webhook-resend] accepted pdf_files=%s',
+    bucketCount(pdfAttachments.length),
   );
 
   EdgeRuntime.waitUntil(

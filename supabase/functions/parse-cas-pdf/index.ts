@@ -10,11 +10,23 @@
 import { CORS, json } from '../_shared/cors.ts';
 import { getUserFromRequest } from '../_shared/auth.ts';
 import {
-  countParsedTransactions,
   importCASData,
   type CASParseResult,
 } from '../_shared/import-cas.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
+import {
+  CASPreflightError,
+  assertCASPreflight,
+  auditErrorCode,
+  buildImportOutcome,
+  buildPreflightFailureOutcome,
+  bucketCount,
+  reasonFromAuditError,
+  safeCASFailureReason,
+  userMessageForCASFailure,
+  type CASFailureReason,
+  type CASPreflightSummary,
+} from '../_shared/cas-import-contract.ts';
 
 const LOCAL_CAS_PARSER_URL = Deno.env.get('LOCAL_CAS_PARSER_URL') ?? '';
 const CAS_PARSER_SHARED_SECRET = Deno.env.get('CAS_PARSER_SHARED_SECRET') ?? '';
@@ -82,7 +94,6 @@ Deno.serve(async (req) => {
     return json({ error: 'Empty file received' }, { status: 400 });
   }
 
-  const fileName = req.headers.get('x-file-name') ?? 'cas.pdf';
   const passwordOverride = req.headers.get('x-password-override')?.trim() || null;
 
   const { data: profile } = await supabase
@@ -105,12 +116,12 @@ Deno.serve(async (req) => {
     : (profile?.pan && profile?.dob ? computeCdslPassword(profile.pan, profile.dob) : null);
 
   console.log(
-    '[parse-cas-pdf] user=%s, file=%s, size=%d bytes, has_dob=%s, custom_pw=%s',
-    user.id, fileName, pdfBytesRaw.byteLength, !!profile?.dob, !!passwordOverride,
+    '[parse-cas-pdf] request_ready password_mode=%s',
+    passwordOverride ? 'custom' : 'profile',
   );
 
   if (!password) {
-    console.warn('[parse-cas-pdf] no password available for user %s', user.id);
+    console.warn('[parse-cas-pdf] rejected reason=missing_password');
     return json(
       { error: 'CAS PDF password required. Please set your PAN in the app settings.' },
       { status: 400 },
@@ -129,50 +140,28 @@ Deno.serve(async (req) => {
     .single();
 
   if (importError || !importRecord) {
-    console.error('[parse-cas-pdf] failed to create import record:', importError?.message);
+    console.error('[parse-cas-pdf] audit_create_failed');
     return json({ error: 'Failed to create import record' }, { status: 500 });
   }
 
   const importId = importRecord.id as string;
-  console.log('[parse-cas-pdf] import record created, import_id=%s', importId);
+  console.log('[parse-cas-pdf] audit_created');
 
   let parsed: CASParseResult;
-  // Diagnostic context captured outside the try/catch so the catch block can
-  // write it into cas_import.error_message — Supabase MCP only exposes HTTP
-  // summaries from the function logs, but the DB row is queryable via SQL,
-  // so when prod imports fail with "Unauthorized" we need this context to
-  // tell apart Vercel deployment-protection HTML, parser-route 401s on a
-  // wrong/missing secret, and an unexpected URL being hit.
-  let diagContext = '';
+  let parserFailureReason: CASFailureReason = 'parser_error';
   try {
     const parserUrl = resolveParserUrl(req);
     if (!CAS_PARSER_SHARED_SECRET) {
       throw new Error('CAS parser secret is not configured');
     }
 
-    // Diagnostic context — helps debug 401s from the upstream Vercel parser.
-    // We log the resolved URL, the *prefix* of the shared secret (first 4
-    // chars + length) so a value mismatch between Supabase Edge and the
-    // Vercel project's env can be spotted in logs without fully exposing
-    // either side, and whether a Vercel protection bypass token was sent.
-    const secretPrefix = CAS_PARSER_SHARED_SECRET.slice(0, 4);
-    console.log(
-      '[parse-cas-pdf] parser_call url=%s, secret_prefix=%s***, secret_len=%d, vercel_bypass_set=%s, file=%s, pdf_bytes=%d, has_cdsl_password=%s',
-      parserUrl,
-      secretPrefix,
-      CAS_PARSER_SHARED_SECRET.length,
-      VERCEL_PROTECTION_BYPASS_TOKEN ? 'true' : 'false',
-      fileName,
-      pdfBytesRaw.byteLength,
-      cdslPassword ? 'true' : 'false',
-    );
+    console.log('[parse-cas-pdf] parser_call_started');
 
     const parserStartedAt = Date.now();
     const parserRes = await fetch(parserUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/octet-stream',
-        'x-file-name': fileName,
         'x-password': password,
         'x-parser-secret': CAS_PARSER_SHARED_SECRET,
         ...(cdslPassword ? { 'x-password-cdsl': cdslPassword } : {}),
@@ -184,155 +173,125 @@ Deno.serve(async (req) => {
     });
     const parserElapsed = Date.now() - parserStartedAt;
 
-    // Capture the raw response body once. We need the text either way: a
-    // 200 path parses it as JSON, a non-OK path logs a truncated prefix so
-    // we can tell apart Vercel deployment-protection HTML (auth wall) from
-    // the parser route's own JSON 401 body.
+    // Capture the body once for JSON decoding. It is never logged or persisted:
+    // upstream parser errors may contain statement-derived details.
     const rawBody = await parserRes.text();
-    let parserBody: { error?: string; mutual_funds?: unknown[] } = {};
-    let bodyParseError: string | null = null;
+    let parserBody: { error?: string; reason?: string; mutual_funds?: unknown[] } = {};
+    let bodyParsed = true;
     try {
       parserBody = rawBody ? JSON.parse(rawBody) : {};
-    } catch (jsonErr) {
-      bodyParseError = jsonErr instanceof Error ? jsonErr.message : String(jsonErr);
+    } catch {
+      bodyParsed = false;
     }
 
     console.log(
-      '[parse-cas-pdf] parser_response status=%d, content_type=%s, body_len=%d, json_ok=%s, elapsed_ms=%d',
+      '[parse-cas-pdf] parser_response status=%d json_ok=%s duration_bucket=%s',
       parserRes.status,
-      parserRes.headers.get('content-type') ?? 'unknown',
-      rawBody.length,
-      bodyParseError ? 'false' : 'true',
-      parserElapsed,
+      bodyParsed ? 'true' : 'false',
+      parserElapsed < 1000 ? '<1s' : parserElapsed < 5000 ? '1-5s' : parserElapsed < 15000 ? '5-15s' : '15s+',
     );
 
     if (!parserRes.ok) {
-      // On non-OK, log the body prefix so the user can tell whether it's
-      // an HTML auth-wall page or a JSON parser-route rejection.
-      const bodyPrefix = rawBody.slice(0, 240).replace(/\s+/g, ' ');
-      console.warn(
-        '[parse-cas-pdf] parser_non_ok status=%d body_prefix=%s',
-        parserRes.status,
-        bodyPrefix,
-      );
-      diagContext = `url=${parserUrl} status=${parserRes.status} secret_prefix=${secretPrefix}*** secret_len=${CAS_PARSER_SHARED_SECRET.length} bypass_set=${VERCEL_PROTECTION_BYPASS_TOKEN ? 'true' : 'false'} content_type=${parserRes.headers.get('content-type') ?? 'unknown'} body_prefix=${bodyPrefix}`;
-      throw new Error(parserBody.error ?? `Parser request failed with status ${parserRes.status}`);
+      parserFailureReason = safeCASFailureReason(parserBody.reason);
+      console.warn('[parse-cas-pdf] parser_rejected reason=%s', parserFailureReason);
+      throw new Error('parser_request_rejected');
     }
 
     parsed = parserBody as CASParseResult;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[parse-cas-pdf] parser error: %s', msg);
-
-    // Persist diag context alongside the user-facing message so we can read
-    // back the URL hit, the status, the secret prefix used and the response
-    // body prefix from the cas_import row when investigating failures.
-    const persistedMsg = diagContext ? `${msg} | ${diagContext}` : msg;
+  } catch {
+    console.error('[parse-cas-pdf] parser_failed reason=%s', parserFailureReason);
     await supabase
       .from('cas_import')
-      .update({ import_status: 'failed', error_message: persistedMsg })
+      .update({
+        import_status: 'failed',
+        funds_updated: 0,
+        transactions_added: 0,
+        error_message: auditErrorCode(parserFailureReason),
+      })
       .eq('id', importId);
 
-    const msgLower = msg.toLowerCase();
-    const isPasswordError = msgLower.includes('password') || msgLower.includes('decrypt');
-    const isHoldingsOnly = msgLower.includes('holdings-only') || msgLower.includes('detailed cas');
     trackServerEvent(
       'cas_parse_failed',
       {
         source: 'parse-cas-pdf',
-        failure_reason: isPasswordError
-          ? 'wrong_password'
-          : isHoldingsOnly
-            ? 'holdings_only'
-            : 'parser_error',
-        error_message: msg.slice(0, 240),
+        status: 'rejected',
+        failure_reason: parserFailureReason,
       },
       user.id,
     );
     return json(
       {
-        error: isHoldingsOnly
-          ? msg
-          : isPasswordError
-            ? 'Wrong PDF password. For CAMS/KFintech/MFCentral PDFs, the password is your PAN. For CDSL/NSDL PDFs, set your date of birth in Settings → Account.'
-            : `Failed to parse CAS PDF: ${msg}`,
+        error: userMessageForCASFailure(parserFailureReason),
+        reason: parserFailureReason,
       },
       { status: 422 },
     );
   }
 
-  const parsedFolios = parsed?.mutual_funds ?? [];
-  const parsedTransactions = countParsedTransactions(parsed);
-  console.log(
-    '[parse-cas-pdf] parser returned %d folios and %d raw transactions',
-    parsedFolios.length,
-    parsedTransactions,
-  );
-
-  if (parsedFolios.length === 0) {
-    const msg = 'No mutual fund data found in this CAS PDF';
-    await supabase
-      .from('cas_import')
-      .update({ import_status: 'failed', error_message: msg })
-      .eq('id', importId);
-
-    return json(
-      {
-        error: 'We could not find any mutual fund entries in this PDF. Please upload a detailed CAS statement.',
-      },
-      { status: 422 },
+  let preflightSummary: CASPreflightSummary;
+  try {
+    const preflight = assertCASPreflight(parsed);
+    parsed = preflight.parsed;
+    preflightSummary = preflight.summary;
+  } catch (error) {
+    if (!(error instanceof CASPreflightError)) throw error;
+    const outcome = buildPreflightFailureOutcome('pdf', error);
+    await supabase.from('cas_import').update(outcome.audit).eq('id', importId);
+    console.warn(
+      '[parse-cas-pdf] preflight_rejected dialect=%s rows=%s reason=%s',
+      error.summary.dialect,
+      error.summary.rows_bucket,
+      error.reason,
     );
-  }
-
-  if (parsedTransactions === 0) {
-    const msg = 'Detailed CAS required: parser found holdings but no transaction rows';
-    await supabase
-      .from('cas_import')
-      .update({ import_status: 'failed', error_message: msg })
-      .eq('id', importId);
-
-    return json(
-      {
-        error:
-          'This PDF has holdings but no transaction history. Please upload a Detailed CAS covering your full investment date range.',
-      },
-      { status: 422 },
-    );
+    trackServerEvent('cas_parse_failed', outcome.telemetry, user.id);
+    return json(outcome.response.body, { status: outcome.response.status });
   }
 
   const { fundsUpdated, transactionsAdded, errors } = await importCASData(
     supabase, user.id, importId, parsed,
   );
 
-  const status = errors.length > 0 && fundsUpdated === 0 ? 'failed' : 'success';
+  const outcome = buildImportOutcome({
+    source: 'pdf',
+    dialect: preflightSummary.dialect,
+    fundsUpdated,
+    transactionsAdded,
+    errors,
+  });
+  const status = outcome.status;
   await supabase
     .from('cas_import')
-    .update({
-      import_status: status,
-      funds_updated: fundsUpdated,
-      transactions_added: transactionsAdded,
-      error_message: errors.length > 0 ? errors.join('; ') : null,
-    })
+    .update(outcome.audit)
     .eq('id', importId);
 
   console.log(
-    '[parse-cas-pdf] done, import_id=%s, status=%s, funds=%d, txns=%d, errors=%d',
-    importId, status, fundsUpdated, transactionsAdded, errors.length,
+    '[parse-cas-pdf] completed status=%s dialect=%s rows=%s',
+    status,
+    preflightSummary.dialect,
+    preflightSummary.rows_bucket,
   );
 
   if (fundsUpdated === 0 && errors.length > 0) {
-    console.error('[parse-cas-pdf] all scheme upserts failed; first error: %s', errors[0]);
+    const failureReason = reasonFromAuditError(errors[0]);
+    console.error(
+      '[parse-cas-pdf] import_failed reason=%s write_failures=%s',
+      failureReason,
+      bucketCount(errors.length),
+    );
     trackServerEvent(
       'cas_parse_failed',
       {
         source: 'parse-cas-pdf',
-        failure_reason: 'import_all_failed',
-        scheme_errors: errors.length,
-        first_error: errors[0]?.slice(0, 240),
+        status: 'failed',
+        failure_reason: failureReason,
+        write_failures_bucket: bucketCount(errors.length),
       },
       user.id,
     );
-    return json({ error: 'Import failed — no funds could be saved. Please try again.' }, { status: 500 });
+    return json(
+      { error: userMessageForCASFailure(failureReason), reason: failureReason },
+      { status: 500 },
+    );
   }
 
   if (fundsUpdated > 0) {
@@ -342,26 +301,20 @@ Deno.serve(async (req) => {
     fetch(`${SUPABASE_URL}/functions/v1/sync-nav`, {
       method: 'POST',
       headers,
-    }).catch((err) => console.error('[parse-cas-pdf] sync-nav trigger failed:', err));
+    }).catch(() => console.error('[parse-cas-pdf] sync_nav_trigger_failed'));
 
     console.log('[parse-cas-pdf] triggering sync-index in background');
     fetch(`${SUPABASE_URL}/functions/v1/sync-index`, {
       method: 'POST',
       headers,
-    }).catch((err) => console.error('[parse-cas-pdf] sync-index trigger failed:', err));
+    }).catch(() => console.error('[parse-cas-pdf] sync_index_trigger_failed'));
   }
 
   trackServerEvent(
     'cas_parse_success',
-    {
-      source: 'parse-cas-pdf',
-      funds_updated: fundsUpdated,
-      transactions_added: transactionsAdded,
-      partial: errors.length > 0,
-      partial_errors: errors.length,
-    },
+    outcome.telemetry,
     user.id,
   );
 
-  return json({ ok: true, funds: fundsUpdated, transactions: transactionsAdded });
+  return json(outcome.response);
 });

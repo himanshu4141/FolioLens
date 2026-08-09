@@ -19,7 +19,7 @@ graph TB
   subgraph Vercel["Vercel: app.foliolens.in (prod project, foliolens)"]
     router["api/resend-inbound-router<br/>──────────────<br/>• Verifies Resend Svix sig<br/>• Routes by local-part<br/>• Fetches Resend content<br/>• Signs FolioLens HMAC"]
     notify["api/cas-import-notify<br/>──────────────<br/>• Verifies FolioLens HMAC<br/>• Sends Resend template"]
-    parser["api/parse-cas-pdf<br/>──────────────<br/>Python casparser /<br/>CDSL/NSDL parser"]
+    parser["api/parse-cas-pdf<br/>──────────────<br/>Python parser +<br/>canonical preflight"]
     secrets_v["Vercel env<br/>──────────────<br/>RESEND_API_KEY<br/>RESEND_INBOUND_ROUTER_SECRET<br/>FOLIOLENS_INBOUND_ROUTER_SECRET<br/>RESEND_NOTIFICATION_FROM_DEV/_PROD<br/>RESEND_IMPORT_NOTIFICATION_TEMPLATE_ID_DEV/_PROD<br/>SUPABASE_DEV/_PROD_FUNCTION_URL<br/>MAIL_FORWARD_TO / _FROM"]
   end
 
@@ -96,17 +96,25 @@ sequenceDiagram
 
     Note over SB: EdgeRuntime.waitUntil(...)<br/>background processor takes over
 
-    loop for each PDF attachment
+    loop phase 1: every PDF attachment
       SB->>RS: GET presigned attachment URL<br/>(no auth — Resend's signed URL)
       RS-->>SB: PDF bytes
       SB->>P: POST PDF + PAN + DOB password<br/>x-parser-secret
-      P-->>SB: parsed schemes + transactions
-      SB->>DB: upsert user_fund + transaction rows
+      P->>P: canonicalize + validate before success
+      P-->>SB: canonical payload or safe reason code
+      SB->>SB: repeat pure TypeScript preflight
     end
 
-    SB->>DB: UPDATE cas_import<br/>(status, funds_updated,<br/> transactions_added, error_message)
+    alt any attachment rejects
+      SB->>DB: UPDATE cas_import<br/>(status='failed', allowlisted reason)
+    else every attachment passes
+      loop phase 2: validated payloads
+        SB->>DB: importCASData()<br/>preflight before domain I/O<br/>upsert user_fund + transaction rows
+      end
+      SB->>DB: UPDATE cas_import<br/>(status='success', exact counts)
+    end
 
-    SB->>SB: build notify body<br/>{to, import_id, status, funds,<br/> transactions, errors, environment}
+    SB->>SB: build notify body<br/>(generic status, safe reason,<br/>exact success counts, environment)
     SB->>SB: sign HMAC-SHA256<br/>(FOLIOLENS_INBOUND_ROUTER_SECRET)
     SB->>N: POST signed body<br/>x-foliolens-signature<br/>x-foliolens-timestamp
     N->>N: verify FolioLens HMAC
@@ -123,8 +131,9 @@ sequenceDiagram
 2. **Supabase signature is FolioLens-owned.** The HMAC over `<unix-ts>.<body>` is symmetric: the same secret signs the inbound handoff (router → Supabase) and the outbound notification callback (Supabase → notify endpoint). Five-minute replay window matches Svix's tolerance.
 3. **Attachment fetch by Supabase is unauthenticated.** Resend's `download_url` is a presigned URL that's valid for a short window — Supabase fetches PDF bytes directly without needing a Resend API key. Signed URLs are part of the normalized payload, so they're covered by the FolioLens HMAC.
 4. **Sync handler returns in <1 s.** Audit row + background hand-off finishes well inside the Svix 15-second timeout, so Resend never retries a successful import.
-5. **Background catch-all guarantees feedback.** Any unhandled throw in the background processor promotes the `pending` row to `failed` with the error message and emails the user via the same notify endpoint. No silent stuck rows.
+5. **Background catch-all guarantees privacy-safe feedback.** Any unhandled throw promotes the `pending` row to `failed` with an allowlisted reason code and emails a generic actionable message through the same notify endpoint. Raw exceptions and normalized webhook payloads are neither persisted nor emitted.
 6. **DEV vs PROD separation by local-part.** A single Resend account + apex MX serves both environments. `cas-dev-<token>@foliolens.in` routes to DEV Supabase, `cas-<token>@foliolens.in` to PROD. The router decides; both Supabase projects share the same `FOLIOLENS_INBOUND_ROUTER_SECRET` and HMAC verification logic.
+7. **All attachments preflight before any import.** Download, parse, and validate form phase 1. Shared-domain writes begin only in phase 2 after every PDF passes, preventing a mixed-validity email from partially changing a portfolio.
 
 ## Diagnostic answers per the issue
 
@@ -133,6 +142,6 @@ sequenceDiagram
 | Did Resend deliver the webhook? | Resend dashboard → Webhooks log |
 | Which route did the router choose? | Vercel function log: `{ok: true, route: "cas_dev"\|"cas_prod"\|"human_forward"\|"drop"}` |
 | Did Supabase receive the normalized payload? | Vercel router log: HTTP status from `forward_cas_to_supabase`. Supabase function log: HTTP boundary entry. |
-| Was the inbox token unknown / missing PAN / etc.? | Supabase function log: `[cas-webhook-resend] DROPPED <reason>: token=…, recipient=…, email_id=…` (stable grep tag) |
-| Did the import succeed/fail and why? | `cas_import` row's `import_status` + `error_message` (authoritative); plus `[cas-webhook-resend] background_completed` log line |
-| Did the user get a notification email? | `[cas-webhook-resend] notification sent` (success) or `DROPPED notification_failed: import_id=…, status=…, error=…` (failure). Resend dashboard for delivery status. |
+| Was the inbox token unknown / profile incomplete / etc.? | Supabase function log: stable allowlisted reason code only; identifiers, recipients, and filenames are deliberately omitted. |
+| Did the import succeed/fail and why? | `cas_import.import_status` plus its allowlisted reason code is authoritative; logs and PostHog add only dialect/status and bucketed counts. |
+| Did the user get a notification email? | Safe notification outcome log plus the Resend delivery dashboard; neither contains the import id, recipient, raw error, or statement data. |

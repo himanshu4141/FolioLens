@@ -12,12 +12,12 @@ graph TB
   end
 
   subgraph SupabaseEdge["Supabase Edge Functions"]
-    parse_edge["parse-cas-pdf<br/>──────────────<br/>• Verifies user JWT<br/>• Reads pan + dob<br/>• Computes CDSL password<br/>• Forwards to Vercel parser<br/>• Calls importCASData()"]
-    shared["_shared/import-cas.ts<br/>──────────────<br/>importCASData()<br/>(shared with cas-webhook-resend)"]
+    parse_edge["parse-cas-pdf<br/>──────────────<br/>• Verifies user JWT<br/>• Creates pending audit<br/>• Forwards to Vercel parser<br/>• Repeats safe preflight<br/>• Calls importCASData()"]
+    shared["_shared/import-cas.ts<br/>+ cas-import-contract.ts<br/>──────────────<br/>Pure preflight before I/O<br/>then importCASData()"]
   end
 
   subgraph Vercel["Vercel (Python)"]
-    parser["api/parse-cas-pdf.py<br/>──────────────<br/>• Verifies x-parser-secret<br/>• Detects CDSL/NSDL vs CAMS"]
+    parser["api/parse-cas-pdf.py<br/>+ _cas_preflight.py<br/>──────────────<br/>• Verifies x-parser-secret<br/>• Detects provider dialect<br/>• Validates before success"]
     cdsl["api/_cdsl_nsdl_parser.py<br/>──────────────<br/>• pdfplumber + AMFI ISIN map"]
     casparser["api/_cas_parser.py<br/>──────────────<br/>• casparser library<br/>(CAMS / KFintech / MFCentral)"]
   end
@@ -70,15 +70,16 @@ sequenceDiagram
     V->>Lib: casparser.read_cas_pdf(bytes, password)
     Lib-->>V: schemes + transactions
   end
-  V-->>SB: { mutual_funds, transactions } JSON
+  V->>V: canonicalize + validate complete payload<br/>(source amount, gross, charges,<br/>NAV, Price, units, date, type, direction)
+  V-->>SB: canonical parsed JSON or safe reason code
 
-  SB->>SB: countParsedTransactions()
-  alt zero transactions
-    SB->>DB: INSERT cas_import(status='failed',<br/>error_message='Detailed CAS required...')
-    SB-->>App: error response
-  else has transactions
-    SB->>DB: importCASData()<br/>upsert fund, transaction, user_fund
-    SB->>DB: INSERT cas_import(status='success', counts)
+  SB->>SB: repeat pure canonical preflight
+  alt parser or preflight rejects
+    SB->>DB: UPDATE pending cas_import<br/>(status='failed', allowlisted reason)
+    SB-->>App: HTTP 422 safe error response
+  else complete payload passes
+    SB->>DB: importCASData()<br/>preflight before first domain query/write<br/>upsert fund, transaction, user_fund
+    SB->>DB: UPDATE cas_import(status='success', exact counts)
     DB-->>SB: import_id
     SB-->>App: { funds: N, transactions: M }
   end
@@ -93,7 +94,7 @@ sequenceDiagram
 | CAMS, KFintech, MFCentral | `casparser` (Python lib by codereverser) | PAN | Mature, handles AMC-issued summary + Detailed CAS variants |
 | CDSL / NSDL | In-house `_cdsl_nsdl_parser.py` | PAN + DDMMYYYY | Demat statements; `casparser` doesn't handle these reliably |
 
-`api/parse-cas-pdf.py` peeks at the first 3 pages and dispatches based on which format markers it finds. Both branches return the same normalized `{ mutual_funds, transactions }` shape so the caller doesn't care which parser ran.
+`api/parse-cas-pdf.py` peeks at the first 3 pages and dispatches based on format markers. Both branches retain a provider dialect and the canonical financial fields until `_cas_preflight.py` validates the complete payload. `_shared/cas-import-contract.ts` repeats the same invariant checks before any shared-domain I/O. This defence in depth prevents an unsafe parser response from becoming an import write.
 
 ## How this differs from the inbound (Resend) flow
 
@@ -108,4 +109,4 @@ sequenceDiagram
 | Notification email | None — UI shows result inline | Yes — via `/api/cas-import-notify` |
 | Background processor | Not needed (sync, fast enough) | Yes (`EdgeRuntime.waitUntil`) — Resend has 15s Svix timeout |
 
-The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. Anything that affects schema mapping or transaction shaping happens once and benefits both paths.
+The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. A rejection may update only the already-created `cas_import` audit row to `failed`, using an allowlisted reason code and bucketed counts. No raw CAS payload, filename, identifier, amount, or exception text is persisted or emitted for diagnosis.

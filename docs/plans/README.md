@@ -6,6 +6,7 @@
 
 | Plan | Branch | What it covers |
 |---|---|---|
+| `cas-import-correctness-q1.md` | `program/Q1-cas-preflight` | CAS correctness Q1 — provider-neutral canonical transaction fields, Python + TypeScript fail-closed preflight, privacy-safe audit/telemetry outcomes, and exact inserted counts before later parser/reconciliation milestones. |
 | `phase-9-pre-launch-readiness/N1-navigation-performance-instrumentation.md` | `codex/n1-navigation-performance-instrumentation` | Navigation N1 — concurrency-safe performance spans plus privacy-safe native timings for Portfolio → Settings, Settings → About, Funds → Fund Detail, and bottom-tab switches; includes the Android/iOS release baseline runbook. |
 | `phase-3-clear-lens-design-mode/M2-money-trail.md` | `feature/money-trail` | Money Trail transaction history on Clear Lens; portfolio preview, entry points, transaction browsing, detail, filters, sorting, CSV export, and calculation alignment |
 | `phase-3-clear-lens-design-mode/M3-dark-mode.md` | `claude/add-dark-theme-selection-hZil0` (PR #97) | Clear Lens dark scheme; Settings appearance picker (light / dark / system); Classic mode retired; live-token migration; theme-aware app icons (iOS dark/tinted, Android monochrome) and web favicon swap |

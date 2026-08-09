@@ -37,46 +37,24 @@ export interface SupabaseClient {
   from(table: string): any;
 }
 
-// ── CASParser response types ──────────────────────────────────────────────────
+import {
+  assertCASPreflight,
+  auditErrorCode,
+  bucketCount,
+  normaliseTxType,
+  parseDate,
+  type CASParseResult,
+  type CASWriteFailureReason,
+} from './cas-import-contract.ts';
 
-export interface CASSchemeAdditionalInfo {
-  amfi?: string;       // AMFI code — same integer used by mfapi.in as scheme_code
-  rta_code?: string;
-  advisor?: string;
-  open_units?: number;
-  close_units?: number;
-}
-
-export interface CASScheme {
-  name?: string;
-  isin?: string;
-  type?: string;       // "Equity" | "Debt" | "Hybrid" | "Other"
-  units?: number;
-  nav?: number;
-  value?: number;
-  additional_info?: CASSchemeAdditionalInfo;
-  transactions?: CASTransaction[];
-}
-
-export interface CASFolio {
-  folio_number?: string;
-  amc?: string;
-  schemes?: CASScheme[];
-}
-
-export interface CASTransaction {
-  date?: string;          // ISO date YYYY-MM-DD
-  type?: string;          // uppercase e.g. "PURCHASE", "REDEMPTION"
-  description?: string;
-  amount?: number;
-  units?: number;
-  nav?: number;
-  balance?: number;
-}
-
-export interface CASParseResult {
-  mutual_funds?: CASFolio[];
-}
+export {
+  normaliseTxType,
+  parseDate,
+  type CASParseResult,
+  type CASTransaction,
+  type CASScheme,
+  type CASFolio,
+} from './cas-import-contract.ts';
 
 export function countParsedTransactions(parsed: CASParseResult): number {
   return (parsed.mutual_funds ?? []).reduce(
@@ -90,63 +68,6 @@ export function countParsedTransactions(parsed: CASParseResult): number {
   );
 }
 
-// ── Date normalisation ────────────────────────────────────────────────────────
-
-const MONTHS: Record<string, string> = {
-  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
-};
-
-export function parseDate(raw: string): string {
-  if (!raw) return new Date().toISOString().slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const m = raw.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/);
-  if (m) {
-    const mm = MONTHS[m[2].toLowerCase()];
-    return mm ? `${m[3]}-${mm}-${m[1]}` : raw;
-  }
-  return raw;
-}
-
-// ── Transaction type normalisation ───────────────────────────────────────────
-// CASParser sends uppercase types; we normalise to our DB enum values.
-
-export function normaliseTxType(raw: string): string | null {
-  if (!raw) return null;
-  const upper = raw.toUpperCase().trim();
-
-  if (upper === 'PURCHASE' || upper === 'PURCHASE_SIP') return 'purchase';
-  if (upper === 'REDEMPTION') return 'redemption';
-  if (upper === 'SWITCH_IN' || upper === 'SWITCH_IN_MERGER') return 'switch_in';
-  if (upper === 'SWITCH_OUT' || upper === 'SWITCH_OUT_MERGER') return 'switch_out';
-  if (upper === 'DIVIDEND_REINVEST') return 'dividend_reinvest';
-  if (upper === 'DIVIDEND_PAYOUT') return 'dividend';
-
-  // SEGREGATION, STAMP_DUTY_TAX, TDS_TAX, STT_TAX, MISC, UNKNOWN — not meaningful
-  // for portfolio accounting; skip rather than default to 'purchase'.
-  if (
-    upper === 'REVERSAL' ||
-    upper === 'SEGREGATION' ||
-    upper === 'STAMP_DUTY_TAX' ||
-    upper === 'TDS_TAX' ||
-    upper === 'STT_TAX' ||
-    upper === 'MISC' ||
-    upper === 'UNKNOWN'
-  ) return null;
-
-  // Also handle legacy lowercase values (for parse-cas-pdf manual uploads)
-  const lower = raw.toLowerCase().trim();
-  if (lower === 'purchase' || lower === 'buy' || lower === 'sip') return 'purchase';
-  if (lower.includes('switch in')) return 'switch_in';
-  if (lower.includes('switch out')) return 'switch_out';
-  if (lower.includes('redempt') || lower.includes('withdrawal')) return 'redemption';
-  if (lower.includes('dividend reinvest')) return 'dividend_reinvest';
-  if (lower.includes('dividend')) return 'dividend';
-
-  // Anything else unrecognised — skip rather than silently import as a purchase.
-  return null;
-}
-
 // ── Core import logic ─────────────────────────────────────────────────────────
 
 export async function importCASData(
@@ -155,12 +76,22 @@ export async function importCASData(
   importId: string,
   parsed: CASParseResult,
 ): Promise<{ fundsUpdated: number; transactionsAdded: number; errors: string[] }> {
+  // This pure, complete-payload pass is intentionally the first operation. A
+  // rejection must happen before benchmark lookup, scheme/user_fund writes,
+  // reversal deletes, or transaction upserts.
+  const { parsed: canonical, summary } = assertCASPreflight(parsed);
   let fundsUpdated = 0;
   let transactionsAdded = 0;
   const errors: string[] = [];
 
-  const folios = parsed.mutual_funds ?? [];
-  console.log('[import-cas] importCASData: %d folios for user %s', folios.length, userId);
+  const folios = canonical.mutual_funds;
+  console.log(
+    '[import-cas] preflight_passed dialect=%s folios=%s schemes=%s rows=%s',
+    summary.dialect,
+    summary.folios_bucket,
+    summary.schemes_bucket,
+    summary.rows_bucket,
+  );
 
   // Prefetch benchmark mappings for category → index lookup
   const { data: benchmarks } = await supabase
@@ -174,17 +105,12 @@ export async function importCASData(
   }
 
   for (const folio of folios) {
-    const schemes = folio.schemes ?? [];
-    console.log('[import-cas] folio %s: %d schemes', folio.folio_number, schemes.length);
+    const schemes = folio.schemes;
 
     for (const mf of schemes) {
       // AMFI code (e.g. "119551") is what mfapi.in uses as scheme_code
-      const amfiStr = mf.additional_info?.amfi ?? '';
-      const schemeCode = parseInt(amfiStr, 10);
-      if (!schemeCode || isNaN(schemeCode)) {
-        console.warn('[import-cas] skipping scheme "%s" — no AMFI code', mf.name);
-        continue;
-      }
+      // Preflight has already proved this is a positive Postgres integer.
+      const schemeCode = parseInt(mf.additional_info.amfi, 10);
 
       // Use CASParser type as scheme_category (broad: Equity/Debt/Hybrid/Other)
       const schemeCategory = mf.type ?? 'Flexi Cap Fund';
@@ -204,7 +130,8 @@ export async function importCASData(
         );
 
       if (schemeErr) {
-        errors.push(`Scheme upsert failed for AMFI ${schemeCode}: ${schemeErr.message}`);
+        const reason: CASWriteFailureReason = 'scheme_write_failed';
+        errors.push(auditErrorCode(reason));
         continue;
       }
 
@@ -222,12 +149,12 @@ export async function importCASData(
         .single();
 
       if (fundErr || !fundRow) {
-        errors.push(`Fund upsert failed for AMFI ${schemeCode}: ${fundErr?.message}`);
+        const reason: CASWriteFailureReason = 'fund_write_failed';
+        errors.push(auditErrorCode(reason));
         continue;
       }
 
       fundsUpdated++;
-      console.log('[import-cas] upserted fund %d "%s"', schemeCode, mf.name);
 
       // Build a set of reversed-purchase keys keyed by "date:amount".
       // casparser often returns REVERSAL rows with null units, so we match on
@@ -236,7 +163,7 @@ export async function importCASData(
       for (const tx of mf.transactions ?? []) {
         if ((tx.type ?? '').toUpperCase().trim() === 'REVERSAL') {
           const date = parseDate(tx.date ?? '');
-          const amount = Math.abs(tx.amount ?? 0);
+          const amount = tx.amount;
           if (amount > 0) reversedKeys.add(`${date}:${amount}`);
         }
       }
@@ -252,7 +179,7 @@ export async function importCASData(
           .eq('transaction_date', date)
           .eq('transaction_type', 'purchase')
           .eq('amount', parseFloat(amountStr));
-        console.log('[import-cas] deleted reversed purchase for fund %d on %s amount=%s', schemeCode, date, amountStr);
+        console.log('[import-cas] reversal_delete_attempted');
       }
 
       // Exclude REVERSAL rows and their paired PURCHASE rows from import.
@@ -263,7 +190,7 @@ export async function importCASData(
           const type = (tx.type ?? '').toUpperCase().trim();
           if (type === 'REVERSAL') return false;
           if (type === 'PURCHASE' || type === 'PURCHASE_SIP') {
-            const key = `${parseDate(tx.date ?? '')}:${Math.abs(tx.amount ?? 0)}`;
+            const key = `${tx.date}:${tx.amount}`;
             if (reversedKeys.has(key)) return false;
           }
           return true;
@@ -272,29 +199,23 @@ export async function importCASData(
           user_id: userId,
           fund_id: fundRow.id as string,
           transaction_date: parseDate(tx.date ?? ''),
-          transaction_type: normaliseTxType(tx.type ?? tx.description ?? ''),
+          transaction_type: tx.normalised_type ?? normaliseTxType(tx.type),
           units: Math.abs(tx.units ?? 0),
-          nav_at_transaction: tx.nav ?? 0,
-          amount: Math.abs(tx.amount ?? 0),
+          // Q1 validates Price and gross cash but preserves the shipped row
+          // identity. Q3 owns provider-neutral gross-cash reconciliation.
+          nav_at_transaction: tx.nav ?? tx.price ?? 0,
+          amount: tx.amount,
           folio_number: folio.folio_number ?? null,
           cas_import_id: importId,
         }))
-        // Drop rows where the parser couldn't surface a real cash amount.
-        // casparser occasionally tags statement-level "balance forward"
-        // markers as SWITCH_IN/SWITCH_OUT with non-zero units but zero rupees;
-        // importing those creates phantom units and corrupts the home-screen
-        // current value, cost basis, and XIRR. A genuine switch always has
-        // both units and money on the line, so amount > 0 is a safe bar.
+        // Non-persisted rows (reversals, taxes, dividend payouts, etc.) have
+        // already been structurally validated. The DB enum stores only the
+        // portfolio-unit-changing types below.
         .filter((tx) => {
-          if (tx.transaction_type === null || tx.units <= 0) return false;
-          if (tx.amount <= 0) {
-            console.warn(
-              '[import-cas] dropping phantom %s row for scheme %d on %s — units=%s, amount=0',
-              tx.transaction_type, schemeCode, tx.transaction_date, tx.units,
-            );
-            return false;
-          }
-          return true;
+          return tx.transaction_type !== null
+            && tx.transaction_type !== 'dividend'
+            && tx.units > 0
+            && tx.amount > 0;
         });
 
       // If the CAS closing balance is 0 and no real transactions remain after
@@ -305,7 +226,7 @@ export async function importCASData(
           .from('user_fund')
           .update({ is_active: false })
           .eq('id', fundRow.id as string);
-        console.log('[import-cas] fund %d has 0 closing units and no real txns — marked inactive', schemeCode);
+        console.log('[import-cas] inactive_holding_update_attempted');
         continue;
       }
 
@@ -325,18 +246,22 @@ export async function importCASData(
           });
 
         if (txErr) {
-          errors.push(`Transaction upsert failed for AMFI ${schemeCode}: ${txErr.message}`);
+          const reason: CASWriteFailureReason = 'transaction_write_failed';
+          errors.push(auditErrorCode(reason));
         } else {
-          transactionsAdded += count ?? txRows.length;
-          console.log('[import-cas] inserted %d transactions for scheme %d', count ?? txRows.length, schemeCode);
+          const inserted = count ?? 0;
+          transactionsAdded += inserted;
+          console.log('[import-cas] transaction_insert_count=%s', bucketCount(inserted));
         }
       }
     }
   }
 
   console.log(
-    '[import-cas] done — funds=%d, txns=%d, errors=%d',
-    fundsUpdated, transactionsAdded, errors.length,
+    '[import-cas] completed funds=%s transactions=%s write_failures=%s',
+    bucketCount(fundsUpdated),
+    bucketCount(transactionsAdded),
+    bucketCount(errors.length),
   );
   return { fundsUpdated, transactionsAdded, errors };
 }
