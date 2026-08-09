@@ -23,6 +23,7 @@ import {
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
 import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import { shouldShowDobFallbackPrompt } from '@/src/utils/casPdfPasswordHelp';
 
 type UploadState = 'idle' | 'picking' | 'uploading' | 'success' | 'error';
 
@@ -40,6 +41,12 @@ export default function PDFScreen() {
   const { data: profile } = useUserProfile(session?.user.id);
 
   const dobMissing = !profile?.dob;
+  const showDobFallbackPrompt = shouldShowDobFallbackPrompt({
+    dobMissing,
+    uploadFailed: state === 'error',
+    errorMessage: errorMsg,
+    customPassword,
+  });
 
   function goBackToImportOptions() {
     router.replace('/onboarding');
@@ -103,8 +110,8 @@ export default function PDFScreen() {
           <Text style={styles.infoItem}>• CAMS CAS (password = your PAN)</Text>
           <Text style={styles.infoItem}>• KFintech / Karvy CAS (password = your PAN)</Text>
           <Text style={styles.infoItem}>• MFcentral CAS (password = your PAN)</Text>
-          <Text style={styles.infoItem}>• CDSL CAS (password = PAN + date of birth, e.g. ABCPE1234F01011990)</Text>
-          <Text style={styles.infoItem}>• NSDL CAS (password = PAN + date of birth, e.g. ABCPE1234F01011990)</Text>
+          <Text style={styles.infoItem}>• CDSL CAS (we try your PAN first)</Text>
+          <Text style={styles.infoItem}>• NSDL CAS (we try your PAN first)</Text>
         </View>
 
         <View style={styles.panel}>
@@ -135,7 +142,7 @@ export default function PDFScreen() {
         <View style={styles.panNote}>
           <Text style={styles.panNoteText}>
             For CAMS/KFintech/MFCentral: PDF password = your PAN.{'\n'}
-            For CDSL/NSDL: PDF password = PAN + date of birth (set both in Settings → Account).
+            For CDSL/NSDL: we try your PAN first. Some statement versions use PAN + date of birth.
           </Text>
         </View>
 
@@ -143,8 +150,8 @@ export default function PDFScreen() {
           <Text style={styles.sectionLabel}>Custom password</Text>
           <Text style={styles.infoTitle}>Different PDF password?</Text>
           <Text style={styles.infoItem}>
-            Leave this blank — your PAN (and date of birth for CDSL/NSDL) are used automatically.
-            Only fill this in if your PDF was sent with a different password.
+            Leave this blank to try your saved PAN first. If available, PAN + date of birth is
+            tried next for CDSL/NSDL. Only fill this in when the PDF uses a different password.
           </Text>
           <TextInput
             style={styles.passwordInput}
@@ -159,11 +166,12 @@ export default function PDFScreen() {
           />
         </View>
 
-        {dobMissing && (
+        {showDobFallbackPrompt && (
           <View style={styles.dobWarning}>
             <Text style={styles.dobWarningTitle}>Date of birth not set</Text>
             <Text style={styles.dobWarningText}>
-              CDSL/NSDL imports require your date of birth. Add it in Settings → Account.
+              Your saved PAN was not accepted. Some CDSL/NSDL statements use PAN + date of birth.
+              Add your date of birth, then try again.
             </Text>
             <TouchableOpacity
               style={styles.dobWarningBtn}

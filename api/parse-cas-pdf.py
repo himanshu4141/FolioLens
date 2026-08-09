@@ -12,7 +12,7 @@ from api._cas_preflight import (
     safe_failure_body,
     safe_parser_telemetry,
 )
-from api._cdsl_nsdl_parser import HoldingsOnlyError
+from api._cdsl_nsdl_parser import HoldingsOnlyError, UnsupportedLayoutError
 
 
 PARSER_SECRET = os.environ.get("CAS_PARSER_SHARED_SECRET", "")
@@ -118,6 +118,23 @@ class handler(BaseHTTPRequestHandler):
                         "Please upload a Detailed CAS covering your full investment date range."
                     ),
                     "reason": "holdings_only",
+                },
+            )
+            return
+        except UnsupportedLayoutError:
+            _track_event(
+                "cas_parser_python_outcome",
+                safe_parser_telemetry("unsupported_layout"),
+            )
+            _json(
+                self,
+                422,
+                {
+                    "error": (
+                        "This statement uses a transaction-table layout "
+                        "that FolioLens cannot verify safely."
+                    ),
+                    "reason": "unsupported_layout",
                 },
             )
             return

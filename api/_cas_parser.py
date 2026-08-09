@@ -10,6 +10,7 @@ import pdfplumber
 from api._cdsl_nsdl_parser import (
     HoldingsOnlyError,
     detect_cdsl_nsdl,
+    looks_like_depository_cas,
     parse_cdsl_nsdl,
 )
 from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
@@ -148,8 +149,8 @@ def parse_cas_pdf_bytes(
         raise Exception(
             "Wrong PDF password. "
             "For CAMS/KFintech/MFCentral PDFs your PAN is the password. "
-            "For CDSL/NSDL PDFs the password is your PAN + date of birth (DDMMYYYY). "
-            "Make sure both are saved in Settings → Account."
+            "FolioLens tried your saved PAN first and PAN + date of birth when available. "
+            "Add your date of birth after a failed attempt, or enter a custom PDF password."
         )
 
     cas_type = detect_cdsl_nsdl(detection_text)
@@ -159,8 +160,8 @@ def parse_cas_pdf_bytes(
         "primary" if working_password == password else "cdsl",
     )
 
-    if cas_type in ("cdsl", "nsdl"):
-        return parse_cdsl_nsdl(pdf_bytes, working_password)
+    if looks_like_depository_cas(detection_text):
+        return parse_cdsl_nsdl(pdf_bytes, working_password, detection_text)
 
     # CAMS / KFintech / MFCentral path — use casparser with the primary password
     try:
@@ -174,7 +175,7 @@ def parse_cas_pdf_bytes(
             logger.warning(
                 "[cas-parser] casparser failed and text contains ISINs — retrying with CDSL/NSDL parser"
             )
-            return parse_cdsl_nsdl(pdf_bytes, working_password)
+            return parse_cdsl_nsdl(pdf_bytes, working_password, detection_text)
         raise exc
 
     if hasattr(raw, "model_dump"):

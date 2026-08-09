@@ -45,6 +45,7 @@ export type CASFailureReason =
   | CASWriteFailureReason
   | 'wrong_password'
   | 'holdings_only'
+  | 'unsupported_layout'
   | 'parser_error'
   | 'attachment_download_failed'
   | 'no_pdf_attachments'
@@ -219,6 +220,7 @@ const FAILURE_REASONS = new Set<CASFailureReason>([
   'transaction_write_failed',
   'wrong_password',
   'holdings_only',
+  'unsupported_layout',
   'parser_error',
   'attachment_download_failed',
   'no_pdf_attachments',
@@ -753,8 +755,9 @@ const USER_FAILURE_MESSAGES: Record<CASFailureReason, string> = {
   scheme_write_failed: 'A fund could not be saved. No further rows for that fund were imported.',
   fund_write_failed: 'A portfolio holding could not be saved.',
   transaction_write_failed: 'One or more transactions could not be saved.',
-  wrong_password: 'The PDF password was not accepted. Check the password saved in FolioLens.',
+  wrong_password: 'The PDF password was not accepted. FolioLens tries your saved PAN first and PAN plus date of birth when available. Add your date of birth after a failed attempt, or use a custom PDF password.',
   holdings_only: 'This PDF has holdings but no transaction history. Please upload a Detailed CAS.',
+  unsupported_layout: 'This statement uses a transaction-table layout that FolioLens cannot verify safely.',
   parser_error: 'This PDF could not be parsed safely.',
   attachment_download_failed: 'An attached PDF could not be downloaded. Please forward the CAS again.',
   no_pdf_attachments: 'No PDF attachment was found in this email.',

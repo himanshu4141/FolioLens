@@ -106,6 +106,20 @@ importing any attachment, so a mixed-validity message cannot partially import.
 Failure records and telemetry use allowlisted reason codes and bucketed counts,
 never raw CAS payloads, filenames, identifiers, financial values, or exception text.
 
+Depository statements use a header-aware adapter. Every CDSL/NSDL transaction
+table must establish an unambiguous normalized map for Date, Description,
+Amount, Units, and NAV or Price before a dated row is accepted. Stamp Duty and
+trailing charge columns are optional. Repeated headers refresh the map across
+page breaks; a missing or ambiguous schema returns the privacy-safe
+`unsupported_layout` reason. Issuer wording from the first three pages is only
+a routing/diagnostic hint—the table schema is the authority for financial
+column extraction.
+
+Direct uploads use a fixed password order. A custom password is exclusive when
+present. Otherwise the Edge Function tries the saved PAN first and, only when a
+valid saved DOB exists, PAN plus DOB second. Missing DOB does not block the
+first attempt; the UI suggests adding it only after a password rejection.
+
 Repeated imports are additive. Duplicate transactions are skipped; newly seen
 transactions update downstream sync/invalidation paths.
 

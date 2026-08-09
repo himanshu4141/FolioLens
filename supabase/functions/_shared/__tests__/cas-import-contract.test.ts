@@ -472,6 +472,7 @@ describe('privacy-safe caller outcomes', () => {
   it('gives malformed and unpaired payloads precise safe user messages', () => {
     expect(userMessageForCASFailure('malformed_payload')).toContain('data structure');
     expect(userMessageForCASFailure('unpaired_reversal')).toContain('matching purchase');
+    expect(userMessageForCASFailure('unsupported_layout')).toContain('layout');
   });
 
   it('keeps raw CAS identifiers and upstream bodies out of caller diagnostics', () => {

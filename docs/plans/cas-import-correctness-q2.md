@@ -1,0 +1,135 @@
+# Q2 Header-Aware Depository CAS Parsing
+
+## Goal
+
+Make CDSL and NSDL transaction extraction depend on each table's normalized headers rather than fixed numeric positions, while preserving the Q1 fail-closed contract and correcting adjacent folio, category, password-help, and diagnostic assumptions.
+
+## User Value
+
+A user can import a detailed CDSL or NSDL CAS without FolioLens mistaking Stamp Duty, NAV, Price, or Units for one another. Missing or ambiguous layouts fail with an actionable, privacy-safe error instead of producing plausible but wrong portfolio data.
+
+## Context
+
+Q1 merged in PR #292 at `f7a54d647f29bdf38e74341156c5dc91d39ef3a6`. It rejects financially incoherent parser output before domain writes. The current adapter in `api/_cdsl_nsdl_parser.py` still assumes CDSL's numeric order (`Amount, NAV, Price, Units, Stamp Duty`) even though the observed NSDL order is (`Amount, Stamp Duty, NAV, Price, Units`). It also detects issuer from the first page only, parses folios with a permissive expression, and presents PAN plus date of birth as a universal depository password requirement.
+
+This plan implements only Q2 from control PR #291. Q3 owns economic reconciliation, Q4 owns shared catalog authority and write recovery, and Q5 owns approved dev repair and field proof.
+
+## Assumptions
+
+- The branch starts from current `origin/main` at the Q1 merge.
+- The accepted research branch is read-only input and will not be merged or cherry-picked.
+- Observed private PDFs may be used only for transient aggregate proof; no filename, folio, identifier, date, amount, raw text, or fixture derived from them may be committed or logged.
+- No deployment or persistent data mutation is part of Q2.
+- Existing Q1 canonical transaction and preflight contracts remain authoritative.
+
+## Scope
+
+- Normalize per-table header cells and map required financial fields by aliases.
+- Support observed CDSL and NSDL column orders, repeated headers, blank rows, page breaks, and optional trailing columns.
+- Reject missing, duplicate, or ambiguous required headers with a typed `unsupported_layout` HTTP 422 path.
+- Treat issuer text as a deterministic diagnostic; use the parsed table schema as extraction authority and use the same multi-page diagnostic input at router and parser boundaries.
+- Parse valid colon, hyphen, Unicode-dash, and missing folios; normalize absence to `null`; reject placeholder values through Q1 preflight.
+- Order AMFI category matches from specific to generic.
+- Preserve the existing password attempt order: custom override exclusively when supplied, otherwise PAN first and PAN plus DOB only as an optional second attempt.
+- Update onboarding/help copy so DOB is suggested only after the first password attempt fails when the profile lacks DOB.
+- Remove raw filename and response-body diagnostics from client upload logs.
+- Update current CAS architecture and discovery documentation.
+
+## Out Of Scope
+
+- Fuzzy or economic deduplication, split/combined-row matching, reversal redesign, or transaction backfill.
+- Changing shared `scheme_master` ownership or repairing category/catalog data.
+- Dev or production deployment, private-account mutation, or production rollout.
+- Cache key, payload, lifetime, invalidation, persistence, or restore changes.
+
+## Approach
+
+Introduce a small header-schema layer in the depository parser. Each candidate header row is normalized, aliases are resolved to canonical fields, duplicate canonical fields are rejected, and a valid schema must include Date, Description, Amount, Units, and at least one of Price or NAV. Transaction rows are then read only through that schema. Stamp Duty and optional trailing charge columns default safely when absent. Repeated headers refresh the active table map; a dated row without an established schema fails closed.
+
+The parser will collect the observed depository layout while extracting. Full issuer phrases and acronyms across the first three pages remain useful diagnostics, but token ordering will never choose financial column positions. The top-level router will pass the same diagnostic text into the adapter so page-two/page-three markers cannot make routing and parser diagnostics disagree.
+
+Add `unsupported_layout` to the shared safe failure vocabulary and surface a generic user message. Keep the existing Edge Function password headers unchanged. In the upload screen, explain PAN-first behavior and reveal the DOB fallback callout only after a password rejection when DOB is absent. Client logs retain only low-cardinality platform/status/bucket diagnostics.
+
+## Milestones
+
+### 1. Header schema and parser fixtures
+
+Add synthetic CDSL and NSDL positive fixtures plus repeated-header, page-break, optional-column, missing-header, and ambiguous-header cases. Replace positional extraction with canonical field lookups and typed unsupported-layout failures.
+
+Acceptance: CDSL behavior is unchanged, NSDL produces the correct canonical row, and malformed schemas fail without parser success.
+
+### 2. Diagnostics, folios, categories, and password behavior
+
+Make multi-page issuer diagnostics consistent, harden folio parsing and placeholder tests, reorder category matching, preserve PAN-first/PAN+DOB-second/custom-exclusive behavior, and correct UI/help copy.
+
+Acceptance: router and parser agree when the marker is on page two or three; folio variants normalize correctly; category headers choose the most specific mapping; missing DOB is not presented as a universal blocker.
+
+### 3. Privacy and documentation
+
+Remove raw client filename/body logging and update `docs/TECH-DISCOVERY.md`, `docs/architecture/cas-upload-flow.md`, and `docs/architecture/cas-inbound-flow.md`.
+
+Acceptance: no application telemetry or diagnostic log contains statement-derived private data, and current docs describe header authority and password fallback accurately.
+
+### 4. Exact-head validation and review handoff
+
+Run all Python and Jest tests, typecheck, lint, diff checks, and any available Deno checks. Run the private supplied-file proof transiently and record aggregate outcomes only. Open the implementation PR, attach exact-head evidence, label it `program-milestone` and `needs-review`, and freeze the SHA for dual review.
+
+Acceptance: synthetic suites are green; private aggregate proof is CDSL 5/5 and NSDL 16/16 at the exact head; no deployment occurred; cache statement is `[cache-shape-stable]`.
+
+## Validation
+
+    PYTHONPATH=. python -m pytest api/tests -q
+    npm test -- --runInBand
+    npm run typecheck
+    npm run lint
+    git diff --check
+
+Focused tests will additionally exercise the parser route's typed 422 response, both password attempts, the custom override path, and upload-screen copy state. The private supplied-file run is transient and reports only provider totals and pass/fail counts.
+
+## Risks And Mitigations
+
+- **Valid layout rejected.** Use normalized aliases and optional trailing columns, but require a minimal unambiguous financial schema and fail closed for unknown variants.
+- **Issuer wording changes.** Treat issuer detection as diagnostics only; extraction follows headers.
+- **Page continuation loses schema.** Carry the last validated schema across page boundaries and refresh it on repeated headers.
+- **Privacy leak in troubleshooting.** Log only allowlisted reason codes and bucketed dimensions; never print cells, filenames, parser bodies, or financial values.
+- **Q2 expands into reconciliation or catalog repair.** Preserve Q1 canonical behavior and defer economic grouping, shared writes, and repair to Q3-Q5.
+
+## Decision Log
+
+- 2026-08-09: Require Date, Description, Amount, Units, and at least one of Price or NAV; Stamp Duty and trailing charge columns are optional and default to zero.
+- 2026-08-09: A date-like row without a validated active header is an unsupported layout, not a positional fallback opportunity.
+- 2026-08-09: Table schema is financial extraction authority. Issuer text is a source-dialect diagnostic and routing hint only.
+- 2026-08-09: Q2 changes no cache surface; the React Query persistence buster remains unchanged.
+
+## Progress
+
+- [x] Read product intent, program protocol, accepted Q2 research sections, and current control state.
+- [x] Merge Q1 after exact-SHA Codex and Claude convergence and start Q2 from current main.
+- [x] Inspect current parser, password path, UI copy, safe failure contract, telemetry, and architecture docs.
+- [x] Implement header-aware extraction and typed unsupported-layout failures.
+- [x] Implement diagnostic, folio, category, password-copy, and privacy corrections.
+- [x] Update current documentation.
+- [x] Run focused and full validation.
+- [ ] Run transient supplied-file aggregate proof.
+- [ ] Open the Q2 implementation PR and start exact-SHA dual review.
+
+## Amendments
+
+- **Private supplied-file proof is pending.** The current workspace contains no
+  usable supplied CDSL/NSDL credential set. Static implementation and full
+  repository validation are complete, but the required transient CDSL 5/5 and
+  NSDL 16/16 aggregate proof must run before the implementation PR can become
+  ready for review. No private artifact or credential was persisted while
+  checking availability.
+
+## Validation Evidence
+
+- 2026-08-09: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
+  202 tests plus 3 subtests.
+- 2026-08-09: `npm test -- --runInBand` passed 104 suites and 2,132 tests.
+- 2026-08-09: `npm run typecheck`, `npm run lint`, and `git diff --check`
+  passed.
+- 2026-08-09: No Edge Function, Vercel function, database migration, dev data,
+  or production surface was deployed or mutated.
+- Cache statement: `[cache-shape-stable]`; no cache key, payload, lifetime,
+  invalidation, persistence, restore, or sign-out behavior changed.

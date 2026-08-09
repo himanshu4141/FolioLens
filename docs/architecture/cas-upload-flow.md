@@ -57,14 +57,14 @@ sequenceDiagram
   SB->>SB: getUserFromRequest()<br/>(verify JWT)
   SB->>DB: SELECT pan, dob FROM user_profile
   DB-->>SB: pan, dob
-  SB->>SB: derive CDSL password = PAN + DDMMYYYY
+  SB->>SB: build ordered attempts:<br/>PAN first, optional PAN + DDMMYYYY second<br/>(custom override is exclusive)
   SB->>V: POST /api/parse-cas-pdf<br/>x-parser-secret CAS_PARSER_SHARED_SECRET<br/>x-password (PAN), x-password-cdsl (PAN+DOB)<br/>body: PDF bytes
 
   V->>V: verify shared secret
   V->>V: pdfplumber peek first 3 pages
   alt PDF says CDSL or NSDL
-    V->>Lib: parse_cdsl_nsdl(bytes, password)
-    Lib->>Lib: pdfplumber extract<br/>+ AMFI ISIN enrichment
+    V->>Lib: parse_cdsl_nsdl(bytes, accepted password,<br/>same 3-page diagnostic text)
+    Lib->>Lib: normalize each transaction header<br/>+ extract by header map<br/>+ AMFI ISIN enrichment
     Lib-->>V: schemes + transactions
   else CAMS / KFintech / MFCentral
     V->>Lib: casparser.read_cas_pdf(bytes, password)
@@ -92,9 +92,11 @@ sequenceDiagram
 | Issuer | Library | Password format | Notes |
 |---|---|---|---|
 | CAMS, KFintech, MFCentral | `casparser` (Python lib by codereverser) | PAN | Mature, handles AMC-issued summary + Detailed CAS variants |
-| CDSL / NSDL | In-house `_cdsl_nsdl_parser.py` | PAN + DDMMYYYY | Demat statements; `casparser` doesn't handle these reliably |
+| CDSL / NSDL | In-house `_cdsl_nsdl_parser.py` | PAN first; PAN + DDMMYYYY fallback when DOB is saved | Demat statements; a custom override is used exclusively |
 
-`api/parse-cas-pdf.py` peeks at the first 3 pages and dispatches based on format markers. Both branches retain a provider dialect and the canonical financial fields until `_cas_preflight.py` validates the complete payload. `_shared/cas-import-contract.ts` repeats the same invariant checks before any shared-domain I/O. This defence in depth prevents an unsafe parser response from becoming an import write.
+`api/parse-cas-pdf.py` peeks at the first 3 pages and dispatches based on format markers. The same text reaches the depository adapter, so a marker on page two or three cannot make routing and parser diagnostics disagree. CDSL/NSDL issuer text is diagnostic only: every transaction table must provide an unambiguous normalized map for Date, Description, Amount, Units, and NAV or Price. Repeated headers and page breaks are supported; missing, duplicate, or ambiguous required headers return HTTP 422 with `unsupported_layout`. Stamp Duty and trailing charge columns are optional.
+
+Both parser branches retain a provider dialect and the canonical financial fields until `_cas_preflight.py` validates the complete payload. `_shared/cas-import-contract.ts` repeats the same invariant checks before any shared-domain I/O. This defence in depth prevents an unsafe parser response from becoming an import write.
 
 ## How this differs from the inbound (Resend) flow
 
@@ -109,4 +111,4 @@ sequenceDiagram
 | Notification email | None — UI shows result inline | Yes — via `/api/cas-import-notify` |
 | Background processor | Not needed (sync, fast enough) | Yes (`EdgeRuntime.waitUntil`) — Resend has 15s Svix timeout |
 
-The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. A rejection may update only the already-created `cas_import` audit row to `failed`, using an allowlisted reason code and bucketed counts. No raw CAS payload, filename, identifier, amount, or exception text is persisted or emitted for diagnosis.
+The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. A rejection may update only the already-created `cas_import` audit row to `failed`, using an allowlisted reason code and bucketed counts. No raw CAS payload, filename, identifier, amount, upstream response body, or exception text is persisted or emitted for diagnosis. Client `portfolio_imported` analytics also use bucketed fund and transaction counts.

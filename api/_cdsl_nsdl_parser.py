@@ -6,16 +6,17 @@ so importCASData() in the TypeScript edge function needs zero changes.
 Key design decisions:
 - ISINs (INF[A-Z0-9]{9}) are always ASCII regardless of PDF language — used as
   the primary anchor for every scheme block.
-- pdfplumber's position-based table extraction is language-agnostic; column
-  values (amounts, units, NAV) are always ASCII numerals.
-- "CDSL" and "NSDL" are acronyms that always appear as ASCII — used for detection.
+- Each transaction table establishes a normalized header map before any dated
+  row is accepted; issuer text is diagnostic and never selects column indexes.
+- pdfplumber's table extraction is language-agnostic; financial values are
+  always ASCII numerals.
 - Dates and transaction descriptions may appear in Hindi (Devanagari) — handled
   via explicit mapping tables with re.UNICODE patterns.
 
 Real CDSL CAS table structure (per scheme):
   Row: [Folio No : <folio> Mode of Holding : Single ...]   ← single merged cell
   Row: [ISIN : INF... UCC : ... Mobile : ... Email : ...]  ← single merged cell
-  Row: [Hindi/English column headers]                       ← skipped
+  Row: [Hindi/English column headers]                       ← schema authority
   Row: [Opening Balance  <units>]                          ← balance row
   Row: [DD-MM-YYYY  SIP Purchase ...  amount nav price units stamp ...]
   Row: [Closing Balance  <units>]                          ← balance row
@@ -43,14 +44,14 @@ _isin_cache: dict[str, tuple[int, str, str]] | None = None
 AMFI_NAV_URL = "https://www.amfiindia.com/spages/NAVAll.txt"
 
 _CATEGORY_MAP = [
-    ("equity", "Equity"),
-    ("debt", "Debt"),
-    ("hybrid", "Hybrid"),
-    ("solution", "Hybrid"),
-    ("other", "Other"),
     ("fund of fund", "Other"),
     ("index fund", "Equity"),
     ("etf", "Equity"),
+    ("solution", "Hybrid"),
+    ("hybrid", "Hybrid"),
+    ("equity", "Equity"),
+    ("debt", "Debt"),
+    ("other", "Other"),
 ]
 
 
@@ -130,17 +131,28 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
 # ── Detection ──────────────────────────────────────────────────────────────────
 
 def detect_cdsl_nsdl(raw_text: str) -> str | None:
-    """Return 'cdsl', 'nsdl', or None.
+    """Return a deterministic issuer diagnostic, never a column-layout choice."""
+    snippet = raw_text[:12000].upper()
+    cdsl_strong = "CENTRAL DEPOSITORY SERVICES" in snippet
+    nsdl_strong = "NATIONAL SECURITIES DEPOSITORY" in snippet
+    if cdsl_strong != nsdl_strong:
+        return "cdsl" if cdsl_strong else "nsdl"
 
-    Checks first ~3000 chars for the ASCII acronyms CDSL / NSDL.
-    Language-agnostic: the acronyms are always ASCII regardless of PDF language.
-    """
-    snippet = raw_text[:3000]
-    if "CDSL" in snippet:
-        return "cdsl"
-    if "NSDL" in snippet:
-        return "nsdl"
+    has_cdsl = bool(re.search(r"\bCDSL\b", snippet))
+    has_nsdl = bool(re.search(r"\bNSDL\b", snippet))
+    if has_cdsl != has_nsdl:
+        return "cdsl" if has_cdsl else "nsdl"
     return None
+
+
+def looks_like_depository_cas(raw_text: str) -> bool:
+    """Return whether multi-page text contains a depository-CAS routing hint."""
+    snippet = raw_text[:12000].upper()
+    return bool(
+        re.search(r"\b(?:CDSL|NSDL)\b", snippet)
+        or "CENTRAL DEPOSITORY SERVICES" in snippet
+        or "NATIONAL SECURITIES DEPOSITORY" in snippet
+    )
 
 
 # ── Date parsing ───────────────────────────────────────────────────────────────
@@ -286,7 +298,12 @@ _ROW_DATE_RE = re.compile(
 # Matches "Folio No : 28056620/47" — try "folio no" before just "folio" so
 # regex engine doesn't stop at "folio" and capture "No" as the folio number.
 _FOLIO_RE = re.compile(
-    r"folio(?:\s+no\.?)?\s*[:\s]+([A-Z0-9][A-Z0-9/\-]*)",
+    r"^\s*folio(?:\s+(?:no\.?|number))?\s*(?::|[-\u2010-\u2015])\s*"
+    r"([A-Z0-9][A-Z0-9/\-.]*)\b",
+    re.IGNORECASE,
+)
+_FOLIO_LABEL_RE = re.compile(
+    r"^\s*folio(?:\s+(?:no\.?|number))?\b",
     re.IGNORECASE,
 )
 
@@ -295,10 +312,120 @@ _CLOSING_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
+_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "date": ("date", "transaction date", "txn date"),
+    "description": (
+        "description",
+        "transaction description",
+        "transaction details",
+        "narration",
+        "particulars",
+    ),
+    "amount": ("amount", "transaction amount", "txn amount"),
+    "stamp_duty": ("stamp duty",),
+    "nav": ("nav", "net asset value"),
+    "price": ("price", "transaction price", "txn price", "unit price"),
+    "units": ("units", "quantity"),
+    "taxes": ("tax", "taxes"),
+    "exit_load": ("exit load",),
+}
+
+_REQUIRED_HEADER_FIELDS = {"date", "description", "amount", "units"}
+
+
+class UnsupportedLayoutError(ValueError):
+    """Raised when a transaction table has no safe, unambiguous header map."""
+
+
+def _normalise_header(cell: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", cell.lower()).split())
+
+
+def _header_field(cell: str) -> str | None:
+    normalised = _normalise_header(cell)
+    if not normalised:
+        return None
+
+    exact_matches = [
+        field
+        for field, aliases in _HEADER_ALIASES.items()
+        if normalised in aliases
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    padded = f" {normalised} "
+    candidates: list[tuple[int, str]] = []
+    for field, aliases in _HEADER_ALIASES.items():
+        for alias in aliases:
+            if f" {alias} " in padded:
+                candidates.append((len(alias.split()), field))
+    if not candidates:
+        return None
+
+    longest = max(length for length, _field in candidates)
+    fields = {field for length, field in candidates if length == longest}
+    return next(iter(fields)) if len(fields) == 1 else None
+
+
+def _transaction_header_map(cells: list[str]) -> dict[str, int] | None:
+    recognised: list[tuple[str, int]] = []
+    for index, cell in enumerate(cells):
+        field = _header_field(cell)
+        if field:
+            recognised.append((field, index))
+
+    fields = {field for field, _index in recognised}
+    looks_like_header = "date" in fields or {"description", "amount"}.issubset(fields)
+    if not looks_like_header:
+        return None
+
+    if len(fields) != len(recognised):
+        raise UnsupportedLayoutError("The transaction table has ambiguous headers.")
+
+    missing = _REQUIRED_HEADER_FIELDS - fields
+    if missing or not ({"nav", "price"} & fields):
+        raise UnsupportedLayoutError("The transaction table is missing required headers.")
+
+    return {field: index for field, index in recognised}
+
+
+def _schema_dialect(header_map: dict[str, int]) -> str | None:
+    stamp_index = header_map.get("stamp_duty")
+    if stamp_index is None:
+        return None
+    amount_index = header_map["amount"]
+    units_index = header_map["units"]
+    if stamp_index > units_index:
+        return "cdsl"
+    nav_or_price_index = min(
+        index for field, index in header_map.items() if field in {"nav", "price"}
+    )
+    if amount_index < stamp_index < nav_or_price_index:
+        return "nsdl"
+    return None
+
+
+def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
+    index = header_map.get(field)
+    return cells[index] if index is not None and index < len(cells) else ""
+
+
+def _folio_from_cell(cell: str) -> str | None:
+    match = _FOLIO_RE.search(cell)
+    if match:
+        return match.group(1)
+    if _FOLIO_LABEL_RE.search(cell):
+        raise UnsupportedLayoutError(
+            "A folio label is missing an explicit delimiter or value."
+        )
+    return None
+
 
 def extract_mf_folios(
     pdf: pdfplumber.PDF,
     isin_map: dict[str, tuple[int, str, str]],
+    observed_dialects: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract mutual fund folio data from a CDSL/NSDL CAS PDF.
 
@@ -306,7 +433,8 @@ def extract_mf_folios(
     - ISIN row (any cell contains INF...) → start/update scheme
     - Folio row (any cell matches Folio No pattern) → record pending folio
     - Closing Balance row → record close_units for current scheme
-    - Transaction row (col 0 is a date) → append transaction
+    - Transaction header row → establish/refresh the financial column map
+    - Transaction row (mapped Date cell is a date) → append transaction
 
     Does NOT require isin_map to be populated — if AMFI fetch failed, schemes
     are still extracted with amfi=None and type='Other'.
@@ -317,6 +445,7 @@ def extract_mf_folios(
     current_isin: str | None = None
     pending_folio: str | None = None
     pending_name: str | None = None
+    active_header_map: dict[str, int] | None = None
 
     for page in pdf.pages:
         for table in page.extract_tables():
@@ -328,6 +457,14 @@ def extract_mf_folios(
                     continue
 
                 cells = [str(c or "").strip() for c in row]
+
+                header_map = _transaction_header_map(cells)
+                if header_map is not None:
+                    active_header_map = header_map
+                    observed_dialect = _schema_dialect(header_map)
+                    if observed_dialect and observed_dialects is not None:
+                        observed_dialects.add(observed_dialect)
+                    continue
 
                 # ── 1. ISIN row — any cell contains INF[A-Z0-9]{9} ────────────
                 isin_in_row: str | None = None
@@ -346,9 +483,9 @@ def extract_mf_folios(
 
                     # Folio may also be in the same row as the ISIN
                     for cell in cells:
-                        fm = _FOLIO_RE.search(cell)
-                        if fm:
-                            folio_by_isin[current_isin] = fm.group(1)
+                        folio = _folio_from_cell(cell)
+                        if folio:
+                            folio_by_isin[current_isin] = folio
                             pending_folio = None
                             break
 
@@ -388,16 +525,26 @@ def extract_mf_folios(
                 # not the current one — so it must remain pending until the next
                 # ISIN row claims it.
                 for cell in cells:
-                    fm = _FOLIO_RE.search(cell)
-                    if fm:
-                        pending_folio = fm.group(1)
+                    folio = _folio_from_cell(cell)
+                    if folio:
+                        pending_folio = folio
                         if current_isin and current_isin not in folio_by_isin:
-                            folio_by_isin[current_isin] = fm.group(1)
+                            folio_by_isin[current_isin] = folio
                         break
 
                 # ── 3. Closing Balance row → capture close_units ───────────────
-                second_cell = cells[1] if len(cells) > 1 else ""
-                if _CLOSING_RE.search(second_cell):
+                if any(_CLOSING_RE.search(cell) for cell in cells):
+                    unit_index = active_header_map.get("units") if active_header_map else None
+                    preferred = (
+                        _parse_float(cells[unit_index])
+                        if unit_index is not None and unit_index < len(cells)
+                        else None
+                    )
+                    if preferred is not None and preferred > 0 and current_isin in schemes_by_isin:
+                        s = schemes_by_isin[current_isin]
+                        s["units"] = preferred
+                        s["additional_info"]["close_units"] = preferred
+                        continue
                     for ci in range(2, len(cells)):
                         v = _parse_float(cells[ci])
                         if v is not None and v > 0 and current_isin and current_isin in schemes_by_isin:
@@ -422,38 +569,62 @@ def extract_mf_folios(
                 ):
                     pending_name = non_empty[0]
 
-                # ── 5. Transaction row — col 0 is a date ──────────────────────
-                first_cell = cells[0]
-                if not first_cell or not _ROW_DATE_RE.match(first_cell):
+                # ── 5. Transaction row — active header map is authoritative ──
+                date_cells = [cell for cell in cells if _ROW_DATE_RE.match(cell)]
+                if not date_cells:
                     continue
+
+                if active_header_map is None:
+                    raise UnsupportedLayoutError(
+                        "A transaction row appeared before a supported header."
+                    )
+
+                date_cell = _cell_at(cells, active_header_map, "date")
+                if not _ROW_DATE_RE.match(date_cell):
+                    raise UnsupportedLayoutError(
+                        "The transaction date does not match the declared header."
+                    )
 
                 if current_isin is None:
                     continue
 
-                parsed_date = parse_date_cdsl(first_cell)
+                parsed_date = parse_date_cdsl(date_cell)
                 if not re.match(r"^\d{4}-\d{2}-\d{2}$", parsed_date):
                     continue
 
-                # Col 1: description
-                desc = cells[1] if len(cells) > 1 else ""
+                desc = _cell_at(cells, active_header_map, "description")
                 tx_type = normalise_cdsl_tx_type(desc)
                 if tx_type is None:
                     continue
 
-                # Cols 2+ (numeric): amount[0], nav[1], price[2], units[3], stamp[4]...
-                # Preserve None for empty/dash cells so index positions stay aligned.
-                nums: list[float | None] = []
-                for c in cells[2:]:
-                    nums.append(_parse_float(c))
+                amount_val = _parse_float(_cell_at(cells, active_header_map, "amount"))
+                nav_val = _parse_float(_cell_at(cells, active_header_map, "nav"))
+                price_val = _parse_float(_cell_at(cells, active_header_map, "price"))
+                units_val = _parse_float(_cell_at(cells, active_header_map, "units"))
+                stamp_duty_val = _parse_float(
+                    _cell_at(cells, active_header_map, "stamp_duty")
+                )
+                taxes_val = _parse_float(_cell_at(cells, active_header_map, "taxes"))
+                exit_load_val = _parse_float(
+                    _cell_at(cells, active_header_map, "exit_load")
+                )
 
-                amount_val = nums[0] if len(nums) > 0 else None
-                nav_val = nums[1] if len(nums) > 1 else None
-                price_val = nums[2] if len(nums) > 2 else nav_val
-                units_val = nums[3] if len(nums) > 3 else (nums[2] if len(nums) > 2 else None)
-                stamp_duty_val = nums[4] if len(nums) > 4 else None
+                nav_val = nav_val if nav_val is not None else price_val
+                price_val = price_val if price_val is not None else nav_val
 
                 if not units_val:
                     continue
+
+                charges = {
+                    key: abs(value)
+                    for key, value in {
+                        "stamp_duty": stamp_duty_val,
+                        "taxes": taxes_val,
+                        "exit_load": exit_load_val,
+                    }.items()
+                    if value is not None
+                }
+                charge_total = sum(charges.values())
 
                 schemes_by_isin[current_isin]["transactions"].append({
                     "date": parsed_date,
@@ -462,7 +633,7 @@ def extract_mf_folios(
                     "amount": abs(amount_val) if amount_val is not None else 0.0,
                     "source_amount": amount_val if amount_val is not None else 0.0,
                     "gross_amount": (
-                        abs(amount_val) + abs(stamp_duty_val or 0.0)
+                        abs(amount_val) + charge_total
                         if amount_val is not None else 0.0
                     ),
                     "units": abs(units_val),
@@ -470,7 +641,7 @@ def extract_mf_folios(
                     "nav": nav_val or 0.0,
                     "price": price_val or 0.0,
                     "stamp_duty": abs(stamp_duty_val or 0.0),
-                    "charges": {"stamp_duty": abs(stamp_duty_val or 0.0)},
+                    "charges": charges,
                     "balance": None,
                 })
 
@@ -496,7 +667,11 @@ class HoldingsOnlyError(ValueError):
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
-def parse_cdsl_nsdl(pdf_bytes: bytes, password: str) -> dict[str, Any]:
+def parse_cdsl_nsdl(
+    pdf_bytes: bytes,
+    password: str,
+    diagnostic_text: str | None = None,
+) -> dict[str, Any]:
     """Parse a CDSL or NSDL CAS PDF and return a CASParseResult-compatible dict.
 
     Raises:
@@ -510,15 +685,11 @@ def parse_cdsl_nsdl(pdf_bytes: bytes, password: str) -> dict[str, Any]:
         raise Exception(f"Could not open PDF — check your password: {exc}") from exc
 
     with pdf:
-        first_page_text = pdf.pages[0].extract_text() or "" if pdf.pages else ""
-        cas_type = detect_cdsl_nsdl(first_page_text)
-        if cas_type is None:
-            raise ValueError(
-                "This PDF does not appear to be a CDSL or NSDL statement. "
-                "For CAMS/KFintech/MFCentral PDFs, use the standard upload flow."
+        if diagnostic_text is None:
+            diagnostic_text = "\n".join(
+                (page.extract_text() or "") for page in pdf.pages[:3]
             )
-
-        logger.info("[cdsl-parser] detected %s CAS", cas_type.upper())
+        diagnostic_issuer = detect_cdsl_nsdl(diagnostic_text)
 
         isin_map = fetch_amfi_isin_map()
         if not isin_map:
@@ -527,7 +698,23 @@ def parse_cdsl_nsdl(pdf_bytes: bytes, password: str) -> dict[str, Any]:
                 "scheme codes and categories will be unavailable"
             )
 
-        folios = extract_mf_folios(pdf, isin_map)
+        observed_dialects: set[str] = set()
+        folios = extract_mf_folios(pdf, isin_map, observed_dialects)
+
+    if len(observed_dialects) > 1:
+        raise UnsupportedLayoutError(
+            "The statement contains conflicting depository table layouts."
+        )
+
+    schema_dialect = next(iter(observed_dialects), None)
+    cas_type = schema_dialect or diagnostic_issuer
+    if cas_type is None:
+        raise ValueError(
+            "This PDF does not appear to be a CDSL or NSDL statement. "
+            "For CAMS/KFintech/MFCentral PDFs, use the standard upload flow."
+        )
+
+    logger.info("[cdsl-parser] detected %s CAS", cas_type.upper())
 
     total_transactions = sum(
         len(s.get("transactions", []))
