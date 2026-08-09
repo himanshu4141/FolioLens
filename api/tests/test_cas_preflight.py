@@ -280,7 +280,7 @@ def test_missing_folio_is_canonical_null():
     assert result["mutual_funds"][0]["folio_number"] is None
 
 
-@pytest.mark.parametrize("amfi", ["0", "2147483648"])
+@pytest.mark.parametrize("amfi", ["0", "2147483648", "9" * 5000])
 def test_non_positive_or_out_of_range_amfi_fails_closed(amfi):
     candidate = _payload()
     candidate["mutual_funds"][0]["schemes"][0]["additional_info"] = {"amfi": amfi}
@@ -423,6 +423,30 @@ def test_valid_cross_period_reversal_reports_unpaired_reason():
             )
         )
     assert caught.value.reason == "unpaired_reversal"
+
+
+def test_paired_cash_only_reversal_derived_overflow_fails_closed():
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(
+            _payload(
+                "cams",
+                [
+                    _valid_transaction(),
+                    {
+                        "date": "2026-07-01",
+                        "type": "REVERSAL",
+                        "amount": -1005.05,
+                        "charges": {
+                            "stamp_duty": 1e308,
+                            "taxes": 1e308,
+                            "exit_load": 1e308,
+                            "other": 1e308,
+                        },
+                    },
+                ],
+            )
+        )
+    assert caught.value.reason == "accounting_mismatch"
 
 
 def test_mixed_payload_with_transactionless_scheme_fails():

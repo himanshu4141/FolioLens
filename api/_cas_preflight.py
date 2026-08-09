@@ -80,6 +80,7 @@ _IGNORED_TYPES = {
 
 _ISIN_RE = re.compile(r"^INF[A-Z0-9]{9}$")
 _AMFI_RE = re.compile(r"^\d+$")
+_MAX_POSTGRES_INTEGER = "2147483647"
 
 
 def bucket_count(count: int) -> CASCountBucket:
@@ -121,6 +122,18 @@ def _number(value: Any) -> float | None:
 def _absolute(value: Any) -> float | None:
     number = _number(value)
     return abs(number) if number is not None else None
+
+
+def _valid_amfi(value: str) -> bool:
+    if not value or not _AMFI_RE.fullmatch(value):
+        return False
+    significant_digits = value.lstrip("0")
+    if not significant_digits:
+        return False
+    return len(significant_digits) < len(_MAX_POSTGRES_INTEGER) or (
+        len(significant_digits) == len(_MAX_POSTGRES_INTEGER)
+        and significant_digits <= _MAX_POSTGRES_INTEGER
+    )
 
 
 def _normalise_date(value: Any) -> str:
@@ -377,7 +390,13 @@ def _reversal_cash_matches(transaction: dict[str, Any]) -> bool:
     charges = sum(transaction["charges"].values())
     tolerance = max(1.0, source_cash * 0.002)
     delta = abs(transaction["gross_amount"] - source_cash)
-    return delta <= tolerance or abs(delta - charges) <= tolerance
+    delta_from_charges = abs(delta - charges)
+    if not all(
+        math.isfinite(value)
+        for value in (charges, tolerance, delta, delta_from_charges)
+    ):
+        return False
+    return delta <= tolerance or delta_from_charges <= tolerance
 
 
 def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
@@ -402,11 +421,7 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
             if not scheme["transactions"]:
                 _reject(canonical, "empty_payload", valid_rows)
             amfi = scheme["additional_info"]["amfi"]
-            if (
-                not amfi
-                or not _AMFI_RE.fullmatch(amfi)
-                or not 0 < int(amfi) <= 2_147_483_647
-            ):
+            if not _valid_amfi(amfi):
                 _reject(canonical, "missing_scheme_identity", valid_rows)
             if not _ISIN_RE.fullmatch(scheme["isin"]):
                 _reject(canonical, "invalid_isin", valid_rows)

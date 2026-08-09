@@ -220,6 +220,7 @@ describe('CAS import preflight contract', () => {
     ['missing AMFI', { amfi: '' }, 'missing_scheme_identity'],
     ['non-numeric AMFI', { amfi: 'ABC' }, 'missing_scheme_identity'],
     ['zero AMFI', { amfi: '0' }, 'missing_scheme_identity'],
+    ['overlong AMFI', { amfi: '9'.repeat(5000) }, 'missing_scheme_identity'],
   ])('rejects %s', (_label, additionalInfo, reason) => {
     const candidate = payload();
     candidate.mutual_funds![0].schemes![0].additional_info = additionalInfo;
@@ -327,6 +328,23 @@ describe('CAS import preflight contract', () => {
       validTransaction(),
       { date: '2026-07-02', type: 'REVERSAL', amount: -1005.05 },
     ]))).toMatchObject({ ok: false, reason: 'unpaired_reversal' });
+  });
+
+  it('rejects derived overflow in a paired cash-only reversal', () => {
+    expect(preflightCASPayload(payload('cams', [
+      validTransaction(),
+      {
+        date: '2026-07-01',
+        type: 'REVERSAL',
+        amount: -1005.05,
+        charges: {
+          stamp_duty: 1e308,
+          taxes: 1e308,
+          exit_load: 1e308,
+          other: 1e308,
+        },
+      },
+    ]))).toMatchObject({ ok: false, reason: 'accounting_mismatch' });
   });
 
   it('rejects a payload containing no actionable transaction', () => {

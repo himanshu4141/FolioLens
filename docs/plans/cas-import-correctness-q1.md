@@ -187,7 +187,9 @@ No production, dev, or local persistent database mutation is required for Q1. Mo
 - [x] Address all round-one findings in one batch, validate the exact new head, and request round-two review.
 - [x] Collect Codex and Claude round-two findings at frozen SHA `e2462fc36b55e57549f45bfa634f8251c9f38765`.
 - [x] Address all round-two findings in one batch, validate the exact new head, and request round-three review.
-- [ ] Complete round-three exact-SHA dual review and reach Q1 convergence.
+- [x] Collect Codex and Claude round-three results at frozen SHA `cbc5513b72e343da507b9e30e8dba3193f8057c2`.
+- [x] Address the two round-three findings in one batch, validate the exact new head, and request round-four review.
+- [ ] Complete round-four exact-SHA dual review and reach Q1 convergence.
 
 
 ## Amendments

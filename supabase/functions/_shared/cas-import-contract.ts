@@ -235,6 +235,7 @@ const PLACEHOLDER_FOLIOS = new Set([
   'UNKNOWN',
   '-',
 ]);
+const MAX_POSTGRES_INTEGER = '2147483647';
 
 const IGNORED_TRANSACTION_TYPES = new Set([
   'REVERSAL',
@@ -288,6 +289,17 @@ function validIsoDate(value: string): boolean {
   return date.getUTCFullYear() === year
     && date.getUTCMonth() === month - 1
     && date.getUTCDate() === day;
+}
+
+function validSchemeCode(value: string): boolean {
+  if (!/^\d+$/.test(value)) return false;
+  const significantDigits = value.replace(/^0+/, '');
+  if (!significantDigits) return false;
+  return significantDigits.length < MAX_POSTGRES_INTEGER.length
+    || (
+      significantDigits.length === MAX_POSTGRES_INTEGER.length
+      && significantDigits <= MAX_POSTGRES_INTEGER
+    );
 }
 
 export function parseDate(raw: string): string {
@@ -544,7 +556,14 @@ function reversalCashMatches(transaction: CanonicalCASTransaction): boolean {
     + transaction.charges.other;
   const tolerance = Math.max(1, sourceCash * 0.002);
   const delta = Math.abs(transaction.gross_amount - sourceCash);
-  return delta <= tolerance || Math.abs(delta - charges) <= tolerance;
+  const deltaFromCharges = Math.abs(delta - charges);
+  if (
+    !Number.isFinite(charges)
+    || !Number.isFinite(tolerance)
+    || !Number.isFinite(delta)
+    || !Number.isFinite(deltaFromCharges)
+  ) return false;
+  return delta <= tolerance || deltaFromCharges <= tolerance;
 }
 
 export function preflightCASPayload(input: unknown): CASPreflightResult {
@@ -572,13 +591,7 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
       if (scheme.transactions.length === 0) {
         return invalidResult(parsed, 'empty_payload', validRows);
       }
-      const schemeCode = Number(scheme.additional_info.amfi);
-      if (
-        !/^\d+$/.test(scheme.additional_info.amfi)
-        || !Number.isInteger(schemeCode)
-        || schemeCode <= 0
-        || schemeCode > 2_147_483_647
-      ) {
+      if (!validSchemeCode(scheme.additional_info.amfi)) {
         return invalidResult(parsed, 'missing_scheme_identity', validRows);
       }
       if (!/^INF[A-Z0-9]{9}$/.test(scheme.isin)) {
