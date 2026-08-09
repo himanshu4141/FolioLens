@@ -26,6 +26,7 @@ function buildMockSupabase({
   benchmarkRows = [],
   schemeMasterError = null,
   txUpsertError = null,
+  txUpsertCount,
 }: {
   fundId?: string;
   benchmarkRows?: Array<{
@@ -35,6 +36,7 @@ function buildMockSupabase({
   }>;
   schemeMasterError?: { message: string } | null;
   txUpsertError?: { message: string } | null;
+  txUpsertCount?: number | null;
 } = {}) {
   const deleteCalls: Array<Array<[string, unknown]>> = [];
   let upsertedRows: Record<string, unknown>[] = [];
@@ -57,7 +59,14 @@ function buildMockSupabase({
 
   const txUpsertMock = jest.fn((rows: Record<string, unknown>[]) => {
     upsertedRows = rows;
-    return { error: txUpsertError, count: txUpsertError ? null : rows.length };
+    return {
+      error: txUpsertError,
+      count: txUpsertError
+        ? null
+        : txUpsertCount === undefined
+          ? rows.length
+          : txUpsertCount,
+    };
   });
 
   const singleMock = jest.fn(() => ({ data: { id: fundId }, error: null }));
@@ -282,10 +291,8 @@ describe('parseDate()', () => {
     expect(parseDate('15-jan-2024')).toBe('2024-01-15');
   });
 
-  it('returns a string for an empty input', () => {
-    const result = parseDate('');
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
+  it('keeps an empty date empty so preflight can reject it', () => {
+    expect(parseDate('')).toBe('');
   });
 
   it('passes through an unrecognised raw date unchanged', () => {
@@ -526,7 +533,6 @@ describe('importCASData()', () => {
     ['TDS_TAX', 0, 120],
     ['STT_TAX', 0, 8],
     ['MISC', 0, 0],
-    ['UNKNOWN', 0, 0],
     ['SEGREGATION', 10, 0],   // non-zero units — must still be skipped
     ['REVERSAL', 100, 10000], // REVERSAL with no paired purchase — excluded by type filter
   ])('filters out %s transactions (null type, never imported)', async (type, units, amount) => {
@@ -543,24 +549,35 @@ describe('importCASData()', () => {
     expect(rows.every((r) => r.transaction_type !== null)).toBe(true);
   });
 
-  it('filters out zero-unit transactions regardless of type', async () => {
-    const { supabase, getUpsertedRows } = buildMockSupabase();
+  it('rejects an unknown transaction type before any domain operation', async () => {
+    const { supabase, fromMock } = buildMockSupabase();
+
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      { date: '2024-01-10', type: 'UNKNOWN', units: 0, amount: 0, nav: 0 },
+    ]);
+
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'unsupported_transaction_type' });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects zero-unit transactions before any domain operation', async () => {
+    const { supabase, fromMock } = buildMockSupabase();
 
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
       { date: '2024-01-10', type: 'PURCHASE', units: 0, amount: 0, nav: 100 },
     ]);
 
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    const rows = getUpsertedRows();
-    expect(rows).toHaveLength(1);
-    expect(rows[0].units).toBe(100);
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'invalid_amount' });
+    expect(fromMock).not.toHaveBeenCalled();
   });
 
   // ── Edge cases ─────────────────────────────────────────────────────────────
 
-  it('skips a scheme with no AMFI code and does not error', async () => {
+  it('rejects a scheme with no AMFI code before any domain operation', async () => {
     const { supabase, fromMock } = buildMockSupabase();
 
     const parsed: CASParseResult = {
@@ -577,10 +594,9 @@ describe('importCASData()', () => {
       }],
     };
 
-    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    expect(fromMock).not.toHaveBeenCalledWith('user_fund');
-    expect(result.fundsUpdated).toBe(0);
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'missing_scheme_identity' });
+    expect(fromMock).not.toHaveBeenCalled();
   });
 
   it('records an error when the fund upsert fails and continues to next scheme', async () => {
@@ -611,7 +627,7 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/Fund upsert failed/);
+    expect(result.errors[0]).toBe('cas_import:fund_write_failed');
     expect(result.fundsUpdated).toBe(0);
   });
 
@@ -627,7 +643,7 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/Scheme upsert failed/);
+    expect(result.errors[0]).toBe('cas_import:scheme_write_failed');
     expect(result.fundsUpdated).toBe(0);
     expect(fromMock).not.toHaveBeenCalledWith('user_fund');
   });
@@ -644,7 +660,7 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/Transaction upsert failed/);
+    expect(result.errors[0]).toBe('cas_import:transaction_write_failed');
     expect(result.fundsUpdated).toBe(1);
     expect(result.transactionsAdded).toBe(0);
   });
@@ -663,6 +679,17 @@ describe('importCASData()', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it.each([null, 0])('reports zero inserted when exact upsert count is %s', async (txUpsertCount) => {
+    const { supabase } = buildMockSupabase({ txUpsertCount });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.transactionsAdded).toBe(0);
+  });
+
   // ── Phantom rows: SWITCH_IN/SWITCH_OUT with units > 0 but amount = 0 ──────
   // casparser sometimes surfaces statement-level "balance forward" markers
   // as switch_in/switch_out with non-zero units but zero rupees. Importing
@@ -670,41 +697,22 @@ describe('importCASData()', () => {
   // funds they fully redeemed years ago, with absurd current values
   // (units * NAV with no offsetting cost basis → +159k% gain).
 
-  it('drops a phantom SWITCH_IN with units > 0 and amount = 0', async () => {
-    const { supabase, getUpsertedRows } = buildMockSupabase();
+  it.each(['SWITCH_IN', 'SWITCH_OUT'])('rejects a phantom %s before any domain operation', async (type) => {
+    const { supabase, fromMock } = buildMockSupabase();
 
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
       // The phantom row — non-zero units, zero amount
-      { date: '2024-06-01', type: 'SWITCH_IN', units: 479.242, amount: 0, nav: 0 },
+      { date: '2026-07-02', type, units: 20, amount: 0, nav: 0 },
     ]);
 
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    const rows = getUpsertedRows();
-    expect(rows).toHaveLength(1);
-    expect(rows[0].transaction_type).toBe('purchase');
-    // The phantom row must NOT make it through
-    expect(rows.every((r) => r.transaction_type !== 'switch_in')).toBe(true);
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'invalid_amount' });
+    expect(fromMock).not.toHaveBeenCalled();
   });
 
-  it('drops a phantom SWITCH_OUT with units > 0 and amount = 0', async () => {
-    const { supabase, getUpsertedRows } = buildMockSupabase();
-
-    const parsed = minimalCAS([
-      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
-      { date: '2024-06-01', type: 'SWITCH_OUT', units: 50, amount: 0, nav: 0 },
-    ]);
-
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    const rows = getUpsertedRows();
-    expect(rows).toHaveLength(1);
-    expect(rows.every((r) => r.transaction_type !== 'switch_out')).toBe(true);
-  });
-
-  it('drops a phantom row with null amount (parser returned undefined)', async () => {
-    const { supabase, getUpsertedRows } = buildMockSupabase();
+  it('rejects a phantom row with null amount before any domain operation', async () => {
+    const { supabase, fromMock } = buildMockSupabase();
 
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
@@ -712,9 +720,9 @@ describe('importCASData()', () => {
       { date: '2024-06-01', type: 'SWITCH_IN', units: 200, amount: null as unknown as number, nav: 0 },
     ]);
 
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    expect(getUpsertedRows()).toHaveLength(1);
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'invalid_amount' });
+    expect(fromMock).not.toHaveBeenCalled();
   });
 
   it('preserves a real SWITCH_IN that has both units AND amount', async () => {
@@ -732,24 +740,19 @@ describe('importCASData()', () => {
     expect(rows[0].amount).toBe(12000);
   });
 
-  it('reproduces the user-reported scenario: phantom switch_in alongside a real switch_out drops only the phantom', async () => {
-    const { supabase, getUpsertedRows } = buildMockSupabase();
+  it('rejects a valid-plus-phantom mixed payload without partial writes', async () => {
+    const { supabase, fromMock } = buildMockSupabase();
 
-    // Scenario from dev DB on 2026-03-09 — DSP Large Cap had a real partial
-    // switch_out on the same day as a phantom switch_in.
+    // Fully synthetic same-day mixed input: one malformed row rejects the
+    // complete payload even when the surrounding rows are coherent.
     const parsed = minimalCAS([
-      { date: '2024-03-07', type: 'PURCHASE', units: 5.92, amount: 2499.88, nav: 422 },
-      { date: '2026-03-09', type: 'SWITCH_IN', units: 479.242, amount: 0, nav: 0 },
-      { date: '2026-03-09', type: 'SWITCH_OUT', units: 10.076, amount: 5000, nav: 496 },
+      { date: '2026-07-01', type: 'PURCHASE', units: 10, amount: 1000, nav: 100 },
+      { date: '2026-07-02', type: 'SWITCH_IN', units: 20, amount: 0, nav: 0 },
+      { date: '2026-07-02', type: 'SWITCH_OUT', units: 5, amount: 500, nav: 100 },
     ]);
 
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
-
-    const rows = getUpsertedRows();
-    // Real purchase + real switch_out kept; phantom switch_in dropped
-    expect(rows).toHaveLength(2);
-    expect(rows.find((r) => r.transaction_type === 'switch_in')).toBeUndefined();
-    expect(rows.find((r) => r.transaction_type === 'switch_out')).toBeDefined();
-    expect(rows.find((r) => r.transaction_type === 'purchase')).toBeDefined();
+    await expect(importCASData(supabase, 'user-1', 'import-1', parsed))
+      .rejects.toMatchObject({ reason: 'invalid_amount' });
+    expect(fromMock).not.toHaveBeenCalled();
   });
 });

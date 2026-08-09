@@ -31,6 +31,8 @@ from typing import Any
 
 import pdfplumber
 
+from api._cas_preflight import validate_and_canonicalize_cas
+
 logger = logging.getLogger(__name__)
 
 # ── AMFI ISIN → scheme_code cache ─────────────────────────────────────────────
@@ -206,7 +208,7 @@ def parse_date_cdsl(raw: str) -> str:
         if mm:
             return f"{yyyy}-{mm}-{dd.zfill(2)}"
 
-    logger.warning("[cdsl-parser] unrecognised date: %r", raw)
+    logger.warning("[cdsl-parser] unrecognised_date")
     return raw
 
 
@@ -446,8 +448,9 @@ def extract_mf_folios(
 
                 amount_val = nums[0] if len(nums) > 0 else None
                 nav_val = nums[1] if len(nums) > 1 else None
-                # Skip price col (same as NAV); units are at index 3
+                price_val = nums[2] if len(nums) > 2 else nav_val
                 units_val = nums[3] if len(nums) > 3 else (nums[2] if len(nums) > 2 else None)
+                stamp_duty_val = nums[4] if len(nums) > 4 else None
 
                 if not units_val:
                     continue
@@ -457,17 +460,26 @@ def extract_mf_folios(
                     "type": tx_type,
                     "description": desc or tx_type.title(),
                     "amount": abs(amount_val) if amount_val is not None else 0.0,
+                    "source_amount": amount_val if amount_val is not None else 0.0,
+                    "gross_amount": (
+                        abs(amount_val) + abs(stamp_duty_val or 0.0)
+                        if amount_val is not None else 0.0
+                    ),
                     "units": abs(units_val),
+                    "source_units": units_val,
                     "nav": nav_val or 0.0,
+                    "price": price_val or 0.0,
+                    "stamp_duty": abs(stamp_duty_val or 0.0),
+                    "charges": {"stamp_duty": abs(stamp_duty_val or 0.0)},
                     "balance": None,
                 })
 
     if not schemes_by_isin:
         return []
 
-    folio_schemes: dict[str, list[dict[str, Any]]] = {}
+    folio_schemes: dict[str | None, list[dict[str, Any]]] = {}
     for isin, scheme in schemes_by_isin.items():
-        fn = folio_by_isin.get(isin, "CDSL")
+        fn = folio_by_isin.get(isin)
         folio_schemes.setdefault(fn, []).append(scheme)
 
     return [
@@ -537,4 +549,6 @@ def parse_cdsl_nsdl(pdf_bytes: bytes, password: str) -> dict[str, Any]:
         total_transactions,
     )
 
-    return {"mutual_funds": folios}
+    return validate_and_canonicalize_cas(
+        {"source_dialect": cas_type, "mutual_funds": folios}
+    )

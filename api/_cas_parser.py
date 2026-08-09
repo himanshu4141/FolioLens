@@ -12,6 +12,7 @@ from api._cdsl_nsdl_parser import (
     detect_cdsl_nsdl,
     parse_cdsl_nsdl,
 )
+from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ def _title_scheme_type(value: str | None) -> str | None:
     return value.title()
 
 
-def normalize_casparser_result(raw: dict[str, Any]) -> dict[str, Any]:
+def normalize_casparser_result(
+    raw: dict[str, Any],
+    source_dialect: str = "unknown_standard",
+) -> dict[str, Any]:
     mutual_funds: list[dict[str, Any]] = []
 
     for folio in raw.get("folios", []):
@@ -49,8 +53,14 @@ def normalize_casparser_result(raw: dict[str, Any]) -> dict[str, Any]:
                     "type": tx.get("type"),
                     "description": tx.get("description"),
                     "amount": _to_float(tx.get("amount")),
+                    "source_amount": _to_float(tx.get("source_amount", tx.get("amount"))),
+                    "gross_amount": _to_float(tx.get("gross_amount", tx.get("amount"))),
                     "units": _to_float(tx.get("units")),
+                    "source_units": _to_float(tx.get("source_units", tx.get("units"))),
                     "nav": _to_float(tx.get("nav")),
+                    "price": _to_float(tx.get("price", tx.get("nav"))),
+                    "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
+                    "charges": tx.get("charges") if isinstance(tx.get("charges"), dict) else {},
                     "balance": _to_float(tx.get("balance")),
                 }
                 for tx in scheme.get("transactions", [])
@@ -84,7 +94,7 @@ def normalize_casparser_result(raw: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    return {"mutual_funds": mutual_funds}
+    return {"source_dialect": source_dialect, "mutual_funds": mutual_funds}
 
 
 def _detection_text(pdf: pdfplumber.PDF) -> str:
@@ -170,4 +180,5 @@ def parse_cas_pdf_bytes(
     if hasattr(raw, "model_dump"):
         raw = raw.model_dump(mode="json")
 
-    return normalize_casparser_result(raw)
+    normalized = normalize_casparser_result(raw, detect_standard_dialect(detection_text))
+    return validate_and_canonicalize_cas(normalized)

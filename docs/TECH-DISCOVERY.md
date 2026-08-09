@@ -96,6 +96,16 @@ FolioLens supports two practical CAS paths:
 1. **PDF upload** — user uploads a detailed CAMS/KFintech/MFCentral/CDSL/NSDL statement. The app sends it to `parse-cas-pdf`, which relays to the Vercel parser and imports through `_shared/import-cas.ts`.
 2. **Email forwarding** — user forwards the CAS email to a per-user Resend inbound address. The Vercel inbound router verifies the Resend event, resolves the target inbox, fetches the full email/attachments when needed, then calls `cas-webhook-resend`.
 
+Both paths enforce the same fail-closed import contract. Python retains the
+provider dialect plus source amount, gross amount, charges, statement NAV,
+transaction Price, units, date, type, and direction, then validates the complete
+payload before returning parser success. TypeScript repeats that preflight before
+the first financial or shared-domain operation. A rejected direct upload changes
+only its audit row to `failed`; inbound email parses and preflights every PDF before
+importing any attachment, so a mixed-validity message cannot partially import.
+Failure records and telemetry use allowlisted reason codes and bucketed counts,
+never raw CAS payloads, filenames, identifiers, financial values, or exception text.
+
 Repeated imports are additive. Duplicate transactions are skipped; newly seen
 transactions update downstream sync/invalidation paths.
 
