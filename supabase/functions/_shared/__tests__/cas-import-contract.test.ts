@@ -8,6 +8,7 @@ import {
   buildImportSuccessTelemetry,
   buildPreflightFailureOutcome,
   preflightCASPayload,
+  userMessageForCASFailure,
   type CASParseResult,
   type CASSourceDialect,
   type CASTransaction,
@@ -185,6 +186,17 @@ describe('CAS import preflight contract', () => {
     });
   });
 
+  it('rejects finite scalars whose derived accounting values overflow', () => {
+    expect(preflightCASPayload(payload('cams', [validTransaction({
+      amount: 1e308,
+      source_amount: 1e308,
+      gross_amount: 1e308,
+      nav: null,
+      price: 1e308,
+      units: 1e308,
+    })]))).toMatchObject({ ok: false, reason: 'accounting_mismatch' });
+  });
+
   it.each(['No', 'CDSL', 'NSDL', 'N/A'])('rejects placeholder folio %s', (folio) => {
     const candidate = payload();
     candidate.mutual_funds![0].folio_number = folio;
@@ -207,6 +219,7 @@ describe('CAS import preflight contract', () => {
   it.each([
     ['missing AMFI', { amfi: '' }, 'missing_scheme_identity'],
     ['non-numeric AMFI', { amfi: 'ABC' }, 'missing_scheme_identity'],
+    ['zero AMFI', { amfi: '0' }, 'missing_scheme_identity'],
   ])('rejects %s', (_label, additionalInfo, reason) => {
     const candidate = payload();
     candidate.mutual_funds![0].schemes![0].additional_info = additionalInfo;
@@ -239,7 +252,6 @@ describe('CAS import preflight contract', () => {
   });
 
   it.each([
-    [{}, 'empty_payload'],
     [{ mutual_funds: [] }, 'empty_payload'],
     [{ mutual_funds: [{ schemes: [] }] }, 'empty_payload'],
     [payload('cams', []), 'empty_payload'],
@@ -250,6 +262,7 @@ describe('CAS import preflight contract', () => {
   it.each([
     null,
     [],
+    {},
     { mutual_funds: {} },
     { mutual_funds: [null] },
     { mutual_funds: [{ schemes: {} }] },
@@ -268,7 +281,7 @@ describe('CAS import preflight contract', () => {
   ])('turns malformed runtime shape %# into an allowlisted rejection', (candidate) => {
     expect(preflightCASPayload(candidate)).toMatchObject({
       ok: false,
-      reason: 'empty_payload',
+      reason: 'malformed_payload',
     });
   });
 
@@ -277,7 +290,7 @@ describe('CAS import preflight contract', () => {
     try {
       assertCASPreflight({ mutual_funds: {} });
     } catch (error) {
-      expect(error).toMatchObject({ reason: 'empty_payload' });
+      expect(error).toMatchObject({ reason: 'malformed_payload' });
     }
   });
 
@@ -307,6 +320,13 @@ describe('CAS import preflight contract', () => {
       validTransaction(),
       { date: '2026-07-02', type: 'REVERSAL', amount: -999_999_999, nav: -5, price: 0 },
     ]))).toMatchObject({ ok: false, reason: 'invalid_nav' });
+  });
+
+  it('reports a valid cross-period reversal as unpaired', () => {
+    expect(preflightCASPayload(payload('cams', [
+      validTransaction(),
+      { date: '2026-07-02', type: 'REVERSAL', amount: -1005.05 },
+    ]))).toMatchObject({ ok: false, reason: 'unpaired_reversal' });
   });
 
   it('rejects a payload containing no actionable transaction', () => {
@@ -429,6 +449,11 @@ describe('privacy-safe caller outcomes', () => {
 
   it('persists only allowlisted write reason codes', () => {
     expect(auditErrorCode('transaction_write_failed')).toBe('cas_import:transaction_write_failed');
+  });
+
+  it('gives malformed and unpaired payloads precise safe user messages', () => {
+    expect(userMessageForCASFailure('malformed_payload')).toContain('data structure');
+    expect(userMessageForCASFailure('unpaired_reversal')).toContain('matching purchase');
   });
 
   it('keeps raw CAS identifiers and upstream bodies out of caller diagnostics', () => {

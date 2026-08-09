@@ -184,7 +184,10 @@ No production, dev, or local persistent database mutation is required for Q1. Mo
 - [x] Run focused and full validation at the initial implementation head.
 - [x] Open implementation PR #292 and start the frozen dual-review round.
 - [x] Collect Codex and Claude round-one findings at frozen SHA `b23fb373ba7ac5b6620e7756799b1368a6ed60f6`.
-- [ ] Address all round-one findings in one batch, validate the exact new head, and request round-two review.
+- [x] Address all round-one findings in one batch, validate the exact new head, and request round-two review.
+- [x] Collect Codex and Claude round-two findings at frozen SHA `e2462fc36b55e57549f45bfa634f8251c9f38765`.
+- [x] Address all round-two findings in one batch, validate the exact new head, and request round-three review.
+- [ ] Complete round-three exact-SHA dual review and reach Q1 convergence.
 
 
 ## Amendments
@@ -192,4 +195,4 @@ No production, dev, or local persistent database mutation is required for Q1. Mo
 - **Missing depository folios.** The Q1 gate rejects the legacy `CDSL` sentinel, so the positional adapter now represents a genuinely absent folio as `null`. This is a narrow prerequisite for validating the existing CDSL path and is also part of Q2's eventual extraction contract. Q2 still owns header-aware folio extraction and its positive fixtures.
 - **NAV and transaction Price.** Q1 carries and validates both values because Price is the accounting basis required by the accepted research contract. To avoid changing a persisted financial column before Q2, the importer continues to store statement NAV (falling back to Price only when NAV is absent). Q2 still owns extraction correctness for both columns.
 - **Gross cash and idempotency.** Q1 retains and validates gross cash but does not persist it into the existing `transaction.amount` uniqueness key. The shipped source-amount magnitude remains the stored identity until Q3 introduces provider-neutral gross normalization, reconciliation, and migration/backfill evidence.
-- **Reversal safety.** Because a reversal amount drives a delete, Q1 validates its amount, charge relationship, optional NAV/Price/units, and requires an independently validated same-payload purchase key. Historical and ambiguous reversal reconciliation remains Q3 scope.
+- **Reversal safety.** Because a reversal amount drives a delete, Q1 validates its amount, charge relationship, optional NAV/Price/units, and requires an independently validated same-payload purchase key. Until Q3 adds provider-neutral historical reconciliation, a valid cross-period reversal fails the entire import with `unpaired_reversal`; the user must provide a Detailed CAS that includes both transactions. Historical and ambiguous reversal reconciliation remains Q3 scope.

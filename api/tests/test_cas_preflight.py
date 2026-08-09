@@ -244,6 +244,26 @@ def test_unreconciled_cash_cannot_widen_its_own_tolerance(overrides):
     assert caught.value.reason == "accounting_mismatch"
 
 
+def test_derived_accounting_overflow_fails_closed():
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(
+            _payload(
+                "cams",
+                [
+                    _valid_transaction(
+                        amount=1e308,
+                        source_amount=1e308,
+                        gross_amount=1e308,
+                        nav=None,
+                        price=1e308,
+                        units=1e308,
+                    )
+                ],
+            )
+        )
+    assert caught.value.reason == "accounting_mismatch"
+
+
 @pytest.mark.parametrize("folio", ["No", "CDSL", "NSDL", "N/A"])
 def test_placeholder_folios_fail_closed(folio):
     candidate = _payload()
@@ -258,6 +278,15 @@ def test_missing_folio_is_canonical_null():
     candidate["mutual_funds"][0]["folio_number"] = None
     result = validate_and_canonicalize_cas(candidate)
     assert result["mutual_funds"][0]["folio_number"] is None
+
+
+@pytest.mark.parametrize("amfi", ["0", "2147483648"])
+def test_non_positive_or_out_of_range_amfi_fails_closed(amfi):
+    candidate = _payload()
+    candidate["mutual_funds"][0]["schemes"][0]["additional_info"] = {"amfi": amfi}
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(candidate)
+    assert caught.value.reason == "missing_scheme_identity"
 
 
 def test_mixed_valid_and_corrupt_schemes_reject_together():
@@ -280,7 +309,6 @@ def test_mixed_valid_and_corrupt_schemes_reject_together():
 @pytest.mark.parametrize(
     "candidate",
     [
-        {},
         {"mutual_funds": []},
         {"mutual_funds": [{"schemes": []}]},
         _payload(transactions=[]),
@@ -297,6 +325,7 @@ def test_empty_or_truncated_payloads_fail(candidate):
     [
         None,
         [],
+        {},
         {"mutual_funds": {}},
         {"mutual_funds": [None]},
         {"mutual_funds": [{"schemes": {}}]},
@@ -339,7 +368,7 @@ def test_empty_or_truncated_payloads_fail(candidate):
 def test_malformed_runtime_shapes_fail_with_allowlisted_reason(candidate):
     with pytest.raises(CASPreflightError) as caught:
         validate_and_canonicalize_cas(candidate)
-    assert caught.value.reason == "empty_payload"
+    assert caught.value.reason == "malformed_payload"
 
 
 def test_paired_reversal_passes_but_corrupt_unpaired_reversal_fails():
@@ -376,6 +405,24 @@ def test_paired_reversal_passes_but_corrupt_unpaired_reversal_fails():
             )
         )
     assert caught.value.reason == "invalid_nav"
+
+
+def test_valid_cross_period_reversal_reports_unpaired_reason():
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(
+            _payload(
+                "cams",
+                [
+                    _valid_transaction(),
+                    {
+                        "date": "2026-07-02",
+                        "type": "REVERSAL",
+                        "amount": -1005.05,
+                    },
+                ],
+            )
+        )
+    assert caught.value.reason == "unpaired_reversal"
 
 
 def test_mixed_payload_with_transactionless_scheme_fails():

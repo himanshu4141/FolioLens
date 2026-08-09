@@ -109,7 +109,7 @@ export async function importCASData(
 
     for (const mf of schemes) {
       // AMFI code (e.g. "119551") is what mfapi.in uses as scheme_code
-      // Preflight has already proved this is a non-empty digit-only string.
+      // Preflight has already proved this is a positive Postgres integer.
       const schemeCode = parseInt(mf.additional_info.amfi, 10);
 
       // Use CASParser type as scheme_category (broad: Equity/Debt/Hybrid/Other)

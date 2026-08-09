@@ -20,6 +20,7 @@ CASSourceDialect = Literal[
 
 CASPreflightReason = Literal[
     "empty_payload",
+    "malformed_payload",
     "missing_scheme_identity",
     "invalid_isin",
     "invalid_folio",
@@ -32,6 +33,7 @@ CASPreflightReason = Literal[
     "direction_mismatch",
     "nav_price_mismatch",
     "accounting_mismatch",
+    "unpaired_reversal",
     "no_actionable_transactions",
 ]
 
@@ -347,6 +349,13 @@ def _accounting_matches(transaction: dict[str, Any]) -> bool:
     # Price x units is independently validated. An untrusted cash field must
     # never be able to widen its own acceptance tolerance.
     tolerance = max(1.0, abs(base) * 0.002)
+    if not (
+        math.isfinite(base)
+        and math.isfinite(charges)
+        and all(math.isfinite(expected) for expected in expected_candidates)
+        and math.isfinite(tolerance)
+    ):
+        return False
     source_cash = abs(transaction["source_amount"])
     gross_cash = transaction["gross_amount"]
     source_matches = any(
@@ -376,7 +385,7 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
     canonical = canonicalize_cas_payload(payload)
     schemes, rows = _flatten(canonical)
     if malformed:
-        _reject(canonical, "empty_payload", 0)
+        _reject(canonical, "malformed_payload", 0)
     if not canonical["mutual_funds"] or not schemes or not rows:
         _reject(canonical, "empty_payload", 0)
 
@@ -393,7 +402,11 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
             if not scheme["transactions"]:
                 _reject(canonical, "empty_payload", valid_rows)
             amfi = scheme["additional_info"]["amfi"]
-            if not amfi or not _AMFI_RE.fullmatch(amfi):
+            if (
+                not amfi
+                or not _AMFI_RE.fullmatch(amfi)
+                or not 0 < int(amfi) <= 2_147_483_647
+            ):
                 _reject(canonical, "missing_scheme_identity", valid_rows)
             if not _ISIN_RE.fullmatch(scheme["isin"]):
                 _reject(canonical, "invalid_isin", valid_rows)
@@ -442,7 +455,7 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
                             _reject(canonical, "accounting_mismatch", valid_rows)
                     reversal_key = f'{transaction["date"]}:{transaction["amount"]}'
                     if reversal_key not in purchase_keys:
-                        _reject(canonical, "accounting_mismatch", valid_rows)
+                        _reject(canonical, "unpaired_reversal", valid_rows)
                 if ignored:
                     valid_rows += 1
                     continue

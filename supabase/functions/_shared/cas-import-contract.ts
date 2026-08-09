@@ -19,6 +19,7 @@ export type CASImportSource = 'pdf' | 'email';
 
 export type CASPreflightReason =
   | 'empty_payload'
+  | 'malformed_payload'
   | 'missing_scheme_identity'
   | 'invalid_isin'
   | 'invalid_folio'
@@ -31,6 +32,7 @@ export type CASPreflightReason =
   | 'direction_mismatch'
   | 'nav_price_mismatch'
   | 'accounting_mismatch'
+  | 'unpaired_reversal'
   | 'no_actionable_transactions';
 
 export type CASWriteFailureReason =
@@ -197,6 +199,7 @@ const DIALECTS = new Set<CASSourceDialect>([
 
 const FAILURE_REASONS = new Set<CASFailureReason>([
   'empty_payload',
+  'malformed_payload',
   'missing_scheme_identity',
   'invalid_isin',
   'invalid_folio',
@@ -209,6 +212,7 @@ const FAILURE_REASONS = new Set<CASFailureReason>([
   'direction_mismatch',
   'nav_price_mismatch',
   'accounting_mismatch',
+  'unpaired_reversal',
   'no_actionable_transactions',
   'scheme_write_failed',
   'fund_write_failed',
@@ -511,6 +515,12 @@ function accountingMatches(transaction: CanonicalCASTransaction): boolean {
   // independently validated accounting base, so a corrupt amount cannot
   // widen its own acceptance window.
   const tolerance = Math.max(1, Math.abs(base) * 0.002);
+  if (
+    !Number.isFinite(base)
+    || !Number.isFinite(charges)
+    || !expectedCandidates.every(Number.isFinite)
+    || !Number.isFinite(tolerance)
+  ) return false;
   const sourceCash = Math.abs(transaction.source_amount);
   const grossCash = transaction.gross_amount;
   const sourceMatches = expectedCandidates.some(
@@ -541,7 +551,7 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
   const { parsed, malformed } = canonicalPayload(input);
   const { schemes, rows } = counts(parsed);
   if (malformed) {
-    return invalidResult(parsed, 'empty_payload', 0);
+    return invalidResult(parsed, 'malformed_payload', 0);
   }
   if (parsed.mutual_funds.length === 0 || schemes.length === 0 || rows.length === 0) {
     return invalidResult(parsed, 'empty_payload', 0);
@@ -562,7 +572,13 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
       if (scheme.transactions.length === 0) {
         return invalidResult(parsed, 'empty_payload', validRows);
       }
-      if (!scheme.additional_info.amfi || !/^\d+$/.test(scheme.additional_info.amfi)) {
+      const schemeCode = Number(scheme.additional_info.amfi);
+      if (
+        !/^\d+$/.test(scheme.additional_info.amfi)
+        || !Number.isInteger(schemeCode)
+        || schemeCode <= 0
+        || schemeCode > 2_147_483_647
+      ) {
         return invalidResult(parsed, 'missing_scheme_identity', validRows);
       }
       if (!/^INF[A-Z0-9]{9}$/.test(scheme.isin)) {
@@ -626,7 +642,7 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
           // an independently validated purchase in the same payload. Q3 owns
           // provider-neutral historical reconciliation.
           if (!purchaseKeys.has(`${transaction.date}:${transaction.amount}`)) {
-            return invalidResult(parsed, 'accounting_mismatch', validRows);
+            return invalidResult(parsed, 'unpaired_reversal', validRows);
           }
         }
 
@@ -706,6 +722,7 @@ export function assertCASPreflight(input: unknown): {
 
 const USER_FAILURE_MESSAGES: Record<CASFailureReason, string> = {
   empty_payload: 'This PDF does not contain a complete transaction history.',
+  malformed_payload: 'This PDF contains an unsupported or incomplete data structure.',
   missing_scheme_identity: 'A fund in this statement could not be identified safely.',
   invalid_isin: 'A fund in this statement could not be identified safely.',
   invalid_folio: 'This statement contains an unsupported folio layout.',
@@ -718,6 +735,7 @@ const USER_FAILURE_MESSAGES: Record<CASFailureReason, string> = {
   direction_mismatch: 'This statement contains inconsistent transaction directions.',
   nav_price_mismatch: 'This statement has inconsistent NAV and transaction-price values.',
   accounting_mismatch: 'This statement has transactions whose cash and units do not reconcile.',
+  unpaired_reversal: 'This statement contains a reversal without its matching purchase. Please upload a Detailed CAS covering both transactions.',
   no_actionable_transactions: 'This PDF has no importable mutual-fund transactions.',
   scheme_write_failed: 'A fund could not be saved. No further rows for that fund were imported.',
   fund_write_failed: 'A portfolio holding could not be saved.',
