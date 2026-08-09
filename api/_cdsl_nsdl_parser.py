@@ -311,6 +311,10 @@ _CLOSING_RE = re.compile(
     r"closing\s+balance|अंतिम\s+शेष|बंद\s+शेष",
     re.IGNORECASE | re.UNICODE,
 )
+_NET_OF_TAX_OUTFLOW_RE = re.compile(
+    r"\bless\b.*\b(?:tds|stt)\b",
+    re.IGNORECASE | re.UNICODE,
+)
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "date": ("date", "transaction date", "txn date"),
@@ -345,6 +349,7 @@ def _header_field(cell: str) -> str | None:
     normalised = _normalise_header(cell)
     if not normalised:
         return None
+    compact = re.sub(r"[^a-z0-9]+", "", cell.lower())
 
     exact_matches = [
         field
@@ -358,8 +363,9 @@ def _header_field(cell: str) -> str | None:
     candidates: list[tuple[int, str]] = []
     for field, aliases in _HEADER_ALIASES.items():
         for alias in aliases:
-            if f" {alias} " in padded:
-                candidates.append((len(alias.split()), field))
+            compact_alias = re.sub(r"[^a-z0-9]+", "", alias)
+            if f" {alias} " in padded or compact_alias in compact:
+                candidates.append((len(compact_alias), field))
     if not candidates:
         return None
 
@@ -376,7 +382,14 @@ def _transaction_header_map(cells: list[str]) -> dict[str, int] | None:
             recognised.append((field, index))
 
     fields = {field for field, _index in recognised}
-    looks_like_header = "date" in fields or {"description", "amount"}.issubset(fields)
+    financial_fields = fields & (
+        _REQUIRED_HEADER_FIELDS | {"nav", "price", "stamp_duty", "taxes", "exit_load"}
+    )
+    looks_like_header = (
+        "date" in fields and len(financial_fields) >= 3
+    ) or (
+        {"description", "amount"}.issubset(fields) and len(financial_fields) >= 3
+    )
     if not looks_like_header:
         return None
 
@@ -411,11 +424,45 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
     return cells[index] if index is not None and index < len(cells) else ""
 
 
-def _folio_from_cell(cell: str) -> str | None:
+def _derived_tax_withholding(
+    description: str,
+    tx_type: str,
+    amount: float | None,
+    price: float | None,
+    units: float | None,
+) -> float | None:
+    """Return a bounded tax gap for explicitly net-of-tax outflows.
+
+    Some NSDL switch-out rows label their cash as "Less TDS, STT" without a
+    separate tax column. Price and Units independently establish gross cash;
+    Amount is the net cash. Never infer a charge for an unmarked row or when
+    the gap exceeds 10% of gross cash.
+    """
+    if (
+        tx_type not in {"REDEMPTION", "SWITCH_OUT"}
+        or not _NET_OF_TAX_OUTFLOW_RE.search(description)
+        or amount is None
+        or price is None
+        or units is None
+    ):
+        return None
+
+    gross_cash = abs(price * units)
+    net_cash = abs(amount)
+    withholding = gross_cash - net_cash
+    tolerance = max(1.0, gross_cash * 0.002)
+    if withholding <= tolerance:
+        return 0.0
+    if withholding <= gross_cash * 0.10 + 1e-9:
+        return withholding
+    return None
+
+
+def _folio_from_cell(cell: str, *, strict: bool = False) -> str | None:
     match = _FOLIO_RE.search(cell)
     if match:
         return match.group(1)
-    if _FOLIO_LABEL_RE.search(cell):
+    if strict and _FOLIO_LABEL_RE.search(cell):
         raise UnsupportedLayoutError(
             "A folio label is missing an explicit delimiter or value."
         )
@@ -457,6 +504,7 @@ def extract_mf_folios(
                     continue
 
                 cells = [str(c or "").strip() for c in row]
+                non_empty = [c for c in cells if c]
 
                 header_map = _transaction_header_map(cells)
                 if header_map is not None:
@@ -483,7 +531,7 @@ def extract_mf_folios(
 
                     # Folio may also be in the same row as the ISIN
                     for cell in cells:
-                        folio = _folio_from_cell(cell)
+                        folio = _folio_from_cell(cell, strict=True)
                         if folio:
                             folio_by_isin[current_isin] = folio
                             pending_folio = None
@@ -525,7 +573,7 @@ def extract_mf_folios(
                 # not the current one — so it must remain pending until the next
                 # ISIN row claims it.
                 for cell in cells:
-                    folio = _folio_from_cell(cell)
+                    folio = _folio_from_cell(cell, strict=len(non_empty) == 1)
                     if folio:
                         pending_folio = folio
                         if current_isin and current_isin not in folio_by_isin:
@@ -557,7 +605,6 @@ def extract_mf_folios(
                 # ── 4. Scheme name candidate (clean single-cell text row) ───────
                 # Only used as fallback when AMFI name is unavailable.
                 # Reject garbled text (letter-digit-letter patterns like "E0N").
-                non_empty = [c for c in cells if c]
                 if (
                     len(non_empty) == 1
                     and len(non_empty[0]) > 15
@@ -612,6 +659,17 @@ def extract_mf_folios(
                 nav_val = nav_val if nav_val is not None else price_val
                 price_val = price_val if price_val is not None else nav_val
 
+                if "taxes" not in active_header_map:
+                    derived_tax = _derived_tax_withholding(
+                        desc,
+                        tx_type,
+                        amount_val,
+                        price_val,
+                        units_val,
+                    )
+                    if derived_tax is not None:
+                        taxes_val = derived_tax
+
                 if not units_val:
                     continue
 
@@ -647,6 +705,23 @@ def extract_mf_folios(
 
     if not schemes_by_isin:
         return []
+
+    # Consolidated depository statements include holdings-summary tables before
+    # the transaction section. Those ISIN rows are not truncated transaction
+    # schemes and must not make the Q1 all-payload preflight reject an otherwise
+    # complete detailed statement. Retain them only when the whole document is
+    # holdings-only so the caller can still return HoldingsOnlyError.
+    transaction_isins = {
+        isin
+        for isin, scheme in schemes_by_isin.items()
+        if scheme["transactions"]
+    }
+    if transaction_isins:
+        schemes_by_isin = {
+            isin: scheme
+            for isin, scheme in schemes_by_isin.items()
+            if isin in transaction_isins
+        }
 
     folio_schemes: dict[str | None, list[dict[str, Any]]] = {}
     for isin, scheme in schemes_by_isin.items():

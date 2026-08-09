@@ -7,11 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import api._cdsl_nsdl_parser as parser
+from api._cas_preflight import CASPreflightError
 from api._cdsl_nsdl_parser import UnsupportedLayoutError, parse_cdsl_nsdl
 
 
 ISIN_MAP = {
     "INF000A00001": (100001, "Equity", "Synthetic Mutual Fund - Growth"),
+    "INF000A00002": (100002, "Equity", "Synthetic Holdings-Only Fund"),
 }
 
 
@@ -121,6 +123,90 @@ def test_aliases_optional_trailing_charges_and_repeated_page_header_are_supporte
     assert transactions[0]["gross_amount"] == 1000.15
     assert transactions[0]["charges"]["stamp_duty"] == 0.05
     assert transactions[0]["charges"]["taxes"] == 0.1
+
+
+def test_line_wrapped_cdsl_header_words_are_reassembled_for_matching():
+    header = [
+        "Date",
+        "Transaction\nDescription",
+        "Amo\nunt",
+        "NA\nV",
+        "Pri\nce",
+        "Units",
+        "Stam\np Du\nty",
+        "Income\nDistribution",
+        "Capital\nWithdrawal",
+    ]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10", "0.05", "0", "0"]
+    result = _parse(_pdf(_page("CDSL", [_table(header, row)])))
+
+    assert result["source_dialect"] == "cdsl"
+    assert result["preflight_summary"]["valid_rows_bucket"] == "1"
+
+
+def test_unrelated_date_and_folio_table_headers_are_ignored():
+    unrelated = [
+        ["Date of Birth", "Registered Email", "Account Number"],
+        ["Folio No.", "Holder Details", "KYC Status"],
+    ]
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "0.05", "100", "100", "10"]
+    result = _parse(_pdf(_page("NSDL", [unrelated, _table(header, row)])))
+
+    assert result["source_dialect"] == "nsdl"
+    assert result["preflight_summary"]["valid_rows_bucket"] == "1"
+
+
+def test_holdings_summary_isins_do_not_become_empty_transaction_schemes():
+    holdings_summary = [
+        ["ISIN", "ISIN Description", "Folio No.", "No. of Units", "Current NAV"],
+        ["INF000A00002", "Synthetic Holdings-Only Fund", "HOLDING-01", "2", "100"],
+    ]
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "0.05", "100", "100", "10"]
+    result = _parse(_pdf(_page("NSDL", [holdings_summary, _table(header, row)])))
+
+    schemes = [
+        scheme
+        for folio in result["mutual_funds"]
+        for scheme in folio["schemes"]
+    ]
+    assert [scheme["isin"] for scheme in schemes] == ["INF000A00001"]
+
+
+def test_explicit_net_of_tax_switch_out_derives_a_bounded_withholding_charge():
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = [
+        "01-07-2026",
+        "Switch Out Less TDS, STT - synthetic",
+        "90",
+        "0",
+        "10",
+        "10",
+        "10",
+    ]
+    result = _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
+
+    assert transaction["source_amount"] == 90
+    assert transaction["gross_amount"] == 100
+    assert transaction["charges"]["taxes"] == 10
+
+
+@pytest.mark.parametrize(
+    ("description", "amount"),
+    [
+        ("Switch Out - synthetic", "90"),
+        ("Switch Out Less TDS, STT - synthetic", "80"),
+    ],
+)
+def test_unmarked_or_excessive_outflow_gap_still_fails_preflight(description, amount):
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = ["01-07-2026", description, amount, "0", "10", "10", "10"]
+
+    with pytest.raises(CASPreflightError) as caught:
+        _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    assert caught.value.reason == "accounting_mismatch"
 
 
 @pytest.mark.parametrize(

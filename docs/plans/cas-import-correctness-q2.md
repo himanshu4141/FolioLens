@@ -110,26 +110,36 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] Implement diagnostic, folio, category, password-copy, and privacy corrections.
 - [x] Update current documentation.
 - [x] Run focused and full validation.
-- [ ] Run transient supplied-file aggregate proof.
-- [ ] Open the Q2 implementation PR and start exact-SHA dual review.
+- [x] Run transient supplied-file aggregate proof.
+- [x] Open draft implementation PR #293.
+- [ ] Freeze the exact validated head and start exact-SHA dual review.
 
 ## Amendments
 
-- **Private supplied-file proof is pending.** The current workspace contains no
-  usable supplied CDSL/NSDL credential set. Static implementation and full
-  repository validation are complete, but the required transient CDSL 5/5 and
-  NSDL 16/16 aggregate proof must run before the implementation PR can become
-  ready for review. No private artifact or credential was persisted while
-  checking availability.
+- **Explicit NSDL net-of-tax switch-outs.** The supplied NSDL statement has
+  switch-out rows whose description explicitly says cash is after TDS/STT but
+  provides no separate tax column. For those marked outflows only, Q2 derives
+  the withholding gap from independently parsed Price times Units and net
+  Amount, capped at 10% of gross cash. Unmarked or larger gaps still fail Q1
+  accounting preflight. Q3 continues to own provider-neutral economic-group
+  reconciliation and cross-provider gross normalization.
+- **Private supplied-file proof completed transiently.** Runtime-supplied
+  credentials and in-memory parsing produced CDSL 5/5 and NSDL 16/16 with the
+  correct dialects and full Q1 preflight. Only those aggregate outcomes are
+  recorded. Temporary page renders and the temporary public AMFI map were
+  deleted; no private artifact, credential, filename, or statement content was
+  copied into the repository, logs, fixtures, commits, or PR text.
 
 ## Validation Evidence
 
 - 2026-08-09: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  202 tests plus 3 subtests.
+  208 tests plus 3 subtests.
 - 2026-08-09: `npm test -- --runInBand` passed 104 suites and 2,132 tests.
 - 2026-08-09: `npm run typecheck`, `npm run lint`, and `git diff --check`
   passed.
 - 2026-08-09: No Edge Function, Vercel function, database migration, dev data,
   or production surface was deployed or mutated.
+- 2026-08-09: Transient supplied-file proof passed CDSL 5/5 and NSDL 16/16;
+  both source-dialect checks and Q1 preflight passed.
 - Cache statement: `[cache-shape-stable]`; no cache key, payload, lifetime,
   invalidation, persistence, restore, or sign-out behavior changed.

@@ -115,6 +115,12 @@ page breaks; a missing or ambiguous schema returns the privacy-safe
 a routing/diagnostic hint—the table schema is the authority for financial
 column extraction.
 
+When an NSDL outflow explicitly labels Amount as net of TDS/STT but has no
+separate tax column, the adapter derives the withholding gap from independently
+parsed Price times Units and net Amount. This exception is limited to marked
+redemption/switch-out rows and a maximum 10% gap; unmarked or larger differences
+still fail accounting preflight.
+
 Direct uploads use a fixed password order. A custom password is exclusive when
 present. Otherwise the Edge Function tries the saved PAN first and, only when a
 valid saved DOB exists, PAN plus DOB second. Missing DOB does not block the
