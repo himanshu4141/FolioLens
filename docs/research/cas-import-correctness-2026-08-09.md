@@ -140,9 +140,11 @@ row key.
 - `api/_cdsl_nsdl_parser.py:130-141` chooses CDSL whenever both acronyms occur in the
   first 3,000 characters. Consolidated statements legitimately mention both
   depositories, so token presence is not a reliable dialect schema.
-- `api/_cas_parser.py:90-99` expands detection to the first three pages, but the inner
-  parser re-detects only page one at `api/_cdsl_nsdl_parser.py:500-509`. Logs can thus
-  disagree about issuer even though both currently enter the same extractor.
+- `api/_cas_parser.py:90-99` expands detection to the first three pages because some
+  statements have an unmarked cover page, but the inner parser re-detects page one only
+  at `api/_cdsl_nsdl_parser.py:500-509`. A valid statement whose issuer marker first
+  appears on page two or three therefore routes to the depository parser and then hard-
+  fails with a misleading “not CDSL or NSDL” error; this is not merely diagnostic drift.
 
 ### Required fix
 
@@ -165,6 +167,8 @@ row key.
   changing the CDSL result.
 - Swapping/removing required headers makes parsing return a typed unsupported-layout
   failure; it never silently falls back to positional values.
+- Synthetic cover-page fixtures whose issuer marker first appears on page two and on the
+  page-three scan boundary both parse successfully, and router/parser diagnostics agree.
 - Every applicable positive-value row satisfies its documented transaction-type equation,
   using transaction Price when present and NAV only under an explicit fallback, with
   tolerances that account for rounding, stamp duty, taxes, and exit loads.
@@ -253,6 +257,13 @@ row key.
   defect. Exact row identity therefore missed every group.
 - Even after column extraction is corrected, split/combined row shapes and gross/net
   cash conventions can still evade the current unique key.
+- `supabase/functions/_shared/import-cas.ts:246-256` has a more destructive cash-only
+  reversal path: it deletes every same-fund/date purchase with the reversal amount,
+  without units, folio, source/import provenance, or a one-row limit. An ambiguous
+  reversal can therefore remove unrelated prior or manual transactions.
+- The current unique key also collapses two genuine same-day, same-type transactions
+  with identical units and amount. Row multiplicity within one statement is evidence of
+  two events; the same multiplicity arriving from a later overlapping statement is not.
 
 ### Required fix
 
@@ -265,7 +276,11 @@ row key.
 4. Specify behavior for exact equality, provider split/combined equality, true superset,
    partial overlap, same-day independent transactions, reversals, switches, dividends,
    and ambiguous conflicts. Ambiguity must be reported, not guessed.
-5. Decide through an ADR/test-backed implementation whether canonical groups replace
+5. Bring reversal handling under the same unit-and-cash economic identity. Remove the
+   unscoped cash-only delete; an ambiguous reversal must fail closed as a conflict.
+6. Preserve within-statement multiplicity for genuinely identical events while using
+   statement/import overlap and provenance to make later re-imports idempotent.
+7. Decide through an ADR/test-backed implementation whether canonical groups replace
    provider rows, coexist via an event identity, or remain row-based with a reconciliation
    record. Do not add a fuzzy unique index without proving collision behavior.
 
@@ -277,6 +292,12 @@ row key.
 - Importing a CDSL/CAMS row whose amount differs only by separately reported stamp duty
   adds zero rows after gross normalization.
 - Two genuine same-day same-type purchases with different economic totals both remain.
+- Two identical same-day rows in one statement remain two economic events, while a later
+  re-import of that statement adds zero; provenance/multiplicity tests make the distinction
+  explicit rather than relying on the current unique key.
+- A reversal with one unit-and-cash match removes/excludes only that economic event. A
+  same-day cash-only match spanning multiple purchases produces a conflict and never a
+  multi-row delete.
 - A partial-overlap or cash-match/unit-mismatch fixture fails closed with a conflict; it
   does not silently insert or delete.
 - Against a sanitized synthetic/isolated snapshot of the observed dev group shapes, the
@@ -345,6 +366,8 @@ row key.
 - `_FOLIO_RE` at `api/_cdsl_nsdl_parser.py:284-289` accepts optional “No” followed by
   whitespace/colon. On the supplied NSDL form `Folio No - …`, the engine can skip the
   optional group and capture literal `No`; all 16 imported rows show that placeholder.
+- When no folio is captured, `api/_cdsl_nsdl_parser.py:470-471` groups the scheme under
+  literal `CDSL`, which the shared importer can persist as a folio number.
 - The supplied CDSL statement opens with the primary PAN-only password. The server already
   tries PAN first, then PAN+DOB (`api/_cas_parser.py:120-135`), so the backend can handle
   this variant.
@@ -368,8 +391,9 @@ row key.
 ### Acceptance criteria
 
 - Mixed CDSL/NSDL cover-page vocabulary does not select a wrong table schema.
-- `Folio No : X`, `Folio No - X`, and known dash variants return `X`; `Folio No` with no
-  value is rejected; literal `No` is impossible as a stored folio.
+- `Folio No : X`, `Folio No - X`, and known dash variants return `X`. A missing folio is
+  represented canonically as `null`; `Folio No` with no value is rejected, and literal
+  `No`, `CDSL`, or `NSDL` is impossible as a stored folio.
 - A PAN-only depository fixture reaches parsing without DOB; a PAN+DOB fixture still
   succeeds through fallback; a custom password remains exclusive as documented.
 - Help/error copy describes both supported attempts without revealing saved identity data.
@@ -394,6 +418,9 @@ row key.
   reconciliation outcome (`supabase/functions/parse-cas-pdf/index.ts:354-364`).
 - The import audit's `success` status did not distinguish “parsed and reconciled,”
   “no-op duplicate,” or “accepted malformed rows.”
+- `supabase/functions/_shared/import-cas.ts:330` falls back from a null exact count to
+  `txRows.length`; a fully duplicate upsert can therefore over-report skipped rows as
+  inserted in the audit and `cas_parse_success` telemetry.
 
 ### Required fix
 
@@ -415,6 +442,8 @@ row key.
 - CI fails when either issuer's header order is interpreted using the other issuer's map.
 - CI fails when a malformed row can reach a mocked transaction upsert.
 - CI proves a no-op re-import reports zero inserted and does not mutate catalog data.
+- A duplicate upsert returning null or zero count reports zero inserted; it never falls
+  back to attempted-row count. Audit, API result, notification, and telemetry agree.
 - Privacy tests reject PAN, DOB, filenames, folios, fund/transaction/user/import IDs, raw
   descriptions, raw query keys, dates, amounts, units, and upstream error bodies from
   analytics, logs, and persisted audit errors.
@@ -457,6 +486,26 @@ row key.
   downgrade.
 - Any new transaction/RPC/staging mechanism has explicit grants, ownership, cleanup,
   migration, and provider-exit rationale.
+
+---
+
+## Interim production exposure decision
+
+The faulty depository parser is present in production tags `v0.0.8` through `v0.0.10`:
+the introducing commit is an ancestor of all three tags. Production exposes both direct
+upload and inbound-email CAS paths (`docs/INFRASTRUCTURE.md:18-35,130-131,490-496`).
+
+**Owner decision, 2026-08-09:** accept this temporary production risk for the duration of
+the program because production adoption is currently small and the owner reports no known
+production user of CDSL/NSDL CAS. Do not create or deploy an interim production hotfix;
+prioritize the planned Q1-Q5 correction. This is an explicit risk acceptance, not a claim
+that the parser is safe and not an independently measured usage fact.
+
+If a production depository import is observed, reported, or attempted before the program's
+production rollout, treat it as a correctness interrupt under
+`docs/process/AGENT-PROGRAM-PLAYBOOK.md` §5.4: pause the queue, investigate, obtain both
+independent confirmations, and re-evaluate immediate fail-closed containment with the
+human owner.
 
 ---
 
@@ -532,6 +581,9 @@ Required evidence at the exact PR head SHA:
   first mocked financial/domain write; only the allowlisted failed-audit transition occurs.
 - Direct upload and inbound email preserve their audit/notification behavior for CAMS,
   KFintech, MFCentral, CDSL, and rejected NSDL fixtures.
+- A duplicate upsert whose exact count is null or zero reports zero inserted across the
+  API result, audit, notification, and telemetry; attempted rows are never used as a
+  successful-insert fallback.
 - Analytics/log/audit sanitizer tests prove prohibited identifiers, dates, amounts, units,
   filenames, and raw upstream errors cannot be emitted or persisted.
 - State explicitly whether cache payloads/keys changed; if not, include the exact
@@ -557,7 +609,8 @@ Scope:
   and page breaks.
 - Make issuer detection diagnostic and deterministic without using acronym order as the
   schema authority.
-- Fix folio delimiter parsing and reject placeholders.
+- Fix folio delimiter parsing, represent a genuinely missing folio as null, and reject
+  `No`, `CDSL`, `NSDL`, and other placeholders.
 - Fix category specificity ordering.
 - Preserve PAN-first, PAN+DOB-second, custom-override password behavior and correct the UI
   and error copy so DOB is not presented as universally required.
@@ -576,10 +629,13 @@ Validation:
 Required evidence at the exact PR head SHA:
 - Synthetic CDSL and NSDL expected-field assertions, including negative/ambiguous headers.
 - CDSL output remains unchanged while NSDL output becomes correct.
+- Synthetic fixtures with issuer markers first appearing on page two and on the page-three
+  scan boundary parse, and the router/parser issuer diagnostics agree.
 - In a transient local/preview run with secrets supplied only at runtime, the private CDSL
   file reports 5/5 valid checked rows and the private NSDL file reports 16/16; publish only
   aggregate outcomes, never fixtures or raw values.
-- Demonstrate `Folio No :`, `Folio No -`, Unicode dash, and missing-value cases.
+- Demonstrate `Folio No :`, `Folio No -`, Unicode dash, missing-value/null, and issuer-
+  sentinel rejection cases; literal `No`, `CDSL`, and `NSDL` never persist as folios.
 - Confirm no application telemetry contains private statement data.
 ```
 
@@ -600,8 +656,11 @@ Scope:
 - Define and implement provider-neutral gross cash normalization and economic-group
   reconciliation using both amount and units with explicit tolerances.
 - Cover exact rows, split-to-combined and combined-to-split equality, stamp-duty net/gross
-  differences, same-day independent events, switches, redemptions, dividends, reversals,
-  true supersets, partial overlaps, and conflicts.
+  differences, same-day independent events, identical within-statement multiplicity,
+  switches, redemptions, dividends, reversals, true supersets, partial overlaps, and
+  conflicts.
+- Remove the unscoped cash-only reversal delete. Reversal matching must use the same unit-
+  and-cash identity, preserve provenance, and fail closed when more than one event matches.
 - Fail closed on ambiguity. Preserve provenance without making provider row shape the
   economic identity.
 - Add any migration only after documenting why application-only reconciliation is
@@ -624,6 +683,10 @@ Required evidence at the exact PR head SHA:
 - All acceptance cases in finding 3 against synthetic/isolated snapshots, including
   garbage-in partial overlap. Do not require the live dev repair, which belongs to Q5.
 - Reimport fixtures report exact inserted/duplicate/conflict counts.
+- Two identical rows in one statement remain two events, while later re-import adds zero;
+  a null/zero database count never over-reports attempted rows as inserted.
+- A uniquely matched reversal affects one event; an ambiguous same-day cash-only reversal
+  produces a conflict without deleting any transaction.
 - No algorithm dedupes on amount alone; reviewers can trace the unit comparison and
   tolerances directly.
 - Document transaction query keys, cache persistence status, and invalidation triggers if
@@ -869,6 +932,10 @@ transient field validation sources only.
   before mutating the dev dataset.
 - **2026-08-09 — Human merge authority and no production rollout.** Every milestone needs
   the mechanical dual-review gate plus a human merge; production requires separate approval.
+- **2026-08-09 — Owner accepts temporary production exposure.** Production adoption is
+  currently small and the owner reports no known production CDSL/NSDL CAS users, so the
+  owner explicitly prefers the planned Q1-Q5 fix over an interim production hotfix. Any
+  observed production depository import reopens containment as a correctness interrupt.
 
 ---
 
@@ -883,6 +950,8 @@ transient field validation sources only.
   partial-write risks.
 - [x] Addressed an independent pre-publication Codex review pass; formal frozen-head
   research convergence remains pending.
+- [x] Addressed Claude research review round 1 and recorded the owner's explicit temporary
+  production-risk acceptance; frozen-head re-review remains pending.
 - [ ] Independent Codex research review converged.
 - [ ] Independent Claude research review converged.
 - [ ] Q1 — Fail-closed import contract.
