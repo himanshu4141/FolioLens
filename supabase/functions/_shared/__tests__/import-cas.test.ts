@@ -57,7 +57,10 @@ function buildMockSupabase({
 
   const deleteMock = jest.fn(() => makeDeleteChain());
 
-  const txUpsertMock = jest.fn((rows: Record<string, unknown>[]) => {
+  const txUpsertMock = jest.fn((
+    rows: Record<string, unknown>[],
+    _options?: Record<string, unknown>,
+  ) => {
     upsertedRows = rows;
     return {
       error: txUpsertError,
@@ -368,6 +371,36 @@ describe('importCASData()', () => {
     expect(rows[0].transaction_type).toBe('redemption');
   });
 
+  it('keeps the shipped source-amount identity and statement NAV across charged re-imports', async () => {
+    const { supabase, txUpsertMock } = buildMockSupabase({ txUpsertCount: 0 });
+    const parsed = minimalCAS([{
+      date: '2026-07-01',
+      type: 'PURCHASE',
+      amount: 1000,
+      source_amount: 1000,
+      gross_amount: 1000.05,
+      stamp_duty: 0.05,
+      charges: { stamp_duty: 0.05 },
+      units: 10,
+      nav: 100,
+      price: 100.05,
+    }]);
+
+    const first = await importCASData(supabase, 'user-1', 'import-1', parsed);
+    const second = await importCASData(supabase, 'user-1', 'import-2', parsed);
+
+    expect(first.transactionsAdded).toBe(0);
+    expect(second.transactionsAdded).toBe(0);
+    expect(txUpsertMock).toHaveBeenCalledTimes(2);
+    for (const [rows, options] of txUpsertMock.mock.calls) {
+      expect(rows[0]).toMatchObject({ amount: 1000, nav_at_transaction: 100 });
+      expect(options).toMatchObject({
+        onConflict: 'fund_id,transaction_date,transaction_type,units,amount',
+        ignoreDuplicates: true,
+      });
+    }
+  });
+
   // ── REVERSAL handling ──────────────────────────────────────────────────────
   // casparser often returns REVERSAL rows with null units (the original bug).
   // The fix: match on amount (always present) instead of units; exclude both
@@ -408,6 +441,40 @@ describe('importCASData()', () => {
     expect(eqPairs).toContainEqual(['amount', 24999]);
 
     // No transaction rows upserted — paired purchase is excluded
+    expect(txUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the persisted source amount consistently for a charged reversal pair', async () => {
+    const { supabase, deleteCalls, txUpsertMock } = buildMockSupabase();
+    const chargeFields = {
+      gross_amount: 1000.05,
+      stamp_duty: 0.05,
+      charges: { stamp_duty: 0.05 },
+      nav: 100,
+      price: 100,
+    };
+    const parsed = minimalCAS([
+      {
+        date: '2024-01-10',
+        type: 'PURCHASE',
+        units: 10,
+        amount: 1000,
+        source_amount: 1000,
+        ...chargeFields,
+      },
+      {
+        date: '2024-01-10',
+        type: 'REVERSAL',
+        units: undefined,
+        amount: -1000,
+        source_amount: -1000,
+        ...chargeFields,
+      },
+    ]);
+
+    await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(deleteCalls[0]).toContainEqual(['amount', 1000]);
     expect(txUpsertMock).not.toHaveBeenCalled();
   });
 
@@ -540,7 +607,7 @@ describe('importCASData()', () => {
 
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
-      { date: '2024-01-10', type, units, amount, nav: 0 },
+      { date: '2024-01-10', type, units, amount, nav: type === 'REVERSAL' ? 100 : 0 },
     ]);
 
     await importCASData(supabase, 'user-1', 'import-1', parsed);

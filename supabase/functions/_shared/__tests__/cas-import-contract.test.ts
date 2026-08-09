@@ -3,6 +3,7 @@ import {
   assertCASPreflight,
   auditErrorCode,
   bucketCount,
+  buildImportCrashOutcome,
   buildImportOutcome,
   buildImportSuccessTelemetry,
   buildPreflightFailureOutcome,
@@ -173,6 +174,17 @@ describe('CAS import preflight contract', () => {
     expect(redemption).toMatchObject({ ok: false, reason: 'accounting_mismatch' });
   });
 
+  it.each([
+    ['inflated gross', { source_amount: 1005.05, gross_amount: 1_000_000_000 }],
+    ['inflated source', { amount: 500_000, source_amount: 500_000, gross_amount: 500_000_000 }],
+    ['unreconciled source/gross', { source_amount: 1005.05, gross_amount: 1015.05 }],
+  ])('rejects %s without allowing cash to widen its own tolerance', (_label, overrides) => {
+    expect(preflightCASPayload(payload('cams', [validTransaction(overrides)]))).toMatchObject({
+      ok: false,
+      reason: 'accounting_mismatch',
+    });
+  });
+
   it.each(['No', 'CDSL', 'NSDL', 'N/A'])('rejects placeholder folio %s', (folio) => {
     const candidate = payload();
     candidate.mutual_funds![0].folio_number = folio;
@@ -235,6 +247,40 @@ describe('CAS import preflight contract', () => {
     expect(preflightCASPayload(candidate as CASParseResult)).toMatchObject({ ok: false, reason });
   });
 
+  it.each([
+    null,
+    [],
+    { mutual_funds: {} },
+    { mutual_funds: [null] },
+    { mutual_funds: [{ schemes: {} }] },
+    { mutual_funds: [{ schemes: [null] }] },
+    { mutual_funds: [{ schemes: [{ additional_info: [], transactions: [] }] }] },
+    { mutual_funds: [{ schemes: [{ additional_info: {}, transactions: {} }] }] },
+    { mutual_funds: [{ schemes: [{ additional_info: {}, transactions: [null] }] }] },
+    {
+      mutual_funds: [{
+        schemes: [{
+          additional_info: {},
+          transactions: [{ date: '2026-07-01', type: 'PURCHASE', charges: [] }],
+        }],
+      }],
+    },
+  ])('turns malformed runtime shape %# into an allowlisted rejection', (candidate) => {
+    expect(preflightCASPayload(candidate)).toMatchObject({
+      ok: false,
+      reason: 'empty_payload',
+    });
+  });
+
+  it('throws the typed error expected by direct and inbound callers for malformed JSON', () => {
+    expect(() => assertCASPreflight({ mutual_funds: {} })).toThrow(CASPreflightError);
+    try {
+      assertCASPreflight({ mutual_funds: {} });
+    } catch (error) {
+      expect(error).toMatchObject({ reason: 'empty_payload' });
+    }
+  });
+
   it('rejects a mixed payload with a transactionless scheme', () => {
     const candidate = payload();
     candidate.mutual_funds![0].schemes!.push({
@@ -254,6 +300,13 @@ describe('CAS import preflight contract', () => {
     ]));
 
     expect(result.ok).toBe(true);
+  });
+
+  it('rejects an unpaired reversal before it can become a delete key', () => {
+    expect(preflightCASPayload(payload('cams', [
+      validTransaction(),
+      { date: '2026-07-02', type: 'REVERSAL', amount: -999_999_999, nav: -5, price: 0 },
+    ]))).toMatchObject({ ok: false, reason: 'invalid_nav' });
   });
 
   it('rejects a payload containing no actionable transaction', () => {
@@ -342,6 +395,27 @@ describe('privacy-safe caller outcomes', () => {
     expect(outcome.telemetry.transactions_bucket).toBe('0');
   });
 
+  it('preserves committed counts across an inbound crash outcome', () => {
+    const outcome = buildImportCrashOutcome({
+      source: 'email',
+      fundsUpdated: 2,
+      transactionsAdded: 7,
+    });
+
+    expect(outcome.audit).toEqual({
+      import_status: 'failed',
+      funds_updated: 2,
+      transactions_added: 7,
+      error_message: 'cas_import:background_crashed',
+    });
+    expect(outcome.notification).toMatchObject({ funds: 2, transactions: 7 });
+    expect(outcome.telemetry).toMatchObject({
+      status: 'crashed',
+      funds_bucket: '2-5',
+      transactions_bucket: '6-20',
+    });
+  });
+
   it.each([
     [0, '0'],
     [1, '1'],
@@ -376,5 +450,21 @@ describe('privacy-safe caller outcomes', () => {
     ]) {
       expect(sources).not.toContain(prohibitedSource);
     }
+  });
+
+  it('attributes direct and resolved inbound events to the authenticated user denominator', () => {
+    const directSource = readFileSync(
+      resolve(__dirname, '../../parse-cas-pdf/index.ts'),
+      'utf8',
+    );
+    const inboundSource = readFileSync(
+      resolve(__dirname, '../../cas-webhook-resend/index.ts'),
+      'utf8',
+    );
+
+    expect(directSource).not.toContain('system:cas-upload');
+    expect(inboundSource).not.toContain('system:cas-inbound');
+    expect(directSource).toContain("outcome.telemetry, user.id");
+    expect(inboundSource).toContain("outcome.telemetry,\n      userId");
   });
 });

@@ -116,12 +116,13 @@ export type TransactionDirection = 'in' | 'out' | 'cash' | 'ignored';
 
 export type CanonicalCASTransaction = Omit<
   CASTransaction,
-  'date' | 'type' | 'description' | 'source_amount' | 'gross_amount' | 'units' | 'source_units' | 'nav' | 'price' | 'stamp_duty' | 'charges'
+  'date' | 'type' | 'description' | 'amount' | 'source_amount' | 'gross_amount' | 'units' | 'source_units' | 'nav' | 'price' | 'stamp_duty' | 'charges'
 > & {
   date: string;
   type: string;
   normalised_type: NormalisedTransactionType | null;
   direction: TransactionDirection;
+  amount: number;
   source_amount: number;
   gross_amount: number;
   units: number | null;
@@ -254,6 +255,10 @@ function absoluteNumber(value: unknown): number | null {
   return number === null ? null : Math.abs(number);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function dialectOf(value: unknown): CASSourceDialect {
   return typeof value === 'string' && DIALECTS.has(value as CASSourceDialect)
     ? value as CASSourceDialect
@@ -322,60 +327,137 @@ function directionFor(type: NormalisedTransactionType | null): TransactionDirect
   return 'ignored';
 }
 
-function canonicalTransaction(transaction: CASTransaction): CanonicalCASTransaction {
+function canonicalTransaction(input: Record<string, unknown>): {
+  transaction: CanonicalCASTransaction;
+  malformed: boolean;
+} {
+  const transaction = input as CASTransaction;
   const { description: _description, ...safeTransaction } = transaction;
-  const type = (transaction.type ?? transaction.description ?? '').trim();
+  const rawType = transaction.type ?? transaction.description ?? '';
+  const rawDate = transaction.date ?? '';
+  const chargesValue = transaction.charges;
+  const malformed = typeof rawType !== 'string'
+    || typeof rawDate !== 'string'
+    || (chargesValue !== undefined && chargesValue !== null && !isRecord(chargesValue));
+  const charges = isRecord(chargesValue) ? chargesValue as CASCharges : {};
+  const type = typeof rawType === 'string' ? rawType.trim() : '';
   const normalisedType = normaliseTxType(type);
   const sourceAmount = finiteNumber(transaction.source_amount ?? transaction.amount) ?? 0;
   const explicitGrossAmount = finiteNumber(transaction.gross_amount);
   const grossAmount = explicitGrossAmount ?? Math.abs(sourceAmount);
-  const stampDuty = absoluteNumber(transaction.stamp_duty ?? transaction.charges?.stamp_duty) ?? 0;
+  const stampDuty = absoluteNumber(transaction.stamp_duty ?? charges.stamp_duty) ?? 0;
   const nav = finiteNumber(transaction.nav);
   const price = finiteNumber(transaction.price) ?? nav;
   const sourceUnits = finiteNumber(transaction.source_units ?? transaction.units);
   const units = absoluteNumber(sourceUnits);
 
   return {
-    ...safeTransaction,
-    date: parseDate(transaction.date ?? ''),
-    type,
-    normalised_type: normalisedType,
-    direction: directionFor(normalisedType),
-    amount: Math.abs(sourceAmount),
-    source_amount: sourceAmount,
-    gross_amount: grossAmount,
-    units,
-    source_units: sourceUnits,
-    nav,
-    price,
-    stamp_duty: stampDuty,
-    charges: {
+    malformed,
+    transaction: {
+      ...safeTransaction,
+      date: parseDate(typeof rawDate === 'string' ? rawDate : ''),
+      type,
+      normalised_type: normalisedType,
+      direction: directionFor(normalisedType),
+      amount: Math.abs(sourceAmount),
+      source_amount: sourceAmount,
+      gross_amount: grossAmount,
+      units,
+      source_units: sourceUnits,
+      nav,
+      price,
       stamp_duty: stampDuty,
-      taxes: absoluteNumber(transaction.charges?.taxes) ?? 0,
-      exit_load: absoluteNumber(transaction.charges?.exit_load) ?? 0,
-      other: absoluteNumber(transaction.charges?.other) ?? 0,
+      charges: {
+        stamp_duty: stampDuty,
+        taxes: absoluteNumber(charges.taxes) ?? 0,
+        exit_load: absoluteNumber(charges.exit_load) ?? 0,
+        other: absoluteNumber(charges.other) ?? 0,
+      },
     },
   };
 }
 
-function canonicalPayload(parsed: CASParseResult): CanonicalCASParseResult {
-  return {
-    ...parsed,
-    contract_version: 1,
-    source_dialect: dialectOf(parsed.source_dialect),
-    mutual_funds: (parsed.mutual_funds ?? []).map((folio) => ({
-      ...folio,
-      folio_number: folio.folio_number?.trim() || null,
-      schemes: (folio.schemes ?? []).map((scheme) => ({
+function canonicalPayload(input: unknown): {
+  parsed: CanonicalCASParseResult;
+  malformed: boolean;
+} {
+  const root = isRecord(input) ? input : {};
+  let malformed = !isRecord(input);
+  const rawFolios = root.mutual_funds;
+  if (!Array.isArray(rawFolios)) malformed = true;
+
+  const folios: CanonicalCASFolio[] = [];
+  for (const rawFolio of Array.isArray(rawFolios) ? rawFolios : []) {
+    if (!isRecord(rawFolio)) {
+      malformed = true;
+      continue;
+    }
+    const folio = rawFolio as CASFolio;
+    if (
+      folio.folio_number !== undefined
+      && folio.folio_number !== null
+      && typeof folio.folio_number !== 'string'
+    ) malformed = true;
+
+    const rawSchemes = rawFolio.schemes;
+    if (!Array.isArray(rawSchemes)) malformed = true;
+    const schemes: CanonicalCASScheme[] = [];
+    for (const rawScheme of Array.isArray(rawSchemes) ? rawSchemes : []) {
+      if (!isRecord(rawScheme)) {
+        malformed = true;
+        continue;
+      }
+      const scheme = rawScheme as CASScheme;
+      if (scheme.isin !== undefined && typeof scheme.isin !== 'string') malformed = true;
+
+      const rawAdditional = rawScheme.additional_info;
+      if (!isRecord(rawAdditional)) malformed = true;
+      const additional = isRecord(rawAdditional)
+        ? rawAdditional as CASSchemeAdditionalInfo
+        : {};
+      if (additional.amfi !== undefined && typeof additional.amfi !== 'string') malformed = true;
+
+      const rawTransactions = rawScheme.transactions;
+      if (!Array.isArray(rawTransactions)) malformed = true;
+      const transactions: CanonicalCASTransaction[] = [];
+      for (const rawTransaction of Array.isArray(rawTransactions) ? rawTransactions : []) {
+        if (!isRecord(rawTransaction)) {
+          malformed = true;
+          continue;
+        }
+        const canonical = canonicalTransaction(rawTransaction);
+        malformed ||= canonical.malformed;
+        transactions.push(canonical.transaction);
+      }
+
+      schemes.push({
         ...scheme,
-        isin: scheme.isin?.trim().toUpperCase() ?? '',
+        isin: typeof scheme.isin === 'string' ? scheme.isin.trim().toUpperCase() : '',
         additional_info: {
-          ...(scheme.additional_info ?? {}),
-          amfi: scheme.additional_info?.amfi?.trim() ?? '',
+          ...additional,
+          amfi: typeof additional.amfi === 'string' ? additional.amfi.trim() : '',
         },
-        transactions: (scheme.transactions ?? []).map(canonicalTransaction),
-      })),
-    })),
+        transactions,
+      });
+    }
+
+    folios.push({
+      ...folio,
+      folio_number: typeof folio.folio_number === 'string'
+        ? folio.folio_number.trim() || null
+        : null,
+      schemes,
+    });
+  }
+
+  return {
+    malformed,
+    parsed: {
+      ...root,
+      contract_version: 1,
+      source_dialect: dialectOf(root.source_dialect),
+      mutual_funds: folios,
+    },
   };
 }
 
@@ -422,22 +504,45 @@ function accountingMatches(transaction: CanonicalCASTransaction): boolean {
     + transaction.charges.taxes
     + transaction.charges.exit_load
     + transaction.charges.other;
-  const cashCandidates = [Math.abs(transaction.source_amount), transaction.gross_amount];
   const expectedCandidates = transaction.direction === 'in'
     ? [base, base + charges]
     : [base, Math.max(0, base - charges)];
-  // Charges are represented explicitly in the expected candidates; treating
-  // their full value as rounding tolerance would make +charge and -charge
-  // equations indistinguishable.
-  const tolerance = Math.max(1, transaction.gross_amount * 0.002);
+  // Never derive tolerance from an untrusted cash field. Price × units is the
+  // independently validated accounting base, so a corrupt amount cannot
+  // widen its own acceptance window.
+  const tolerance = Math.max(1, Math.abs(base) * 0.002);
+  const sourceCash = Math.abs(transaction.source_amount);
+  const grossCash = transaction.gross_amount;
+  const sourceMatches = expectedCandidates.some(
+    (expected) => Math.abs(sourceCash - expected) <= tolerance,
+  );
+  const grossMatches = expectedCandidates.some(
+    (expected) => Math.abs(grossCash - expected) <= tolerance,
+  );
+  const sourceGrossDelta = Math.abs(grossCash - sourceCash);
+  const relationshipMatches = sourceGrossDelta <= tolerance
+    || Math.abs(sourceGrossDelta - charges) <= tolerance;
 
-  return cashCandidates.some((cash) =>
-    expectedCandidates.some((expected) => Math.abs(cash - expected) <= tolerance));
+  return sourceMatches && grossMatches && relationshipMatches;
 }
 
-export function preflightCASPayload(input: CASParseResult): CASPreflightResult {
-  const parsed = canonicalPayload(input);
+function reversalCashMatches(transaction: CanonicalCASTransaction): boolean {
+  const sourceCash = Math.abs(transaction.source_amount);
+  const charges = transaction.charges.stamp_duty
+    + transaction.charges.taxes
+    + transaction.charges.exit_load
+    + transaction.charges.other;
+  const tolerance = Math.max(1, sourceCash * 0.002);
+  const delta = Math.abs(transaction.gross_amount - sourceCash);
+  return delta <= tolerance || Math.abs(delta - charges) <= tolerance;
+}
+
+export function preflightCASPayload(input: unknown): CASPreflightResult {
+  const { parsed, malformed } = canonicalPayload(input);
   const { schemes, rows } = counts(parsed);
+  if (malformed) {
+    return invalidResult(parsed, 'empty_payload', 0);
+  }
   if (parsed.mutual_funds.length === 0 || schemes.length === 0 || rows.length === 0) {
     return invalidResult(parsed, 'empty_payload', 0);
   }
@@ -464,6 +569,12 @@ export function preflightCASPayload(input: CASParseResult): CASPreflightResult {
         return invalidResult(parsed, 'invalid_isin', validRows);
       }
 
+      const purchaseKeys = new Set(
+        scheme.transactions
+          .filter((transaction) => transaction.normalised_type === 'purchase')
+          .map((transaction) => `${transaction.date}:${transaction.amount}`),
+      );
+
       for (const transaction of scheme.transactions) {
         if (!validIsoDate(transaction.date)) {
           return invalidResult(parsed, 'invalid_date', validRows);
@@ -473,6 +584,50 @@ export function preflightCASPayload(input: CASParseResult): CASPreflightResult {
         const ignored = IGNORED_TRANSACTION_TYPES.has(upperType);
         if (transaction.normalised_type === null && !ignored) {
           return invalidResult(parsed, 'unsupported_transaction_type', validRows);
+        }
+
+        if (ignored && upperType === 'REVERSAL') {
+          if (Math.abs(transaction.source_amount) <= 0 || transaction.gross_amount <= 0) {
+            return invalidResult(parsed, 'invalid_amount', validRows);
+          }
+          if (!reversalCashMatches(transaction)) {
+            return invalidResult(parsed, 'accounting_mismatch', validRows);
+          }
+          if (transaction.nav !== null && transaction.nav <= 0) {
+            return invalidResult(parsed, 'invalid_nav', validRows);
+          }
+          if (transaction.price !== null && transaction.price <= 0) {
+            return invalidResult(parsed, 'invalid_price', validRows);
+          }
+          if (transaction.nav !== null && transaction.price !== null) {
+            const navPriceDelta = Math.abs(transaction.nav - transaction.price);
+            const navPriceTolerance = Math.max(transaction.nav, transaction.price) * 0.05;
+            if (navPriceDelta > navPriceTolerance) {
+              return invalidResult(parsed, 'nav_price_mismatch', validRows);
+            }
+          }
+          if (transaction.source_units !== null) {
+            if (transaction.units === null || transaction.units <= 0) {
+              return invalidResult(parsed, 'invalid_units', validRows);
+            }
+            if (
+              Math.sign(transaction.source_units) !== Math.sign(transaction.source_amount)
+            ) {
+              return invalidResult(parsed, 'direction_mismatch', validRows);
+            }
+            if (transaction.price === null || transaction.price <= 0) {
+              return invalidResult(parsed, 'invalid_price', validRows);
+            }
+            if (!accountingMatches(transaction)) {
+              return invalidResult(parsed, 'accounting_mismatch', validRows);
+            }
+          }
+          // A cash-only reversal cannot safely target historical rows without
+          // an independently validated purchase in the same payload. Q3 owns
+          // provider-neutral historical reconciliation.
+          if (!purchaseKeys.has(`${transaction.date}:${transaction.amount}`)) {
+            return invalidResult(parsed, 'accounting_mismatch', validRows);
+          }
         }
 
         if (ignored) {
@@ -540,7 +695,7 @@ export function preflightCASPayload(input: CASParseResult): CASPreflightResult {
   };
 }
 
-export function assertCASPreflight(input: CASParseResult): {
+export function assertCASPreflight(input: unknown): {
   parsed: CanonicalCASParseResult;
   summary: CASPreflightSummary;
 } {
@@ -698,5 +853,38 @@ export function buildImportOutcome({
       transactionsAdded,
       writeFailures: errors.length,
     }),
+  };
+}
+
+export function buildImportCrashOutcome({
+  source,
+  fundsUpdated,
+  transactionsAdded,
+}: {
+  source: CASImportSource;
+  fundsUpdated: number;
+  transactionsAdded: number;
+}) {
+  const reason: CASFailureReason = 'background_crashed';
+  return {
+    audit: {
+      import_status: 'failed' as const,
+      funds_updated: fundsUpdated,
+      transactions_added: transactionsAdded,
+      error_message: auditErrorCode(reason),
+    },
+    notification: {
+      status: 'failed' as const,
+      funds: fundsUpdated,
+      transactions: transactionsAdded,
+      errors: [userMessageForCASFailure(reason)],
+    },
+    telemetry: {
+      source,
+      status: 'crashed',
+      failure_reason: reason,
+      funds_bucket: bucketCount(fundsUpdated),
+      transactions_bucket: bucketCount(transactionsAdded),
+    },
   };
 }

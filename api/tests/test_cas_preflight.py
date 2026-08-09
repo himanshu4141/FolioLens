@@ -228,6 +228,22 @@ def test_purchase_and_redemption_use_direction_specific_charge_equations():
     assert redemption_error.value.reason == "accounting_mismatch"
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"source_amount": 1005.05, "gross_amount": 1_000_000_000},
+        {"amount": 500_000, "source_amount": 500_000, "gross_amount": 500_000_000},
+        {"source_amount": 1005.05, "gross_amount": 1015.05},
+    ],
+)
+def test_unreconciled_cash_cannot_widen_its_own_tolerance(overrides):
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(
+            _payload("cams", [_valid_transaction(**overrides)])
+        )
+    assert caught.value.reason == "accounting_mismatch"
+
+
 @pytest.mark.parametrize("folio", ["No", "CDSL", "NSDL", "N/A"])
 def test_placeholder_folios_fail_closed(folio):
     candidate = _payload()
@@ -274,6 +290,92 @@ def test_empty_or_truncated_payloads_fail(candidate):
     with pytest.raises(CASPreflightError) as caught:
         validate_and_canonicalize_cas(candidate)
     assert caught.value.reason == "empty_payload"
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        None,
+        [],
+        {"mutual_funds": {}},
+        {"mutual_funds": [None]},
+        {"mutual_funds": [{"schemes": {}}]},
+        {"mutual_funds": [{"schemes": [None]}]},
+        {
+            "mutual_funds": [
+                {"schemes": [{"additional_info": [], "transactions": []}]}
+            ]
+        },
+        {
+            "mutual_funds": [
+                {"schemes": [{"additional_info": {}, "transactions": {}}]}
+            ]
+        },
+        {
+            "mutual_funds": [
+                {"schemes": [{"additional_info": {}, "transactions": [None]}]}
+            ]
+        },
+        {
+            "mutual_funds": [
+                {
+                    "schemes": [
+                        {
+                            "additional_info": {},
+                            "transactions": [
+                                {
+                                    "date": "2026-07-01",
+                                    "type": "PURCHASE",
+                                    "charges": [],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        },
+    ],
+)
+def test_malformed_runtime_shapes_fail_with_allowlisted_reason(candidate):
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(candidate)
+    assert caught.value.reason == "empty_payload"
+
+
+def test_paired_reversal_passes_but_corrupt_unpaired_reversal_fails():
+    valid = _valid_transaction()
+    result = validate_and_canonicalize_cas(
+        _payload(
+            "cams",
+            [
+                valid,
+                {
+                    "date": valid["date"],
+                    "type": "REVERSAL",
+                    "amount": -valid["source_amount"],
+                },
+            ],
+        )
+    )
+    assert result["preflight_summary"]["valid_rows_bucket"] == "2-5"
+
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(
+            _payload(
+                "cams",
+                [
+                    valid,
+                    {
+                        "date": "2026-07-02",
+                        "type": "REVERSAL",
+                        "amount": -999_999_999,
+                        "nav": -5,
+                        "price": 0,
+                    },
+                ],
+            )
+        )
+    assert caught.value.reason == "invalid_nav"
 
 
 def test_mixed_payload_with_transactionless_scheme_fails():

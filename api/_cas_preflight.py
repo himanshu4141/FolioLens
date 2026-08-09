@@ -230,14 +230,44 @@ def _canonical_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
     return canonical
 
 
-def canonicalize_cas_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    canonical = copy.deepcopy(payload)
-    dialect = payload.get("source_dialect")
+def _malformed_payload_shape(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    raw_folios = payload.get("mutual_funds")
+    if not isinstance(raw_folios, list):
+        return True
+    for folio in raw_folios:
+        if not isinstance(folio, dict):
+            return True
+        raw_schemes = folio.get("schemes")
+        if not isinstance(raw_schemes, list):
+            return True
+        for scheme in raw_schemes:
+            if not isinstance(scheme, dict):
+                return True
+            if not isinstance(scheme.get("additional_info"), dict):
+                return True
+            raw_transactions = scheme.get("transactions")
+            if not isinstance(raw_transactions, list):
+                return True
+            for transaction in raw_transactions:
+                if not isinstance(transaction, dict):
+                    return True
+                charges = transaction.get("charges")
+                if charges is not None and not isinstance(charges, dict):
+                    return True
+    return False
+
+
+def canonicalize_cas_payload(payload: Any) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    canonical = copy.deepcopy(source)
+    dialect = source.get("source_dialect")
     if not isinstance(dialect, str) or dialect not in _DIALECTS:
         dialect = "unknown_standard"
 
     folios: list[dict[str, Any]] = []
-    raw_folios = payload.get("mutual_funds")
+    raw_folios = source.get("mutual_funds")
     for raw_folio in raw_folios if isinstance(raw_folios, list) else []:
         if not isinstance(raw_folio, dict):
             continue
@@ -309,25 +339,44 @@ def _accounting_matches(transaction: dict[str, Any]) -> bool:
     units = transaction.get("units") or 0.0
     base = price * units
     charges = sum(transaction["charges"].values())
-    cash_candidates = {abs(transaction["source_amount"]), transaction["gross_amount"]}
     expected_candidates = (
         {base, base + charges}
         if transaction["direction"] == "in"
         else {base, max(0.0, base - charges)}
     )
-    # Charges are explicit expected-value candidates. Using the full charge as
-    # tolerance would allow the opposite direction's charge equation to pass.
-    tolerance = max(1.0, transaction["gross_amount"] * 0.002)
-    return any(
-        abs(cash - expected) <= tolerance
-        for cash in cash_candidates
-        for expected in expected_candidates
+    # Price x units is independently validated. An untrusted cash field must
+    # never be able to widen its own acceptance tolerance.
+    tolerance = max(1.0, abs(base) * 0.002)
+    source_cash = abs(transaction["source_amount"])
+    gross_cash = transaction["gross_amount"]
+    source_matches = any(
+        abs(source_cash - expected) <= tolerance for expected in expected_candidates
     )
+    gross_matches = any(
+        abs(gross_cash - expected) <= tolerance for expected in expected_candidates
+    )
+    source_gross_delta = abs(gross_cash - source_cash)
+    relationship_matches = (
+        source_gross_delta <= tolerance
+        or abs(source_gross_delta - charges) <= tolerance
+    )
+    return source_matches and gross_matches and relationship_matches
 
 
-def validate_and_canonicalize_cas(payload: dict[str, Any]) -> dict[str, Any]:
+def _reversal_cash_matches(transaction: dict[str, Any]) -> bool:
+    source_cash = abs(transaction["source_amount"])
+    charges = sum(transaction["charges"].values())
+    tolerance = max(1.0, source_cash * 0.002)
+    delta = abs(transaction["gross_amount"] - source_cash)
+    return delta <= tolerance or abs(delta - charges) <= tolerance
+
+
+def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
+    malformed = _malformed_payload_shape(payload)
     canonical = canonicalize_cas_payload(payload)
     schemes, rows = _flatten(canonical)
+    if malformed:
+        _reject(canonical, "empty_payload", 0)
     if not canonical["mutual_funds"] or not schemes or not rows:
         _reject(canonical, "empty_payload", 0)
 
@@ -349,6 +398,12 @@ def validate_and_canonicalize_cas(payload: dict[str, Any]) -> dict[str, Any]:
             if not _ISIN_RE.fullmatch(scheme["isin"]):
                 _reject(canonical, "invalid_isin", valid_rows)
 
+            purchase_keys = {
+                f'{transaction["date"]}:{transaction["amount"]}'
+                for transaction in scheme["transactions"]
+                if transaction["normalised_type"] == "purchase"
+            }
+
             for transaction in scheme["transactions"]:
                 if not _valid_iso_date(transaction["date"]):
                     _reject(canonical, "invalid_date", valid_rows)
@@ -357,6 +412,37 @@ def validate_and_canonicalize_cas(payload: dict[str, Any]) -> dict[str, Any]:
                 ignored = upper_type in _IGNORED_TYPES
                 if transaction["normalised_type"] is None and not ignored:
                     _reject(canonical, "unsupported_transaction_type", valid_rows)
+                if ignored and upper_type == "REVERSAL":
+                    if (
+                        abs(transaction["source_amount"]) <= 0
+                        or transaction["gross_amount"] <= 0
+                    ):
+                        _reject(canonical, "invalid_amount", valid_rows)
+                    if not _reversal_cash_matches(transaction):
+                        _reject(canonical, "accounting_mismatch", valid_rows)
+                    if transaction["nav"] is not None and transaction["nav"] <= 0:
+                        _reject(canonical, "invalid_nav", valid_rows)
+                    if transaction["price"] is not None and transaction["price"] <= 0:
+                        _reject(canonical, "invalid_price", valid_rows)
+                    if transaction["nav"] is not None and transaction["price"] is not None:
+                        difference = abs(transaction["nav"] - transaction["price"])
+                        tolerance = max(transaction["nav"], transaction["price"]) * 0.05
+                        if difference > tolerance:
+                            _reject(canonical, "nav_price_mismatch", valid_rows)
+                    if transaction["source_units"] is not None:
+                        if transaction["units"] is None or transaction["units"] <= 0:
+                            _reject(canonical, "invalid_units", valid_rows)
+                        if math.copysign(1, transaction["source_units"]) != math.copysign(
+                            1, transaction["source_amount"]
+                        ):
+                            _reject(canonical, "direction_mismatch", valid_rows)
+                        if transaction["price"] is None or transaction["price"] <= 0:
+                            _reject(canonical, "invalid_price", valid_rows)
+                        if not _accounting_matches(transaction):
+                            _reject(canonical, "accounting_mismatch", valid_rows)
+                    reversal_key = f'{transaction["date"]}:{transaction["amount"]}'
+                    if reversal_key not in purchase_keys:
+                        _reject(canonical, "accounting_mismatch", valid_rows)
                 if ignored:
                     valid_rows += 1
                     continue

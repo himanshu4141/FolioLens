@@ -40,6 +40,7 @@ import {
   assertCASPreflight,
   auditErrorCode,
   bucketCount,
+  buildImportCrashOutcome,
   buildImportOutcome,
   reasonFromAuditError,
   safeCASFailureReason,
@@ -302,6 +303,9 @@ async function finalizeImportRow(
 async function processImportInBackground(args: BackgroundJobArgs) {
   const { supabase, importId, userId, pan, dob, attachments } = args;
   const authEmailPromise = getAuthEmail(supabase, userId);
+  let totalFunds = 0;
+  let totalTransactions = 0;
+  const allErrors: string[] = [];
 
   try {
     console.log('[cas-webhook-resend] background_started');
@@ -327,9 +331,6 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       return;
     }
 
-    let totalFunds = 0;
-    let totalTransactions = 0;
-    const allErrors: string[] = [];
     const parsedPayloads: CanonicalCASParseResult[] = [];
     const dialects: CASSourceDialect[] = [];
     const cdslPassword = dob ? computeCdslPassword(pan, dob) : null;
@@ -397,7 +398,7 @@ async function processImportInBackground(args: BackgroundJobArgs) {
           failure_reason: firstReason,
           attachment_failures_bucket: bucketCount(allErrors.length),
         },
-        'system:cas-inbound',
+        userId,
       );
       await sendImportNotification({
         to: await authEmailPromise,
@@ -449,7 +450,7 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     trackServerEvent(
       status === 'success' ? 'cas_inbound_imported' : 'cas_inbound_failed',
       outcome.telemetry,
-      'system:cas-inbound',
+      userId,
     );
 
     await sendImportNotification({
@@ -476,29 +477,30 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       }).catch(() => console.error('[cas-webhook-resend] sync_nav_trigger_failed'));
     }
   } catch {
-    const reason: CASFailureReason = 'background_crashed';
+    const outcome = buildImportCrashOutcome({
+      source: 'email',
+      fundsUpdated: totalFunds,
+      transactionsAdded: totalTransactions,
+    });
     console.error('[cas-webhook-resend] background_crashed');
     trackServerEvent(
       'cas_inbound_crashed',
-      { source: 'email', status: 'crashed', failure_reason: reason },
-      'system:cas-inbound',
+      outcome.telemetry,
+      userId,
     );
     try {
       await finalizeImportRow(
         supabase,
         importId,
-        'failed',
-        0,
-        0,
-        [auditErrorCode(reason)],
+        outcome.audit.import_status,
+        outcome.audit.funds_updated,
+        outcome.audit.transactions_added,
+        [outcome.audit.error_message],
       );
       await sendImportNotification({
         to: await authEmailPromise,
         importId,
-        status: 'failed',
-        funds: 0,
-        transactions: 0,
-        errors: [userMessageForCASFailure(reason)],
+        ...outcome.notification,
       });
     } catch {
       console.error('[cas-webhook-resend] crash_reporting_failed');

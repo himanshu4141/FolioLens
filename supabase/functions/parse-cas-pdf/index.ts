@@ -217,7 +217,7 @@ Deno.serve(async (req) => {
         status: 'rejected',
         failure_reason: parserFailureReason,
       },
-      'system:cas-upload',
+      user.id,
     );
     return json(
       {
@@ -243,7 +243,7 @@ Deno.serve(async (req) => {
       error.summary.rows_bucket,
       error.reason,
     );
-    trackServerEvent('cas_parse_failed', outcome.telemetry, 'system:cas-upload');
+    trackServerEvent('cas_parse_failed', outcome.telemetry, user.id);
     return json(outcome.response.body, { status: outcome.response.status });
   }
 
@@ -286,7 +286,7 @@ Deno.serve(async (req) => {
         failure_reason: failureReason,
         write_failures_bucket: bucketCount(errors.length),
       },
-      'system:cas-upload',
+      user.id,
     );
     return json(
       { error: userMessageForCASFailure(failureReason), reason: failureReason },
@@ -313,7 +313,7 @@ Deno.serve(async (req) => {
   trackServerEvent(
     'cas_parse_success',
     outcome.telemetry,
-    'system:cas-upload',
+    user.id,
   );
 
   return json(outcome.response);

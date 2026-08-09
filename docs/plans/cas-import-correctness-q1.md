@@ -165,7 +165,7 @@ No production, dev, or local persistent database mutation is required for Q1. Mo
 ## Decision Log
 
 - 2026-08-09: Use the transaction Price for the accounting equation when present; NAV is an explicit fallback. When both exist, require them to be within a bounded percentage so the known NSDL shift cannot hide behind a plausible Price.
-- 2026-08-09: Purchases/switch-ins use `Price × units` or that value plus explicit charges; redemptions/switch-outs use `Price × units` or that value minus explicit charges. Rounding tolerance is the greater of ₹1 and 0.2% of gross cash, because including the full charge as tolerance would blur the two directions.
+- 2026-08-09: Purchases/switch-ins use `Price × units` or that value plus explicit charges; redemptions/switch-outs use `Price × units` or that value minus explicit charges. Both source and gross cash must reconcile, and their difference must be zero or the explicit charge total. Rounding tolerance is the greater of ₹1 and 0.2% of the independently validated `Price × units` base; an untrusted cash field can never widen its own tolerance.
 - 2026-08-09: Outflows accept either unsigned magnitudes or a negative signed amount/units pair for adapter compatibility. Inflows reject negative signed pairs, and all unit-changing rows reject mismatched amount/unit signs.
 - 2026-08-09: Missing folio is allowed as `null`, but known sentinels such as `No`, `CDSL`, and `NSDL` are invalid.
 - 2026-08-09: Exact Supabase count `null` is treated as unknown and therefore zero inserted, never as attempted-row count.
@@ -181,5 +181,15 @@ No production, dev, or local persistent database mutation is required for Q1. Mo
 - [x] Enforce importer zero-write preflight, safe codes, and exact counts.
 - [x] Integrate direct-upload and inbound-email caller outcomes.
 - [x] Update current CAS architecture and observability docs.
-- [ ] Run focused and full validation at the exact implementation head.
-- [ ] Open the draft implementation PR and start the frozen dual-review round.
+- [x] Run focused and full validation at the initial implementation head.
+- [x] Open implementation PR #292 and start the frozen dual-review round.
+- [x] Collect Codex and Claude round-one findings at frozen SHA `b23fb373ba7ac5b6620e7756799b1368a6ed60f6`.
+- [ ] Address all round-one findings in one batch, validate the exact new head, and request round-two review.
+
+
+## Amendments
+
+- **Missing depository folios.** The Q1 gate rejects the legacy `CDSL` sentinel, so the positional adapter now represents a genuinely absent folio as `null`. This is a narrow prerequisite for validating the existing CDSL path and is also part of Q2's eventual extraction contract. Q2 still owns header-aware folio extraction and its positive fixtures.
+- **NAV and transaction Price.** Q1 carries and validates both values because Price is the accounting basis required by the accepted research contract. To avoid changing a persisted financial column before Q2, the importer continues to store statement NAV (falling back to Price only when NAV is absent). Q2 still owns extraction correctness for both columns.
+- **Gross cash and idempotency.** Q1 retains and validates gross cash but does not persist it into the existing `transaction.amount` uniqueness key. The shipped source-amount magnitude remains the stored identity until Q3 introduces provider-neutral gross normalization, reconciliation, and migration/backfill evidence.
+- **Reversal safety.** Because a reversal amount drives a delete, Q1 validates its amount, charge relationship, optional NAV/Price/units, and requires an independently validated same-payload purchase key. Historical and ambiguous reversal reconciliation remains Q3 scope.

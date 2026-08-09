@@ -109,12 +109,8 @@ export async function importCASData(
 
     for (const mf of schemes) {
       // AMFI code (e.g. "119551") is what mfapi.in uses as scheme_code
-      const amfiStr = mf.additional_info?.amfi ?? '';
-      const schemeCode = parseInt(amfiStr, 10);
-      if (!schemeCode || isNaN(schemeCode)) {
-        console.warn('[import-cas] scheme_skipped reason=missing_scheme_identity');
-        continue;
-      }
+      // Preflight has already proved this is a non-empty digit-only string.
+      const schemeCode = parseInt(mf.additional_info.amfi, 10);
 
       // Use CASParser type as scheme_category (broad: Equity/Debt/Hybrid/Other)
       const schemeCategory = mf.type ?? 'Flexi Cap Fund';
@@ -167,7 +163,7 @@ export async function importCASData(
       for (const tx of mf.transactions ?? []) {
         if ((tx.type ?? '').toUpperCase().trim() === 'REVERSAL') {
           const date = parseDate(tx.date ?? '');
-          const amount = Math.abs(tx.amount ?? 0);
+          const amount = tx.amount;
           if (amount > 0) reversedKeys.add(`${date}:${amount}`);
         }
       }
@@ -194,7 +190,7 @@ export async function importCASData(
           const type = (tx.type ?? '').toUpperCase().trim();
           if (type === 'REVERSAL') return false;
           if (type === 'PURCHASE' || type === 'PURCHASE_SIP') {
-            const key = `${parseDate(tx.date ?? '')}:${Math.abs(tx.amount ?? 0)}`;
+            const key = `${tx.date}:${tx.amount}`;
             if (reversedKeys.has(key)) return false;
           }
           return true;
@@ -205,8 +201,10 @@ export async function importCASData(
           transaction_date: parseDate(tx.date ?? ''),
           transaction_type: tx.normalised_type ?? normaliseTxType(tx.type),
           units: Math.abs(tx.units ?? 0),
-          nav_at_transaction: tx.price ?? tx.nav ?? 0,
-          amount: tx.gross_amount,
+          // Q1 validates Price and gross cash but preserves the shipped row
+          // identity. Q3 owns provider-neutral gross-cash reconciliation.
+          nav_at_transaction: tx.nav ?? tx.price ?? 0,
+          amount: tx.amount,
           folio_number: folio.folio_number ?? null,
           cas_import_id: importId,
         }))
