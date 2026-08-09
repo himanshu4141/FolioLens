@@ -107,24 +107,30 @@ Failure records and telemetry use allowlisted reason codes and bucketed counts,
 never raw CAS payloads, filenames, identifiers, financial values, or exception text.
 
 Depository statements use a header-aware adapter. Every CDSL/NSDL transaction
-table must establish an unambiguous normalized map for Date, Description,
-Amount, Units, and NAV or Price before a dated row is accepted. Stamp Duty and
+table must be covered by an unambiguous normalized map for Date, Description,
+Amount, Units, and NAV or Price before a dated row is accepted. A leading
+page-header table may cover sibling transaction tables on that page; a
+scheme-local header cannot leak into a new scheme table. Stamp Duty and
 trailing charge columns are optional. Repeated headers refresh the map across
 page breaks; a missing or ambiguous schema returns the privacy-safe
 `unsupported_layout` reason. Issuer wording from the first three pages is only
-a routing/diagnostic hint—the table schema is the authority for financial
-column extraction.
+a routing/diagnostic hint—the validated header schema is the authority for
+financial column extraction.
 
-When an NSDL outflow explicitly labels Amount as net of TDS/STT but has no
-separate tax column, the adapter derives the withholding gap from independently
-parsed Price times Units and net Amount. This exception is limited to marked
-redemption/switch-out rows and a maximum 10% gap; unmarked or larger differences
-still fail accounting preflight.
+The adapter never invents a charge from the residual between Amount and Price
+times Units. An outflow that reports net cash but provides no mapped gross or
+charge column remains fail-closed as `accounting_mismatch`; Q3 owns the explicit
+gross/net reconciliation model.
 
 Direct uploads use a fixed password order. A custom password is exclusive when
 present. Otherwise the Edge Function tries the saved PAN first and, only when a
 valid saved DOB exists, PAN plus DOB second. Missing DOB does not block the
 first attempt; the UI suggests adding it only after a password rejection.
+The primary onboarding wizard follows the same rule: a returning user whose
+PAN-only attempt fails is routed to the Identity step to add DOB, while a
+custom-password attempt remains exclusive. Client diagnostics log only
+low-cardinality platform, status, reason, and size/timing buckets—never a
+filename, exact statement count, raw response, or exception message.
 
 Repeated imports are additive. Duplicate transactions are skipped; newly seen
 transactions update downstream sync/invalidation paths.

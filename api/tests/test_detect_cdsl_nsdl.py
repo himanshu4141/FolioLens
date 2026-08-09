@@ -36,11 +36,11 @@ def test_empty_text():
     assert detect_cdsl_nsdl("") is None
 
 
-def test_only_checks_first_3000_chars():
-    # Diagnostics are intentionally bounded even though they cover three pages.
+def test_preserves_full_three_page_detection_window_after_long_cover_text():
     prefix = "x" * 12001
-    text = prefix + "CDSL"
-    assert detect_cdsl_nsdl(text) is None
+    text = prefix + "\nNSDL Consolidated Account Statement"
+    assert detect_cdsl_nsdl(text) == "nsdl"
+    assert looks_like_depository_cas(text) is True
 
 
 def test_mixed_acronyms_are_ambiguous_but_still_route_to_depository_parser():

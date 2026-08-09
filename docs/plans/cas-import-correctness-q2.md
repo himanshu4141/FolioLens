@@ -44,7 +44,7 @@ This plan implements only Q2 from control PR #291. Q3 owns economic reconciliati
 
 ## Approach
 
-Introduce a small header-schema layer in the depository parser. Each candidate header row is normalized, aliases are resolved to canonical fields, duplicate canonical fields are rejected, and a valid schema must include Date, Description, Amount, Units, and at least one of Price or NAV. Transaction rows are then read only through that schema. Stamp Duty and optional trailing charge columns default safely when absent. Repeated headers refresh the active table map; a dated row without an established schema fails closed.
+Introduce a small header-schema layer in the depository parser. Each candidate header row is normalized, aliases are resolved to canonical fields, duplicate canonical fields are rejected, and a valid schema must include Date, Description, Amount, Units, and at least one of Price or NAV. Transaction rows are then read only through that schema. Stamp Duty and optional trailing charge columns default safely when absent. Repeated headers refresh the active table map. A leading page-header table may bind sibling transaction tables on that page, while a scheme-local header cannot cross into a new scheme table. A dated row without an established schema fails closed.
 
 The parser will collect the observed depository layout while extracting. Full issuer phrases and acronyms across the first three pages remain useful diagnostics, but token ordering will never choose financial column positions. The top-level router will pass the same diagnostic text into the adapter so page-two/page-three markers cannot make routing and parser diagnostics disagree.
 
@@ -112,34 +112,38 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] Run focused and full validation.
 - [x] Run transient supplied-file aggregate proof.
 - [x] Open draft implementation PR #293.
-- [ ] Freeze the exact validated head and start exact-SHA dual review.
+- [x] Freeze `da73b323b06431a5a9c1bf5dd5c8be159c78e7e9` and complete exact-SHA dual review round 1.
+- [x] Address all six round-1 findings in one batch and rerun full validation plus transient proof.
+- [x] Prepare the next exact validated head for dual re-review.
 
 ## Amendments
 
-- **Explicit NSDL net-of-tax switch-outs.** The supplied NSDL statement has
-  switch-out rows whose description explicitly says cash is after TDS/STT but
-  provides no separate tax column. For those marked outflows only, Q2 derives
-  the withholding gap from independently parsed Price times Units and net
-  Amount, capped at 10% of gross cash. Unmarked or larger gaps still fail Q1
-  accounting preflight. Q3 continues to own provider-neutral economic-group
-  reconciliation and cross-provider gross normalization.
+- **Explicit NSDL net-of-tax switch-outs remain fail-closed.** Review showed
+  that deriving a charge from the unexplained Price-times-Units versus Amount
+  residual makes the Q1 equation self-fulfilling. Q2 therefore records only
+  charges present in mapped statement columns. Rows that need a gross/net cash
+  model remain `accounting_mismatch` until Q3 implements that reconciliation.
 - **Private supplied-file proof completed transiently.** Runtime-supplied
   credentials and in-memory parsing produced CDSL 5/5 and NSDL 16/16 with the
-  correct dialects and full Q1 preflight. Only those aggregate outcomes are
-  recorded. Temporary page renders and the temporary public AMFI map were
-  deleted; no private artifact, credential, filename, or statement content was
-  copied into the repository, logs, fixtures, commits, or PR text.
+  correct dialects. Q1 remains intentionally fail-closed for rows that require
+  Q3 gross/net modeling. Only aggregate extraction outcomes are recorded.
+  Temporary page renders and the temporary public AMFI map were deleted; no
+  private artifact, credential, filename, or statement content was copied into
+  the repository, logs, fixtures, commits, or PR text.
 
 ## Validation Evidence
 
-- 2026-08-09: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  208 tests plus 3 subtests.
-- 2026-08-09: `npm test -- --runInBand` passed 104 suites and 2,132 tests.
-- 2026-08-09: `npm run typecheck`, `npm run lint`, and `git diff --check`
+- 2026-08-10: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
+  212 tests plus 3 subtests.
+- 2026-08-10: `npm test -- --coverage --ci --runInBand` passed 105 suites
+  and 2,135 tests with the coverage gate satisfied.
+- 2026-08-10: `npm run typecheck`, `npm run lint`, and `git diff --check`
   passed.
 - 2026-08-09: No Edge Function, Vercel function, database migration, dev data,
   or production surface was deployed or mutated.
-- 2026-08-09: Transient supplied-file proof passed CDSL 5/5 and NSDL 16/16;
-  both source-dialect checks and Q1 preflight passed.
+- 2026-08-10: Transient supplied-file extraction selected CDSL 5/5 and NSDL
+  16/16 with the correct dialects. CDSL passed Q1 preflight; NSDL intentionally
+  stopped at `accounting_mismatch` for rows that require Q3 gross/net cash
+  modeling. The helper and temporary public AMFI map were deleted immediately.
 - Cache statement: `[cache-shape-stable]`; no cache key, payload, lifetime,
   invalidation, persistence, restore, or sign-out behavior changed.

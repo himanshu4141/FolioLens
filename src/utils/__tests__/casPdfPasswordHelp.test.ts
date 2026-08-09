@@ -1,4 +1,7 @@
-import { shouldShowDobFallbackPrompt } from '../casPdfPasswordHelp';
+import {
+  shouldShowDobFallbackPrompt,
+  wizardStepAfterCasUploadFailure,
+} from '../casPdfPasswordHelp';
 
 describe('CAS PDF DOB fallback prompt', () => {
   const base = {
@@ -18,5 +21,21 @@ describe('CAS PDF DOB fallback prompt', () => {
   it('does not suggest the profile fallback after an exclusive custom-password attempt', () => {
     expect(shouldShowDobFallbackPrompt({ ...base, customPassword: 'different-password' }))
       .toBe(false);
+  });
+
+  it('routes the primary returning-user wizard to Identity after PAN-only rejection', () => {
+    expect(wizardStepAfterCasUploadFailure({
+      ...base,
+      hasSavedPan: true,
+    })).toBe('identity');
+    expect(wizardStepAfterCasUploadFailure({
+      ...base,
+      hasSavedPan: false,
+    })).toBeNull();
+    expect(wizardStepAfterCasUploadFailure({
+      ...base,
+      hasSavedPan: true,
+      customPassword: 'different-password',
+    })).toBeNull();
   });
 });

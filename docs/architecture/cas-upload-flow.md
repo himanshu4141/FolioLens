@@ -64,7 +64,7 @@ sequenceDiagram
   V->>V: pdfplumber peek first 3 pages
   alt PDF says CDSL or NSDL
     V->>Lib: parse_cdsl_nsdl(bytes, accepted password,<br/>same 3-page diagnostic text)
-    Lib->>Lib: normalize each transaction header<br/>+ extract by header map<br/>+ AMFI ISIN enrichment
+    Lib->>Lib: normalize transaction headers<br/>+ bind table/page-scoped maps<br/>+ AMFI ISIN enrichment
     Lib-->>V: schemes + transactions
   else CAMS / KFintech / MFCentral
     V->>Lib: casparser.read_cas_pdf(bytes, password)

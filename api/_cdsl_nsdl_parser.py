@@ -132,7 +132,7 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
 
 def detect_cdsl_nsdl(raw_text: str) -> str | None:
     """Return a deterministic issuer diagnostic, never a column-layout choice."""
-    snippet = raw_text[:12000].upper()
+    snippet = raw_text.upper()
     cdsl_strong = "CENTRAL DEPOSITORY SERVICES" in snippet
     nsdl_strong = "NATIONAL SECURITIES DEPOSITORY" in snippet
     if cdsl_strong != nsdl_strong:
@@ -147,7 +147,7 @@ def detect_cdsl_nsdl(raw_text: str) -> str | None:
 
 def looks_like_depository_cas(raw_text: str) -> bool:
     """Return whether multi-page text contains a depository-CAS routing hint."""
-    snippet = raw_text[:12000].upper()
+    snippet = raw_text.upper()
     return bool(
         re.search(r"\b(?:CDSL|NSDL)\b", snippet)
         or "CENTRAL DEPOSITORY SERVICES" in snippet
@@ -306,16 +306,15 @@ _FOLIO_LABEL_RE = re.compile(
     r"^\s*folio(?:\s+(?:no\.?|number))?\b",
     re.IGNORECASE,
 )
+_EMPTY_FOLIO_VALUE_RE = re.compile(
+    r"^\s*folio(?:\s+(?:no\.?|number))?\s*(?::|[-\u2010-\u2015])\s*$",
+    re.IGNORECASE,
+)
 
 _CLOSING_RE = re.compile(
     r"closing\s+balance|अंतिम\s+शेष|बंद\s+शेष",
     re.IGNORECASE | re.UNICODE,
 )
-_NET_OF_TAX_OUTFLOW_RE = re.compile(
-    r"\bless\b.*\b(?:tds|stt)\b",
-    re.IGNORECASE | re.UNICODE,
-)
-
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "date": ("date", "transaction date", "txn date"),
     "description": (
@@ -424,45 +423,13 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
     return cells[index] if index is not None and index < len(cells) else ""
 
 
-def _derived_tax_withholding(
-    description: str,
-    tx_type: str,
-    amount: float | None,
-    price: float | None,
-    units: float | None,
-) -> float | None:
-    """Return a bounded tax gap for explicitly net-of-tax outflows.
-
-    Some NSDL switch-out rows label their cash as "Less TDS, STT" without a
-    separate tax column. Price and Units independently establish gross cash;
-    Amount is the net cash. Never infer a charge for an unmarked row or when
-    the gap exceeds 10% of gross cash.
-    """
-    if (
-        tx_type not in {"REDEMPTION", "SWITCH_OUT"}
-        or not _NET_OF_TAX_OUTFLOW_RE.search(description)
-        or amount is None
-        or price is None
-        or units is None
-    ):
-        return None
-
-    gross_cash = abs(price * units)
-    net_cash = abs(amount)
-    withholding = gross_cash - net_cash
-    tolerance = max(1.0, gross_cash * 0.002)
-    if withholding <= tolerance:
-        return 0.0
-    if withholding <= gross_cash * 0.10 + 1e-9:
-        return withholding
-    return None
-
-
 def _folio_from_cell(cell: str, *, strict: bool = False) -> str | None:
     match = _FOLIO_RE.search(cell)
     if match:
         return match.group(1)
-    if strict and _FOLIO_LABEL_RE.search(cell):
+    if _EMPTY_FOLIO_VALUE_RE.search(cell) or (
+        strict and _FOLIO_LABEL_RE.search(cell)
+    ):
         raise UnsupportedLayoutError(
             "A folio label is missing an explicit delimiter or value."
         )
@@ -493,11 +460,21 @@ def extract_mf_folios(
     pending_folio: str | None = None
     pending_name: str | None = None
     active_header_map: dict[str, int] | None = None
+    active_header_page: int | None = None
 
-    for page in pdf.pages:
+    for page_index, page in enumerate(pdf.pages):
         for table in page.extract_tables():
             if not table:
                 continue
+
+            # A leading header-only table may define sibling transaction tables
+            # on the same PDF page (an observed NSDL extraction shape). A
+            # scheme-local header that follows folio/ISIN rows is scoped to its
+            # own table. Same-scheme continuations may retain either map across
+            # a page break, but a new scheme may only inherit a page-scoped map
+            # from the current page.
+            table_has_valid_header = False
+            table_saw_nonheader_row = False
 
             for row in table:
                 if not row or not any(c for c in row if c):
@@ -509,10 +486,16 @@ def extract_mf_folios(
                 header_map = _transaction_header_map(cells)
                 if header_map is not None:
                     active_header_map = header_map
+                    active_header_page = (
+                        page_index if not table_saw_nonheader_row else None
+                    )
+                    table_has_valid_header = True
                     observed_dialect = _schema_dialect(header_map)
                     if observed_dialect and observed_dialects is not None:
                         observed_dialects.add(observed_dialect)
                     continue
+
+                table_saw_nonheader_row = True
 
                 # ── 1. ISIN row — any cell contains INF[A-Z0-9]{9} ────────────
                 isin_in_row: str | None = None
@@ -523,6 +506,16 @@ def extract_mf_folios(
                         break
 
                 if isin_in_row:
+                    if (
+                        isin_in_row != current_isin
+                        and not table_has_valid_header
+                        and active_header_page != page_index
+                    ):
+                        # Do not reuse a prior table's schema for a new scheme.
+                        # Only a leading page-scoped header on this exact page
+                        # may cover a sibling table's new scheme.
+                        active_header_map = None
+                        active_header_page = None
                     current_isin = isin_in_row
 
                     # Folio may have appeared in the previous row (pending_folio)
@@ -658,17 +651,6 @@ def extract_mf_folios(
 
                 nav_val = nav_val if nav_val is not None else price_val
                 price_val = price_val if price_val is not None else nav_val
-
-                if "taxes" not in active_header_map:
-                    derived_tax = _derived_tax_withholding(
-                        desc,
-                        tx_type,
-                        amount_val,
-                        price_val,
-                        units_val,
-                    )
-                    if derived_tax is not None:
-                        taxes_val = derived_tax
 
                 if not units_val:
                     continue

@@ -174,7 +174,7 @@ def test_holdings_summary_isins_do_not_become_empty_transaction_schemes():
     assert [scheme["isin"] for scheme in schemes] == ["INF000A00001"]
 
 
-def test_explicit_net_of_tax_switch_out_derives_a_bounded_withholding_charge():
+def test_explicit_net_of_tax_switch_out_fails_closed_until_q3_models_gross_cash():
     header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
     row = [
         "01-07-2026",
@@ -185,12 +185,9 @@ def test_explicit_net_of_tax_switch_out_derives_a_bounded_withholding_charge():
         "10",
         "10",
     ]
-    result = _parse(_pdf(_page("NSDL", [_table(header, row)])))
-    transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
-
-    assert transaction["source_amount"] == 90
-    assert transaction["gross_amount"] == 100
-    assert transaction["charges"]["taxes"] == 10
+    with pytest.raises(CASPreflightError) as caught:
+        _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    assert caught.value.reason == "accounting_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -232,6 +229,62 @@ def test_dated_row_before_any_transaction_header_fails_closed():
         _parse(_pdf(_page("CDSL", [table])))
 
 
+def test_new_scheme_cannot_reuse_previous_scheme_header_map():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    first = _table(
+        header,
+        ["01-07-2026", "Purchase", "1000", "100", "100", "10"],
+    )
+    second = [
+        ["Folio No : SYNTHETIC-02", None, None, None, None, None],
+        ["ISIN : INF000A00002", None, None, None, None, None],
+        [
+            "02-07-2026",
+            "Switch Out Less TDS, STT - synthetic",
+            "90",
+            "10",
+            "10",
+            "10",
+        ],
+    ]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [first, second])))
+
+
+def test_unused_header_only_table_can_bind_immediately_following_scheme_table():
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    header_only = [header]
+    content = [
+        ["Folio No : SYNTHETIC-02", None, None, None, None, None, None],
+        ["ISIN : INF000A00002", None, None, None, None, None, None],
+        ["02-07-2026", "Purchase", "1000", "0.05", "100", "100", "10"],
+    ]
+
+    result = _parse(_pdf(_page("NSDL", [header_only, content])))
+    transactions = result["mutual_funds"][0]["schemes"][0]["transactions"]
+
+    assert result["source_dialect"] == "nsdl"
+    assert len(transactions) == 1
+
+
+def test_page_scoped_header_cannot_bind_a_new_scheme_on_the_next_page():
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    content = [
+        ["Folio No : SYNTHETIC-02", None, None, None, None, None, None],
+        ["ISIN : INF000A00002", None, None, None, None, None, None],
+        ["02-07-2026", "Purchase", "1000", "0.05", "100", "100", "10"],
+    ]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(
+            _pdf(
+                _page("NSDL cover", [[header]]),
+                _page("continuation", [content]),
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("folio_cell", "expected"),
     [
@@ -265,6 +318,16 @@ def test_folio_label_without_explicit_value_is_rejected(folio_cell):
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
     with pytest.raises(UnsupportedLayoutError):
         _parse(_pdf(_page("CDSL", [_table(header, row, folio=folio_cell)])))
+
+
+def test_empty_folio_value_in_multi_cell_row_is_rejected():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = ["Folio No -", "Mode of Holding: Single", None, None, None, None]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [table])))
 
 
 @pytest.mark.parametrize(
