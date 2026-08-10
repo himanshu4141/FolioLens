@@ -360,7 +360,7 @@ def test_merged_empty_folio_cannot_capture_the_next_field_label():
         )
 
 
-@pytest.mark.parametrize("folio_label", ["Folio No.", "Folio No", "Folio No :"])
+@pytest.mark.parametrize("folio_label", ["Folio No.", "Folio No"])
 def test_split_cell_folio_value_is_recovered(folio_label):
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
@@ -372,14 +372,63 @@ def test_split_cell_folio_value_is_recovered(folio_label):
     assert result["mutual_funds"][0]["folio_number"] == "SYN-99"
 
 
-def test_split_cell_non_folio_value_is_rejected():
+def test_split_cell_delimiter_without_an_inline_value_is_rejected():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = ["Folio No :", "SYN-99", None, None, None, None]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [table])))
+
+
+def test_split_cell_non_folio_value_is_ignored_as_a_summary_header():
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
     table = _table(header, row)
     table[0] = ["Folio No.", "Mode of Holding: Single", None, None, None, None]
 
-    with pytest.raises(UnsupportedLayoutError):
+    result = _parse(_pdf(_page("CDSL", [table])))
+
+    assert result["mutual_funds"][0]["folio_number"] is None
+
+
+@pytest.mark.parametrize(
+    "summary_header",
+    [
+        ["Folio No.", "ISIN", "Units"],
+        ["Folio No.", "Mode", "Units"],
+        ["Folio No.", "Scheme Name", "Units", "Value"],
+    ],
+)
+def test_folio_summary_headers_neither_invent_a_folio_nor_abort(summary_header):
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    content = [
+        ["ISIN : INF000A00001", None, None, None, None, None],
+        header,
+        row,
+    ]
+
+    result = _parse(_pdf(_page("CDSL", [[summary_header], content])))
+
+    assert result["mutual_funds"][0]["folio_number"] is None
+
+
+def test_date_cell_is_not_accepted_as_an_adjacent_folio_value():
+    assert parser._folio_from_cells(["Folio No.", "01-07-2026"]) is None
+
+
+def test_split_cell_folio_sentinel_reaches_q1_rejection():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = ["Folio No.", "NO", None, None, None, None]
+
+    with pytest.raises(CASPreflightError) as caught:
         _parse(_pdf(_page("CDSL", [table])))
+
+    assert caught.value.reason == "invalid_folio"
 
 
 def test_dated_transaction_row_shorter_than_declared_header_is_rejected():

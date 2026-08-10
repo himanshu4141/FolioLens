@@ -306,14 +306,18 @@ _FOLIO_DELIMITED_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 _FOLIO_VALUE_RE = re.compile(r"^[A-Z0-9][A-Z0-9/\-.]*$", re.IGNORECASE)
+_FOLIO_SENTINEL_VALUES = {
+    "NO",
+    "CDSL",
+    "NSDL",
+    "N/A",
+    "NA",
+    "NONE",
+    "UNKNOWN",
+}
 _FOLIO_TRAILING_FIELD_RE = re.compile(
     r"(?:^|\s+)(?=(?:mode\s+of\s+holding|holder\s+details|kyc\s+status|"
     r"account\s+number|no\.?\s+of\s+units|current\s+nav)\b\s*:)",
-    re.IGNORECASE,
-)
-_FOLIO_COMPANION_HEADER_RE = re.compile(
-    r"^(?:holder\s+details|kyc\s+status|mode\s+of\s+holding|account\s+number|"
-    r"no\.?\s+of\s+units|current\s+nav)$",
     re.IGNORECASE,
 )
 
@@ -429,7 +433,21 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
     return cells[index] if index is not None and index < len(cells) else ""
 
 
+def _looks_like_adjacent_folio_value(value: str) -> bool:
+    return bool(
+        _FOLIO_VALUE_RE.fullmatch(value)
+        and (
+            re.search(r"\d", value)
+            or "/" in value
+            or value.upper() in _FOLIO_SENTINEL_VALUES
+        )
+        and not _ROW_DATE_RE.fullmatch(value)
+    )
+
+
 def _folio_from_cells(cells: list[str]) -> str | None:
+    non_empty = [(index, cell) for index, cell in enumerate(cells) if cell]
+
     for index, cell in enumerate(cells):
         label_match = _FOLIO_LABEL_RE.search(cell)
         if not label_match:
@@ -448,35 +466,39 @@ def _folio_from_cells(cells: list[str]) -> str | None:
                 )
 
             value = delimited_match.group("value").strip()
-            had_inline_value = bool(value)
             trailing_field = _FOLIO_TRAILING_FIELD_RE.search(value)
             if trailing_field:
                 value = value[:trailing_field.start()].strip()
             if value and _FOLIO_VALUE_RE.fullmatch(value):
                 return value
-            if had_inline_value:
-                raise UnsupportedLayoutError(
-                    "A folio label is missing an explicit delimiter or value."
-                )
+            raise UnsupportedLayoutError(
+                "A folio label is missing an explicit delimiter or value."
+            )
 
         adjacent_value = next(
-            (candidate for candidate in cells[index + 1:] if candidate),
+            (
+                candidate
+                for candidate_index, candidate in non_empty
+                if candidate_index > index
+            ),
             None,
         )
-        if adjacent_value and _FOLIO_VALUE_RE.fullmatch(adjacent_value):
+        if (
+            adjacent_value
+            and len(non_empty) == 2
+            and _looks_like_adjacent_folio_value(adjacent_value)
+        ):
             return adjacent_value
 
-        if any(
-            _FOLIO_COMPANION_HEADER_RE.fullmatch(candidate)
-            for candidate in cells
-            if candidate
-        ):
-            # Holdings-summary column headers are not a folio-value row.
-            return None
+        if len(non_empty) == 1:
+            raise UnsupportedLayoutError(
+                "A folio label is missing an explicit delimiter or value."
+            )
 
-        raise UnsupportedLayoutError(
-            "A folio label is missing an explicit delimiter or value."
-        )
+        # A bare label beside a non-folio value is a summary/header row, not a
+        # malformed folio-value row. Unknown header vocabularies must not abort
+        # an otherwise supported statement.
+        return None
 
     return None
 
