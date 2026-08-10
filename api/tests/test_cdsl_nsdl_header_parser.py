@@ -375,6 +375,25 @@ def test_split_cell_folio_value_is_recovered(folio_label):
     assert result["mutual_funds"][0]["folio_number"] == "SYN-99"
 
 
+@pytest.mark.parametrize("folio_label", ["Folio No :", "Folio No -", "Folio No –"])
+def test_delimited_split_cell_folio_is_recovered_with_trailing_field(folio_label):
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = [
+        folio_label,
+        "SYN-99",
+        "Mode of Holding : Single",
+        None,
+        None,
+        None,
+    ]
+
+    result = _parse(_pdf(_page("CDSL", [table])))
+
+    assert result["mutual_funds"][0]["folio_number"] == "SYN-99"
+
+
 def test_split_cell_non_folio_value_is_ignored_as_a_summary_header():
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
