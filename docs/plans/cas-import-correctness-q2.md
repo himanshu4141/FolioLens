@@ -114,6 +114,8 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] Open draft implementation PR #293.
 - [x] Freeze `da73b323b06431a5a9c1bf5dd5c8be159c78e7e9` and complete exact-SHA dual review round 1.
 - [x] Address all six round-1 findings in one batch and rerun full validation plus transient proof.
+- [x] Freeze `ee7b3e8e1e68a2511e883de3f86e1d6c86ab975f` and complete exact-SHA dual review round 2.
+- [x] End round 2 and batch its three fail-open findings: merged/split folio cells and truncated transaction rows.
 - [x] Prepare the next exact validated head for dual re-review.
 
 ## Amendments
@@ -130,11 +132,15 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
   Temporary page renders and the temporary public AMFI map were deleted; no
   private artifact, credential, filename, or statement content was copied into
   the repository, logs, fixtures, commits, or PR text.
+- **Multiple folios sharing one scheme ISIN remain deferred.** Round-2 review
+  observed that the pre-existing scheme map is keyed by ISIN. Q2 does not change
+  that ownership model; Q3/Q4 will decide the reconciliation and persistence
+  contract before altering it.
 
 ## Validation Evidence
 
 - 2026-08-10: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  212 tests plus 3 subtests.
+  220 tests plus 3 subtests.
 - 2026-08-10: `npm test -- --coverage --ci --runInBand` passed 105 suites
   and 2,135 tests with the coverage gate satisfied.
 - 2026-08-10: `npm run typecheck`, `npm run lint`, and `git diff --check`

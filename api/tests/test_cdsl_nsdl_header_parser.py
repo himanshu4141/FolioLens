@@ -148,6 +148,7 @@ def test_unrelated_date_and_folio_table_headers_are_ignored():
     unrelated = [
         ["Date of Birth", "Registered Email", "Account Number"],
         ["Folio No.", "Holder Details", "KYC Status"],
+        ["Folio No. / Account No.", "Scheme Name", "Current Value"],
     ]
     header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "0.05", "100", "100", "10"]
@@ -328,6 +329,82 @@ def test_empty_folio_value_in_multi_cell_row_is_rejected():
 
     with pytest.raises(UnsupportedLayoutError):
         _parse(_pdf(_page("CDSL", [table])))
+
+
+def test_merged_folio_cell_stops_before_the_next_labeled_field():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(
+        header,
+        row,
+        folio="Folio No : ALPHA/01 Mode of Holding : Single",
+    )
+
+    result = _parse(_pdf(_page("CDSL", [table])))
+
+    assert result["mutual_funds"][0]["folio_number"] == "ALPHA/01"
+
+
+def test_merged_empty_folio_cannot_capture_the_next_field_label():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(
+            _pdf(
+                _page(
+                    "CDSL",
+                    [_table(header, row, folio="Folio No - Mode of Holding : Single")],
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize("folio_label", ["Folio No.", "Folio No", "Folio No :"])
+def test_split_cell_folio_value_is_recovered(folio_label):
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = [folio_label, "SYN-99", None, None, None, None]
+
+    result = _parse(_pdf(_page("CDSL", [table])))
+
+    assert result["mutual_funds"][0]["folio_number"] == "SYN-99"
+
+
+def test_split_cell_non_folio_value_is_rejected():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = ["Folio No.", "Mode of Holding: Single", None, None, None, None]
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [table])))
+
+
+def test_dated_transaction_row_shorter_than_declared_header_is_rejected():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units", "Stamp Duty"]
+    valid_row = ["01-07-2026", "Purchase", "1000", "100", "100", "10", "0.05"]
+    truncated_row = ["02-07-2026", "Purchase", "1000", "100", "100"]
+    table = _table(header, valid_row)
+    table.append(truncated_row)
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [table])))
+
+
+def test_present_but_empty_units_cell_remains_a_skippable_unitless_payout():
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units", "Stamp Duty"]
+    valid_row = ["01-07-2026", "Purchase", "1000", "100", "100", "10", "0.05"]
+    unitless_row = ["02-07-2026", "Dividend Payout", "50", "100", "100", "", ""]
+    table = _table(header, valid_row)
+    table.append(unitless_row)
+
+    result = _parse(_pdf(_page("CDSL", [table])))
+    transactions = result["mutual_funds"][0]["schemes"][0]["transactions"]
+
+    assert len(transactions) == 1
+    assert transactions[0]["type"] == "PURCHASE"
 
 
 @pytest.mark.parametrize(

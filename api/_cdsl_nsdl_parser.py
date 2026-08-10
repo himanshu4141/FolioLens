@@ -295,19 +295,25 @@ _ROW_DATE_RE = re.compile(
     re.UNICODE,
 )
 
-# Matches "Folio No : 28056620/47" — try "folio no" before just "folio" so
-# regex engine doesn't stop at "folio" and capture "No" as the folio number.
-_FOLIO_RE = re.compile(
-    r"^\s*folio(?:\s+(?:no\.?|number))?\s*(?::|[-\u2010-\u2015])\s*"
-    r"([A-Z0-9][A-Z0-9/\-.]*)\b",
-    re.IGNORECASE,
-)
+# Matches the row label only. The value is validated separately so a following
+# field such as "Mode of Holding" cannot be mistaken for the folio identifier.
 _FOLIO_LABEL_RE = re.compile(
-    r"^\s*folio(?:\s+(?:no\.?|number))?\b",
+    r"^\s*folio(?:\s+(?:no(?:\.)?|number))?\s*(?P<suffix>.*)$",
     re.IGNORECASE,
 )
-_EMPTY_FOLIO_VALUE_RE = re.compile(
-    r"^\s*folio(?:\s+(?:no\.?|number))?\s*(?::|[-\u2010-\u2015])\s*$",
+_FOLIO_DELIMITED_VALUE_RE = re.compile(
+    r"^(?::|[-\u2010-\u2015])\s*(?P<value>.*)$",
+    re.IGNORECASE,
+)
+_FOLIO_VALUE_RE = re.compile(r"^[A-Z0-9][A-Z0-9/\-.]*$", re.IGNORECASE)
+_FOLIO_TRAILING_FIELD_RE = re.compile(
+    r"(?:^|\s+)(?=(?:mode\s+of\s+holding|holder\s+details|kyc\s+status|"
+    r"account\s+number|no\.?\s+of\s+units|current\s+nav)\b\s*:)",
+    re.IGNORECASE,
+)
+_FOLIO_COMPANION_HEADER_RE = re.compile(
+    r"^(?:holder\s+details|kyc\s+status|mode\s+of\s+holding|account\s+number|"
+    r"no\.?\s+of\s+units|current\s+nav)$",
     re.IGNORECASE,
 )
 
@@ -423,16 +429,55 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
     return cells[index] if index is not None and index < len(cells) else ""
 
 
-def _folio_from_cell(cell: str, *, strict: bool = False) -> str | None:
-    match = _FOLIO_RE.search(cell)
-    if match:
-        return match.group(1)
-    if _EMPTY_FOLIO_VALUE_RE.search(cell) or (
-        strict and _FOLIO_LABEL_RE.search(cell)
-    ):
+def _folio_from_cells(cells: list[str]) -> str | None:
+    for index, cell in enumerate(cells):
+        label_match = _FOLIO_LABEL_RE.search(cell)
+        if not label_match:
+            continue
+
+        suffix = label_match.group("suffix").strip()
+        if suffix:
+            delimited_match = _FOLIO_DELIMITED_VALUE_RE.match(suffix)
+            if not delimited_match:
+                if any(candidate for candidate in cells[index + 1:] if candidate):
+                    # A multi-column summary header may begin with text such as
+                    # "Folio No. / Account No.". It is not a folio-value row.
+                    return None
+                raise UnsupportedLayoutError(
+                    "A folio label is missing an explicit delimiter or value."
+                )
+
+            value = delimited_match.group("value").strip()
+            had_inline_value = bool(value)
+            trailing_field = _FOLIO_TRAILING_FIELD_RE.search(value)
+            if trailing_field:
+                value = value[:trailing_field.start()].strip()
+            if value and _FOLIO_VALUE_RE.fullmatch(value):
+                return value
+            if had_inline_value:
+                raise UnsupportedLayoutError(
+                    "A folio label is missing an explicit delimiter or value."
+                )
+
+        adjacent_value = next(
+            (candidate for candidate in cells[index + 1:] if candidate),
+            None,
+        )
+        if adjacent_value and _FOLIO_VALUE_RE.fullmatch(adjacent_value):
+            return adjacent_value
+
+        if any(
+            _FOLIO_COMPANION_HEADER_RE.fullmatch(candidate)
+            for candidate in cells
+            if candidate
+        ):
+            # Holdings-summary column headers are not a folio-value row.
+            return None
+
         raise UnsupportedLayoutError(
             "A folio label is missing an explicit delimiter or value."
         )
+
     return None
 
 
@@ -523,12 +568,10 @@ def extract_mf_folios(
                         folio_by_isin[current_isin] = pending_folio
 
                     # Folio may also be in the same row as the ISIN
-                    for cell in cells:
-                        folio = _folio_from_cell(cell, strict=True)
-                        if folio:
-                            folio_by_isin[current_isin] = folio
-                            pending_folio = None
-                            break
+                    folio = _folio_from_cells(cells)
+                    if folio:
+                        folio_by_isin[current_isin] = folio
+                        pending_folio = None
 
                     if current_isin not in schemes_by_isin:
                         amfi_code: int | None = None
@@ -565,13 +608,11 @@ def extract_mf_folios(
                 # A new folio row between two ISINs belongs to the NEXT scheme,
                 # not the current one — so it must remain pending until the next
                 # ISIN row claims it.
-                for cell in cells:
-                    folio = _folio_from_cell(cell, strict=len(non_empty) == 1)
-                    if folio:
-                        pending_folio = folio
-                        if current_isin and current_isin not in folio_by_isin:
-                            folio_by_isin[current_isin] = folio
-                        break
+                folio = _folio_from_cells(cells)
+                if folio:
+                    pending_folio = folio
+                    if current_isin and current_isin not in folio_by_isin:
+                        folio_by_isin[current_isin] = folio
 
                 # ── 3. Closing Balance row → capture close_units ───────────────
                 if any(_CLOSING_RE.search(cell) for cell in cells):
@@ -602,7 +643,7 @@ def extract_mf_folios(
                     len(non_empty) == 1
                     and len(non_empty[0]) > 15
                     and not _ISIN_RE.search(non_empty[0])
-                    and not _FOLIO_RE.search(non_empty[0])
+                    and not _FOLIO_LABEL_RE.search(non_empty[0])
                     and not _ROW_DATE_RE.match(non_empty[0])
                     and not _FLOAT_RE.match(non_empty[0].replace(",", ""))
                     and not _GARBLED_RE.search(non_empty[0])
@@ -623,6 +664,23 @@ def extract_mf_folios(
                 if not _ROW_DATE_RE.match(date_cell):
                     raise UnsupportedLayoutError(
                         "The transaction date does not match the declared header."
+                    )
+
+                required_indices = [
+                    active_header_map[field] for field in _REQUIRED_HEADER_FIELDS
+                ]
+                if any(index >= len(cells) for index in required_indices):
+                    raise UnsupportedLayoutError(
+                        "A transaction row is shorter than its declared header."
+                    )
+                value_indices = [
+                    index
+                    for field, index in active_header_map.items()
+                    if field in {"nav", "price"}
+                ]
+                if not any(index < len(cells) for index in value_indices):
+                    raise UnsupportedLayoutError(
+                        "A transaction row is shorter than its declared header."
                     )
 
                 if current_isin is None:
