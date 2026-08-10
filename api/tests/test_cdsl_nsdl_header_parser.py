@@ -360,7 +360,10 @@ def test_merged_empty_folio_cannot_capture_the_next_field_label():
         )
 
 
-@pytest.mark.parametrize("folio_label", ["Folio No.", "Folio No"])
+@pytest.mark.parametrize(
+    "folio_label",
+    ["Folio No.", "Folio No", "Folio No :", "Folio No -"],
+)
 def test_split_cell_folio_value_is_recovered(folio_label):
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
@@ -370,16 +373,6 @@ def test_split_cell_folio_value_is_recovered(folio_label):
     result = _parse(_pdf(_page("CDSL", [table])))
 
     assert result["mutual_funds"][0]["folio_number"] == "SYN-99"
-
-
-def test_split_cell_delimiter_without_an_inline_value_is_rejected():
-    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
-    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
-    table = _table(header, row)
-    table[0] = ["Folio No :", "SYN-99", None, None, None, None]
-
-    with pytest.raises(UnsupportedLayoutError):
-        _parse(_pdf(_page("CDSL", [table])))
 
 
 def test_split_cell_non_folio_value_is_ignored_as_a_summary_header():

@@ -454,6 +454,7 @@ def _folio_from_cells(cells: list[str]) -> str | None:
             continue
 
         suffix = label_match.group("suffix").strip()
+        has_explicit_delimiter = False
         if suffix:
             delimited_match = _FOLIO_DELIMITED_VALUE_RE.match(suffix)
             if not delimited_match:
@@ -465,15 +466,18 @@ def _folio_from_cells(cells: list[str]) -> str | None:
                     "A folio label is missing an explicit delimiter or value."
                 )
 
+            has_explicit_delimiter = True
             value = delimited_match.group("value").strip()
+            had_inline_value = bool(value)
             trailing_field = _FOLIO_TRAILING_FIELD_RE.search(value)
             if trailing_field:
                 value = value[:trailing_field.start()].strip()
             if value and _FOLIO_VALUE_RE.fullmatch(value):
                 return value
-            raise UnsupportedLayoutError(
-                "A folio label is missing an explicit delimiter or value."
-            )
+            if had_inline_value:
+                raise UnsupportedLayoutError(
+                    "A folio label is missing an explicit delimiter or value."
+                )
 
         adjacent_value = next(
             (
@@ -490,7 +494,7 @@ def _folio_from_cells(cells: list[str]) -> str | None:
         ):
             return adjacent_value
 
-        if len(non_empty) == 1:
+        if has_explicit_delimiter or len(non_empty) == 1:
             raise UnsupportedLayoutError(
                 "A folio label is missing an explicit delimiter or value."
             )

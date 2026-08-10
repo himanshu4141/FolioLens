@@ -118,6 +118,8 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] End round 2 and batch its three fail-open findings: merged/split folio cells and truncated transaction rows.
 - [x] Freeze `a3558b4ebb04c1c84adbf529c7276fad15d8de2f` and complete exact-SHA dual review round 3.
 - [x] End round 3 and address its shared adjacent-cell folio/header discriminator finding.
+- [x] Freeze `af173c31d89c9b7cd66e6ea2d461604690790415` and complete exact-SHA dual review round 4.
+- [x] End round 4 and address its shared delimiter-terminated split-cell regression.
 - [x] Prepare the next exact validated head for dual re-review.
 
 ## Amendments
@@ -143,11 +145,13 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
   single-word header and reject an otherwise valid summary table. Adjacent-cell
   recovery is therefore limited to a bare label/value pair whose value carries
   folio-like identity, while unknown multi-column summary headers are ignored.
+  A delimiter attached to an otherwise empty label may use the same bounded
+  recovery; lone or invalid explicit labels still fail closed.
 
 ## Validation Evidence
 
 - 2026-08-10: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  225 tests plus 3 subtests.
+  226 tests plus 3 subtests.
 - 2026-08-10: `npm test -- --coverage --ci --runInBand` passed 105 suites
   and 2,135 tests with the coverage gate satisfied.
 - 2026-08-10: `npm run typecheck`, `npm run lint`, and `git diff --check`
