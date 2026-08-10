@@ -130,6 +130,8 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] End round 8 and unify inline, delimited-adjacent, and bare-adjacent folio predicates.
 - [x] Freeze `53fbce267ebe1ce90067f4cc93333f598e41dc1e` and complete exact-SHA dual review round 9.
 - [x] End round 9 and remove slash punctuation as independent folio identity evidence.
+- [x] Freeze `ec7005dd64baef7bcdd614b2c118482301f1e0a2` and complete exact-SHA dual review round 10.
+- [x] End round 10 and reject normalized date-like folio values across all shapes.
 - [x] Prepare the next exact validated head for dual re-review.
 
 ## Amendments
@@ -161,13 +163,14 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
   all paths share one value predicate that rejects dates, bare words, and every
   value containing a parser-recognized ISIN. A candidate must contain a digit
   unless it is an exact sentinel that Q1 rejects; slash punctuation alone is
-  never identity evidence. Lone labels and invalid explicit labels still fail
-  closed.
+  never identity evidence. Date-like values are rejected after allowing
+  single-digit components, textual months, alternate separators, and trailing
+  folio punctuation. Lone labels and invalid explicit labels still fail closed.
 
 ## Validation Evidence
 
 - 2026-08-10: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  279 tests plus 3 subtests.
+  315 tests plus 3 subtests.
 - 2026-08-10: `npm test -- --coverage --ci --runInBand` passed 105 suites
   and 2,135 tests with the coverage gate satisfied.
 - 2026-08-10: `npm run typecheck`, `npm run lint`, and `git diff --check`

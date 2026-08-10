@@ -421,6 +421,18 @@ def test_delimited_folio_does_not_skip_a_non_folio_neighbour(folio_cells):
         "INF000A00001.5",
         "Single",
         "01-07-2026",
+        "01-07-2026.",
+        "01-07-2026-",
+        "01-07-2026/",
+        "01-07-2026..",
+        "01-07-2026.5",
+        "01/07/2026.",
+        "01/07/2026-",
+        "01/07/2026/",
+        "01-Jul-2026.",
+        "01-JUL-2026/",
+        "1-7-2026",
+        "01.07.2026",
         "ISIN",
         "CDSL/NSDL",
         "CDSL/",
@@ -446,7 +458,7 @@ def test_non_folio_tokens_are_never_persisted_in_any_folio_shape(token, shape):
     else:
         table[0] = ["Folio No.", token, None, None, None, None]
 
-    if shape == "bare" and token != "01-07-2026":
+    if shape == "bare" and not parser._ROW_DATE_RE.fullmatch(token):
         result = _parse(_pdf(_page("CDSL", [table])))
         assert result["mutual_funds"][0]["folio_number"] is None
     else:

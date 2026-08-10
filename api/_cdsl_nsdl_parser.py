@@ -294,6 +294,10 @@ _ROW_DATE_RE = re.compile(
     r"^\d{1,2}[/\-](?:\d{2}|[A-Za-zऀ-ॿ]+)[/\-]\d{4}$",
     re.UNICODE,
 )
+_FOLIO_DATE_LIKE_RE = re.compile(
+    r"^\d{1,2}[./\-](?:\d{1,2}|[A-Za-zऀ-ॿ]+)[./\-]\d{4}(?:[./\-].*)?$",
+    re.UNICODE,
+)
 
 # Matches the row label only. The value is validated separately so a following
 # field such as "Mode of Holding" cannot be mistaken for the folio identifier.
@@ -441,7 +445,7 @@ def _looks_like_folio_value(value: str) -> bool:
             re.search(r"\d", value)
             or value.upper() in _FOLIO_SENTINEL_VALUES
         )
-        and not _ROW_DATE_RE.fullmatch(value)
+        and not _FOLIO_DATE_LIKE_RE.fullmatch(value)
     )
 
 
