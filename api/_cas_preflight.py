@@ -81,6 +81,8 @@ _IGNORED_TYPES = {
 _ISIN_RE = re.compile(r"^INF[A-Z0-9]{9}$")
 _AMFI_RE = re.compile(r"^\d+$")
 _MAX_POSTGRES_INTEGER = "2147483647"
+_CASH_BASES = {"source", "net_of_withholding"}
+_MAX_WITHHOLDING_RATIO = 0.10
 
 
 def bucket_count(count: int) -> CASCountBucket:
@@ -216,6 +218,12 @@ def _canonical_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
     source_units = _number(transaction.get("source_units", transaction.get("units")))
     units = abs(source_units) if source_units is not None else None
     normalised_type = normalise_transaction_type(raw_type)
+    raw_cash_basis = transaction.get("cash_basis", "source")
+    cash_basis = (
+        raw_cash_basis
+        if isinstance(raw_cash_basis, str) and raw_cash_basis in _CASH_BASES
+        else "source"
+    )
 
     # Descriptions can contain provider text or reference identifiers and are
     # not needed after type normalization.
@@ -240,6 +248,7 @@ def _canonical_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
                 "exit_load": _absolute(charges.get("exit_load")) or 0.0,
                 "other": _absolute(charges.get("other")) or 0.0,
             },
+            "cash_basis": cash_basis,
         }
     )
     return canonical
@@ -270,6 +279,11 @@ def _malformed_payload_shape(payload: Any) -> bool:
                     return True
                 charges = transaction.get("charges")
                 if charges is not None and not isinstance(charges, dict):
+                    return True
+                cash_basis = transaction.get("cash_basis")
+                if cash_basis is not None and (
+                    not isinstance(cash_basis, str) or cash_basis not in _CASH_BASES
+                ):
                     return True
     return False
 
@@ -371,6 +385,15 @@ def _accounting_matches(transaction: dict[str, Any]) -> bool:
         return False
     source_cash = abs(transaction["source_amount"])
     gross_cash = transaction["gross_amount"]
+    if transaction["cash_basis"] == "net_of_withholding":
+        withheld = gross_cash - source_cash
+        return (
+            transaction["direction"] == "out"
+            and source_cash > 0
+            and abs(gross_cash - base) <= tolerance
+            and withheld >= -tolerance
+            and withheld <= max(tolerance, gross_cash * _MAX_WITHHOLDING_RATIO)
+        )
     source_matches = any(
         abs(source_cash - expected) <= tolerance for expected in expected_candidates
     )
@@ -426,12 +449,6 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
             if not _ISIN_RE.fullmatch(scheme["isin"]):
                 _reject(canonical, "invalid_isin", valid_rows)
 
-            purchase_keys = {
-                f'{transaction["date"]}:{transaction["amount"]}'
-                for transaction in scheme["transactions"]
-                if transaction["normalised_type"] == "purchase"
-            }
-
             for transaction in scheme["transactions"]:
                 if not _valid_iso_date(transaction["date"]):
                     _reject(canonical, "invalid_date", valid_rows)
@@ -468,9 +485,11 @@ def validate_and_canonicalize_cas(payload: Any) -> dict[str, Any]:
                             _reject(canonical, "invalid_price", valid_rows)
                         if not _accounting_matches(transaction):
                             _reject(canonical, "accounting_mismatch", valid_rows)
-                    reversal_key = f'{transaction["date"]}:{transaction["amount"]}'
-                    if reversal_key not in purchase_keys:
-                        _reject(canonical, "unpaired_reversal", valid_rows)
+                    # Reversals are not insertable transaction rows, but they
+                    # are actionable reconciliation instructions. A statement
+                    # containing only a valid historical reversal must reach
+                    # the importer so it can delete the uniquely matched event.
+                    actionable_rows += 1
                 if ignored:
                     valid_rows += 1
                     continue

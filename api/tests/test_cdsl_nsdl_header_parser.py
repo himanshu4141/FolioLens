@@ -175,7 +175,7 @@ def test_holdings_summary_isins_do_not_become_empty_transaction_schemes():
     assert [scheme["isin"] for scheme in schemes] == ["INF000A00001"]
 
 
-def test_explicit_net_of_tax_switch_out_fails_closed_until_q3_models_gross_cash():
+def test_explicit_net_of_tax_switch_out_uses_independent_gross_cash():
     header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
     row = [
         "01-07-2026",
@@ -186,9 +186,12 @@ def test_explicit_net_of_tax_switch_out_fails_closed_until_q3_models_gross_cash(
         "10",
         "10",
     ]
-    with pytest.raises(CASPreflightError) as caught:
-        _parse(_pdf(_page("NSDL", [_table(header, row)])))
-    assert caught.value.reason == "accounting_mismatch"
+    result = _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
+
+    assert transaction["cash_basis"] == "net_of_withholding"
+    assert transaction["source_amount"] == 90
+    assert transaction["gross_amount"] == 100
 
 
 @pytest.mark.parametrize(

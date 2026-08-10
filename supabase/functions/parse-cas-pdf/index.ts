@@ -22,6 +22,7 @@ import {
   buildImportOutcome,
   buildPreflightFailureOutcome,
   bucketCount,
+  importFailureHttpStatus,
   reasonFromAuditError,
   safeCASFailureReason,
   userMessageForCASFailure,
@@ -284,7 +285,7 @@ Deno.serve(async (req) => {
     );
     return json(
       { error: userMessageForCASFailure(failureReason), reason: failureReason },
-      { status: 500 },
+      { status: importFailureHttpStatus(failureReason) },
     );
   }
 

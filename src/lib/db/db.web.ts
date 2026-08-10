@@ -23,7 +23,9 @@
  * consumers.
  */
 
-export const SCHEMA_VERSION = 2;
+// Keep the exported contract aligned with native even though web does not
+// open SQLite. Native v3 keys cached transactions by immutable server ID.
+export const SCHEMA_VERSION = 3;
 export const DB_NAME = 'foliolens.db';
 
 export interface DatabaseWriteScope {

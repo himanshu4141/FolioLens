@@ -97,8 +97,8 @@ FolioLens supports two practical CAS paths:
 2. **Email forwarding** — user forwards the CAS email to a per-user Resend inbound address. The Vercel inbound router verifies the Resend event, resolves the target inbox, fetches the full email/attachments when needed, then calls `cas-webhook-resend`.
 
 Both paths enforce the same fail-closed import contract. Python retains the
-provider dialect plus source amount, gross amount, charges, statement NAV,
-transaction Price, units, date, type, and direction, then validates the complete
+provider dialect plus source amount, explicit cash basis, gross amount, charges,
+statement NAV, transaction Price, units, date, type, and direction, then validates the complete
 payload before returning parser success. TypeScript repeats that preflight before
 the first financial or shared-domain operation. A rejected direct upload changes
 only its audit row to `failed`; inbound email parses and preflights every PDF before
@@ -118,9 +118,11 @@ a routing/diagnostic hint—the validated header schema is the authority for
 financial column extraction.
 
 The adapter never invents a charge from the residual between Amount and Price
-times Units. An outflow that reports net cash but provides no mapped gross or
-charge column remains fail-closed as `accounting_mismatch`; Q3 owns the explicit
-gross/net reconciliation model.
+times Units. An outflow is marked `net_of_withholding` only when mapped provider
+wording explicitly says tax/TDS/withholding was deducted; its provider-neutral
+gross cash must then be independently supported by Price times Units and remain
+within the bounded withholding rule. An unlabeled residual remains fail-closed as
+`accounting_mismatch`.
 
 Direct uploads use a fixed password order. A custom password is exclusive when
 present. Otherwise the Edge Function tries the saved PAN first and, only when a
@@ -132,8 +134,26 @@ custom-password attempt remains exclusive. Client diagnostics log only
 low-cardinality platform, status, reason, and size/timing buckets—never a
 filename, exact statement count, raw response, or exception message.
 
-Repeated imports are additive. Duplicate transactions are skipped; newly seen
-transactions update downstream sync/invalidation paths.
+Before any transaction mutation, the shared importer pages the complete existing
+history for every affected user fund and builds one provider-neutral reconciliation
+plan. Economic groups use fund, date, normalized type, compatible folio, gross cash,
+and units. Cash tolerance is the larger of one rupee or 0.2%; unit tolerance is the
+larger of 0.0001 units or one part per million. Exact rows, provider split/combined
+representations, stored supersets, and provable exact incoming supersets are
+idempotent; partial overlap, one-dimensional equality, and ambiguous same-day events
+fail closed before catalog, holding, insert, delete, or inactive-state writes.
+
+Reversals first consume one uniquely matching purchase in the incoming statement.
+Only when none matches may they select one historical purchase using folio, date,
+gross cash, and units when available; deletion is then scoped by exact transaction ID
+and fund ID. Cash-only multi-candidate reversals fail closed and never issue a delete.
+
+Postgres preserves genuine identical events with `cas_event_ordinal` and a
+`UNIQUE NULLS NOT DISTINCT` race backstop over the full persisted identity. Native
+SQLite keys its transaction cache by the already-selected immutable server UUID, so
+identical economic rows survive locally while overlapping sync remains idempotent.
+The server-only ordinal is absent from client query payloads and React Query keys;
+normal transaction insert/delete sync invalidation remains unchanged.
 
 Rejected approaches remain rejected:
 

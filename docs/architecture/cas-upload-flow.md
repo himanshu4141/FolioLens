@@ -13,7 +13,7 @@ graph TB
 
   subgraph SupabaseEdge["Supabase Edge Functions"]
     parse_edge["parse-cas-pdf<br/>──────────────<br/>• Verifies user JWT<br/>• Creates pending audit<br/>• Forwards to Vercel parser<br/>• Repeats safe preflight<br/>• Calls importCASData()"]
-    shared["_shared/import-cas.ts<br/>+ cas-import-contract.ts<br/>──────────────<br/>Pure preflight before I/O<br/>then importCASData()"]
+    shared["_shared/import-cas.ts<br/>+ cas-import-contract.ts<br/>+ cas-reconciliation.ts<br/>──────────────<br/>Pure preflight<br/>paged history read<br/>economic plan before writes"]
   end
 
   subgraph Vercel["Vercel (Python)"]
@@ -70,7 +70,7 @@ sequenceDiagram
     V->>Lib: casparser.read_cas_pdf(bytes, password)
     Lib-->>V: schemes + transactions
   end
-  V->>V: canonicalize + validate complete payload<br/>(source amount, gross, charges,<br/>NAV, Price, units, date, type, direction)
+  V->>V: canonicalize + validate complete payload<br/>(source cash, cash basis, gross, charges,<br/>NAV, Price, units, date, type, direction)
   V-->>SB: canonical parsed JSON or safe reason code
 
   SB->>SB: repeat pure canonical preflight
@@ -78,13 +78,19 @@ sequenceDiagram
     SB->>DB: UPDATE pending cas_import<br/>(status='failed', allowlisted reason)
     SB-->>App: HTTP 422 safe error response
   else complete payload passes
-    SB->>DB: importCASData()<br/>preflight before first domain query/write<br/>upsert fund, transaction, user_fund
-    SB->>DB: UPDATE cas_import(status='success', exact counts)
-    DB-->>SB: import_id
-    SB-->>App: { funds: N, transactions: M }
+    SB->>DB: page existing affected transactions
+    SB->>SB: reconcile gross cash + units<br/>exact, split/combined, multiplicity, reversals
+    alt overlap or reversal is ambiguous
+      SB->>DB: UPDATE pending cas_import<br/>(status='failed', reconciliation reason)
+      SB-->>App: HTTP 422 safe error response
+    else one complete mutation plan
+      SB->>DB: exact-ID reversal deletes<br/>+ planned transaction/user_fund writes
+      SB->>DB: UPDATE cas_import(status='success', exact counts)
+      DB-->>SB: import_id
+      SB-->>App: { funds: N, transactions: M }
+      App->>U: "Import complete: N funds, M transactions"
+    end
   end
-
-  App->>U: "Import complete: N funds, M transactions"
 ```
 
 ## Why two parser families
@@ -96,7 +102,15 @@ sequenceDiagram
 
 `api/parse-cas-pdf.py` peeks at the first 3 pages and dispatches based on format markers. The same text reaches the depository adapter, so a marker on page two or three cannot make routing and parser diagnostics disagree. CDSL/NSDL issuer text is diagnostic only: every transaction table must provide an unambiguous normalized map for Date, Description, Amount, Units, and NAV or Price. Repeated headers and page breaks are supported; missing, duplicate, or ambiguous required headers return HTTP 422 with `unsupported_layout`. Stamp Duty and trailing charge columns are optional.
 
-Both parser branches retain a provider dialect and the canonical financial fields until `_cas_preflight.py` validates the complete payload. `_shared/cas-import-contract.ts` repeats the same invariant checks before any shared-domain I/O. This defence in depth prevents an unsafe parser response from becoming an import write.
+Both parser branches retain a provider dialect and the canonical financial fields until `_cas_preflight.py` validates the complete payload. Explicit provider wording is required before a net-withholding outflow can use Price times Units as independently supported gross cash; an unexplained residual still fails closed. `_shared/cas-import-contract.ts` repeats the same invariant checks before any shared-domain I/O. This defence in depth prevents an unsafe parser response from becoming an import write.
+
+`importCASData()` then pages all existing rows for affected user funds and calls the
+I/O-free economic reconciler before its first domain mutation. Every equivalence
+requires both gross cash and units within documented tolerances; provider
+split/combined rows may match, while partial overlap and ambiguous independent events
+fail closed. Genuine identical events receive deterministic ordinals in Postgres. A
+reversal consumes a unique incoming pair first, otherwise it can delete only one
+uniquely matched historical transaction by exact ID.
 
 ## How this differs from the inbound (Resend) flow
 

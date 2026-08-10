@@ -12,9 +12,10 @@
  *   sync_state  — last-synced-at watermark per scope.
  *   meta        — single-row key/value, currently holds SCHEMA_VERSION.
  *
- * Primary keys are composite natural keys. Inserts use `INSERT OR
- * IGNORE`, so re-running a sync that overlaps with rows already on
- * disk is a no-op rather than a constraint violation.
+ * Transaction rows use the immutable server UUID as their cache key;
+ * the other append-only tables use composite natural keys. Inserts use
+ * `INSERT OR IGNORE`, so re-running an overlapping sync is a no-op while
+ * two distinct server events with identical cash and units both survive.
  *
  * On `SCHEMA_VERSION` mismatch (or first ever open), we `DROP` and
  * `CREATE`. The cache is treated as discardable — Supabase remains
@@ -23,13 +24,11 @@
 import * as SQLite from 'expo-sqlite';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 
-// v2 (2026-05-12): widen `tx` to mirror the 10 columns now returned by
-// `fetchUserTransactions` (PR #142). The v1 schema stored only the 5 PK
-// columns, so `tx.readAll()` returned rows that were missing the extras
-// that Money Trail + Wealth Journey rely on (`id`, `nav_at_transaction`,
-// `folio_number`, `cas_import_id`, `created_at`). Bumping forces a clean
-// re-sync from Supabase on next launch.
-export const SCHEMA_VERSION = 2;
+// v3 (2026-08-10): key `tx` by immutable server `id` instead of the old
+// five-column economic shape. Q3 preserves genuine identical CAS events
+// on the server, and the native cache must not collapse the second UUID.
+// A mismatch wipes this discardable cache and re-syncs it from Supabase.
+export const SCHEMA_VERSION = 3;
 export const DB_NAME = 'foliolens.db';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -185,12 +184,11 @@ const DDL: readonly string[] = [
     transaction_type TEXT NOT NULL,
     units REAL NOT NULL,
     amount REAL NOT NULL,
-    id TEXT NOT NULL,
+    id TEXT NOT NULL PRIMARY KEY,
     nav_at_transaction REAL,
     folio_number TEXT,
     cas_import_id TEXT,
-    created_at TEXT,
-    PRIMARY KEY (fund_id, transaction_date, transaction_type, units, amount)
+    created_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tx_fund_date ON tx (fund_id, transaction_date)`,
   `CREATE TABLE IF NOT EXISTS nav (

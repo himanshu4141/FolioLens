@@ -73,6 +73,7 @@ def test_provider_golden_fixtures_pass(dialect):
     assert transaction["nav"] == 100.0
     assert transaction["price"] == 100.5
     assert transaction["normalised_type"] == "purchase"
+    assert transaction["cash_basis"] == "source"
     assert "description" not in transaction
 
 
@@ -407,22 +408,78 @@ def test_paired_reversal_passes_but_corrupt_unpaired_reversal_fails():
     assert caught.value.reason == "invalid_nav"
 
 
-def test_valid_cross_period_reversal_reports_unpaired_reason():
-    with pytest.raises(CASPreflightError) as caught:
-        validate_and_canonicalize_cas(
-            _payload(
-                "cams",
-                [
-                    _valid_transaction(),
-                    {
-                        "date": "2026-07-02",
-                        "type": "REVERSAL",
-                        "amount": -1005.05,
-                    },
-                ],
-            )
+def test_valid_cross_period_reversal_reaches_q3_reconciliation():
+    result = validate_and_canonicalize_cas(
+        _payload(
+            "cams",
+            [
+                {
+                    "date": "2026-07-02",
+                    "type": "REVERSAL",
+                    "amount": -1005.05,
+                },
+            ],
         )
-    assert caught.value.reason == "unpaired_reversal"
+    )
+    assert len(result["mutual_funds"][0]["schemes"][0]["transactions"]) == 1
+
+
+def test_net_withholding_requires_explicit_basis_and_independent_gross():
+    accepted = validate_and_canonicalize_cas(
+        _payload(
+            transactions=[
+                _valid_transaction(
+                    type="SWITCH_OUT",
+                    amount=90,
+                    source_amount=90,
+                    gross_amount=100,
+                    units=10,
+                    source_units=10,
+                    nav=10,
+                    price=10,
+                    stamp_duty=0,
+                    charges={},
+                    cash_basis="net_of_withholding",
+                )
+            ]
+        )
+    )
+    transaction = accepted["mutual_funds"][0]["schemes"][0]["transactions"][0]
+    assert transaction["gross_amount"] == 100
+
+    for overrides in (
+        {"cash_basis": "source"},
+        {"cash_basis": "net_of_withholding", "gross_amount": 90},
+        {"cash_basis": "net_of_withholding", "source_amount": 80, "amount": 80},
+        {"cash_basis": "net_of_withholding", "type": "PURCHASE"},
+    ):
+        values = {
+            "type": "SWITCH_OUT",
+            "amount": 90,
+            "source_amount": 90,
+            "gross_amount": 100,
+            "units": 10,
+            "source_units": 10,
+            "nav": 10,
+            "price": 10,
+            "stamp_duty": 0,
+            "charges": {},
+        }
+        values.update(overrides)
+        candidate = _valid_transaction(**values)
+        with pytest.raises(CASPreflightError) as caught:
+            validate_and_canonicalize_cas(_payload(transactions=[candidate]))
+        assert caught.value.reason in {"accounting_mismatch", "direction_mismatch"}
+
+
+@pytest.mark.parametrize("cash_basis", ["unknown", 1, [], {}])
+def test_invalid_cash_basis_shape_fails_with_allowlisted_reason(cash_basis):
+    candidate = _valid_transaction(cash_basis=cash_basis)
+
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(_payload(transactions=[candidate]))
+
+    assert caught.value.reason == "malformed_payload"
 
 
 def test_paired_cash_only_reversal_derived_overflow_fails_closed():

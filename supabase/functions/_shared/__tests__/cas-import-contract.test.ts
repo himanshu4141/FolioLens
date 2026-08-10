@@ -7,6 +7,7 @@ import {
   buildImportOutcome,
   buildImportSuccessTelemetry,
   buildPreflightFailureOutcome,
+  importFailureHttpStatus,
   preflightCASPayload,
   userMessageForCASFailure,
   type CASParseResult,
@@ -75,6 +76,7 @@ describe('CAS import preflight contract', () => {
       units: 10,
       normalised_type: 'purchase',
       direction: 'in',
+      cash_basis: 'source',
     });
   });
 
@@ -139,8 +141,8 @@ describe('CAS import preflight contract', () => {
       amount: -1000,
       source_amount: -1000,
       gross_amount: 1000,
-      units: -10,
-      source_units: -10,
+      units: 10,
+      source_units: 10,
     })]));
 
     expect(result).toMatchObject({ ok: false, reason: 'direction_mismatch' });
@@ -323,11 +325,56 @@ describe('CAS import preflight contract', () => {
     ]))).toMatchObject({ ok: false, reason: 'invalid_nav' });
   });
 
-  it('reports a valid cross-period reversal as unpaired', () => {
+  it('lets a valid cross-period reversal reach Q3 reconciliation', () => {
     expect(preflightCASPayload(payload('cams', [
-      validTransaction(),
       { date: '2026-07-02', type: 'REVERSAL', amount: -1005.05 },
-    ]))).toMatchObject({ ok: false, reason: 'unpaired_reversal' });
+    ]))).toMatchObject({ ok: true });
+  });
+
+  it('accepts explicit bounded net withholding with independent gross evidence', () => {
+    expect(preflightCASPayload(payload('nsdl', [validTransaction({
+      type: 'SWITCH_OUT',
+      amount: 90,
+      source_amount: 90,
+      gross_amount: 100,
+      units: 10,
+      source_units: 10,
+      nav: 10,
+      price: 10,
+      stamp_duty: 0,
+      charges: {},
+      cash_basis: 'net_of_withholding',
+    })]))).toMatchObject({ ok: true });
+  });
+
+  it.each(['unknown', 1, [], {}])(
+    'rejects malformed cash basis %p with an allowlisted reason',
+    (cashBasis) => {
+      expect(preflightCASPayload(payload('nsdl', [validTransaction({
+        cash_basis: cashBasis as never,
+      })]))).toMatchObject({ ok: false, reason: 'malformed_payload' });
+    },
+  );
+
+  it.each([
+    ['unmarked residual', { cash_basis: 'source' as const }],
+    ['gross not independently supported', { cash_basis: 'net_of_withholding' as const, gross_amount: 90 }],
+    ['excessive withholding', { cash_basis: 'net_of_withholding' as const, amount: 80, source_amount: 80 }],
+    ['inflow basis misuse', { cash_basis: 'net_of_withholding' as const, type: 'PURCHASE' }],
+  ])('rejects %s', (_label, overrides) => {
+    expect(preflightCASPayload(payload('nsdl', [validTransaction({
+      type: 'SWITCH_OUT',
+      amount: 90,
+      source_amount: 90,
+      gross_amount: 100,
+      units: -10,
+      source_units: -10,
+      nav: 10,
+      price: 10,
+      stamp_duty: 0,
+      charges: {},
+      ...overrides,
+    })]))).toMatchObject({ ok: false });
   });
 
   it('rejects derived overflow in a paired cash-only reversal', () => {
@@ -467,6 +514,36 @@ describe('privacy-safe caller outcomes', () => {
 
   it('persists only allowlisted write reason codes', () => {
     expect(auditErrorCode('transaction_write_failed')).toBe('cas_import:transaction_write_failed');
+  });
+
+  it.each([
+    'reconciliation_read_failed',
+    'reconciliation_conflict',
+  ] as const)('keeps %s allowlisted across audit, notification, and telemetry', (reason) => {
+    const outcome = buildImportOutcome({
+      source: 'email',
+      dialect: 'nsdl',
+      fundsUpdated: 0,
+      transactionsAdded: 0,
+      errors: [auditErrorCode(reason)],
+    });
+
+    expect(outcome.status).toBe('failed');
+    expect(outcome.audit.error_message).toBe(`cas_import:${reason}`);
+    expect(outcome.notification.errors[0]).toContain('this statement');
+    expect(outcome.telemetry).toMatchObject({
+      status: 'rejected',
+      failure_reason: reason,
+      funds_bucket: '0',
+      transactions_bucket: '0',
+      write_failures_bucket: '1',
+    });
+  });
+
+  it('returns a client-safe status for conflicts while keeping I/O failures retryable', () => {
+    expect(importFailureHttpStatus('reconciliation_conflict')).toBe(422);
+    expect(importFailureHttpStatus('reconciliation_read_failed')).toBe(500);
+    expect(importFailureHttpStatus('transaction_write_failed')).toBe(500);
   });
 
   it('gives malformed and unpaired payloads precise safe user messages', () => {

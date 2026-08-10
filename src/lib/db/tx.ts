@@ -1,12 +1,12 @@
 /**
  * Repo for the `tx` table — the local copy of `transaction` rows from
- * Supabase. Append-only; deduped at write time via the composite PK.
+ * Supabase. Append-only; deduped at write time by immutable server `id`.
  *
  * Shape mirrors `UserTransactionRow` so the read-through path in
  * `useUserTransactions.fetchUserTransactions` can return SQLite rows
- * directly to callers without a re-shape. The 5 PK columns are the
- * dedup key Portfolio + Fund Detail XIRR math relies on; the other 5
- * are nullable metadata that Money Trail + Wealth Journey display.
+ * directly to callers without a re-shape. The financial columns drive
+ * Portfolio + Fund Detail XIRR math; `id` preserves genuine identical
+ * events while the remaining columns support Money Trail + Wealth Journey.
  */
 import {
   getDb,

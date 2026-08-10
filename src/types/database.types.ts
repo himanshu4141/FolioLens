@@ -335,6 +335,7 @@ export type Database = {
       transaction: {
         Row: {
           amount: number
+          cas_event_ordinal: number
           cas_import_id: string | null
           created_at: string
           folio_number: string | null
@@ -348,6 +349,7 @@ export type Database = {
         }
         Insert: {
           amount: number
+          cas_event_ordinal?: number
           cas_import_id?: string | null
           created_at?: string
           folio_number?: string | null
@@ -361,6 +363,7 @@ export type Database = {
         }
         Update: {
           amount?: number
+          cas_event_ordinal?: number
           cas_import_id?: string | null
           created_at?: string
           folio_number?: string | null

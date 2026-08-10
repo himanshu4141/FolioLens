@@ -20,7 +20,7 @@ when needed:
 ### Product surfaces
 
 - **Auth** — magic-link sign-in through Resend and Google OAuth through Supabase PKCE. Settings includes connected-account management and account deletion.
-- **Portfolio import** — onboarding and later refresh support detailed CAS PDF upload plus Resend inbound auto-forwarding (`cas-<token>@foliolens.in` / `cas-dev-<token>@foliolens.in`). Imports are additive and skip duplicate transactions.
+- **Portfolio import** — onboarding and later refresh support detailed CAS PDF upload plus Resend inbound auto-forwarding (`cas-<token>@foliolens.in` / `cas-dev-<token>@foliolens.in`). Imports reconcile provider split/combined rows using gross cash plus units, preserve genuine identical events, and fail closed on ambiguous overlap or reversal targets.
 - **Portfolio** — value hero, NAV freshness, SIP-aware XIRR, benchmark comparison, invested-vs-portfolio-vs-benchmark chart, top movers, allocation preview, Money Trail preview, and entry points into detailed screens.
 - **Funds and Fund Detail** — allocation overview, searchable/sortable holdings, fund-level XIRR/benchmark context, NAV history, performance, composition, and fund-specific transaction drill-down.
 - **Money Trail** — transaction history with Indian-financial-year summaries, filters, search, sorting, CSV export, and transaction detail.
