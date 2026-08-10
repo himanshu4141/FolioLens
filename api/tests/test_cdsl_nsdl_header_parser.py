@@ -412,20 +412,38 @@ def test_delimited_folio_does_not_skip_a_non_folio_neighbour(folio_cells):
 
 
 @pytest.mark.parametrize(
-    "folio_row",
+    "token",
     [
-        ["Folio No : INF000A00001", None, None, None, None, None],
-        ["Folio No :", "INF000A00001", None, None, None, None],
+        "INF000A00001",
+        "INF000A00001.",
+        "INF000A00001-",
+        "INF000A00001/",
+        "INF000A00001.5",
+        "Single",
+        "01-07-2026",
+        "ISIN",
     ],
 )
-def test_isin_shaped_value_is_rejected_as_a_folio(folio_row):
+@pytest.mark.parametrize("shape", ["inline", "delimited", "bare"])
+def test_non_folio_tokens_are_never_persisted_in_any_folio_shape(token, shape):
+    assert not parser._looks_like_folio_value(token)
+
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
     table = _table(header, row)
-    table[0] = folio_row
+    if shape == "inline":
+        table[0] = [f"Folio No : {token}", None, None, None, None, None]
+    elif shape == "delimited":
+        table[0] = ["Folio No :", token, None, None, None, None]
+    else:
+        table[0] = ["Folio No.", token, None, None, None, None]
 
-    with pytest.raises(UnsupportedLayoutError):
-        _parse(_pdf(_page("CDSL", [table])))
+    if shape == "bare" and token != "01-07-2026":
+        result = _parse(_pdf(_page("CDSL", [table])))
+        assert result["mutual_funds"][0]["folio_number"] is None
+    else:
+        with pytest.raises(UnsupportedLayoutError):
+            _parse(_pdf(_page("CDSL", [table])))
 
 
 def test_split_cell_non_folio_value_is_ignored_as_a_summary_header():

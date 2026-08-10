@@ -433,10 +433,10 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
     return cells[index] if index is not None and index < len(cells) else ""
 
 
-def _looks_like_adjacent_folio_value(value: str) -> bool:
+def _looks_like_folio_value(value: str) -> bool:
     return bool(
         _FOLIO_VALUE_RE.fullmatch(value)
-        and not _ISIN_RE.fullmatch(value.upper())
+        and not _ISIN_RE.search(value.upper())
         and (
             re.search(r"\d", value)
             or "/" in value
@@ -473,11 +473,7 @@ def _folio_from_cells(cells: list[str]) -> str | None:
             trailing_field = _FOLIO_TRAILING_FIELD_RE.search(value)
             if trailing_field:
                 value = value[:trailing_field.start()].strip()
-            if (
-                value
-                and _FOLIO_VALUE_RE.fullmatch(value)
-                and not _ISIN_RE.fullmatch(value.upper())
-            ):
+            if value and _looks_like_folio_value(value):
                 return value
             if had_inline_value:
                 raise UnsupportedLayoutError(
@@ -495,12 +491,12 @@ def _folio_from_cells(cells: list[str]) -> str | None:
             # folio label, folio value, and one or more trailing field cells.
             # Only the immediate logical neighbour can be the split value;
             # skipping over a field label could capture a later ISIN or number.
-            if later_values and _looks_like_adjacent_folio_value(later_values[0]):
+            if later_values and _looks_like_folio_value(later_values[0]):
                 return later_values[0]
         elif (
             len(non_empty) == 2
             and later_values
-            and _looks_like_adjacent_folio_value(later_values[0])
+            and _looks_like_folio_value(later_values[0])
         ):
             return later_values[0]
 
