@@ -439,7 +439,6 @@ def _looks_like_folio_value(value: str) -> bool:
         and not _ISIN_RE.search(value.upper())
         and (
             re.search(r"\d", value)
-            or "/" in value
             or value.upper() in _FOLIO_SENTINEL_VALUES
         )
         and not _ROW_DATE_RE.fullmatch(value)

@@ -422,6 +422,14 @@ def test_delimited_folio_does_not_skip_a_non_folio_neighbour(folio_cells):
         "Single",
         "01-07-2026",
         "ISIN",
+        "CDSL/NSDL",
+        "CDSL/",
+        "NO/",
+        "NONE/",
+        "N/A/",
+        "Single/Joint",
+        "Growth/Regular",
+        "Mode/Holding",
     ],
 )
 @pytest.mark.parametrize("shape", ["inline", "delimited", "bare"])
