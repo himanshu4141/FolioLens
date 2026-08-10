@@ -7,6 +7,7 @@ import {
 } from 'expo-file-system/legacy';
 import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
+import { bucketBytes, bucketCount } from '@/src/lib/uxTelemetry';
 
 export type CasUploadResult = { funds: number; transactions: number };
 
@@ -60,10 +61,8 @@ export async function uploadCasPdf(
 
   console.log('[cas-upload] dispatch', {
     platform: Platform.OS,
-    file_name: asset.name ?? 'cas.pdf',
-    declared_size: asset.size ?? null,
+    file_size_bucket: bucketBytes(asset.size),
     has_password_override: !!trimmedPassword,
-    target_host: new URL(url).host,
   });
 
   if (Platform.OS === 'web') {
@@ -84,28 +83,22 @@ function parseUploadResponse(status: number, bodyText: string): CasUploadResult 
   if (parseFailed) {
     console.warn('[cas-upload] response_not_json', {
       status,
-      body_prefix: bodyText.slice(0, 200),
     });
     throw new Error(`Import failed (${status})`);
   }
 
   if (status >= 200 && status < 300) {
-    console.log('[cas-upload] response_ok', {
-      status,
-      funds: body.funds ?? 0,
-      transactions: body.transactions ?? 0,
-    });
+    console.log('[cas-upload] response_ok', { status });
     analytics.track('portfolio_imported', {
       source: 'cas_pdf',
-      funds_count: body.funds ?? 0,
-      transactions_count: body.transactions ?? 0,
+      funds_count_bucket: bucketCount(body.funds),
+      transactions_count_bucket: bucketCount(body.transactions),
     });
     return { funds: body.funds ?? 0, transactions: body.transactions ?? 0 };
   }
 
   console.warn('[cas-upload] response_error', {
     status,
-    server_error: body.error ?? null,
   });
   throw new Error(body.error ?? `Import failed (${status})`);
 }

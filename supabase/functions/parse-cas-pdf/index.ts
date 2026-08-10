@@ -14,6 +14,7 @@ import {
   type CASParseResult,
 } from '../_shared/import-cas.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
+import { buildCASPasswordAttempts } from '../_shared/cas-passwords.ts';
 import {
   CASPreflightError,
   assertCASPreflight,
@@ -102,22 +103,15 @@ Deno.serve(async (req) => {
     .eq('user_id', user.id)
     .maybeSingle();
 
-  function computeCdslPassword(pan: string, dob: string): string {
-    // dob is ISO YYYY-MM-DD; CDSL/NSDL password format is PAN + DDMMYYYY
-    const [yyyy, mm, dd] = dob.split('-');
-    return `${pan.toUpperCase()}${dd}${mm}${yyyy}`;
-  }
-
   // If user supplied a custom password, use it exclusively — they've opted out of defaults.
   // Otherwise fall back to PAN (primary) and PAN+DOB (CDSL/NSDL fallback).
-  const password = passwordOverride ?? (profile?.pan ?? '');
-  const cdslPassword = passwordOverride
-    ? null
-    : (profile?.pan && profile?.dob ? computeCdslPassword(profile.pan, profile.dob) : null);
+  const passwordAttempts = buildCASPasswordAttempts(profile, passwordOverride);
+  const password = passwordAttempts.primary;
+  const cdslPassword = passwordAttempts.depositoryFallback;
 
   console.log(
     '[parse-cas-pdf] request_ready password_mode=%s',
-    passwordOverride ? 'custom' : 'profile',
+    passwordAttempts.mode,
   );
 
   if (!password) {

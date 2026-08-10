@@ -69,6 +69,34 @@ describe('uploadCasPdf — auth + config preconditions', () => {
 });
 
 describe('uploadCasPdf — native path', () => {
+  it('keeps filenames, exact counts, and upstream bodies out of diagnostics', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedGetInfo.mockResolvedValue({
+      exists: true,
+      isDirectory: false,
+      size: 1024,
+    } as never);
+    mockedUpload
+      .mockResolvedValueOnce({
+        status: 200,
+        body: JSON.stringify({ funds: 5, transactions: 42 }),
+      } as never)
+      .mockResolvedValueOnce({ status: 502, body: '<private upstream body>' } as never);
+
+    try {
+      await uploadCasPdf(ASSET_NATIVE);
+      await expect(uploadCasPdf(ASSET_NATIVE)).rejects.toThrow('Import failed (502)');
+      const diagnostics = JSON.stringify([...logSpy.mock.calls, ...warnSpy.mock.calls]);
+      expect(diagnostics).not.toContain('sample.pdf');
+      expect(diagnostics).not.toContain('private upstream body');
+      expect(diagnostics).not.toContain('42');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   it('rejects when file does not exist', async () => {
     mockedGetInfo.mockResolvedValueOnce({ exists: false } as never);
     await expect(uploadCasPdf(ASSET_NATIVE)).rejects.toThrow(/not available/);

@@ -504,19 +504,24 @@ def test_observed_cdsl_table_order_passes_end_to_end():
     assert result["preflight_summary"]["valid_rows_bucket"] == "1"
 
 
-def test_observed_nsdl_table_order_is_rejected_until_q2():
+def test_observed_nsdl_table_order_passes_end_to_end():
     depository_parser._isin_cache = {
         "INF000A00001": (100001, "Equity", "Synthetic Mutual Fund - Growth")
     }
     try:
         with patch("pdfplumber.open", return_value=_pdf_mock("NSDL", NSDL_TABLE)):
-            with pytest.raises(CASPreflightError) as caught:
-                parse_cdsl_nsdl(b"synthetic", "synthetic-password")
+            result = parse_cdsl_nsdl(b"synthetic", "synthetic-password")
     finally:
         depository_parser._isin_cache = None
 
-    assert caught.value.reason == "nav_price_mismatch"
-    assert caught.value.summary["dialect"] == "nsdl"
+    assert result["source_dialect"] == "nsdl"
+    transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
+    assert transaction["source_amount"] == 1000
+    assert transaction["gross_amount"] == 1000.05
+    assert transaction["stamp_duty"] == 0.05
+    assert transaction["nav"] == 100
+    assert transaction["price"] == 100
+    assert transaction["units"] == 10
 
 
 def test_failure_body_and_telemetry_cannot_echo_private_source_fields():

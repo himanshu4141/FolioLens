@@ -50,6 +50,11 @@ import {
   saveOnboardingDraft,
 } from '@/src/utils/onboardingDraft';
 import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import { wizardStepAfterCasUploadFailure } from '@/src/utils/casPdfPasswordHelp';
+import {
+  onboardingCasUploadOutcomeDiagnostics,
+  onboardingCasUploadStartDiagnostics,
+} from '@/src/utils/onboardingCasUploadDiagnostics';
 import {
   isOnboardingMode,
   pickOnboardingInitialStep,
@@ -366,22 +371,19 @@ function OnboardingWizard() {
     setUploading(true);
     setUploadError(null);
     const startedAt = Date.now();
-    console.log('[onboarding:upload] start', {
+    console.log('[onboarding:upload] start', onboardingCasUploadStartDiagnostics({
       platform: Platform.OS,
-      file_name: asset.name,
-      size_bytes: asset.size ?? null,
-      mime: asset.mimeType ?? null,
-      has_password_override: !!password?.trim(),
-    });
+      sizeBytes: asset.size,
+      hasPasswordOverride: !!password?.trim(),
+    }));
     const hadPasswordOverride = !!password?.trim();
     try {
       const result = await uploadCasPdf(asset, password);
       const elapsed = Date.now() - startedAt;
-      console.log('[onboarding:upload] success', {
-        funds: result.funds,
-        transactions: result.transactions,
-        elapsed_ms: elapsed,
-      });
+      console.log(
+        '[onboarding:upload] success',
+        onboardingCasUploadOutcomeDiagnostics({ elapsedMs: elapsed }),
+      );
       if (hadPasswordOverride) {
         analytics.track('onboarding_password_override_used', {
           succeeded: true,
@@ -405,11 +407,10 @@ function OnboardingWizard() {
       const elapsed = Date.now() - startedAt;
       const msg = err instanceof Error ? err.message : 'Upload failed.';
       const errorKind = categorizeUploadError(msg);
-      console.warn('[onboarding:upload] failed', {
-        message: msg,
-        elapsed_ms: elapsed,
-        error_kind: errorKind,
-      });
+      console.warn(
+        '[onboarding:upload] failed',
+        onboardingCasUploadOutcomeDiagnostics({ elapsedMs: elapsed, errorKind }),
+      );
       analytics.track('portfolio_import_failed', {
         source: 'cas_pdf',
         error_kind: errorKind,
@@ -422,11 +423,23 @@ function OnboardingWizard() {
           error_kind: errorKind,
         });
       }
+      const recoveryStep = wizardStepAfterCasUploadFailure({
+        hasSavedPan: !!profile?.pan,
+        dobMissing: !profile?.dob,
+        uploadFailed: true,
+        errorMessage: msg,
+        customPassword: password ?? '',
+      });
       setUploadError(
-        errorKind === 'read_error'
+        recoveryStep === 'identity'
+          ? 'Your saved PAN was not accepted. Add your date of birth, then try again.'
+          : errorKind === 'read_error'
           ? 'Could not read the PDF file. Re-download and try again.'
           : msg,
       );
+      if (recoveryStep) {
+        dispatch({ type: 'goto', step: recoveryStep });
+      }
     } finally {
       setUploading(false);
     }
@@ -490,8 +503,6 @@ function OnboardingWizard() {
   async function handleFinish() {
     console.log('[onboarding:wizard] finish', {
       imported: !!draft.importResult,
-      funds: draft.importResult?.funds ?? 0,
-      transactions: draft.importResult?.transactions ?? 0,
     });
 
     // Cache was invalidated right after upload completed and Done's
@@ -704,7 +715,7 @@ function WelcomeStep({
       });
     } catch (pickerErr) {
       console.warn('[onboarding:upload] picker_threw', {
-        message: pickerErr instanceof Error ? pickerErr.message : String(pickerErr),
+        error_kind: pickerErr instanceof Error ? 'picker_error' : 'unknown_error',
       });
       return;
     }

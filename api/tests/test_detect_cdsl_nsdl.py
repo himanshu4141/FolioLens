@@ -1,4 +1,4 @@
-from api._cdsl_nsdl_parser import detect_cdsl_nsdl
+from api._cdsl_nsdl_parser import detect_cdsl_nsdl, looks_like_depository_cas
 
 
 def test_detects_cdsl_english():
@@ -36,8 +36,19 @@ def test_empty_text():
     assert detect_cdsl_nsdl("") is None
 
 
-def test_only_checks_first_3000_chars():
-    # CDSL appears only after 3000 chars — should not be detected
-    prefix = "x" * 3001
-    text = prefix + "CDSL"
+def test_preserves_full_three_page_detection_window_after_long_cover_text():
+    prefix = "x" * 12001
+    text = prefix + "\nNSDL Consolidated Account Statement"
+    assert detect_cdsl_nsdl(text) == "nsdl"
+    assert looks_like_depository_cas(text) is True
+
+
+def test_mixed_acronyms_are_ambiguous_but_still_route_to_depository_parser():
+    text = "NSDL participant details\nCDSL Consolidated Account Statement"
     assert detect_cdsl_nsdl(text) is None
+    assert looks_like_depository_cas(text) is True
+
+
+def test_full_issuer_name_wins_over_other_incidental_acronym():
+    text = "Central Depository Services (India) Limited\nNSDL participant reference"
+    assert detect_cdsl_nsdl(text) == "cdsl"

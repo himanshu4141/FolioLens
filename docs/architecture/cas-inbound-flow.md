@@ -43,8 +43,8 @@ graph TB
   router -- "POST normalized payload<br/>(FolioLens HMAC)<br/>cas-* route" --> edge_p
   edge_d -- "GET attachment<br/>(presigned URL)" --> resend
   edge_p -- "GET attachment<br/>(presigned URL)" --> resend
-  edge_d -- "POST PDF + PAN" --> parser
-  edge_p -- "POST PDF + PAN" --> parser
+  edge_d -- "POST PDF + ordered password attempts" --> parser
+  edge_p -- "POST PDF + ordered password attempts" --> parser
   edge_d <--> db_d
   edge_p <--> db_p
   edge_d -- "POST signed body<br/>(FolioLens HMAC)" --> notify
@@ -99,8 +99,8 @@ sequenceDiagram
     loop phase 1: every PDF attachment
       SB->>RS: GET presigned attachment URL<br/>(no auth — Resend's signed URL)
       RS-->>SB: PDF bytes
-      SB->>P: POST PDF + PAN + DOB password<br/>x-parser-secret
-      P->>P: canonicalize + validate before success
+      SB->>P: POST PDF + PAN first<br/>optional PAN + DOB fallback<br/>x-parser-secret
+      P->>P: map CDSL/NSDL columns from headers<br/>canonicalize + validate before success
       P-->>SB: canonical payload or safe reason code
       SB->>SB: repeat pure TypeScript preflight
     end
@@ -134,6 +134,8 @@ sequenceDiagram
 5. **Background catch-all guarantees privacy-safe feedback.** Any unhandled throw promotes the `pending` row to `failed` with an allowlisted reason code and emails a generic actionable message through the same notify endpoint. Raw exceptions and normalized webhook payloads are neither persisted nor emitted.
 6. **DEV vs PROD separation by local-part.** A single Resend account + apex MX serves both environments. `cas-dev-<token>@foliolens.in` routes to DEV Supabase, `cas-<token>@foliolens.in` to PROD. The router decides; both Supabase projects share the same `FOLIOLENS_INBOUND_ROUTER_SECRET` and HMAC verification logic.
 7. **All attachments preflight before any import.** Download, parse, and validate form phase 1. Shared-domain writes begin only in phase 2 after every PDF passes, preventing a mixed-validity email from partially changing a portfolio.
+8. **Depository schemas are header-owned.** CDSL/NSDL issuer text from the first three pages is a routing and diagnostic hint only. Financial fields come from a validated table-local map or a leading page-header map that covers sibling tables on that page; scheme-local maps cannot leak into a new table. Repeated headers/page breaks are supported, while missing or ambiguous required headers fail with `unsupported_layout`.
+9. **Password fallback is optional.** Profile-based imports try PAN first and PAN plus DOB only when DOB is available. A custom password override is used exclusively, so missing DOB does not block a first attempt.
 
 ## Diagnostic answers per the issue
 
