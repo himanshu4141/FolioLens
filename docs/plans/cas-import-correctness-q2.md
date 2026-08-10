@@ -124,6 +124,8 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
 - [x] End round 5 and address its shared three-cell delimiter-split folio finding.
 - [x] Freeze `ee3aef5512c4ce37f39a3e25cd8e088af8a8f97b` and complete exact-SHA dual review round 6.
 - [x] End round 6 and address the scan-ahead folio invention finding.
+- [x] Freeze `7cec07e179739c51e3839ad08b4bdeb6f25c7e5b` and complete exact-SHA dual review round 7.
+- [x] End round 7 and reject ISIN-shaped inline and adjacent folio values.
 - [x] Prepare the next exact validated head for dual re-review.
 
 ## Amendments
@@ -152,12 +154,13 @@ Focused tests will additionally exercise the parser route's typed 422 response, 
   A delimiter attached to an otherwise empty label may use the same bounded
   recovery when the immediate following non-empty cell is folio-like, even if
   trailing extracted field cells remain. It may not scan past a non-folio cell;
-  lone or invalid explicit labels still fail closed.
+  exact ISIN-shaped candidates, lone labels, and invalid explicit labels still
+  fail closed.
 
 ## Validation Evidence
 
 - 2026-08-10: `PYTHONPATH=. .venv/bin/python -m pytest api/tests -q` passed
-  231 tests plus 3 subtests.
+  233 tests plus 3 subtests.
 - 2026-08-10: `npm test -- --coverage --ci --runInBand` passed 105 suites
   and 2,135 tests with the coverage gate satisfied.
 - 2026-08-10: `npm run typecheck`, `npm run lint`, and `git diff --check`

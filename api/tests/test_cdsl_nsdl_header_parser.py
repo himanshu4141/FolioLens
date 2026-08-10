@@ -411,6 +411,23 @@ def test_delimited_folio_does_not_skip_a_non_folio_neighbour(folio_cells):
         _parse(_pdf(_page("CDSL", [table])))
 
 
+@pytest.mark.parametrize(
+    "folio_row",
+    [
+        ["Folio No : INF000A00001", None, None, None, None, None],
+        ["Folio No :", "INF000A00001", None, None, None, None],
+    ],
+)
+def test_isin_shaped_value_is_rejected_as_a_folio(folio_row):
+    header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
+    row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]
+    table = _table(header, row)
+    table[0] = folio_row
+
+    with pytest.raises(UnsupportedLayoutError):
+        _parse(_pdf(_page("CDSL", [table])))
+
+
 def test_split_cell_non_folio_value_is_ignored_as_a_summary_header():
     header = ["Date", "Description", "Amount", "NAV", "Price", "Units"]
     row = ["01-07-2026", "Purchase", "1000", "100", "100", "10"]

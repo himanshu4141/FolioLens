@@ -436,6 +436,7 @@ def _cell_at(cells: list[str], header_map: dict[str, int], field: str) -> str:
 def _looks_like_adjacent_folio_value(value: str) -> bool:
     return bool(
         _FOLIO_VALUE_RE.fullmatch(value)
+        and not _ISIN_RE.fullmatch(value.upper())
         and (
             re.search(r"\d", value)
             or "/" in value
@@ -472,7 +473,11 @@ def _folio_from_cells(cells: list[str]) -> str | None:
             trailing_field = _FOLIO_TRAILING_FIELD_RE.search(value)
             if trailing_field:
                 value = value[:trailing_field.start()].strip()
-            if value and _FOLIO_VALUE_RE.fullmatch(value):
+            if (
+                value
+                and _FOLIO_VALUE_RE.fullmatch(value)
+                and not _ISIN_RE.fullmatch(value.upper())
+            ):
                 return value
             if had_inline_value:
                 raise UnsupportedLayoutError(
