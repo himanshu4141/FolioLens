@@ -488,16 +488,10 @@ def _folio_from_cells(cells: list[str]) -> str | None:
             # A retained delimiter is positive evidence that this is a folio
             # value row. Extraction may split the same logical line into
             # folio label, folio value, and one or more trailing field cells.
-            adjacent_value = next(
-                (
-                    candidate
-                    for candidate in later_values
-                    if _looks_like_adjacent_folio_value(candidate)
-                ),
-                None,
-            )
-            if adjacent_value:
-                return adjacent_value
+            # Only the immediate logical neighbour can be the split value;
+            # skipping over a field label could capture a later ISIN or number.
+            if later_values and _looks_like_adjacent_folio_value(later_values[0]):
+                return later_values[0]
         elif (
             len(non_empty) == 2
             and later_values
