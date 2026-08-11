@@ -304,6 +304,83 @@ describe('CAS economic reconciliation', () => {
     expect(new Set(plan.reversalDeleteIds)).toEqual(new Set(['split-a', 'split-b']));
   });
 
+  it('deletes only the unique split subset when an independent purchase shares the group', () => {
+    const plan = reconcileEconomicRows([incoming()], [
+      existing({ id: 'split-a', amount: 400, units: 4 }),
+      existing({ id: 'split-b', amount: 600, units: 6 }),
+      existing({ id: 'independent', amount: 500, units: 5 }),
+    ], [reversal()]);
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.inserts).toEqual([]);
+    expect(new Set(plan.reversalDeleteIds)).toEqual(new Set(['split-a', 'split-b']));
+    expect(plan.reversalDeleteIds).not.toContain('independent');
+  });
+
+  it('rejects exact-versus-split reversal ambiguity without deleting either representation', () => {
+    const plan = reconcileEconomicRows([incoming()], [
+      existing({ id: 'exact', amount: 1000, units: 10 }),
+      existing({ id: 'split-a', amount: 400, units: 4 }),
+      existing({ id: 'split-b', amount: 600, units: 6 }),
+    ], [reversal()]);
+
+    expect(plan.conflicts[0].reason).toBe('ambiguous_reversal');
+    expect(plan.inserts).toEqual([]);
+    expect(plan.reversalDeleteIds).toEqual([]);
+  });
+
+  it('rejects multiple matching split subsets without deleting any candidate', () => {
+    const plan = reconcileEconomicRows([incoming()], [
+      existing({ id: 'split-a', amount: 400, units: 4 }),
+      existing({ id: 'split-b', amount: 600, units: 6 }),
+      existing({ id: 'split-c', amount: 200, units: 2 }),
+      existing({ id: 'split-d', amount: 800, units: 8 }),
+    ], [reversal()]);
+
+    expect(plan.conflicts[0].reason).toBe('ambiguous_reversal');
+    expect(plan.inserts).toEqual([]);
+    expect(plan.reversalDeleteIds).toEqual([]);
+  });
+
+  it('preserves unique-subset-or-conflict reversal safety across mixed groups', () => {
+    const values = [10, 8, 6, 5, 4, 3, 2, 1];
+    for (let mask = 1; mask < 2 ** values.length; mask += 1) {
+      const selected = values.filter((_, index) => (mask & (1 << index)) !== 0);
+      const stored = selected.map((value) => existing({
+        id: `units-${value}`,
+        amount: value * 100,
+        units: value,
+      }));
+      const nonExact = selected.filter((value) => value !== 10);
+      const matchingSubsets: number[][] = [];
+      for (let subsetMask = 1; subsetMask < 2 ** nonExact.length; subsetMask += 1) {
+        const subset = nonExact.filter((_, index) =>
+          (subsetMask & (1 << index)) !== 0
+        );
+        if (subset.reduce((sum, value) => sum + value, 0) === 10) {
+          matchingSubsets.push(subset);
+        }
+      }
+
+      const plan = reconcileEconomicRows([incoming()], stored, [reversal()]);
+      const hasExact = selected.includes(10);
+      const ambiguous = matchingSubsets.length > 1
+        || (hasExact && matchingSubsets.length === 1);
+      if (ambiguous) {
+        expect(plan.conflicts[0].reason).toBe('ambiguous_reversal');
+        expect(plan.reversalDeleteIds).toEqual([]);
+      } else {
+        expect(plan.conflicts).toEqual([]);
+        const expectedValues = hasExact
+          ? [10]
+          : matchingSubsets[0] ?? [];
+        expect(new Set(plan.reversalDeleteIds)).toEqual(
+          new Set(expectedValues.map((value) => `units-${value}`)),
+        );
+      }
+    }
+  });
+
   it('clears a resolved delete when another reversal conflicts', () => {
     const plan = reconcileEconomicRows([], [existing()], [
       reversal(),

@@ -343,8 +343,8 @@ export async function importCASData(
     };
   }
 
-  // Q4 will make the remaining catalog/fund/transaction writes atomic. Q3
-  // guarantees the transaction plan itself is complete before they begin.
+  // Q3 applies every transaction delete/insert atomically after snapshot
+  // revalidation. Q4 still owns catalog/fund authority and wider-domain retry.
   const { data: benchmarks } = await supabase
     .from('benchmark_mapping')
     .select('scheme_category, benchmark_index, benchmark_index_symbol');

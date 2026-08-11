@@ -222,6 +222,88 @@ function resolvedGroupKey(
   return '';
 }
 
+type AggregateSubsetMatch =
+  | { kind: 'none' }
+  | { kind: 'unique'; rows: ExistingEconomicRow[] }
+  | { kind: 'ambiguous' };
+
+const MAX_SUBSET_SEARCH_STATES = 100_000;
+
+function findUniqueAggregateSubset(
+  rows: ExistingEconomicRow[],
+  targetCash: number,
+  targetUnits: number,
+): AggregateSubsetMatch {
+  const eligible = rows
+    .filter((row) => {
+      const cash = roundCash(row.amount);
+      const units = roundUnits(row.units);
+      return (cash <= targetCash || cashMatches(cash, targetCash))
+        && (units <= targetUnits || unitsMatch(units, targetUnits));
+    })
+    .sort((left, right) =>
+      right.amount - left.amount
+      || right.units - left.units
+      || left.id.localeCompare(right.id)
+    );
+  type SubsetState = { count: 1 | 2; rows: ExistingEconomicRow[] };
+  const states = new Map<string, SubsetState>([
+    ['0\u001f0', { count: 1, rows: [] }],
+  ]);
+
+  for (const row of eligible) {
+    const rowCash = Math.round(roundCash(row.amount) * CASH_SCALE);
+    const rowUnits = Math.round(roundUnits(row.units) * UNITS_SCALE);
+    const additions: Array<[string, SubsetState]> = [];
+    for (const [key, state] of [...states.entries()]) {
+      const [cashValue, unitsValue] = key.split('\u001f').map(Number);
+      const cash = cashValue + rowCash;
+      const units = unitsValue + rowUnits;
+      const roundedCash = cash / CASH_SCALE;
+      const roundedUnits = units / UNITS_SCALE;
+      // All economic components are positive. Once either aggregate is above
+      // the target and outside tolerance, adding another row cannot restore a
+      // match.
+      if (
+        (roundedCash > targetCash && !cashMatches(roundedCash, targetCash))
+        || (roundedUnits > targetUnits && !unitsMatch(roundedUnits, targetUnits))
+      ) continue;
+      additions.push([
+        `${cash}\u001f${units}`,
+        { count: state.count, rows: [...state.rows, row] },
+      ]);
+    }
+
+    for (const [key, addition] of additions) {
+      const current = states.get(key);
+      if (current === undefined) {
+        states.set(key, addition);
+      } else {
+        states.set(key, {
+          count: 2,
+          rows: current.rows,
+        });
+      }
+    }
+    if (states.size > MAX_SUBSET_SEARCH_STATES) return { kind: 'ambiguous' };
+  }
+
+  let match: ExistingEconomicRow[] | null = null;
+  for (const [key, state] of states) {
+    if (state.rows.length === 0) continue;
+    const [cash, units] = key.split('\u001f').map(Number);
+    if (
+      !cashMatches(cash / CASH_SCALE, targetCash)
+      || !unitsMatch(units / UNITS_SCALE, targetUnits)
+    ) continue;
+    if (state.count > 1 || match !== null) return { kind: 'ambiguous' };
+    match = state.rows;
+  }
+
+  if (match === null) return { kind: 'none' };
+  return { kind: 'unique', rows: match };
+}
+
 function matchReversals(
   incoming: PlannedIncomingRow[],
   existing: ExistingEconomicRow[],
@@ -321,33 +403,45 @@ function matchReversals(
     ).sort((left, right) =>
       right.eventOrdinal - left.eventOrdinal || right.id.localeCompare(left.id)
     );
-    const deleteCount = Math.max(0, storedMatches.length - remainingCount);
-    for (const row of storedMatches.slice(0, deleteCount)) {
-      consumedExisting.add(row.id);
-      deleteIds.push(row.id);
-    }
-
-    // The statement may present one combined purchase while history holds its
-    // provider-split representation. When the reversal leaves no live copy and
-    // the complete compatible stored group proves the same aggregate cash and
-    // units, every exact stored ID is part of that reversed event.
     if (remainingCount === 0) {
-      const aggregateCandidates = existing.filter((row) => {
+      const compatibleGroup = existing.filter((row) => {
         if (consumedExisting.has(row.id) || baseKey(row) !== baseKey(reversedRow)) return false;
         const folios = knownFoliosForRows([reversedRow], [row]);
         return folioCompatible(reversedRow.folioNumber, row.folioNumber, folios);
       });
-      const totals = aggregateExisting(aggregateCandidates);
+      const storedMatchIds = new Set(storedMatches.map((row) => row.id));
+      const splitMatch = findUniqueAggregateSubset(
+        compatibleGroup.filter((row) => !storedMatchIds.has(row.id)),
+        reversedRow.grossAmount,
+        reversedRow.units,
+      );
+
+      // Exact stored copies are one representation of the reversed event. A
+      // matching non-exact subset is another. If both exist, or more than one
+      // non-exact subset exists, choosing either would delete legitimate
+      // history in at least one valid interpretation, so reject the plan.
       if (
-        aggregateCandidates.length > 0
-        && cashMatches(totals.cash, reversedRow.grossAmount)
-        && unitsMatch(totals.units, reversedRow.units)
+        splitMatch.kind === 'ambiguous'
+        || (storedMatches.length > 0 && splitMatch.kind === 'unique')
       ) {
-        for (const row of aggregateCandidates) {
-          consumedExisting.add(row.id);
-          deleteIds.push(row.id);
-        }
+        conflicts.push(conflict('ambiguous_reversal', 1, compatibleGroup.length));
+        continue;
       }
+
+      const reversedStoredRows = storedMatches.length > 0
+        ? storedMatches
+        : splitMatch.kind === 'unique' ? splitMatch.rows : [];
+      for (const row of reversedStoredRows) {
+        consumedExisting.add(row.id);
+        deleteIds.push(row.id);
+      }
+      continue;
+    }
+
+    const deleteCount = Math.max(0, storedMatches.length - remainingCount);
+    for (const row of storedMatches.slice(0, deleteCount)) {
+      consumedExisting.add(row.id);
+      deleteIds.push(row.id);
     }
   }
 

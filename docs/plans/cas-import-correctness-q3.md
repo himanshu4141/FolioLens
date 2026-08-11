@@ -65,7 +65,7 @@ Cash comparison uses the larger of one rupee or 0.2 percent of the compared econ
 
 Folio matching is exact after trim and uppercase when both sides have a value. A null folio may bridge to a known folio only when that date/type group has at most one distinct known folio; otherwise reconciliation conflicts. Different known folios are independent groups.
 
-For reversals, search the same incoming statement and stored history under one complete date/type/folio candidate set. Cash and units must both match when units are present; a missing-unit reversal may select only one cash candidate. When a complete statement repeats and reverses a purchase already stored, the final stored multiplicity is reduced to the live post-reversal statement multiplicity instead of consuming only the incoming copy. A reversal-only statement may delete one uniquely proven historical event. Zero, multiple, or folio-ambiguous candidates conflict. All reversal and ordinary-group plans complete before any transaction mutation.
+For reversals, search the same incoming statement and stored history under one complete date/type/folio candidate set. Cash and units must both match when units are present; a missing-unit reversal may select only one cash candidate. When a complete statement repeats and reverses a purchase already stored, the final stored multiplicity is reduced to the live post-reversal statement multiplicity instead of consuming only the incoming copy. If history uses a provider-split representation, delete only one unique stored subset whose aggregate cash and units match the reversed event. Exact-versus-split or multiple-subset interpretations conflict and authorize no deletion. A reversal-only statement may delete one uniquely proven historical event. Zero, multiple, or folio-ambiguous candidates conflict. All reversal and ordinary-group plans complete before any transaction mutation.
 
 The importer will persist economic gross cash instead of provider source cash. Depository parsing will mark a row as net-of-withholding only from explicit statement wording and will set gross cash from independent Price times Units evidence. The Python and TypeScript preflights will accept that form only for outflows, only when gross equals the independently calculated base within tolerance, only when source cash does not exceed gross, and only within a bounded withholding ratio. No residual is stored as a fabricated charge.
 
@@ -169,6 +169,7 @@ Current implementation evidence:
 - Historical reconciliation was initially described as one complete query. It is now a stable ID-ordered paginated read, with a page-two regression fixture, because PostgREST otherwise caps results at 1,000 rows.
 - Round-one independent review replaced incoming-only reversal consumption with post-reversal statement multiplicity, added complete-candidate folio ambiguity, and retained exact immutable IDs for every authorized historical delete.
 - Round-one independent review moved transaction mutation into one locked PostgreSQL RPC, added exact native ID-set repair for server deletes, made event ordinals history-aware, normalized legacy folio sentinels to null, ignored non-economic legacy rows, narrowed withholding narration to explicit TDS/withholding terms, and expanded the anomaly ceiling to cover realistic rate bands.
+- Round-two independent review replaced whole-group reversal cleanup with unique aggregate-subset selection. A mixed group deletes only the one proven split subset; exact-versus-split and multiple-subset interpretations fail closed without deleting any candidate.
 - Final contract audit added malformed non-string cash-basis parity, reversal-only actionability, multi-folio closing-balance aggregation, and a client-safe conflict HTTP status. These close fail-open/runtime and false-inactivation edges without changing the economic identity.
 
 ## Progress
@@ -185,4 +186,6 @@ Current implementation evidence:
 - [x] Run focused and full validation plus transient supplied-file proof.
 - [x] Open the Q3 implementation PR and complete exact-SHA dual-review round one.
 - [x] Batch every round-one actionable finding into one validated review-fix commit.
-- [ ] Enter exact-SHA dual-review round two and reach convergence.
+- [x] Complete exact-SHA dual-review round two and collect both reviewers' findings.
+- [x] Batch and validate every round-two finding in one subsequent fix commit.
+- [ ] Enter exact-SHA dual-review round three and reach convergence.
