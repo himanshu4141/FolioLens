@@ -64,13 +64,13 @@ export interface CASImportResult {
   transactionsAdded: number;
   transactionsDuplicate: number;
   reconciliationConflicts: number;
+  catalogHydrationRequested: number;
   errors: string[];
 }
 
 interface PreparedScheme {
   schemeCode: number;
   schemeName: string;
-  schemeCategory: string;
   closingUnits: number | null;
   incomingRows: IncomingEconomicRow[];
   reversals: ReversalRequest[];
@@ -80,10 +80,6 @@ interface PlannedScheme extends PreparedScheme {
   existingFundId: string | null;
   expectedTransactionIds: string[];
   plan: EconomicReconciliationPlan;
-}
-
-interface WritableScheme extends PlannedScheme {
-  fundId: string;
 }
 
 const PERSISTED_TRANSACTION_TYPES = new Set<PersistedTransactionType>([
@@ -109,7 +105,6 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
       const prepared = bySchemeCode.get(schemeCode) ?? {
         schemeCode,
         schemeName: scheme.name ?? 'Unknown Fund',
-        schemeCategory: scheme.type ?? 'Flexi Cap Fund',
         closingUnits: 0,
         incomingRows: [],
         reversals: [],
@@ -214,6 +209,7 @@ function reconciliationFailure(reason: CASWriteFailureReason): CASImportResult {
     transactionsAdded: 0,
     transactionsDuplicate: 0,
     reconciliationConflicts: 0,
+    catalogHydrationRequested: 0,
     errors: [auditErrorCode(reason)],
   };
 }
@@ -231,6 +227,7 @@ export async function importCASData(
   let transactionsAdded = 0;
   let transactionsDuplicate = 0;
   let reconciliationConflicts = 0;
+  let catalogHydrationRequested = 0;
   const errors: string[] = [];
 
   console.log(
@@ -244,8 +241,8 @@ export async function importCASData(
   // Deployment is function-first, then migration. During that short window the
   // capability RPC is absent and the new function must reject before the first
   // domain read/write rather than running against the legacy uniqueness shape.
-  const schemaCapability = await supabase.rpc('cas_reconciliation_schema_version_v1');
-  if (schemaCapability.error || schemaCapability.data !== 1) {
+  const schemaCapability = await supabase.rpc('cas_import_schema_version_v2');
+  if (schemaCapability.error || schemaCapability.data !== 2) {
     return reconciliationFailure('reconciliation_read_failed');
   }
 
@@ -339,74 +336,21 @@ export async function importCASData(
       transactionsAdded: 0,
       transactionsDuplicate,
       reconciliationConflicts,
+      catalogHydrationRequested: 0,
       errors: [auditErrorCode('reconciliation_conflict')],
     };
   }
 
-  // Q3 applies every transaction delete/insert atomically after snapshot
-  // revalidation. Q4 still owns catalog/fund authority and wider-domain retry.
-  const { data: benchmarks } = await supabase
-    .from('benchmark_mapping')
-    .select('scheme_category, benchmark_index, benchmark_index_symbol');
-
-  const benchmarkMap = new Map<string, { index: string; symbol: string }>();
-  for (const value of benchmarks ?? []) {
-    const benchmark = value as {
-      scheme_category: string;
-      benchmark_index: string;
-      benchmark_index_symbol: string;
-    };
-    benchmarkMap.set(benchmark.scheme_category, {
-      index: benchmark.benchmark_index,
-      symbol: benchmark.benchmark_index_symbol,
-    });
-  }
-
-  const writableSchemes: WritableScheme[] = [];
-  for (const scheme of plannedSchemes) {
-    const benchmark = benchmarkMap.get(scheme.schemeCategory)
-      ?? benchmarkMap.get('Flexi Cap Fund');
-    const { error: schemeError } = await supabase
-      .from('scheme_master')
-      .upsert(
-        {
-          scheme_code: scheme.schemeCode,
-          scheme_name: scheme.schemeName,
-          scheme_category: scheme.schemeCategory,
-          benchmark_index: benchmark?.index ?? null,
-          benchmark_index_symbol: benchmark?.symbol ?? null,
-        },
-        { onConflict: 'scheme_code' },
-      );
-    if (schemeError) {
-      errors.push(auditErrorCode('scheme_write_failed'));
-      continue;
-    }
-
-    const { data: fundRow, error: fundError } = await supabase
-      .from('user_fund')
-      .upsert(
-        {
-          user_id: userId,
-          scheme_code: scheme.schemeCode,
-          is_active: true,
-        },
-        { onConflict: 'user_id,scheme_code' },
-      )
-      .select('id')
-      .single();
-    if (fundError || !fundRow) {
-      errors.push(auditErrorCode('fund_write_failed'));
-      continue;
-    }
-
-    fundsUpdated++;
-    writableSchemes.push({ ...scheme, fundId: fundRow.id as string });
-  }
-
-  const transactionPlans = writableSchemes.map((scheme) => ({
-    fund_id: scheme.fundId,
+  // Q4 moves the previously separate catalog, holding, transaction, and
+  // activation writes behind one service-role-only PostgreSQL transaction.
+  // Existing shared catalog rows are never part of an update payload: the RPC
+  // may insert a marked minimal identity only when the code is absent.
+  const importPlans = plannedSchemes.map((scheme) => ({
+    scheme_code: scheme.schemeCode,
+    provisional_scheme_name: scheme.schemeName,
+    expected_fund_id: scheme.existingFundId,
     expected_transaction_ids: scheme.expectedTransactionIds,
+    closing_units: scheme.closingUnits,
     delete_ids: scheme.plan.reversalDeleteIds,
     inserts: scheme.plan.inserts.map((transaction) => ({
       transaction_date: transaction.transactionDate,
@@ -419,15 +363,13 @@ export async function importCASData(
     })),
   }));
 
-  let transactionMutationSucceeded = true;
-  if (transactionPlans.length > 0) {
-    const mutationResult = await supabase.rpc('apply_cas_transaction_plans_v1', {
+  if (importPlans.length > 0) {
+    const mutationResult = await supabase.rpc('apply_cas_import_plans_v2', {
       p_user_id: userId,
       p_import_id: importId,
-      p_plans: transactionPlans,
+      p_plans: importPlans,
     });
     if (mutationResult.error) {
-      transactionMutationSucceeded = false;
       const message = typeof mutationResult.error.message === 'string'
         ? mutationResult.error.message
         : '';
@@ -443,26 +385,16 @@ export async function importCASData(
         : mutationResult.data;
       const inserted = Number(payload?.inserted_count ?? 0);
       const deleted = Number(payload?.deleted_count ?? 0);
+      const funds = Number(payload?.fund_count ?? 0);
+      const provisionalSchemes = Number(payload?.provisional_scheme_count ?? 0);
       transactionsAdded += Number.isInteger(inserted) && inserted >= 0 ? inserted : 0;
+      fundsUpdated += Number.isInteger(funds) && funds >= 0 ? funds : 0;
+      catalogHydrationRequested += Number.isInteger(provisionalSchemes)
+        && provisionalSchemes >= 0
+        ? provisionalSchemes
+        : 0;
       if (deleted > 0) console.log('[import-cas] reversal_delete_count=%s', bucketCount(deleted));
       console.log('[import-cas] transaction_insert_count=%s', bucketCount(transactionsAdded));
-    }
-  }
-
-  if (transactionMutationSucceeded) {
-    for (const scheme of writableSchemes) {
-      if (
-        scheme.closingUnits === 0 &&
-        scheme.plan.inserts.length === 0 &&
-        scheme.plan.duplicateRows === 0 &&
-        scheme.plan.matchedGroups === 0
-      ) {
-        await supabase
-          .from('user_fund')
-          .update({ is_active: false })
-          .eq('id', scheme.fundId);
-        console.log('[import-cas] inactive_holding_update_attempted');
-      }
     }
   }
 
@@ -479,6 +411,7 @@ export async function importCASData(
     transactionsAdded,
     transactionsDuplicate,
     reconciliationConflicts,
+    catalogHydrationRequested,
     errors,
   };
 }

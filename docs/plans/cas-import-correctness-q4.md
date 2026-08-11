@@ -148,15 +148,29 @@ The isolated database proof must use the repository migration itself, not a rewr
 - 2026-08-11: Trigger the existing hydration job by aggregate provisional-creation result and let the job select pending rows; do not pass raw scheme-code targets through the external function contract.
 - 2026-08-11: A complete zero closing balance means inactive even when historical transactions remain. Without a complete balance, post-plan transaction existence is the activation fallback.
 - 2026-08-11: No client cache version changes because the new columns and atomic result details do not enter client query payloads or persisted keys.
+- 2026-08-11: Keep the existing aggregate import outcome analytics unchanged. Q4 adds no user-facing step or safe diagnostic that needs a new PostHog event, and provider hydration logs remain aggregate-only.
+
+## Amendments
+
+- Inbound email now combines every preflight-passed attachment into one canonical payload before calling the importer. This closes an attachment-level partial-commit gap that would otherwise remain outside the database transaction while preserving each statement row's independent preflight validation.
+- Immediate metadata hydration uses an explicit `pending-cas-identities` mode. The function still selects identifiers from the database and accepts no caller-supplied scheme-code list, but this avoids scanning unrelated active holdings after each CAS import. The scheduled/default mode continues to process active holdings plus pending identities.
+
+## Evidence
+
+- Focused Q4 importer, catalog-boundary, and identity tests: 3 suites, 113 tests passed.
+- Full Jest regression: 109 suites, 2,211 tests passed.
+- TypeScript typecheck, zero-warning lint, and `git diff --check`: passed.
+- The repository migration was applied to disposable isolated local Supabase/PostgreSQL stacks. Live SQL confirmed service-role-only execution, `SECURITY INVOKER`, existing-row catalog immutability across two users, positive/zero/missing-balance activation, minimal provisional creation, retry convergence, import ownership and closing-balance validation, and full rollback after an injected transaction-enum failure. Controlled overlapping sessions also proved one immutable identity with separate cross-user holdings and same-user stale-plan rejection without duplicates. Both stacks, databases, session logs, and proof files were deleted immediately afterward; no shared database was contacted.
+- Each supplied statement independently passed the current parser, financial preflight, and Q4 database-plan input contract. The local helper read credentials directly, emitted only separate statement pass/fail markers, held no combined statement payload, and was deleted with its scratch directory immediately afterward. No credential, filename, holder data, extracted row, statement-derived count, or financial value is retained in repository evidence.
 
 ## Progress
 
 - [x] Read `VISION.md`, the program playbook, accepted research findings 4 and 7, the Q4 standalone prompt, Q3 plan/migration, current importer, metadata writer, deployment ordering, cache inventory, and exit-readiness constraints.
 - [x] Create the Q4 branch from exact Q3 main and record the intended catalog, atomicity, activation, hydration, cache, privacy, and deployment contracts in this ExecPlan.
-- [ ] Open the draft Q4 implementation PR, post the allowed control comment, and link the tracking row.
-- [ ] Add failing focused tests and the Q4 migration contract.
-- [ ] Refactor the importer to one atomic plan and remove CAS catalog authority.
-- [ ] Add authoritative provisional-identity hydration and safe entry-point triggers.
-- [ ] Update architecture, infrastructure, cache, exit-readiness, and plan evidence.
-- [ ] Complete focused, full, isolated-database, and independent private validations.
+- [x] Open the draft Q4 implementation PR, post the allowed control comment, and link the tracking row.
+- [x] Add focused tests and the Q4 migration contract.
+- [x] Refactor the importer to one atomic plan and remove CAS catalog authority.
+- [x] Add authoritative provisional-identity hydration and safe entry-point triggers.
+- [x] Update architecture, infrastructure, cache, exit-readiness, and plan evidence.
+- [x] Complete focused, full, isolated-database, concurrency, and independent private validations.
 - [ ] Freeze the exact SHA and begin dual independent review.

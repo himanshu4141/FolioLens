@@ -155,6 +155,24 @@ identical economic rows survive locally while overlapping sync remains idempoten
 The server-only ordinal is absent from client query payloads and React Query keys;
 normal transaction insert/delete sync invalidation remains unchanged.
 
+CAS is not an authority for the shared scheme catalog. An import never updates an
+existing `scheme_master` row, even when its name, category, or benchmark differs
+from the statement. If an AMFI code is missing, the importer may insert only the
+validated code, a provisional display name, and `cas_identity_created_at`; category,
+benchmark, ISIN, and provider metadata stay null. `sync-fund-meta` includes every
+CAS-created row whose `cas_identity_created_at` is set and
+`cas_identity_hydrated_at` is still null, obtains canonical AMFI identity
+from mfapi, keeps OpenFolio-first/mfdata-fallback metadata precedence, and records
+successful identity hydration. Both import entry points trigger that provider route
+after creating a provisional identity.
+
+Catalog insertion, user-holding creation, transaction snapshot revalidation, exact
+reversal deletes, transaction inserts, and holding activation run in one
+service-role-only PostgreSQL transaction. A complete positive closing balance marks
+the holding active and a complete zero balance marks it inactive; without a complete
+balance, committed post-plan transaction history decides. Any error rolls the whole
+plan back, so retry begins from either the old state or the complete new state.
+
 Rejected approaches remain rejected:
 
 - **No Gmail OAuth** — persistent inbox access is unnecessary and privacy-hostile.

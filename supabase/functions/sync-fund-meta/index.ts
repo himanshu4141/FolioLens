@@ -35,6 +35,11 @@ import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import { resolveB1Field } from '../_shared/b1-field-resolution.ts';
 import { resolveSebiCategory, broadCategoryFromSebi } from '../_shared/portfolio-utils.ts';
 import { mergeMfdataReturns, mergeOfReturns } from '../_shared/period-returns.ts';
+import {
+  parseMfapiSchemeIdentity,
+  uniqueSchemeCodes,
+  type MfapiSchemeIdentity,
+} from '../_shared/scheme-identity.ts';
 
 const META_STALE_DAYS = 7;
 const MFDATA_USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -104,13 +109,12 @@ async function fetchMFDataScheme(schemeCode: number): Promise<MFDataSchemePayloa
   return body ?? null;
 }
 
-async function fetchMfapiIsin(schemeCode: number): Promise<string | null> {
+async function fetchMfapiIdentity(schemeCode: number): Promise<MfapiSchemeIdentity | null> {
   const res = await fetchWithTimeout(`https://api.mfapi.in/mf/${schemeCode}`, {
     headers: { 'User-Agent': MFDATA_USER_AGENT },
   });
   if (!res.ok) throw new Error(`mfapi HTTP ${res.status}`);
-  const body = await res.json();
-  return body?.meta?.isin_growth ?? null;
+  return parseMfapiSchemeIdentity(await res.json());
 }
 
 // ── Per-field status helper ────────────────────────────────────────────────
@@ -134,7 +138,15 @@ Deno.serve(async (req) => {
     return new Response('Method not allowed', { status: 405, headers: CORS });
   }
 
-  console.log('[sync-fund-meta] invoked, method=%s', req.method);
+  const requestBody = req.method === 'POST'
+    ? await req.json().catch(() => null) as { mode?: unknown } | null
+    : null;
+  const pendingIdentityOnly = requestBody?.mode === 'pending-cas-identities';
+  console.log(
+    '[sync-fund-meta] invoked, method=%s mode=%s',
+    req.method,
+    pendingIdentityOnly ? 'pending-cas-identities' : 'all',
+  );
 
   const supabase = createServiceClient();
 
@@ -158,12 +170,31 @@ Deno.serve(async (req) => {
     return json({ success: false, error: fundsError.message }, { status: 500 });
   }
 
-  if (!funds?.length) {
-    console.log('[sync-fund-meta] no active funds found');
+  const { data: pendingIdentityRows, error: pendingIdentityError } = await supabase
+    .from('scheme_master')
+    .select('scheme_code')
+    .not('cas_identity_created_at', 'is', null)
+    .is('cas_identity_hydrated_at', null);
+
+  if (pendingIdentityError) {
+    console.error('[sync-fund-meta] failed to load provisional identities:', pendingIdentityError.message);
+    return json({ success: false, error: pendingIdentityError.message }, { status: 500 });
+  }
+
+  if ((pendingIdentityOnly || !funds?.length) && !pendingIdentityRows?.length) {
+    console.log('[sync-fund-meta] no active funds or provisional identities found');
     return json({ success: true, updated: 0 });
   }
 
-  const allSchemeCodes = [...new Set((funds ?? []).map((f) => f.scheme_code as number))];
+  const pendingIdentityCodes = (pendingIdentityRows ?? [])
+    .map((row) => row.scheme_code as number);
+  const pendingIdentityCodeSet = new Set(pendingIdentityCodes);
+  const allSchemeCodes = pendingIdentityOnly
+    ? uniqueSchemeCodes([], pendingIdentityCodes)
+    : uniqueSchemeCodes(
+      (funds ?? []).map((fund) => fund.scheme_code as number),
+      pendingIdentityCodes,
+    );
 
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
@@ -189,7 +220,10 @@ Deno.serve(async (req) => {
       .filter((r) => isSchemeMetaFresh(r, META_STALE_DAYS, now))
       .map((r) => r.scheme_code as number),
   );
-  const schemeCodes = allSchemeCodes.filter((c) => !freshCodes.has(c));
+  const schemeCodes = allSchemeCodes.filter((code) =>
+    pendingIdentityCodeSet.has(code) || !freshCodes.has(code)
+  );
+  const skippedCount = allSchemeCodes.length - schemeCodes.length;
 
   // Pre-load existing risk_ratios so we can merge OF volatility without
   // wiping mfdata beta (used by mfdataGuards.ts → useFundDetail.ts).
@@ -212,14 +246,14 @@ Deno.serve(async (req) => {
   }
 
   console.log(
-    '[sync-fund-meta] %d active — %d fresh (skipped), %d stale/new (processing)',
+    '[sync-fund-meta] %d active/pending — %d fresh (skipped), %d stale/new (processing)',
     allSchemeCodes.length,
-    freshCodes.size,
+    skippedCount,
     schemeCodes.length,
   );
 
   if (!schemeCodes.length) {
-    return json({ success: true, updated: 0, skipped: freshCodes.size });
+    return json({ success: true, updated: 0, skipped: skippedCount });
   }
 
   let updated = 0;
@@ -278,13 +312,18 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ── 4. ISIN from mfapi if not in mfdata ──────────────────────────────
+      // ── 4. Canonical AMFI identity from mfapi ────────────────────────────
+      // Pending CAS-created identities must fetch the canonical name even if
+      // mfdata already supplied an ISIN. They remain pending until that name
+      // succeeds, so a partial provider response is retried on the next run.
+      let mfapiIdentity: MfapiSchemeIdentity | null = null;
       let isin = mfdata?.isin ?? null;
-      if (!isin) {
+      if (!isin || pendingIdentityCodeSet.has(schemeCode)) {
         try {
-          isin = await fetchMfapiIsin(schemeCode);
+          mfapiIdentity = await fetchMfapiIdentity(schemeCode);
+          isin ??= mfapiIdentity?.isin ?? null;
         } catch (err) {
-          console.warn('[sync-fund-meta] scheme %d: mfapi isin error (%s)', schemeCode, (err as Error).message);
+          console.warn('[sync-fund-meta] scheme %d: mfapi identity error (%s)', schemeCode, (err as Error).message);
         }
       }
 
@@ -292,7 +331,7 @@ Deno.serve(async (req) => {
       // Use ofMeta (not hasOfMetrics) — a sparse-but-present OF record still
       // stamps openfolio_meta_synced_at and must not be counted as failed.
       const hasMfdata = mfdata != null;
-      if (!ofMeta && !hasMfdata && !isin) {
+      if (!ofMeta && !hasMfdata && !isin && !mfapiIdentity) {
         console.warn('[sync-fund-meta] scheme %d: no data from any source — skipping', schemeCode);
         failed++;
         continue;
@@ -302,6 +341,10 @@ Deno.serve(async (req) => {
       const payload: Record<string, unknown> = { fund_meta_synced_at: syncedAt };
 
       if (isin) payload.isin = isin;
+      if (pendingIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
+        payload.scheme_name = mfapiIdentity.schemeName;
+        payload.cas_identity_hydrated_at = syncedAt;
+      }
 
       // ── Metrics from OpenFolio (when available), mfdata fallback ─────────
       if (ofMeta) {
@@ -515,7 +558,7 @@ Deno.serve(async (req) => {
     '[sync-fund-meta] done — updated=%d failed=%d skipped=%d elapsed_ms=%d',
     updated,
     failed,
-    freshCodes.size,
+    skippedCount,
     elapsedMs,
   );
 
@@ -525,11 +568,11 @@ Deno.serve(async (req) => {
       job: 'sync-fund-meta',
       updated,
       failed,
-      skipped: freshCodes.size,
+      skipped: skippedCount,
       elapsed_ms: elapsedMs,
     },
     'system:sync-fund-meta',
   );
 
-  return json({ success: true, updated, failed, skipped: freshCodes.size });
+  return json({ success: true, updated, failed, skipped: skippedCount });
 });
