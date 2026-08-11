@@ -20,7 +20,7 @@ when needed:
 ### Product surfaces
 
 - **Auth** — magic-link sign-in through Resend and Google OAuth through Supabase PKCE. Settings includes connected-account management and account deletion.
-- **Portfolio import** — onboarding and later refresh support detailed CAS PDF upload plus Resend inbound auto-forwarding (`cas-<token>@foliolens.in` / `cas-dev-<token>@foliolens.in`). Imports are additive and skip duplicate transactions.
+- **Portfolio import** — onboarding and later refresh support detailed CAS PDF upload plus Resend inbound auto-forwarding (`cas-<token>@foliolens.in` / `cas-dev-<token>@foliolens.in`). Imports reconcile provider split/combined rows using gross cash plus units, preserve genuine identical events, and fail closed on ambiguous overlap or reversal targets.
 - **Portfolio** — value hero, NAV freshness, SIP-aware XIRR, benchmark comparison, invested-vs-portfolio-vs-benchmark chart, top movers, allocation preview, Money Trail preview, and entry points into detailed screens.
 - **Funds and Fund Detail** — allocation overview, searchable/sortable holdings, fund-level XIRR/benchmark context, NAV history, performance, composition, and fund-specific transaction drill-down.
 - **Money Trail** — transaction history with Indian-financial-year summaries, filters, search, sorting, CSV export, and transaction detail.
@@ -34,7 +34,7 @@ when needed:
 
 - **Primary fund data** — OpenFolio supplies official NAV, metadata, and composition where available. Held-fund NAV sync uses batched `/v1/nav/delta` requests with per-scheme watermarks; mfapi.in and mfdata.in remain fallbacks for gaps.
 - **Local performance cache** — React Query persists bounded rendered results, native SQLite owns durable raw NAV/index/transaction inputs, and Zustand/AsyncStorage hold preferences and small drafts. See the cache inventory before changing any of these surfaces.
-- **Freshness and sync** — background sync invalidates only affected query families. Web has explicit transaction-freshness probes so server-side CAS imports do not leave Portfolio stale across reloads.
+- **Freshness and sync** — background sync invalidates only affected query families. Web has explicit transaction-freshness probes, while native sync reconciles immutable transaction IDs and atomically repairs inserted or deleted server rows so a CAS reversal cannot remain in SQLite.
 - **PostHog** — privacy-safe operational/product events cover onboarding/import outcomes, navigation timing, screen readiness, slow events, JS stalls, cache health, persister restore health, and server-side sync/import outcomes.
 
 ### Delivery

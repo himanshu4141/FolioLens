@@ -109,7 +109,9 @@ sequenceDiagram
       SB->>DB: UPDATE cas_import<br/>(status='failed', allowlisted reason)
     else every attachment passes
       loop phase 2: validated payloads
-        SB->>DB: importCASData()<br/>preflight before domain I/O<br/>upsert user_fund + transaction rows
+        SB->>DB: page existing affected transactions
+        SB->>SB: reconcile gross cash + units<br/>before any domain mutation
+        SB->>DB: exact-ID reversal deletes<br/>+ planned user_fund/transaction writes
       end
       SB->>DB: UPDATE cas_import<br/>(status='success', exact counts)
     end
@@ -136,6 +138,7 @@ sequenceDiagram
 7. **All attachments preflight before any import.** Download, parse, and validate form phase 1. Shared-domain writes begin only in phase 2 after every PDF passes, preventing a mixed-validity email from partially changing a portfolio.
 8. **Depository schemas are header-owned.** CDSL/NSDL issuer text from the first three pages is a routing and diagnostic hint only. Financial fields come from a validated table-local map or a leading page-header map that covers sibling tables on that page; scheme-local maps cannot leak into a new table. Repeated headers/page breaks are supported, while missing or ambiguous required headers fail with `unsupported_layout`.
 9. **Password fallback is optional.** Profile-based imports try PAN first and PAN plus DOB only when DOB is available. A custom password override is used exclusively, so missing DOB does not block a first attempt.
+10. **Economic reconciliation is provider-neutral and complete before mutation.** The shared importer pages affected history, then requires gross cash and units together for exact or split/combined equivalence. Genuine identical rows retain deterministic ordinals. Partial overlap and ambiguous same-day or reversal candidates return an allowlisted conflict before any domain write; a historical reversal can delete only one exact transaction ID.
 
 ## Diagnostic answers per the issue
 

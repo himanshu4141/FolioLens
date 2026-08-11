@@ -237,6 +237,10 @@ TX_KEYWORDS: list[tuple[str, str]] = [
 ]
 
 _TX_COMPILED = [(re.compile(pat, re.IGNORECASE | re.UNICODE), typ) for pat, typ in TX_KEYWORDS]
+_NET_WITHHOLDING_RE = re.compile(
+    r"\b(?:tds|tax\s+deducted\s+at\s+source|withholding(?:\s+tax)?)\b",
+    re.IGNORECASE | re.UNICODE,
+)
 
 
 def normalise_cdsl_tx_type(description: str) -> str | None:
@@ -761,6 +765,25 @@ def extract_mf_folios(
                     if value is not None
                 }
                 charge_total = sum(charges.values())
+                cash_basis = (
+                    "net_of_withholding"
+                    if tx_type in {"REDEMPTION", "SWITCH_OUT"}
+                    and _NET_WITHHOLDING_RE.search(desc or "")
+                    else "source"
+                )
+                independent_base = (
+                    abs(price_val * units_val)
+                    if price_val is not None and units_val is not None
+                    else None
+                )
+                gross_amount = (
+                    independent_base
+                    if cash_basis == "net_of_withholding" and independent_base is not None
+                    else (
+                        abs(amount_val) + charge_total
+                        if amount_val is not None else 0.0
+                    )
+                )
 
                 schemes_by_isin[current_isin]["transactions"].append({
                     "date": parsed_date,
@@ -768,16 +791,14 @@ def extract_mf_folios(
                     "description": desc or tx_type.title(),
                     "amount": abs(amount_val) if amount_val is not None else 0.0,
                     "source_amount": amount_val if amount_val is not None else 0.0,
-                    "gross_amount": (
-                        abs(amount_val) + charge_total
-                        if amount_val is not None else 0.0
-                    ),
+                    "gross_amount": gross_amount,
                     "units": abs(units_val),
                     "source_units": units_val,
                     "nav": nav_val or 0.0,
                     "price": price_val or 0.0,
                     "stamp_duty": abs(stamp_duty_val or 0.0),
                     "charges": charges,
+                    "cash_basis": cash_basis,
                     "balance": None,
                 })
 

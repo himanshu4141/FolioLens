@@ -658,8 +658,8 @@ All workflows live under `.github/workflows/`. The intent is that **PRs and `mai
 | `cache-shape-check.yml` | PR touching tracked cache-shape files | Requires a React Query buster bump or `[cache-shape-stable]` in the PR title. |
 | `supabase-validate.yml` | PR commit (only when `supabase/**` changes) | Spins up local Supabase, replays migrations, lints `public` schema. Read-only. |
 | `main-deploy.yml` | Push to `main` | typecheck + lint + tests + EAS update to `foliolens-main` (DEV Supabase). |
-| `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions and pushes migrations to DEV Supabase. |
-| `supabase-deploy-prod.yml` | `workflow_dispatch` only (manual button) | Validates parity, deploys functions, pushes migrations to PROD Supabase. |
+| `supabase-deploy-dev.yml` | Push to `main` (only when `supabase/**` changes) | Deploys all Edge Functions, then pushes migrations to DEV Supabase. Schema-sensitive functions fail closed on a capability probe during the short ordered gap. |
+| `supabase-deploy-prod.yml` | `workflow_dispatch` only (manual button) | Validates parity, deploys functions, then pushes migrations to PROD Supabase only after function deployment succeeds. |
 | `production-release.yml` | Tag push `v*` (also `workflow_dispatch`) | typecheck + lint + tests + EAS update to `foliolens-production` + Vercel prod deploy via CLI. |
 | `play-store-submit.yml` | `workflow_dispatch` only (manual button) | Validates the Android `production-store` config and selected EAS build, then builds a new AAB or submits a supplied EAS build ID to Play internal testing as a draft. |
 | `universe-backfill.yml` | Monthly cron, hourly resume window, manual dispatch | Invokes the `universe-backfill` Edge Function against DEV/PROD to sync OpenFolio composition and metadata for the active universe. |

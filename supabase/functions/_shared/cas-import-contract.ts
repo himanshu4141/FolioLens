@@ -38,6 +38,8 @@ export type CASPreflightReason =
 export type CASWriteFailureReason =
   | 'scheme_write_failed'
   | 'fund_write_failed'
+  | 'reconciliation_read_failed'
+  | 'reconciliation_conflict'
   | 'transaction_write_failed';
 
 export type CASFailureReason =
@@ -68,6 +70,8 @@ export interface CASCharges {
   other?: number;
 }
 
+export type CASCashBasis = 'source' | 'net_of_withholding';
+
 export interface CASTransaction {
   date?: string;
   type?: string;
@@ -81,6 +85,7 @@ export interface CASTransaction {
   price?: number | null;
   stamp_duty?: number | null;
   charges?: CASCharges;
+  cash_basis?: CASCashBasis;
   balance?: number | null;
 }
 
@@ -134,6 +139,7 @@ export type CanonicalCASTransaction = Omit<
   price: number | null;
   stamp_duty: number;
   charges: Required<CASCharges>;
+  cash_basis: CASCashBasis;
 };
 
 export type CanonicalCASScheme = Omit<CASScheme, 'isin' | 'additional_info' | 'transactions'> & {
@@ -217,6 +223,8 @@ const FAILURE_REASONS = new Set<CASFailureReason>([
   'no_actionable_transactions',
   'scheme_write_failed',
   'fund_write_failed',
+  'reconciliation_read_failed',
+  'reconciliation_conflict',
   'transaction_write_failed',
   'wrong_password',
   'holdings_only',
@@ -227,7 +235,7 @@ const FAILURE_REASONS = new Set<CASFailureReason>([
   'background_crashed',
 ]);
 
-const PLACEHOLDER_FOLIOS = new Set([
+export const PLACEHOLDER_FOLIOS = new Set([
   'NO',
   'CDSL',
   'NSDL',
@@ -238,6 +246,11 @@ const PLACEHOLDER_FOLIOS = new Set([
   '-',
 ]);
 const MAX_POSTGRES_INTEGER = '2147483647';
+const CASH_BASES = new Set<CASCashBasis>(['source', 'net_of_withholding']);
+// Explicit TDS/withholding narration plus independently reported Price x Units
+// is the primary safety proof. The ceiling is only an anomaly guard and must
+// cover ordinary NRI statutory bands (including rates above 30%).
+const MAX_WITHHOLDING_RATIO = 0.50;
 
 const IGNORED_TRANSACTION_TYPES = new Set([
   'REVERSAL',
@@ -260,6 +273,13 @@ function finiteNumber(value: unknown): number | null {
 function absoluteNumber(value: unknown): number | null {
   const number = finiteNumber(value);
   return number === null ? null : Math.abs(number);
+}
+
+export function canonicalFolioNumber(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (normalized.length === 0) return null;
+  return PLACEHOLDER_FOLIOS.has(normalized.toUpperCase()) ? null : normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -354,9 +374,11 @@ function canonicalTransaction(input: Record<string, unknown>): {
   const rawType = transaction.type ?? transaction.description ?? '';
   const rawDate = transaction.date ?? '';
   const chargesValue = transaction.charges;
+  const cashBasisValue = transaction.cash_basis;
   const malformed = typeof rawType !== 'string'
     || typeof rawDate !== 'string'
-    || (chargesValue !== undefined && chargesValue !== null && !isRecord(chargesValue));
+    || (chargesValue !== undefined && chargesValue !== null && !isRecord(chargesValue))
+    || (cashBasisValue !== undefined && !CASH_BASES.has(cashBasisValue));
   const charges = isRecord(chargesValue) ? chargesValue as CASCharges : {};
   const type = typeof rawType === 'string' ? rawType.trim() : '';
   const normalisedType = normaliseTxType(type);
@@ -368,6 +390,9 @@ function canonicalTransaction(input: Record<string, unknown>): {
   const price = finiteNumber(transaction.price) ?? nav;
   const sourceUnits = finiteNumber(transaction.source_units ?? transaction.units);
   const units = absoluteNumber(sourceUnits);
+  const cashBasis = CASH_BASES.has(cashBasisValue as CASCashBasis)
+    ? cashBasisValue as CASCashBasis
+    : 'source';
 
   return {
     malformed,
@@ -391,6 +416,7 @@ function canonicalTransaction(input: Record<string, unknown>): {
         exit_load: absoluteNumber(charges.exit_load) ?? 0,
         other: absoluteNumber(charges.other) ?? 0,
       },
+      cash_basis: cashBasis,
     },
   };
 }
@@ -537,6 +563,14 @@ function accountingMatches(transaction: CanonicalCASTransaction): boolean {
   ) return false;
   const sourceCash = Math.abs(transaction.source_amount);
   const grossCash = transaction.gross_amount;
+  if (transaction.cash_basis === 'net_of_withholding') {
+    const withheld = grossCash - sourceCash;
+    return transaction.direction === 'out'
+      && sourceCash > 0
+      && Math.abs(grossCash - base) <= tolerance
+      && withheld >= -tolerance
+      && withheld <= Math.max(tolerance, grossCash * MAX_WITHHOLDING_RATIO);
+  }
   const sourceMatches = expectedCandidates.some(
     (expected) => Math.abs(sourceCash - expected) <= tolerance,
   );
@@ -600,12 +634,6 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
         return invalidResult(parsed, 'invalid_isin', validRows);
       }
 
-      const purchaseKeys = new Set(
-        scheme.transactions
-          .filter((transaction) => transaction.normalised_type === 'purchase')
-          .map((transaction) => `${transaction.date}:${transaction.amount}`),
-      );
-
       for (const transaction of scheme.transactions) {
         if (!validIsoDate(transaction.date)) {
           return invalidResult(parsed, 'invalid_date', validRows);
@@ -653,12 +681,11 @@ export function preflightCASPayload(input: unknown): CASPreflightResult {
               return invalidResult(parsed, 'accounting_mismatch', validRows);
             }
           }
-          // A cash-only reversal cannot safely target historical rows without
-          // an independently validated purchase in the same payload. Q3 owns
-          // provider-neutral historical reconciliation.
-          if (!purchaseKeys.has(`${transaction.date}:${transaction.amount}`)) {
-            return invalidResult(parsed, 'unpaired_reversal', validRows);
-          }
+          // Reversals are not insertable transaction rows, but they are
+          // actionable reconciliation instructions. A statement containing
+          // only a valid historical reversal must reach the importer so it can
+          // delete the uniquely matched event.
+          actionableRows++;
         }
 
         if (ignored) {
@@ -754,6 +781,8 @@ const USER_FAILURE_MESSAGES: Record<CASFailureReason, string> = {
   no_actionable_transactions: 'This PDF has no importable mutual-fund transactions.',
   scheme_write_failed: 'A fund could not be saved. No further rows for that fund were imported.',
   fund_write_failed: 'A portfolio holding could not be saved.',
+  reconciliation_read_failed: 'Existing transaction history could not be checked safely. No transactions from this statement were changed.',
+  reconciliation_conflict: 'This statement overlaps existing transaction history in a way FolioLens cannot reconcile safely. No transactions from this statement were changed.',
   transaction_write_failed: 'One or more transactions could not be saved.',
   wrong_password: 'The PDF password was not accepted. FolioLens tries your saved PAN first and PAN plus date of birth when available. Add your date of birth after a failed attempt, or use a custom PDF password.',
   holdings_only: 'This PDF has holdings but no transaction history. Please upload a Detailed CAS.',
@@ -766,6 +795,13 @@ const USER_FAILURE_MESSAGES: Record<CASFailureReason, string> = {
 
 export function userMessageForCASFailure(reason: CASFailureReason): string {
   return USER_FAILURE_MESSAGES[reason];
+}
+
+export function importFailureHttpStatus(reason: CASFailureReason): 422 | 500 {
+  // A proven overlap/reversal conflict is a valid request whose financial
+  // meaning is unsafe to apply, not an infrastructure failure. Read/write
+  // failures remain server errors so clients can distinguish retryability.
+  return reason === 'reconciliation_conflict' ? 422 : 500;
 }
 
 export function auditErrorCode(reason: CASFailureReason): string {
@@ -824,21 +860,28 @@ export function buildImportSuccessTelemetry({
   fundsUpdated,
   transactionsAdded,
   writeFailures,
+  failureReason,
 }: {
   source: CASImportSource;
   dialect: CASSourceDialect;
   fundsUpdated: number;
   transactionsAdded: number;
   writeFailures: number;
+  failureReason?: CASFailureReason;
 }) {
   return {
     source,
     dialect,
-    status: writeFailures > 0 ? 'partial' : 'accepted',
+    status: writeFailures === 0
+      ? 'accepted'
+      : fundsUpdated === 0
+        ? 'rejected'
+        : 'partial',
     funds_bucket: bucketCount(fundsUpdated),
     transactions_bucket: bucketCount(transactionsAdded),
     write_failures_bucket: bucketCount(writeFailures),
     validation_reason: 'validated',
+    ...(failureReason ? { failure_reason: failureReason } : {}),
   };
 }
 
@@ -886,6 +929,7 @@ export function buildImportOutcome({
       fundsUpdated,
       transactionsAdded,
       writeFailures: errors.length,
+      failureReason: safeReasons[0],
     }),
   };
 }

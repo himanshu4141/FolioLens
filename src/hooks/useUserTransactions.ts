@@ -91,6 +91,29 @@ export async function fetchUserTransactionsRemote(
 }
 
 /**
+ * Fetches the authoritative immutable-ID set without transferring financial
+ * columns. Native sync compares this set on every bootstrap/foreground pass so
+ * a server-side reversal delete cannot survive indefinitely in SQLite merely
+ * because transaction delta sync is append-oriented.
+ */
+export async function fetchUserTransactionIdsRemote(userId: string): Promise<string[]> {
+  const ids: string[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await transactionRepo
+      .from()
+      .select('id')
+      .eq('user_id', userId)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    const page = (data ?? []) as { id: string }[];
+    ids.push(...page.map((row) => row.id));
+    if (page.length < PAGE_SIZE) break;
+  }
+  return ids;
+}
+
+/**
  * Server-side count of transactions for a user. Used by the sync
  * orchestrator's reconciliation step to detect when the local SQLite
  * cache has drifted from the source of truth (audit follow-up to

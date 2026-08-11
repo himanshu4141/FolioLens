@@ -39,6 +39,9 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Push migrations
+        # Keep function-first ordering. Schema-sensitive Edge code probes its
+        # migration capability and fails closed before domain writes until this
+        # step succeeds.
         run: supabase db push --yes
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
