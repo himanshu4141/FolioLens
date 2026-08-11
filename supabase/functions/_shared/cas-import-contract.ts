@@ -235,7 +235,7 @@ const FAILURE_REASONS = new Set<CASFailureReason>([
   'background_crashed',
 ]);
 
-const PLACEHOLDER_FOLIOS = new Set([
+export const PLACEHOLDER_FOLIOS = new Set([
   'NO',
   'CDSL',
   'NSDL',
@@ -247,7 +247,10 @@ const PLACEHOLDER_FOLIOS = new Set([
 ]);
 const MAX_POSTGRES_INTEGER = '2147483647';
 const CASH_BASES = new Set<CASCashBasis>(['source', 'net_of_withholding']);
-const MAX_WITHHOLDING_RATIO = 0.10;
+// Explicit TDS/withholding narration plus independently reported Price x Units
+// is the primary safety proof. The ceiling is only an anomaly guard and must
+// cover ordinary NRI statutory bands (including rates above 30%).
+const MAX_WITHHOLDING_RATIO = 0.50;
 
 const IGNORED_TRANSACTION_TYPES = new Set([
   'REVERSAL',
@@ -270,6 +273,13 @@ function finiteNumber(value: unknown): number | null {
 function absoluteNumber(value: unknown): number | null {
   const number = finiteNumber(value);
   return number === null ? null : Math.abs(number);
+}
+
+export function canonicalFolioNumber(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (normalized.length === 0) return null;
+  return PLACEHOLDER_FOLIOS.has(normalized.toUpperCase()) ? null : normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

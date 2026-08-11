@@ -450,7 +450,7 @@ def test_net_withholding_requires_explicit_basis_and_independent_gross():
     for overrides in (
         {"cash_basis": "source"},
         {"cash_basis": "net_of_withholding", "gross_amount": 90},
-        {"cash_basis": "net_of_withholding", "source_amount": 80, "amount": 80},
+        {"cash_basis": "net_of_withholding", "source_amount": 40, "amount": 40},
         {"cash_basis": "net_of_withholding", "type": "PURCHASE"},
     ):
         values = {
@@ -470,6 +470,34 @@ def test_net_withholding_requires_explicit_basis_and_independent_gross():
         with pytest.raises(CASPreflightError) as caught:
             validate_and_canonicalize_cas(_payload(transactions=[candidate]))
         assert caught.value.reason in {"accounting_mismatch", "direction_mismatch"}
+
+
+@pytest.mark.parametrize("withholding_rate", [0.125, 0.20, 0.30])
+def test_net_withholding_accepts_realistic_statutory_rate_bands(withholding_rate):
+    gross = 100.0
+    source = gross * (1 - withholding_rate)
+    result = validate_and_canonicalize_cas(
+        _payload(
+            transactions=[
+                _valid_transaction(
+                    type="SWITCH_OUT",
+                    amount=source,
+                    source_amount=source,
+                    gross_amount=gross,
+                    units=10,
+                    source_units=10,
+                    nav=10,
+                    price=10,
+                    stamp_duty=0,
+                    charges={},
+                    cash_basis="net_of_withholding",
+                )
+            ]
+        )
+    )
+    assert result["mutual_funds"][0]["schemes"][0]["transactions"][0][
+        "gross_amount"
+    ] == gross
 
 
 @pytest.mark.parametrize("cash_basis", ["unknown", 1, [], {}])

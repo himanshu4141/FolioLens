@@ -347,6 +347,27 @@ describe('CAS import preflight contract', () => {
     })]))).toMatchObject({ ok: true });
   });
 
+  it.each([0.125, 0.20, 0.30])(
+    'accepts an explicit net-withholding rate of %p with independent gross evidence',
+    (rate) => {
+      const gross = 100;
+      const source = gross * (1 - rate);
+      expect(preflightCASPayload(payload('nsdl', [validTransaction({
+        type: 'SWITCH_OUT',
+        amount: source,
+        source_amount: source,
+        gross_amount: gross,
+        units: 10,
+        source_units: 10,
+        nav: 10,
+        price: 10,
+        stamp_duty: 0,
+        charges: {},
+        cash_basis: 'net_of_withholding',
+      })]))).toMatchObject({ ok: true });
+    },
+  );
+
   it.each(['unknown', 1, [], {}])(
     'rejects malformed cash basis %p with an allowlisted reason',
     (cashBasis) => {
@@ -359,7 +380,7 @@ describe('CAS import preflight contract', () => {
   it.each([
     ['unmarked residual', { cash_basis: 'source' as const }],
     ['gross not independently supported', { cash_basis: 'net_of_withholding' as const, gross_amount: 90 }],
-    ['excessive withholding', { cash_basis: 'net_of_withholding' as const, amount: 80, source_amount: 80 }],
+    ['excessive withholding', { cash_basis: 'net_of_withholding' as const, amount: 40, source_amount: 40 }],
     ['inflow basis misuse', { cash_basis: 'net_of_withholding' as const, type: 'PURCHASE' }],
   ])('rejects %s', (_label, overrides) => {
     expect(preflightCASPayload(payload('nsdl', [validTransaction({

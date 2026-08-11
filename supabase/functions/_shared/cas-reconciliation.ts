@@ -123,6 +123,15 @@ function rowIdentity(row: PlannedIncomingRow): string {
   ].join('\u001f');
 }
 
+function existingRowIdentity(row: ExistingEconomicRow): string {
+  return [
+    baseKey(row),
+    roundUnits(row.units).toFixed(4),
+    roundCash(row.amount).toFixed(2),
+    normalizedFolio(row.folioNumber) ?? '',
+  ].join('\u001f');
+}
+
 export function assignEventOrdinals(
   rows: IncomingEconomicRow[],
 ): PlannedIncomingRow[] {
@@ -227,29 +236,48 @@ function matchReversals(
   const consumedExisting = new Set<string>();
   const deleteIds: string[] = [];
   const conflicts: ReconciliationConflict[] = [];
+  const statementReversedRows: PlannedIncomingRow[] = [];
 
   for (const reversal of reversals) {
-    // A reversal in the same statement belongs to that statement's purchase
-    // before it can target historical storage. This ordering prevents a
-    // re-imported historical twin from turning a proven in-payload pair into an
-    // ambiguous delete candidate.
     const availableIncoming = incoming.filter((row) =>
       row.transactionType === 'purchase'
       && row.transactionDate === reversal.transactionDate
       && !consumedIncoming.has(row.sourceIndex)
     );
-    const incomingFolios = knownFoliosForRows(availableIncoming, []);
-    if (normalizedFolio(reversal.folioNumber) === null && incomingFolios.size > 1) {
-      conflicts.push(conflict('ambiguous_folio', 1, availableIncoming.length));
+    const availableExisting = existing.filter((row) =>
+      row.transactionType === 'purchase'
+      && row.transactionDate === reversal.transactionDate
+      && !consumedExisting.has(row.id)
+    );
+    // A null candidate may bridge only when the complete candidate set plus
+    // the reversal itself names at most one known folio. Including the
+    // reversal closes the unsafe FOLIO-01 -> null bridge when contradictory
+    // FOLIO-02 evidence is present in the same date/type group.
+    const candidateFolios = knownFoliosForRows(
+      [reversal, ...availableIncoming],
+      availableExisting,
+    );
+    const hasNullCandidate = [...availableIncoming, ...availableExisting]
+      .some((row) => normalizedFolio(row.folioNumber) === null);
+    if (
+      candidateFolios.size > 1
+      && (hasNullCandidate || normalizedFolio(reversal.folioNumber) === null)
+    ) {
+      conflicts.push(conflict(
+        'ambiguous_folio',
+        availableIncoming.length + 1,
+        availableExisting.length,
+      ));
       continue;
     }
     const incomingCandidates = availableIncoming.filter((row) =>
-      folioCompatible(reversal.folioNumber, row.folioNumber, incomingFolios)
+      folioCompatible(reversal.folioNumber, row.folioNumber, candidateFolios)
       && cashMatches(roundCash(reversal.grossAmount), row.grossAmount)
       && (reversal.units === null || unitsMatch(roundUnits(reversal.units), row.units))
     );
     if (incomingCandidates.length === 1) {
       consumedIncoming.add(incomingCandidates[0].sourceIndex);
+      statementReversedRows.push(incomingCandidates[0]);
       continue;
     }
     if (incomingCandidates.length > 1) {
@@ -257,18 +285,8 @@ function matchReversals(
       continue;
     }
 
-    const availableExisting = existing.filter((row) =>
-      row.transactionType === 'purchase'
-      && row.transactionDate === reversal.transactionDate
-      && !consumedExisting.has(row.id)
-    );
-    const existingFolios = knownFoliosForRows([], availableExisting);
-    if (normalizedFolio(reversal.folioNumber) === null && existingFolios.size > 1) {
-      conflicts.push(conflict('ambiguous_folio', 1, availableExisting.length));
-      continue;
-    }
     const existingCandidates = availableExisting.filter((row) =>
-      folioCompatible(reversal.folioNumber, row.folioNumber, existingFolios)
+      folioCompatible(reversal.folioNumber, row.folioNumber, candidateFolios)
       && cashMatches(roundCash(reversal.grossAmount), roundCash(row.amount))
       && (reversal.units === null || unitsMatch(roundUnits(reversal.units), roundUnits(row.units)))
     );
@@ -284,12 +302,87 @@ function matchReversals(
     deleteIds.push(existingCandidates[0].id);
   }
 
+  // When the statement repeats a purchase and then reverses it, that incoming
+  // row is the statement representation of any identical stored row. Keep
+  // exactly the multiplicity that remains live in the statement after its
+  // reversals. This makes E=n/P=1/R=1 converge to zero instead of consuming
+  // only the incoming copy and leaving every historical copy behind.
+  const reversedIdentities = new Set(statementReversedRows.map(rowIdentity));
+  for (const identity of reversedIdentities) {
+    const reversedRow = statementReversedRows.find((row) => rowIdentity(row) === identity)!;
+    const remainingCount = incoming.filter((row) =>
+      row.transactionType === 'purchase'
+      && rowIdentity(row) === identity
+      && !consumedIncoming.has(row.sourceIndex)
+    ).length;
+    const storedMatches = existing.filter((row) =>
+      !consumedExisting.has(row.id)
+      && existingRowIdentity(row) === identity
+    ).sort((left, right) =>
+      right.eventOrdinal - left.eventOrdinal || right.id.localeCompare(left.id)
+    );
+    const deleteCount = Math.max(0, storedMatches.length - remainingCount);
+    for (const row of storedMatches.slice(0, deleteCount)) {
+      consumedExisting.add(row.id);
+      deleteIds.push(row.id);
+    }
+
+    // The statement may present one combined purchase while history holds its
+    // provider-split representation. When the reversal leaves no live copy and
+    // the complete compatible stored group proves the same aggregate cash and
+    // units, every exact stored ID is part of that reversed event.
+    if (remainingCount === 0) {
+      const aggregateCandidates = existing.filter((row) => {
+        if (consumedExisting.has(row.id) || baseKey(row) !== baseKey(reversedRow)) return false;
+        const folios = knownFoliosForRows([reversedRow], [row]);
+        return folioCompatible(reversedRow.folioNumber, row.folioNumber, folios);
+      });
+      const totals = aggregateExisting(aggregateCandidates);
+      if (
+        aggregateCandidates.length > 0
+        && cashMatches(totals.cash, reversedRow.grossAmount)
+        && unitsMatch(totals.units, reversedRow.units)
+      ) {
+        for (const row of aggregateCandidates) {
+          consumedExisting.add(row.id);
+          deleteIds.push(row.id);
+        }
+      }
+    }
+  }
+
   return {
     remainingIncoming: incoming.filter((row) => !consumedIncoming.has(row.sourceIndex)),
     remainingExisting: existing.filter((row) => !consumedExisting.has(row.id)),
     deleteIds,
     conflicts,
   };
+}
+
+function allocateInsertOrdinals(
+  inserts: PlannedIncomingRow[],
+  existingRows: ExistingEconomicRow[],
+  reversalDeleteIds: string[],
+): PlannedIncomingRow[] {
+  const deleted = new Set(reversalDeleteIds);
+  const usedByIdentity = new Map<string, Set<number>>();
+  for (const row of existingRows) {
+    if (deleted.has(row.id)) continue;
+    const identity = existingRowIdentity(row);
+    const used = usedByIdentity.get(identity) ?? new Set<number>();
+    used.add(row.eventOrdinal);
+    usedByIdentity.set(identity, used);
+  }
+
+  return inserts.map((row) => {
+    const identity = rowIdentity(row);
+    const used = usedByIdentity.get(identity) ?? new Set<number>();
+    let ordinal = 0;
+    while (used.has(ordinal)) ordinal++;
+    used.add(ordinal);
+    usedByIdentity.set(identity, used);
+    return { ...row, eventOrdinal: ordinal };
+  });
 }
 
 export function reconcileEconomicRows(
@@ -306,7 +399,11 @@ export function reconcileEconomicRows(
     matchedGroups: 0,
     conflicts: [...reversalPlan.conflicts],
   };
-  if (plan.conflicts.length > 0) return plan;
+  if (plan.conflicts.length > 0) {
+    plan.inserts = [];
+    plan.reversalDeleteIds = [];
+    return plan;
+  }
 
   const allBaseKeys = new Set([
     ...reversalPlan.remainingIncoming.map(baseKey),
@@ -396,6 +493,12 @@ export function reconcileEconomicRows(
   if (plan.conflicts.length > 0) {
     plan.inserts = [];
     plan.reversalDeleteIds = [];
+  } else {
+    plan.inserts = allocateInsertOrdinals(
+      plan.inserts,
+      existingRows,
+      plan.reversalDeleteIds,
+    );
   }
   return plan;
 }

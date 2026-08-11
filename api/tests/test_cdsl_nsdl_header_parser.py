@@ -198,12 +198,29 @@ def test_explicit_net_of_tax_switch_out_uses_independent_gross_cash():
     ("description", "amount"),
     [
         ("Switch Out - synthetic", "90"),
-        ("Switch Out Less TDS, STT - synthetic", "80"),
+        ("Switch Out Less TDS, STT - synthetic", "40"),
     ],
 )
 def test_unmarked_or_excessive_outflow_gap_still_fails_preflight(description, amount):
     header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
     row = ["01-07-2026", description, amount, "0", "10", "10", "10"]
+
+    with pytest.raises(CASPreflightError) as caught:
+        _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    assert caught.value.reason == "accounting_mismatch"
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Redemption - Less Exit Load and STT tax",
+        "Redemption less STT tax",
+        "Redemption from Axis Long Term Equity Tax Saver less exit load",
+    ],
+)
+def test_non_withholding_tax_narration_does_not_relax_accounting(description):
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = ["01-07-2026", description, "90", "0", "10", "10", "10"]
 
     with pytest.raises(CASPreflightError) as caught:
         _parse(_pdf(_page("NSDL", [_table(header, row)])))

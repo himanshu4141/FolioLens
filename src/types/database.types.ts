@@ -549,6 +549,11 @@ export type Database = {
       }
     }
     Functions: {
+      apply_cas_transaction_plans_v1: {
+        Args: { p_import_id: string; p_plans: Json; p_user_id: string }
+        Returns: Json
+      }
+      cas_reconciliation_schema_version_v1: { Args: never; Returns: number }
       gen_cas_inbox_token: { Args: { p_user_id: string }; Returns: string }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }

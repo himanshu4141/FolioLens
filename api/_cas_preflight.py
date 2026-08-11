@@ -82,7 +82,10 @@ _ISIN_RE = re.compile(r"^INF[A-Z0-9]{9}$")
 _AMFI_RE = re.compile(r"^\d+$")
 _MAX_POSTGRES_INTEGER = "2147483647"
 _CASH_BASES = {"source", "net_of_withholding"}
-_MAX_WITHHOLDING_RATIO = 0.10
+# Explicit TDS/withholding narration plus independently reported Price x Units
+# is the primary proof. This ceiling is an anomaly guard that still covers
+# ordinary NRI statutory bands, including rates above 30%.
+_MAX_WITHHOLDING_RATIO = 0.50
 
 
 def bucket_count(count: int) -> CASCountBucket:

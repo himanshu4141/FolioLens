@@ -267,10 +267,76 @@ describe('CAS economic reconciliation', () => {
     expect(plan.reversalDeleteIds).toEqual([]);
   });
 
-  it('prefers the proven incoming reversal pair over its historical twin', () => {
+  it('deletes the historical twin when the statement repeats and reverses the purchase', () => {
     const plan = reconcileEconomicRows([incoming()], [existing()], [reversal()]);
 
     expect(plan.conflicts).toEqual([]);
+    expect(plan.inserts).toEqual([]);
+    expect(plan.reversalDeleteIds).toEqual(['tx-1']);
+  });
+
+  it.each([1, 2, 3])(
+    'removes all %i historical copies when a complete statement repeats one purchase and reverses it',
+    (existingCount) => {
+      const stored = Array.from({ length: existingCount }, (_, index) => existing({
+        id: `tx-${index}`,
+        eventOrdinal: index,
+      }));
+      const plan = reconcileEconomicRows([incoming()], stored, [reversal()]);
+
+      expect(plan.conflicts).toEqual([]);
+      expect(plan.inserts).toEqual([]);
+      expect(plan.reversalDeleteIds).toHaveLength(existingCount);
+      expect(new Set(plan.reversalDeleteIds)).toEqual(
+        new Set(stored.map((row) => row.id)),
+      );
+    },
+  );
+
+  it('deletes every exact ID in a stored split representation of a repeated combined reversal', () => {
+    const plan = reconcileEconomicRows([incoming()], [
+      existing({ id: 'split-a', amount: 400, units: 4 }),
+      existing({ id: 'split-b', amount: 600, units: 6 }),
+    ], [reversal()]);
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.inserts).toEqual([]);
+    expect(new Set(plan.reversalDeleteIds)).toEqual(new Set(['split-a', 'split-b']));
+  });
+
+  it('clears a resolved delete when another reversal conflicts', () => {
+    const plan = reconcileEconomicRows([], [existing()], [
+      reversal(),
+      reversal({ sourceIndex: 101, transactionDate: '2026-07-02' }),
+    ]);
+
+    expect(plan.conflicts[0].reason).toBe('unmatched_reversal');
+    expect(plan.inserts).toEqual([]);
+    expect(plan.reversalDeleteIds).toEqual([]);
+  });
+
+  it('does not bridge a known reversal folio to null when another known folio contradicts it', () => {
+    const plan = reconcileEconomicRows([], [
+      existing({ id: 'unknown-folio', folioNumber: null }),
+      existing({
+        id: 'other-folio',
+        folioNumber: 'FOLIO-02',
+        amount: 2000,
+        units: 20,
+      }),
+    ], [reversal({ folioNumber: 'FOLIO-01' })]);
+
+    expect(plan.conflicts[0].reason).toBe('ambiguous_folio');
+    expect(plan.reversalDeleteIds).toEqual([]);
+  });
+
+  it('does not consume a null-folio incoming purchase amid contradictory known-folio evidence', () => {
+    const plan = reconcileEconomicRows([
+      incoming({ sourceIndex: 0, folioNumber: null }),
+      incoming({ sourceIndex: 1, folioNumber: 'FOLIO-02', grossAmount: 2000, units: 20 }),
+    ], [], [reversal({ folioNumber: 'FOLIO-01' })]);
+
+    expect(plan.conflicts[0].reason).toBe('ambiguous_folio');
     expect(plan.inserts).toEqual([]);
     expect(plan.reversalDeleteIds).toEqual([]);
   });
@@ -290,6 +356,19 @@ describe('CAS economic reconciliation', () => {
 
     expect(plan.conflicts).toEqual([]);
     expect(plan.reversalDeleteIds).toEqual(['tx-2']);
+  });
+
+  it('allocates an unmatched identical row into a gap in historical ordinals', () => {
+    const plan = reconcileEconomicRows([
+      incoming({ sourceIndex: 0 }),
+      incoming({ sourceIndex: 1 }),
+    ], [existing({ eventOrdinal: 1 })]);
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.duplicateRows).toBe(1);
+    expect(plan.inserts).toEqual([
+      expect.objectContaining({ eventOrdinal: 0 }),
+    ]);
   });
 
   it('rejects an ambiguous cash-only reversal without planning any delete', () => {

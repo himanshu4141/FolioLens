@@ -88,6 +88,40 @@ describe('tx repo', () => {
       first.id,
       second.id,
     ]);
+    expect(await txRepo.readIds()).toEqual([first.id, second.id].sort());
+  });
+
+  it('replaceAll atomically makes the local ID set match the server snapshot', async () => {
+    const stale = mkTx({
+      fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase',
+      units: 100, amount: 10000,
+    });
+    const fresh = {
+      ...mkTx({
+        fund_id: 'f1', transaction_date: '2024-02-01', transaction_type: 'purchase',
+        units: 50, amount: 6000,
+      }),
+      id: 'fresh-server-id',
+    };
+    await txRepo.bulkInsert([stale]);
+
+    await txRepo.replaceAll([fresh]);
+
+    expect(await txRepo.readIds()).toEqual(['fresh-server-id']);
+    expect((await txRepo.readAll())[0]).toMatchObject({ amount: 6000, units: 50 });
+  });
+
+  it('replaceAll supports an authoritative empty server snapshot', async () => {
+    await txRepo.bulkInsert([
+      mkTx({
+        fund_id: 'f1', transaction_date: '2024-01-01', transaction_type: 'purchase',
+        units: 100, amount: 10000,
+      }),
+    ]);
+
+    await txRepo.replaceAll([]);
+
+    expect(await txRepo.readIds()).toEqual([]);
   });
 
   it('readByFundId filters by fund_id', async () => {

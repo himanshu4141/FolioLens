@@ -65,13 +65,15 @@ Cash comparison uses the larger of one rupee or 0.2 percent of the compared econ
 
 Folio matching is exact after trim and uppercase when both sides have a value. A null folio may bridge to a known folio only when that date/type group has at most one distinct known folio; otherwise reconciliation conflicts. Different known folios are independent groups.
 
-For reversals, first search the same incoming statement for purchase candidates on the same date and compatible folio. Cash and units must both match when units are present; a missing-unit reversal may select only one cash candidate. A unique incoming match removes only that incoming purchase from the insertion plan. If no incoming candidate exists, search stored purchases under the same rules and plan deletion by exact transaction `id`. Zero or multiple candidates conflict. All reversal and ordinary-group plans complete before any transaction mutation.
+For reversals, search the same incoming statement and stored history under one complete date/type/folio candidate set. Cash and units must both match when units are present; a missing-unit reversal may select only one cash candidate. When a complete statement repeats and reverses a purchase already stored, the final stored multiplicity is reduced to the live post-reversal statement multiplicity instead of consuming only the incoming copy. A reversal-only statement may delete one uniquely proven historical event. Zero, multiple, or folio-ambiguous candidates conflict. All reversal and ordinary-group plans complete before any transaction mutation.
 
 The importer will persist economic gross cash instead of provider source cash. Depository parsing will mark a row as net-of-withholding only from explicit statement wording and will set gross cash from independent Price times Units evidence. The Python and TypeScript preflights will accept that form only for outflows, only when gross equals the independently calculated base within tolerance, only when source cash does not exceed gross, and only within a bounded withholding ratio. No residual is stored as a fabricated charge.
 
-Application-only reconciliation cannot preserve two identical rows because the current database unique constraint rejects the second row. Add `cas_event_ordinal integer not null default 0` and replace the old key with a `UNIQUE NULLS NOT DISTINCT` constraint over fund, date, type, units, amount, folio, and ordinal. Existing rows remain ordinal zero. The migration is provider-neutral SQL, needs no new grant, policy, provider feature, or client payload. Rollback requires first consolidating ordinal-greater-than-zero duplicates, then restoring the old constraint; that destructive rollback is documented but not automated.
+Application-only reconciliation cannot preserve two identical rows because the current database unique constraint rejects the second row. Add `cas_event_ordinal integer not null default 0` and replace the old key with a `UNIQUE NULLS NOT DISTINCT` constraint over fund, date, type, units, amount, folio, and ordinal. Existing rows remain ordinal zero; inserts allocate the first ordinal not occupied by surviving history. The migration also adds a service-role-only transaction-plan RPC. It locks every affected fund in deterministic order, revalidates the exact immutable-ID snapshot, and applies all exact deletes plus inserts in one PostgreSQL transaction. A concurrent split/combined import therefore loses on snapshot conflict before mutation, and a write failure rolls the full transaction plan back.
 
-The new server column is deliberately absent from every client `select(...)`. Public `UserTransactionRow`, React Query payloads, and persisted web transaction payloads therefore do not change shape. Native SQLite already receives immutable server `id`, but its old economic composite primary key would collapse genuine identical rows; Q3 bumps `SCHEMA_VERSION` to 3 and keys `tx` by `id`. The version mismatch wipes and rehydrates the discardable native cache. Existing transaction insert/delete sync invalidation and server-count drift repair remain authoritative, so the React Query `__BUSTER__` does not change.
+Deployment is deliberately function-first then migration in both DEV and PROD workflows. New Edge code probes a schema-capability RPC before any domain access and fails closed during the short pre-migration window. PROD migrations now depend on successful function deployment rather than racing it in parallel, so an old function never runs after the ordinal constraint changes.
+
+The new server column is deliberately absent from every client `select(...)`. Public `UserTransactionRow`, React Query payloads, and persisted web transaction payloads therefore do not change shape. Native SQLite already receives immutable server `id`, but its old economic composite primary key would collapse genuine identical rows; Q3 bumps `SCHEMA_VERSION` to 3 and keys `tx` by `id`. The version mismatch wipes and rehydrates the discardable native cache. Every native bootstrap/foreground sync now compares the complete immutable server-ID set; any difference, including one server-side reversal delete or equal counts with different IDs, atomically replaces SQLite from a full snapshot. The React Query `__BUSTER__` does not change because the public payload shape remains stable.
 
 ## Alternatives Considered
 
@@ -126,11 +128,11 @@ Focused validation also covers the pure reconciler, Python/TypeScript net-cash t
 
 Current implementation evidence:
 
-- Python: 353 tests and 3 subtests passed.
-- Jest: 106 suites and 2,188 tests passed, including the reconciler, importer, caller contract, native SQLite identity, and cache-shape guard.
+- Python: 359 tests and 3 subtests passed.
+- Jest: 107 suites and 2,198 tests passed, including the reconciler, importer, caller contract, native SQLite identity, deployment ordering, and cache-shape guard. Shared import code has 100% statement and line coverage.
 - `npm run typecheck` and zero-warning `npm run lint` passed.
-- Ephemeral PostgreSQL 17 accepted the migration, preserved ordinals zero and one for two identical economic rows, rejected an ordinal-identical race through the exact `ON CONFLICT` target, and rejected a negative ordinal. The container and SQL scratch were deleted; no shared database was contacted.
-- The official AMFI map endpoint returned HTTP 200. Both supplied private statements then passed the current parser/preflight independently: the unrelated NSDL statement produced 16 accepted rows, including four explicitly supported net-basis rows, and the unrelated CDSL statement produced five accepted rows. They were never combined into one account or reconciliation fixture. Passwords, filenames, holder data, folios, raw rows, and financial values were neither emitted nor persisted; the in-memory helper was deleted immediately.
+- An isolated local PostgreSQL database accepted the actual migration, restricted both new RPCs to the service role, rejected a stale concurrent plan before mutation, and rolled back an injected insert failure together with its preceding delete. The isolated database and SQL scratch were deleted; no shared database was contacted.
+- Each supplied private statement passed the current parser/preflight independently and they were never combined into one account or reconciliation fixture. No credentials, filenames, holder data, extracted rows, statement-derived counts, or financial values are retained in repository evidence; the transient helper and scratch were deleted immediately.
 - No dev/prod migration, function deployment, data mutation, or production rollout occurred.
 
 ## Risks And Mitigations
@@ -138,7 +140,7 @@ Current implementation evidence:
 - **Independent same-day events are mistaken for overlap.** Preserve all rows when no stored group exists; allow only provable multiset supersets when a stored group does exist; otherwise fail closed.
 - **Tolerance merges distinct events.** Require cash and units together, round to database precision first, and keep tolerances explicit and narrow.
 - **Null folio bridges unrelated accounts.** Permit null bridging only when one known folio candidate exists; otherwise conflict.
-- **A reversal mutates before a later conflict.** Build every plan before the first transaction mutation and delete only by exact ID.
+- **A reversal mutates before a later conflict or fails mid-delete.** Build every plan first, revalidate its immutable-ID snapshot under per-fund locks, and apply every exact delete plus insert in one PostgreSQL transaction.
 - **Migration exposes a client cache identity mismatch.** Keep the new column out of explicit client selects, key native cached rows by their existing server UUID, bump SQLite to v3, and document why the stable React Query payload needs no buster bump.
 - **Private validation leaks evidence.** Use secure hidden input, in-memory parsing, aggregate-only output, and immediate scratch deletion.
 - **Q3 expands into catalog/write recovery.** Leave scheme metadata authority and all-domain atomic retry behavior to Q4.
@@ -153,7 +155,10 @@ Current implementation evidence:
 - 2026-08-10: The migration is necessary because application logic cannot override the current unique constraint's collapse of identical events.
 - 2026-08-10: Cache audit corrected the prior SQLite decision: payload shape remains stable and needs no `__BUSTER__`, but native `tx` must move from the economic composite key to immutable server `id`; `SCHEMA_VERSION` therefore advances to 3.
 - 2026-08-10: Reconciliation history reads are deterministically ordered and paged at 1,000 rows so PostgREST response limits cannot silently truncate overlap evidence.
-- 2026-08-10: A proven incoming purchase/reversal pair is consumed before historical candidates are considered; this prevents a re-imported historical twin from turning a safe in-payload pair into an ambiguous delete.
+- 2026-08-10: A repeated purchase/reversal pair and its stored historical representation converge to the statement's live post-reversal multiplicity; consuming only the incoming row would leave a reversed historical purchase alive.
+- 2026-08-10: Transaction plans use a service-role-only, fund-locked, snapshot-checked RPC so concurrent provider representations cannot both commit and multi-delete failure is atomic.
+- 2026-08-10: Native transaction sync compares immutable IDs rather than thresholded counts, because one reversal delete and equal-count ID replacement must both repair immediately.
+- 2026-08-10: Edge deployment precedes the ordinal migration and probes schema capability before domain access; production migration execution is serialized after function deployment.
 - 2026-08-10: A valid reversal-only statement is reconciliation-actionable even though reversals are not insertable transaction rows; tax/charge-only statements remain rejected.
 - 2026-08-10: Scheme-level closing units are summed across every folio occurrence and can drive inactivation only when every occurrence supplies a numeric balance.
 - 2026-08-10: Direct-upload reconciliation conflicts return HTTP 422, while history-read and write failures remain server errors.
@@ -162,7 +167,8 @@ Current implementation evidence:
 
 - The initial plan said the server-only ordinal required no SQLite schema change. Implementation review disproved that: native SQLite's old five-column primary key would still collapse the second genuine identical event. Q3 now bumps native schema v3 and uses the already-selected immutable server transaction ID as the local key. This strengthens the original multiplicity requirement without changing client payloads or React Query persistence.
 - Historical reconciliation was initially described as one complete query. It is now a stable ID-ordered paginated read, with a page-two regression fixture, because PostgREST otherwise caps results at 1,000 rows.
-- The reversal algorithm now makes its intended source priority explicit: match the incoming statement first, then historical storage only when no incoming candidate exists. All historical deletes remain exact-ID plus fund scoped.
+- Round-one independent review replaced incoming-only reversal consumption with post-reversal statement multiplicity, added complete-candidate folio ambiguity, and retained exact immutable IDs for every authorized historical delete.
+- Round-one independent review moved transaction mutation into one locked PostgreSQL RPC, added exact native ID-set repair for server deletes, made event ordinals history-aware, normalized legacy folio sentinels to null, ignored non-economic legacy rows, narrowed withholding narration to explicit TDS/withholding terms, and expanded the anomaly ceiling to cover realistic rate bands.
 - Final contract audit added malformed non-string cash-basis parity, reversal-only actionability, multi-folio closing-balance aggregation, and a client-safe conflict HTTP status. These close fail-open/runtime and false-inactivation edges without changing the economic identity.
 
 ## Progress
@@ -177,4 +183,6 @@ Current implementation evidence:
 - [x] Add and validate the Postgres multiplicity migration plus native SQLite v3 identity.
 - [x] Update technical, architecture, cache, and plan documentation.
 - [x] Run focused and full validation plus transient supplied-file proof.
-- [ ] Open the Q3 implementation PR and enter exact-SHA dual review.
+- [x] Open the Q3 implementation PR and complete exact-SHA dual-review round one.
+- [x] Batch every round-one actionable finding into one validated review-fix commit.
+- [ ] Enter exact-SHA dual-review round two and reach convergence.

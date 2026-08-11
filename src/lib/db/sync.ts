@@ -26,7 +26,10 @@ import { analytics } from '@/src/lib/analytics';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { beginSyncActivity } from '@/src/lib/performanceRuntimeState';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
-import { countUserTransactionsRemote, fetchUserTransactionsRemote } from '@/src/hooks/useUserTransactions';
+import {
+  fetchUserTransactionIdsRemote,
+  fetchUserTransactionsRemote,
+} from '@/src/hooks/useUserTransactions';
 import { BENCHMARK_OPTIONS } from '@/src/store/appStore';
 import * as txRepo from '@/src/lib/db/tx';
 import * as navRepo from '@/src/lib/db/nav';
@@ -112,9 +115,8 @@ export interface SyncResult {
   idxInserted: number;
   errors: string[];
   /**
-   * True when the post-sync tx count reconciliation detected drift
-   * between local SQLite and the Supabase source of truth and rebuilt
-   * the local table. See `reconcileTransactionCount`.
+   * True when immutable transaction IDs differed from the Supabase source of
+   * truth and SQLite was atomically replaced from a full server snapshot.
    */
   txRebuiltFromDrift?: boolean;
 }
@@ -138,95 +140,42 @@ export function didSyncChangeData(result: SyncResult): boolean {
   );
 }
 
-/**
- * Pure rebuild-decision helper. Exported for unit tests so the
- * tolerance thresholds can't drift silently.
- *
- * Returns `true` when the drift between local SQLite count and the
- * server's count is big enough — both absolutely (≥5 rows) and
- * relatively (>5%) — that we should treat the local cache as
- * unreliable and trigger a full rebuild.
- *
- * The dual threshold is deliberate:
- * - Absolute alone (e.g. ≥1) would rebuild on a 1-row-during-the-race
- *   case, which is just a sync-window artefact.
- * - Relative alone (e.g. >5%) would rebuild a 100-row portfolio over a
- *   single missing transaction (1%), again just race noise.
- * - Requiring both means we only rebuild when there's *meaningful*
- *   drift — the May 2026 user case (~25% of their portfolio worth of
- *   transactions missing) triggers cleanly; everyday sync races do not.
- */
-export function shouldRebuildTxOnDrift(localCount: number, serverCount: number): boolean {
-  const drift = Math.abs(serverCount - localCount);
-  if (drift < 5) return false;
-  const driftPct = serverCount > 0 ? drift / serverCount : 0;
-  return driftPct > 0.05;
+export function transactionIdSetsDiffer(localIds: string[], serverIds: string[]): boolean {
+  if (localIds.length !== serverIds.length) return true;
+  return localIds.some((id, index) => id !== serverIds[index]);
 }
 
 /**
- * After the tx delta sync settles, count what's on the server vs what
- * we have locally. If they disagree beyond the rebuild threshold,
- * re-fetch the full transaction history and merge it into the local
- * table via `INSERT OR IGNORE` — additive, not destructive.
- *
- * **Why this is needed.** The delta sync only fetches rows with
- * `created_at >= watermark`. If the local cache started life
- * incomplete — partial pre-PR-#175 bootstrap, a schema migration that
- * dropped rows, manual SQLite tampering, or any future bug we don't
- * know about yet — those historical gaps stay forever because no
- * delta can ever reach them. May 2026 incident: a user's main install
- * was ₹8L behind a side-by-side PR install because of exactly this.
- *
- * **Why we don't `clear()` first.** An earlier draft did
- * `txRepo.clear()` then `bulkInsert`. That opens a window between the
- * two operations where SQLite is empty — if the network drops mid-
- * rebuild, the user ends up worse off than they were with drift
- * (empty cache → screens show "no transactions"). `INSERT OR IGNORE`
- * over the full server set lands at the same end state for the
- * dominant drift case ("local is missing rows server has") without
- * the failure window. The one shape it doesn't repair is "local has
- * rows server doesn't" (e.g. account deletion mirrored late, or a
- * row deleted server-side) — that surfaces as a negative drift on
- * the `tx_cache_reconciled` event so we can investigate it as a
- * separate signal rather than silently overwriting.
- *
- * The reconciliation cost is one HTTP HEAD-style request per cold
- * launch (PostgREST `count: 'exact', head: true`); on the rare drift
- * detection it's one full re-fetch of the user's transactions.
- *
- * Returns `{ drift, rebuilt }`. `drift = null` when the remote count
- * was unavailable (network/permission error) — we don't rebuild on
- * unknown state.
+ * Delta sync cannot observe deletes because deleted rows have no newer
+ * `created_at`. Compare immutable server IDs on every sync and atomically
+ * replace SQLite from a full snapshot on any difference — including a single
+ * stale local row or equal counts with different IDs. The replacement itself
+ * is one SQLite transaction, so network/refill failure preserves the previous
+ * cache rather than exposing an empty intermediate state.
  */
-async function reconcileTransactionCount(
+async function reconcileTransactionSnapshot(
   userId: string,
   writeScope: DatabaseWriteScope,
   mode: 'bootstrap' | 'delta',
 ): Promise<{ drift: number | null; rebuilt: boolean; serverCount: number | null; localCount: number }> {
-  const [localCount, serverCount] = await Promise.all([
-    txRepo.count(),
-    countUserTransactionsRemote(userId),
+  const [localIds, serverIds] = await Promise.all([
+    txRepo.readIds(),
+    fetchUserTransactionIdsRemote(userId),
   ]);
-  if (serverCount === null) {
-    // Network or permission error — don't disrupt the user's existing
-    // cache on an unknown signal.
-    return { drift: null, rebuilt: false, serverCount: null, localCount };
-  }
+  const localCount = localIds.length;
+  const serverCount = serverIds.length;
   const drift = serverCount - localCount;
-  if (!shouldRebuildTxOnDrift(localCount, serverCount)) {
+  if (!transactionIdSetsDiffer(localIds, serverIds)) {
     return { drift, rebuilt: false, serverCount, localCount };
   }
 
   console.warn(
-    '[db/sync] tx count drift detected: local=%d server=%d drift=%d; rebuilding',
+    '[db/sync] tx snapshot drift detected: local=%d server=%d drift=%d; rebuilding',
     localCount, serverCount, drift,
   );
   try {
-    // Additive merge — see the comment above for why we don't `clear()`
-    // first. `INSERT OR IGNORE` makes this a no-op for rows already
-    // local, and writes the rows that were missing.
     const fresh = await fetchUserTransactionsRemote(userId, null);
-    await txRepo.bulkInsert(fresh, {
+    await txRepo.replaceAll(fresh, {
       scope: writeScope,
       operation: `${mode}_tx_repair`,
     });
@@ -327,25 +276,13 @@ async function runSync(
   }
 
   // ── Reconciliation ────────────────────────────────────────────────
-  // Verify the local tx count matches the server. Catches cache drift
-  // that the delta sync alone can't repair — see
-  // `reconcileTransactionCount`. Cheap enough to run on every sync
-  // (one HEAD-style count query); rebuild only fires when drift is
-  // both absolute (≥5 rows) and relative (>5%).
+  // Exact immutable-ID reconciliation catches both missing and deleted rows;
+  // count-only thresholds cannot represent a one-row server reversal.
   let txRebuiltFromDrift = false;
   try {
-    const reconciliation = await reconcileTransactionCount(userId, writeScope, options.mode);
+    const reconciliation = await reconcileTransactionSnapshot(userId, writeScope, options.mode);
     txRebuiltFromDrift = reconciliation.rebuilt;
-    // Visibility threshold ≠ rebuild threshold. We rebuild only on
-    // meaningful drift (≥5 absolute AND >5% relative — see
-    // `shouldRebuildTxOnDrift`) to avoid thrashing on the sync-race
-    // window. But we emit the analytics event on *any* non-zero
-    // drift so the below-rebuild-threshold cases are still visible
-    // in PostHog: that's the signal we'd watch to find caching bugs
-    // the auto-rebuild would otherwise mask. `rebuilt: false` rows
-    // in the event let us separate "noise we tolerated" from
-    // "actually broken, we fixed it".
-    if (reconciliation.drift !== null && reconciliation.drift !== 0) {
+    if (reconciliation.rebuilt || reconciliation.drift !== 0) {
       analytics.track('tx_cache_reconciled', {
         mode: options.mode,
         local_count: reconciliation.localCount,

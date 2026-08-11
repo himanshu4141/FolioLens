@@ -12,12 +12,15 @@
 export interface SupabaseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from(table: string): any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rpc(functionName: string, args?: Record<string, unknown>): any;
 }
 
 import {
   assertCASPreflight,
   auditErrorCode,
   bucketCount,
+  canonicalFolioNumber,
   normaliseTxType,
   parseDate,
   type CASParseResult,
@@ -75,6 +78,7 @@ interface PreparedScheme {
 
 interface PlannedScheme extends PreparedScheme {
   existingFundId: string | null;
+  expectedTransactionIds: string[];
   plan: EconomicReconciliationPlan;
 }
 
@@ -88,16 +92,6 @@ const PERSISTED_TRANSACTION_TYPES = new Set<PersistedTransactionType>([
   'switch_in',
   'switch_out',
   'dividend_reinvest',
-]);
-const INVALID_EXISTING_FOLIOS = new Set([
-  'NO',
-  'CDSL',
-  'NSDL',
-  'N/A',
-  'NA',
-  'NONE',
-  'UNKNOWN',
-  '-',
 ]);
 const RECONCILIATION_PAGE_SIZE = 1000;
 
@@ -171,40 +165,47 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
   return [...bySchemeCode.values()];
 }
 
-function existingEconomicRow(value: Record<string, unknown>): ExistingEconomicRow | null {
+interface ExistingSnapshotRow {
+  id: string;
+  fundId: string;
+  economicRow: ExistingEconomicRow | null;
+}
+
+function existingSnapshotRow(value: Record<string, unknown>): ExistingSnapshotRow | null {
   const transactionType = value.transaction_type;
   const units = Number(value.units);
   const amount = Number(value.amount);
   const eventOrdinal = Number(value.cas_event_ordinal ?? 0);
-  const folioNumber = typeof value.folio_number === 'string'
-    ? value.folio_number.trim() || null
-    : null;
   if (
     typeof value.id !== 'string' ||
     typeof value.fund_id !== 'string' ||
     typeof value.transaction_date !== 'string' ||
     typeof transactionType !== 'string' ||
     !PERSISTED_TRANSACTION_TYPES.has(transactionType as PersistedTransactionType) ||
-    !Number.isFinite(units) ||
-    units <= 0 ||
-    !Number.isFinite(amount) ||
-    amount <= 0 ||
     !Number.isInteger(eventOrdinal) ||
-    eventOrdinal < 0 ||
-    (folioNumber !== null && INVALID_EXISTING_FOLIOS.has(folioNumber.toUpperCase()))
+    eventOrdinal < 0
   ) return null;
 
-  return {
-    id: value.id,
-    fundId: value.fund_id,
-    transactionDate: value.transaction_date,
-    transactionType: transactionType as PersistedTransactionType,
-    units,
-    amount,
-    folioNumber,
-    eventOrdinal,
-    casImportId: typeof value.cas_import_id === 'string' ? value.cas_import_id : null,
-  };
+  // Pre-Q2 rows can contain folio sentinels or non-economic zero values. They
+  // remain part of the immutable-ID snapshot (so concurrency checks see them)
+  // but they are not evidence against a new valid statement. Placeholder
+  // folios bridge as canonical null; non-positive/non-finite economic rows are
+  // ignored by reconciliation instead of bricking every future import.
+  const economicRow = !Number.isFinite(units) || units <= 0
+    || !Number.isFinite(amount) || amount <= 0
+    ? null
+    : {
+      id: value.id,
+      fundId: value.fund_id,
+      transactionDate: value.transaction_date,
+      transactionType: transactionType as PersistedTransactionType,
+      units,
+      amount,
+      folioNumber: canonicalFolioNumber(value.folio_number),
+      eventOrdinal,
+      casImportId: typeof value.cas_import_id === 'string' ? value.cas_import_id : null,
+    };
+  return { id: value.id, fundId: value.fund_id, economicRow };
 }
 
 function reconciliationFailure(reason: CASWriteFailureReason): CASImportResult {
@@ -240,6 +241,14 @@ export async function importCASData(
     summary.rows_bucket,
   );
 
+  // Deployment is function-first, then migration. During that short window the
+  // capability RPC is absent and the new function must reject before the first
+  // domain read/write rather than running against the legacy uniqueness shape.
+  const schemaCapability = await supabase.rpc('cas_reconciliation_schema_version_v1');
+  if (schemaCapability.error || schemaCapability.data !== 1) {
+    return reconciliationFailure('reconciliation_read_failed');
+  }
+
   // Resolve existing IDs and rows before any domain write so an ambiguity can
   // reject without inserting/deleting/updating a transaction.
   const schemeCodes = preparedSchemes.map((scheme) => scheme.schemeCode);
@@ -265,6 +274,7 @@ export async function importCASData(
   }
 
   const existingTransactions: ExistingEconomicRow[] = [];
+  const snapshotIdsByFund = new Map<string, string[]>();
   const existingFundIds = [...existingFundByScheme.values()];
   for (
     let from = 0;
@@ -285,9 +295,12 @@ export async function importCASData(
 
     const page = currentTransactionsResult.data ?? [];
     for (const value of page) {
-      const row = existingEconomicRow(value as Record<string, unknown>);
-      if (!row) return reconciliationFailure('reconciliation_read_failed');
-      existingTransactions.push(row);
+      const snapshotRow = existingSnapshotRow(value as Record<string, unknown>);
+      if (!snapshotRow) return reconciliationFailure('reconciliation_read_failed');
+      const ids = snapshotIdsByFund.get(snapshotRow.fundId) ?? [];
+      ids.push(snapshotRow.id);
+      snapshotIdsByFund.set(snapshotRow.fundId, ids);
+      if (snapshotRow.economicRow) existingTransactions.push(snapshotRow.economicRow);
     }
     if (page.length < RECONCILIATION_PAGE_SIZE) break;
   }
@@ -300,6 +313,9 @@ export async function importCASData(
     return {
       ...scheme,
       existingFundId,
+      expectedTransactionIds: existingFundId === null
+        ? []
+        : [...(snapshotIdsByFund.get(existingFundId) ?? [])].sort(),
       plan: reconcileEconomicRows(scheme.incomingRows, existing, scheme.reversals),
     };
   });
@@ -388,65 +404,64 @@ export async function importCASData(
     writableSchemes.push({ ...scheme, fundId: fundRow.id as string });
   }
 
-  for (const scheme of writableSchemes) {
-    let deleteFailed = false;
-    for (const transactionId of scheme.plan.reversalDeleteIds) {
-      const { error: deleteError } = await supabase
-        .from('transaction')
-        .delete()
-        .eq('id', transactionId)
-        .eq('fund_id', scheme.fundId);
-      if (deleteError) {
-        errors.push(auditErrorCode('transaction_write_failed'));
-        deleteFailed = true;
-        break;
-      }
-      console.log('[import-cas] reversal_delete_exact');
-    }
-    if (deleteFailed) continue;
-
-    const transactionRows = scheme.plan.inserts.map((transaction) => ({
-      user_id: userId,
-      fund_id: scheme.fundId,
+  const transactionPlans = writableSchemes.map((scheme) => ({
+    fund_id: scheme.fundId,
+    expected_transaction_ids: scheme.expectedTransactionIds,
+    delete_ids: scheme.plan.reversalDeleteIds,
+    inserts: scheme.plan.inserts.map((transaction) => ({
       transaction_date: transaction.transactionDate,
       transaction_type: transaction.transactionType,
       units: transaction.units,
       nav_at_transaction: transaction.navAtTransaction,
       amount: transaction.grossAmount,
       folio_number: transaction.folioNumber,
-      cas_import_id: importId,
       cas_event_ordinal: transaction.eventOrdinal,
-    }));
+    })),
+  }));
 
-    if (
-      scheme.closingUnits === 0 &&
-      transactionRows.length === 0 &&
-      scheme.plan.duplicateRows === 0 &&
-      scheme.plan.matchedGroups === 0
-    ) {
-      await supabase
-        .from('user_fund')
-        .update({ is_active: false })
-        .eq('id', scheme.fundId);
-      console.log('[import-cas] inactive_holding_update_attempted');
-      continue;
-    }
-
-    if (transactionRows.length > 0) {
-      const { error: transactionError, count } = await supabase
-        .from('transaction')
-        .upsert(transactionRows, {
-          onConflict:
-            'fund_id,transaction_date,transaction_type,units,amount,folio_number,cas_event_ordinal',
-          ignoreDuplicates: true,
-          count: 'exact',
-        });
-      if (transactionError) {
-        errors.push(auditErrorCode('transaction_write_failed'));
+  let transactionMutationSucceeded = true;
+  if (transactionPlans.length > 0) {
+    const mutationResult = await supabase.rpc('apply_cas_transaction_plans_v1', {
+      p_user_id: userId,
+      p_import_id: importId,
+      p_plans: transactionPlans,
+    });
+    if (mutationResult.error) {
+      transactionMutationSucceeded = false;
+      const message = typeof mutationResult.error.message === 'string'
+        ? mutationResult.error.message
+        : '';
+      if (message.includes('cas_snapshot_conflict')) {
+        reconciliationConflicts += 1;
+        errors.push(auditErrorCode('reconciliation_conflict'));
       } else {
-        const inserted = count ?? 0;
-        transactionsAdded += inserted;
-        console.log('[import-cas] transaction_insert_count=%s', bucketCount(inserted));
+        errors.push(auditErrorCode('transaction_write_failed'));
+      }
+    } else {
+      const payload = Array.isArray(mutationResult.data)
+        ? mutationResult.data[0]
+        : mutationResult.data;
+      const inserted = Number(payload?.inserted_count ?? 0);
+      const deleted = Number(payload?.deleted_count ?? 0);
+      transactionsAdded += Number.isInteger(inserted) && inserted >= 0 ? inserted : 0;
+      if (deleted > 0) console.log('[import-cas] reversal_delete_count=%s', bucketCount(deleted));
+      console.log('[import-cas] transaction_insert_count=%s', bucketCount(transactionsAdded));
+    }
+  }
+
+  if (transactionMutationSucceeded) {
+    for (const scheme of writableSchemes) {
+      if (
+        scheme.closingUnits === 0 &&
+        scheme.plan.inserts.length === 0 &&
+        scheme.plan.duplicateRows === 0 &&
+        scheme.plan.matchedGroups === 0
+      ) {
+        await supabase
+          .from('user_fund')
+          .update({ is_active: false })
+          .eq('id', scheme.fundId);
+        console.log('[import-cas] inactive_holding_update_attempted');
       }
     }
   }

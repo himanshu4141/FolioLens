@@ -33,6 +33,8 @@ function buildMockSupabase({
   txUpsertError = null,
   txUpsertCount,
   txDeleteError = null,
+  schemaCapabilityError = null,
+  rpcMutationError = null,
 }: {
   fundId?: string;
   benchmarkRows?: Array<{
@@ -49,6 +51,8 @@ function buildMockSupabase({
   txUpsertError?: { message: string } | null;
   txUpsertCount?: number | null;
   txDeleteError?: { message: string } | null;
+  schemaCapabilityError?: { message: string } | null;
+  rpcMutationError?: { message: string } | null;
 } = {}) {
   const deleteCalls: Array<Array<[string, unknown]>> = [];
   let upsertedRows: Record<string, unknown>[] = [];
@@ -156,8 +160,79 @@ function buildMockSupabase({
     return {};
   });
 
+  const rpcMock = jest.fn(async (
+    functionName: string,
+    args?: Record<string, unknown>,
+  ) => {
+    if (functionName === 'cas_reconciliation_schema_version_v1') {
+      return {
+        data: schemaCapabilityError ? null : 1,
+        error: schemaCapabilityError,
+      };
+    }
+    if (functionName !== 'apply_cas_transaction_plans_v1') {
+      return { data: null, error: { message: 'unknown rpc' } };
+    }
+
+    const plans = (args?.p_plans ?? []) as Array<{
+      fund_id: string;
+      expected_transaction_ids: string[];
+      delete_ids: string[];
+      inserts: Record<string, unknown>[];
+    }>;
+    for (const plan of plans) {
+      const currentIds = storedTransactions
+        .filter((row) => row.fund_id === plan.fund_id)
+        .map((row) => String(row.id))
+        .sort();
+      if (JSON.stringify(currentIds) !== JSON.stringify([...plan.expected_transaction_ids].sort())) {
+        return { data: null, error: { message: 'cas_snapshot_conflict' } };
+      }
+    }
+
+    // The real RPC is one Postgres transaction. Injected failures are checked
+    // before this mock mutates its shared state so tests prove all-or-nothing.
+    if (rpcMutationError || txDeleteError || txUpsertError) {
+      return {
+        data: null,
+        error: rpcMutationError ?? txDeleteError ?? txUpsertError,
+      };
+    }
+
+    let deletedCount = 0;
+    let insertedCount = 0;
+    for (const plan of plans) {
+      for (const id of plan.delete_ids) {
+        const chain = deleteMock() as { eq: (col: string, val: unknown) => unknown };
+        chain.eq('id', id);
+        chain.eq('fund_id', plan.fund_id);
+        const index = storedTransactions.findIndex((row) =>
+          row.id === id && row.fund_id === plan.fund_id
+        );
+        if (index >= 0) {
+          storedTransactions.splice(index, 1);
+          deletedCount++;
+        }
+      }
+      if (plan.inserts.length > 0) {
+        const rows = plan.inserts.map((row) => ({
+          user_id: args?.p_user_id,
+          fund_id: plan.fund_id,
+          cas_import_id: args?.p_import_id,
+          ...row,
+        }));
+        const response = txUpsertMock(rows);
+        insertedCount += response.count ?? 0;
+      }
+    }
+    return {
+      data: { inserted_count: insertedCount, deleted_count: deletedCount },
+      error: null,
+    };
+  });
+
   return {
-    supabase: { from: fromMock } as unknown as SupabaseClient,
+    supabase: { from: fromMock, rpc: rpcMock } as unknown as SupabaseClient,
     fromMock,
     deleteMock,
     deleteCalls,
@@ -168,6 +243,7 @@ function buildMockSupabase({
     userFundUpdateMock,
     fundUpdateCalls,
     storedTransactions,
+    rpcMock,
     getUpsertedRows: () => upsertedRows,
     getUpsertedSchemeRow: () => upsertedSchemeRow,
   };
@@ -476,16 +552,11 @@ describe('importCASData()', () => {
     expect(second.transactionsAdded).toBe(0);
     expect(second.transactionsDuplicate).toBe(1);
     expect(txUpsertMock).toHaveBeenCalledTimes(1);
-    for (const [rows, options] of txUpsertMock.mock.calls) {
+    for (const [rows] of txUpsertMock.mock.calls) {
       expect(rows[0]).toMatchObject({
         amount: 1000.05,
         nav_at_transaction: 100,
         cas_event_ordinal: 0,
-      });
-      expect(options).toMatchObject({
-        onConflict:
-          'fund_id,transaction_date,transaction_type,units,amount,folio_number,cas_event_ordinal',
-        ignoreDuplicates: true,
       });
     }
   });
@@ -860,6 +931,62 @@ describe('importCASData()', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it('fails closed before domain access while the ordered schema migration is not ready', async () => {
+    const { supabase, fromMock } = buildMockSupabase({
+      schemaCapabilityError: { message: 'function does not exist' },
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result.errors).toEqual(['cas_import:reconciliation_read_failed']);
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the existing fund roster cannot be read', async () => {
+    const { supabase, schemeMasterUpsertMock, userFundUpsertMock } = buildMockSupabase({
+      fundReadError: { message: 'fund read failed' },
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result.errors).toEqual(['cas_import:reconciliation_read_failed']);
+    expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
+    expect(userFundUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a malformed resolved fund row before every domain write', async () => {
+    const { supabase, schemeMasterUpsertMock, userFundUpsertMock } = buildMockSupabase({
+      existingFundRows: [{ id: 123, scheme_code: 119551 }],
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result.errors).toEqual(['cas_import:reconciliation_read_failed']);
+    expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
+    expect(userFundUpsertMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed when historical reconciliation rows cannot be read', async () => {
     const {
       supabase,
@@ -889,18 +1016,36 @@ describe('importCASData()', () => {
     expect(txUpsertMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['zero units', { units: 0 }],
-    ['a legacy folio sentinel', { folio_number: 'No' }],
-  ])('fails closed on a stored economic row with %s', async (_label, overrides) => {
+  it('fails closed on a structurally malformed historical transaction row', async () => {
     const {
       supabase,
       schemeMasterUpsertMock,
       userFundUpsertMock,
-      deleteMock,
       txUpsertMock,
     } = buildMockSupabase({
-      existingTransactionRows: [storedPurchase(overrides)],
+      existingTransactionRows: [storedPurchase({ id: 123 })],
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result.errors).toEqual(['cas_import:reconciliation_read_failed']);
+    expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
+    expect(userFundUpsertMock).not.toHaveBeenCalled();
+    expect(txUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stored non-economic zero row without blocking the valid import', async () => {
+    const {
+      supabase,
+    } = buildMockSupabase({
+      existingTransactionRows: [storedPurchase({ units: 0 })],
     });
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
@@ -909,15 +1054,32 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result).toMatchObject({
-      fundsUpdated: 0,
-      transactionsAdded: 0,
-      transactionsDuplicate: 0,
+      fundsUpdated: 1,
+      transactionsAdded: 1,
       reconciliationConflicts: 0,
-      errors: ['cas_import:reconciliation_read_failed'],
+      errors: [],
     });
-    expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
-    expect(userFundUpsertMock).not.toHaveBeenCalled();
-    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a stored legacy folio sentinel to null for safe matching', async () => {
+    const { supabase, txUpsertMock } = buildMockSupabase({
+      existingTransactionRows: [storedPurchase({ folio_number: 'No' })],
+    });
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result).toMatchObject({
+      transactionsAdded: 0,
+      transactionsDuplicate: 1,
+      reconciliationConflicts: 0,
+      errors: [],
+    });
     expect(txUpsertMock).not.toHaveBeenCalled();
   });
 
@@ -1120,6 +1282,82 @@ describe('importCASData()', () => {
     expect(deleteMock).toHaveBeenCalledTimes(1);
     expect(deleteCalls[0]).toContainEqual(['id', 'candidate-2']);
     expect(deleteCalls[0]).toContainEqual(['fund_id', 'fund-id-1']);
+  });
+
+  it('rolls back the complete multi-delete plan when the atomic RPC fails', async () => {
+    const existingRows = [
+      storedPurchase({ id: 'historical-1' }),
+      storedPurchase({
+        id: 'historical-2',
+        transaction_date: '2024-02-05',
+        units: 50,
+        amount: 6000,
+        cas_event_ordinal: 0,
+      }),
+    ];
+    const { supabase, storedTransactions, txUpsertMock } = buildMockSupabase({
+      existingTransactionRows: existingRows,
+      rpcMutationError: { message: 'simulated transaction failure' },
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'REVERSAL', units: -100, amount: -10000, nav: 100 },
+        { date: '2024-02-05', type: 'REVERSAL', units: -50, amount: -6000, nav: 120 },
+        { date: '2024-03-05', type: 'PURCHASE', units: 10, amount: 1200, nav: 120 },
+      ]),
+    );
+
+    expect(result.errors).toContain('cas_import:transaction_write_failed');
+    expect(storedTransactions).toEqual(existingRows);
+    expect(txUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a serialized snapshot race to a reconciliation conflict without transaction mutation', async () => {
+    const { supabase, storedTransactions } = buildMockSupabase({
+      rpcMutationError: { message: 'cas_snapshot_conflict' },
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result.reconciliationConflicts).toBe(1);
+    expect(result.errors).toContain('cas_import:reconciliation_conflict');
+    expect(storedTransactions).toEqual([]);
+  });
+
+  it('serializes interleaved split and combined imports so only one economic group survives', async () => {
+    const { supabase, storedTransactions } = buildMockSupabase({
+      existingTransactionRows: [],
+    });
+    const combined = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 10, amount: 1000, nav: 100 },
+    ]);
+    const split = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 4, amount: 400, nav: 100 },
+      { date: '2024-01-10', type: 'PURCHASE', units: 6, amount: 600, nav: 100 },
+    ]);
+
+    const results = await Promise.all([
+      importCASData(supabase, 'user-1', 'import-combined', combined),
+      importCASData(supabase, 'user-1', 'import-split', split),
+    ]);
+
+    expect(results.filter((result) => result.transactionsAdded > 0)).toHaveLength(1);
+    expect(results.filter((result) =>
+      result.errors.includes('cas_import:reconciliation_conflict')
+    )).toHaveLength(1);
+    expect(storedTransactions.reduce((sum, row) => sum + Number(row.units), 0)).toBe(10);
+    expect(storedTransactions.reduce((sum, row) => sum + Number(row.amount), 0)).toBe(1000);
   });
 
   it('matches twelve isolated economic groups without inserts or conflicts', async () => {

@@ -34,7 +34,7 @@ when needed:
 
 - **Primary fund data** — OpenFolio supplies official NAV, metadata, and composition where available. Held-fund NAV sync uses batched `/v1/nav/delta` requests with per-scheme watermarks; mfapi.in and mfdata.in remain fallbacks for gaps.
 - **Local performance cache** — React Query persists bounded rendered results, native SQLite owns durable raw NAV/index/transaction inputs, and Zustand/AsyncStorage hold preferences and small drafts. See the cache inventory before changing any of these surfaces.
-- **Freshness and sync** — background sync invalidates only affected query families. Web has explicit transaction-freshness probes so server-side CAS imports do not leave Portfolio stale across reloads.
+- **Freshness and sync** — background sync invalidates only affected query families. Web has explicit transaction-freshness probes, while native sync reconciles immutable transaction IDs and atomically repairs inserted or deleted server rows so a CAS reversal cannot remain in SQLite.
 - **PostHog** — privacy-safe operational/product events cover onboarding/import outcomes, navigation timing, screen readiness, slow events, JS stalls, cache health, persister restore health, and server-side sync/import outcomes.
 
 ### Delivery

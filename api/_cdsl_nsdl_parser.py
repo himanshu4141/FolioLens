@@ -238,8 +238,7 @@ TX_KEYWORDS: list[tuple[str, str]] = [
 
 _TX_COMPILED = [(re.compile(pat, re.IGNORECASE | re.UNICODE), typ) for pat, typ in TX_KEYWORDS]
 _NET_WITHHOLDING_RE = re.compile(
-    r"(?:\b(?:less|net\s+of)\b.*\b(?:tds|tax|withholding)\b"
-    r"|\b(?:tds|tax|withholding)\b.*\b(?:deducted|less)\b)",
+    r"\b(?:tds|tax\s+deducted\s+at\s+source|withholding(?:\s+tax)?)\b",
     re.IGNORECASE | re.UNICODE,
 )
 

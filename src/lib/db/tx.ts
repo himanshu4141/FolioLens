@@ -1,6 +1,7 @@
 /**
  * Repo for the `tx` table — the local copy of `transaction` rows from
- * Supabase. Append-only; deduped at write time by immutable server `id`.
+ * Supabase. Rows are keyed by immutable server `id`; exact snapshot repair can
+ * atomically replace the table when server-side reconciliation deletes a row.
  *
  * Shape mirrors `UserTransactionRow` so the read-through path in
  * `useUserTransactions.fetchUserTransactions` can return SQLite rows
@@ -56,6 +57,12 @@ export async function readByFundIds(fundIds: string[]): Promise<DbTxRow[]> {
   );
 }
 
+export async function readIds(): Promise<string[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ id: string }>('SELECT id FROM tx ORDER BY id ASC');
+  return rows.map((row) => row.id);
+}
+
 export async function bulkInsert(
   rows: DbTxRow[],
   options: SerializedDatabaseWriteOptions = {},
@@ -64,6 +71,42 @@ export async function bulkInsert(
   await runSerializedDatabaseTransaction(options.operation ?? 'tx_bulk_insert', async (db) => {
     const stmt = await db.prepareAsync(
       `INSERT OR IGNORE INTO tx (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    try {
+      for (const row of rows) {
+        await stmt.executeAsync([
+          row.fund_id,
+          row.transaction_date,
+          row.transaction_type,
+          row.units,
+          row.amount,
+          row.id,
+          row.nav_at_transaction,
+          row.folio_number,
+          row.cas_import_id,
+          row.created_at,
+        ]);
+      }
+    } finally {
+      await stmt.finalizeAsync();
+    }
+  }, options);
+}
+
+/**
+ * Atomically replaces the local transaction snapshot. DELETE and refill share
+ * one SQLite transaction, so a failed refill rolls back to the previous cache
+ * instead of exposing an empty or half-rebuilt table.
+ */
+export async function replaceAll(
+  rows: DbTxRow[],
+  options: SerializedDatabaseWriteOptions = {},
+): Promise<void> {
+  await runSerializedDatabaseTransaction(options.operation ?? 'tx_replace_all', async (db) => {
+    await db.execAsync('DELETE FROM tx');
+    if (rows.length === 0) return;
+    const stmt = await db.prepareAsync(
+      `INSERT INTO tx (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     try {
       for (const row of rows) {
