@@ -198,9 +198,9 @@ function buildMockSupabase({
     functionName: string,
     args?: Record<string, unknown>,
   ) => {
-    if (functionName === 'cas_import_schema_version_v2') {
+    if (functionName === 'cas_import_schema_version_v3') {
       return {
-        data: schemaCapabilityError ? null : 2,
+        data: schemaCapabilityError ? null : 3,
         error: schemaCapabilityError,
       };
     }
@@ -575,7 +575,6 @@ describe('importCASData()', () => {
     ]);
 
     await importCASData(supabase, 'user-1', 'import-1', parsed);
-
     const rows = getUpsertedRows();
     expect(rows).toHaveLength(1);
     expect(rows[0].transaction_type).toBe('purchase');
@@ -807,8 +806,9 @@ describe('importCASData()', () => {
       { date: '2024-01-10', type: 'REVERSAL', units: -100, amount: -10000, nav: 100 },
     ]);
 
-    await importCASData(supabase, 'user-1', 'import-1', parsed);
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
+    expect(result.transactionsRemoved).toBe(1);
     expect(deleteMock).toHaveBeenCalledTimes(1);
     const eqPairs = deleteCalls[0];
     expect(eqPairs).toContainEqual(['id', 'historical-purchase']);
@@ -1325,6 +1325,7 @@ describe('importCASData()', () => {
       fundsUpdated: 0,
       transactionsAdded: 0,
       transactionsDuplicate: 0,
+      transactionsRemoved: 0,
       reconciliationConflicts: 0,
       catalogHydrationRequested: 0,
       errors: ['cas_import:reconciliation_read_failed'],

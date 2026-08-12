@@ -182,6 +182,20 @@ visible again. Any error rolls the whole plan back, so retry begins from either 
 old state or the complete new state. Inbound email rejects cross-attachment scheme
 overlap rather than merging independent statement multiplicity or closing balances.
 
+Q5 makes the transaction outcome explicit everywhere. `cas_import` records exact
+non-negative added, already-present, removed-by-reversal, and reconciliation-conflict
+counts; the direct response, inbound notification, import history, and bucketed
+telemetry are derived from the same shared outcome. The legacy `transactions` response
+field remains an alias for added rows. A no-op therefore reports zero added rather than
+attempted rows, while a conflict reports its rejected count without claiming a write.
+
+After a direct upload, web marks only transaction-derived React Query families stale.
+Native first runs the immutable-ID delta/repair into SQLite, then invalidates the same
+families from the observed sync result. Added or removed rows trigger this path;
+no-op/conflict outcomes perform no cache or SQLite work. Inbound imports remain covered
+by initial-session, foreground, and persisted-web freshness checks because they occur
+outside the open client's request lifecycle.
+
 Rejected approaches remain rejected:
 
 - **No Gmail OAuth** — persistent inbox access is unnecessary and privacy-hostile.

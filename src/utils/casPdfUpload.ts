@@ -9,12 +9,50 @@ import { authClient } from '@/src/lib/auth';
 import { analytics } from '@/src/lib/analytics';
 import { bucketBytes, bucketCount } from '@/src/lib/uxTelemetry';
 
-export type CasUploadResult = { funds: number; transactions: number };
+export interface CasUploadResult {
+  funds: number;
+  /** Backward-compatible alias for transactionsAdded. */
+  transactions: number;
+  transactionsAdded: number;
+  transactionsAlreadyPresent: number;
+  transactionsRejected: number;
+  transactionsRemoved: number;
+}
+
+export class CasUploadError extends Error {
+  readonly result: CasUploadResult;
+
+  constructor(message: string, result: CasUploadResult) {
+    super(message);
+    this.name = 'CasUploadError';
+    this.result = result;
+  }
+}
 
 interface UploadResponse {
   funds?: number;
   transactions?: number;
+  transactions_added?: number;
+  transactions_already_present?: number;
+  transactions_rejected?: number;
+  transactions_removed?: number;
   error?: string;
+}
+
+function exactCount(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function uploadResult(body: UploadResponse): CasUploadResult {
+  const transactionsAdded = exactCount(body.transactions_added ?? body.transactions);
+  return {
+    funds: exactCount(body.funds),
+    transactions: transactionsAdded,
+    transactionsAdded,
+    transactionsAlreadyPresent: exactCount(body.transactions_already_present),
+    transactionsRejected: exactCount(body.transactions_rejected),
+    transactionsRemoved: exactCount(body.transactions_removed),
+  };
 }
 
 /**
@@ -88,19 +126,23 @@ function parseUploadResponse(status: number, bodyText: string): CasUploadResult 
   }
 
   if (status >= 200 && status < 300) {
+    const result = uploadResult(body);
     console.log('[cas-upload] response_ok', { status });
     analytics.track('portfolio_imported', {
       source: 'cas_pdf',
-      funds_count_bucket: bucketCount(body.funds),
-      transactions_count_bucket: bucketCount(body.transactions),
+      funds_count_bucket: bucketCount(result.funds),
+      transactions_count_bucket: bucketCount(result.transactionsAdded),
+      already_present_count_bucket: bucketCount(result.transactionsAlreadyPresent),
+      rejected_count_bucket: bucketCount(result.transactionsRejected),
+      removed_count_bucket: bucketCount(result.transactionsRemoved),
     });
-    return { funds: body.funds ?? 0, transactions: body.transactions ?? 0 };
+    return result;
   }
 
   console.warn('[cas-upload] response_error', {
     status,
   });
-  throw new Error(body.error ?? `Import failed (${status})`);
+  throw new CasUploadError(body.error ?? `Import failed (${status})`, uploadResult(body));
 }
 
 async function readWebPdfBytes(asset: DocumentPicker.DocumentPickerAsset) {

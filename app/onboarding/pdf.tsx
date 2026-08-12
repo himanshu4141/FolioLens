@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from '@/src/hooks/useSession';
 import { useUserProfile } from '@/src/hooks/useUserProfile';
 import { FolioLensLogo } from '@/src/components/clearLens/FolioLensLogo';
@@ -22,19 +23,25 @@ import {
   ClearLensTypography,
   type ClearLensTokens,
 } from '@/src/constants/clearLensTheme';
-import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import {
+  CasUploadError,
+  uploadCasPdf,
+  type CasUploadResult,
+} from '@/src/utils/casPdfUpload';
+import { refreshAfterDirectCasImport } from '@/src/lib/casImportFreshness';
 import { shouldShowDobFallbackPrompt } from '@/src/utils/casPdfPasswordHelp';
 
 type UploadState = 'idle' | 'picking' | 'uploading' | 'success' | 'error';
 
 export default function PDFScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { session } = useSession();
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const cl = tokens.colors;
   const [state, setState] = useState<UploadState>('idle');
-  const [result, setResult] = useState<{ funds: number; transactions: number } | null>(null);
+  const [result, setResult] = useState<CasUploadResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [customPassword, setCustomPassword] = useState('');
 
@@ -79,9 +86,22 @@ export default function PDFScreen() {
 
     try {
       const uploadResult = await uploadCasPdf(asset, customPassword);
-      setResult({ funds: uploadResult.funds, transactions: uploadResult.transactions });
+      if (session?.user.id) {
+        const refresh = await refreshAfterDirectCasImport(
+          queryClient,
+          session.user.id,
+          uploadResult,
+        );
+        if (refresh.errors.length > 0) {
+          console.warn('[cas-upload] post_import_refresh_delayed', {
+            error_count: refresh.errors.length,
+          });
+        }
+      }
+      setResult(uploadResult);
       setState('success');
     } catch (err) {
+      if (err instanceof CasUploadError) setResult(err.result);
       const raw = err instanceof Error ? err.message : 'Unknown error';
       const msg = /read/i.test(raw)
         ? 'Could not read the PDF file. Please re-download it and try again.'
@@ -186,8 +206,8 @@ export default function PDFScreen() {
           <View style={styles.successCard}>
             <Text style={styles.successTitle}>Import complete</Text>
             <Text style={styles.successText}>
-              {result.funds} fund{result.funds !== 1 ? 's' : ''} ·{' '}
-              {result.transactions} transaction{result.transactions !== 1 ? 's' : ''} imported
+              {result.transactionsAdded} added · {result.transactionsAlreadyPresent} already present
+              {result.transactionsRemoved > 0 ? ` · ${result.transactionsRemoved} removed` : ''}
             </Text>
             <TouchableOpacity style={styles.doneBtn} onPress={goBackToImportOptions}>
               <Text style={styles.doneBtnText}>Back to import setup</Text>
@@ -199,6 +219,12 @@ export default function PDFScreen() {
           <View style={styles.errorCard}>
             <Text style={styles.errorTitle}>Import failed</Text>
             <Text style={styles.errorText}>{errorMsg}</Text>
+            {result && (
+              <Text style={styles.errorText}>
+                {result.transactionsAdded} added · {result.transactionsAlreadyPresent} already present ·{' '}
+                {result.transactionsRejected} rejected
+              </Text>
+            )}
           </View>
         )}
 

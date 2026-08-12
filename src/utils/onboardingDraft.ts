@@ -8,7 +8,14 @@ export interface OnboardingDraft {
   step: OnboardingStep;
   pan: string;
   dob: string | null;          // ISO YYYY-MM-DD, optional
-  importResult: { funds: number; transactions: number } | null;
+  importResult: {
+    funds: number;
+    /** Added rows; retained for backward compatibility with v1 drafts. */
+    transactions: number;
+    alreadyPresent: number;
+    rejected: number;
+    removed: number;
+  } | null;
 }
 
 export const EMPTY_DRAFT: OnboardingDraft = {
@@ -23,7 +30,14 @@ export type OnboardingAction =
   | { type: 'goto'; step: OnboardingStep }
   | { type: 'set_pan'; pan: string }
   | { type: 'set_dob'; dob: string | null }
-  | { type: 'import_complete'; funds: number; transactions: number }
+  | {
+      type: 'import_complete';
+      funds: number;
+      transactions: number;
+      alreadyPresent: number;
+      rejected: number;
+      removed: number;
+    }
   | { type: 'reset' };
 
 export function reduceOnboarding(state: OnboardingDraft, action: OnboardingAction): OnboardingDraft {
@@ -40,7 +54,13 @@ export function reduceOnboarding(state: OnboardingDraft, action: OnboardingActio
     case 'import_complete':
       return {
         ...state,
-        importResult: { funds: action.funds, transactions: action.transactions },
+        importResult: {
+          funds: action.funds,
+          transactions: action.transactions,
+          alreadyPresent: action.alreadyPresent,
+          rejected: action.rejected,
+          removed: action.removed,
+        },
         step: 'done',
       };
     case 'reset':
@@ -92,7 +112,19 @@ export async function loadOnboardingDraft(): Promise<OnboardingDraft | null> {
         typeof parsed.importResult === 'object' &&
         typeof parsed.importResult.funds === 'number' &&
         typeof parsed.importResult.transactions === 'number'
-          ? { funds: parsed.importResult.funds, transactions: parsed.importResult.transactions }
+          ? {
+              funds: parsed.importResult.funds,
+              transactions: parsed.importResult.transactions,
+              alreadyPresent: typeof parsed.importResult.alreadyPresent === 'number'
+                ? parsed.importResult.alreadyPresent
+                : 0,
+              rejected: typeof parsed.importResult.rejected === 'number'
+                ? parsed.importResult.rejected
+                : 0,
+              removed: typeof parsed.importResult.removed === 'number'
+                ? parsed.importResult.removed
+                : 0,
+            }
           : null,
     };
   } catch {

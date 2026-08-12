@@ -827,6 +827,9 @@ export function buildPreflightFailureOutcome(
       import_status: 'failed' as const,
       funds_updated: 0,
       transactions_added: 0,
+      transactions_duplicate: 0,
+      reconciliation_conflicts: 0,
+      transactions_removed: 0,
       error_message: auditErrorCode(error.reason),
     },
     response: {
@@ -834,12 +837,21 @@ export function buildPreflightFailureOutcome(
       body: {
         error: userMessageForCASFailure(error.reason),
         reason: error.reason,
+        funds: 0,
+        transactions: 0,
+        transactions_added: 0,
+        transactions_already_present: 0,
+        transactions_rejected: 0,
+        transactions_removed: 0,
       },
     },
     notification: {
       status: 'failed' as const,
       funds: 0,
       transactions: 0,
+      alreadyPresent: 0,
+      rejected: 0,
+      removed: 0,
       errors: [userMessageForCASFailure(error.reason)],
     },
     telemetry: {
@@ -859,6 +871,9 @@ export function buildImportSuccessTelemetry({
   dialect,
   fundsUpdated,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
   writeFailures,
   failureReason,
 }: {
@@ -866,6 +881,9 @@ export function buildImportSuccessTelemetry({
   dialect: CASSourceDialect;
   fundsUpdated: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
   writeFailures: number;
   failureReason?: CASFailureReason;
 }) {
@@ -879,6 +897,9 @@ export function buildImportSuccessTelemetry({
         : 'partial',
     funds_bucket: bucketCount(fundsUpdated),
     transactions_bucket: bucketCount(transactionsAdded),
+    duplicates_bucket: bucketCount(transactionsDuplicate),
+    conflicts_bucket: bucketCount(reconciliationConflicts),
+    removed_bucket: bucketCount(transactionsRemoved),
     write_failures_bucket: bucketCount(writeFailures),
     validation_reason: 'validated',
     ...(failureReason ? { failure_reason: failureReason } : {}),
@@ -890,12 +911,18 @@ export function buildImportOutcome({
   dialect,
   fundsUpdated,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
   errors,
 }: {
   source: CASImportSource;
   dialect: CASSourceDialect;
   fundsUpdated: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
   errors: string[];
 }) {
   const status: 'success' | 'failed' = errors.length > 0 && fundsUpdated === 0
@@ -908,6 +935,9 @@ export function buildImportOutcome({
       import_status: status,
       funds_updated: fundsUpdated,
       transactions_added: transactionsAdded,
+      transactions_duplicate: transactionsDuplicate,
+      reconciliation_conflicts: reconciliationConflicts,
+      transactions_removed: transactionsRemoved,
       error_message: errors.length > 0
         ? safeReasons.map(auditErrorCode).join('; ')
         : null,
@@ -916,11 +946,18 @@ export function buildImportOutcome({
       ok: status === 'success',
       funds: fundsUpdated,
       transactions: transactionsAdded,
+      transactions_added: transactionsAdded,
+      transactions_already_present: transactionsDuplicate,
+      transactions_rejected: reconciliationConflicts,
+      transactions_removed: transactionsRemoved,
     },
     notification: {
       status,
       funds: fundsUpdated,
       transactions: transactionsAdded,
+      alreadyPresent: transactionsDuplicate,
+      rejected: reconciliationConflicts,
+      removed: transactionsRemoved,
       errors: safeReasons.map(userMessageForCASFailure),
     },
     telemetry: buildImportSuccessTelemetry({
@@ -928,6 +965,9 @@ export function buildImportOutcome({
       dialect,
       fundsUpdated,
       transactionsAdded,
+      transactionsDuplicate,
+      reconciliationConflicts,
+      transactionsRemoved,
       writeFailures: errors.length,
       failureReason: safeReasons[0],
     }),
@@ -938,10 +978,16 @@ export function buildImportCrashOutcome({
   source,
   fundsUpdated,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
 }: {
   source: CASImportSource;
   fundsUpdated: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
 }) {
   const reason: CASFailureReason = 'background_crashed';
   return {
@@ -949,12 +995,18 @@ export function buildImportCrashOutcome({
       import_status: 'failed' as const,
       funds_updated: fundsUpdated,
       transactions_added: transactionsAdded,
+      transactions_duplicate: transactionsDuplicate,
+      reconciliation_conflicts: reconciliationConflicts,
+      transactions_removed: transactionsRemoved,
       error_message: auditErrorCode(reason),
     },
     notification: {
       status: 'failed' as const,
       funds: fundsUpdated,
       transactions: transactionsAdded,
+      alreadyPresent: transactionsDuplicate,
+      rejected: reconciliationConflicts,
+      removed: transactionsRemoved,
       errors: [userMessageForCASFailure(reason)],
     },
     telemetry: {
@@ -963,6 +1015,9 @@ export function buildImportCrashOutcome({
       failure_reason: reason,
       funds_bucket: bucketCount(fundsUpdated),
       transactions_bucket: bucketCount(transactionsAdded),
+      duplicates_bucket: bucketCount(transactionsDuplicate),
+      conflicts_bucket: bucketCount(reconciliationConflicts),
+      removed_bucket: bucketCount(transactionsRemoved),
     },
   };
 }

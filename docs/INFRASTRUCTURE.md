@@ -155,19 +155,21 @@ also intentional for public app boundaries such as `demo-signup`,
 `fetch-fund-nav`, and `fetch-fund-snapshot`, which validate their own payloads and
 use service-role access only server-side.
 
-CAS domain mutation uses `cas_import_schema_version_v2()` and
+CAS domain mutation uses `cas_import_schema_version_v3()` and
 `apply_cas_import_plans_v2(uuid, uuid, jsonb)`. Both functions are
 `SECURITY INVOKER`, executable only by `service_role`, and absent from client
-wrappers. Function-first deployment is intentional: new Edge code probes the v2
-capability and fails before domain access until the migration has been applied.
+wrappers. v3 proves the additive exact-outcome audit columns are present; the atomic
+plan remains v2 because its domain contract is unchanged. Function-first deployment
+is intentional: new Edge code probes v3 and fails before domain access until the
+migration has been applied.
 The atomic writer delegates final `user_fund.is_active` state to the plain-Postgres
 `resolve_user_fund_activation_v1` policy, also `SECURITY INVOKER` and
 service-role-only. Existing holdings preserve activation for every non-current
 closing-balance shape before positive, zero, or missing units are interpreted, but
 an empty committed post-plan ledger is a deactivation floor. Q5 repair must use the
-same resolver when deliberately recomputing activation after transaction deletion
-or restoration. This C1 migration changes no Edge request or response contract, so
-the v2 capability remains valid.
+same resolver when applying delete-only activation changes; rollback restores the
+captured prior activation instead of deriving a second policy. The C1 migration
+changes no Edge request or response contract, so the v2 writer remains valid.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -514,7 +516,9 @@ The inbound CAS path also sends a FolioLens-branded status email to the user's a
 | DEV | `supabase/templates/resend_cas_import_status.html` published in Resend as the DEV import-status template | `FolioLens Dev <noreply-dev@foliolens.in>` |
 | PROD | Same source, separately published / aliased as the PROD import-status template | `FolioLens <noreply@foliolens.in>` |
 
-Success emails include funds / transactions imported; failure emails explain the actionable next step, especially when a holdings-only CAS lacks transaction history.
+Success and failure emails distinguish transactions added, already present, removed by
+an exact reversal, and rejected as reconciliation conflicts. Failure emails also explain
+the actionable next step, especially when a holdings-only CAS lacks transaction history.
 
 The router intentionally lives on the PROD Vercel project so Resend needs only one webhook endpoint and one verified domain on the free plan. DEV / PROD separation is encoded in the email local-part, not in subdomains.
 
@@ -892,9 +896,9 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 
 
 - **PostHog** — single pane for product events and operational health, fed from every surface that runs FolioLens code:
-  - **Client (native + web)**: onboarding funnel events `onboarding_started` / `onboarding_step_completed` / `onboarding_completed` / `portfolio_imported` plus the redesign-era decision / failure / design-validation events (`onboarding_skip_clicked`, `onboarding_pdf_picker_dismissed`, `onboarding_path_chosen`, `portfolio_import_failed`, `onboarding_password_override_used`, `onboarding_app_family_selected`, `onboarding_portal_opened`, `onboarding_auto_refresh_setup_completed`, `onboarding_done_nudge_clicked`); plus `insight_viewed` / `app_started` / `app_returned` plus `$exception` from uncaught errors. CAS upload diagnostics omit filenames and upstream bodies; `portfolio_imported` uses `funds_count_bucket` and `transactions_count_bucket` rather than exact statement counts. Per-event dimensions documented in `docs/plans/phase-6-cas-onboarding/00-onboarding-redesign.md` → "Analytics Events". Gated by `EXPO_PUBLIC_POSTHOG_KEY`.
+  - **Client (native + web)**: onboarding funnel events `onboarding_started` / `onboarding_step_completed` / `onboarding_completed` / `portfolio_imported` plus the redesign-era decision / failure / design-validation events (`onboarding_skip_clicked`, `onboarding_pdf_picker_dismissed`, `onboarding_path_chosen`, `portfolio_import_failed`, `onboarding_password_override_used`, `onboarding_app_family_selected`, `onboarding_portal_opened`, `onboarding_auto_refresh_setup_completed`, `onboarding_done_nudge_clicked`); plus `insight_viewed` / `app_started` / `app_returned` plus `$exception` from uncaught errors. CAS upload diagnostics omit filenames and upstream bodies; `portfolio_imported` uses bucketed fund, added, already-present, removed, and rejected counts rather than exact statement counts. Per-event dimensions documented in `docs/plans/phase-6-cas-onboarding/00-onboarding-redesign.md` → "Analytics Events". Gated by `EXPO_PUBLIC_POSTHOG_KEY`.
   - **Client UX performance**: explicit low-cardinality timing and cache-health events `navigation_performance`, `ux_screen_ready`, `ux_interaction_latency`, `ux_slow_event`, `ux_js_stall`, `ux_cache_health`, `perf_mark`, `persister_restore_completed`, and `persister_restore_failed`. These intentionally avoid autocapture/session replay and never include fund IDs, transaction IDs, route pathnames, or financial values. Dashboard by `surface`, `readiness`, `source_event`, `platform`, `app_version`, and `eas_update_id`; alert on p95 `ux_screen_ready.elapsed_ms`, sustained `ux_slow_event` spikes grouped by `source_event`, and `ux_cache_health.blob_size_bucket = 5MB+`.
-  - **Supabase Edge Functions**: `cas_parse_success` / `cas_parse_failed` (parse-cas-pdf), `cas_inbound_imported` / `cas_inbound_failed` / `cas_inbound_crashed` (cas-webhook-resend), `sync_completed` / `sync_failed` per cron job. Direct-upload events and inbound events emitted after inbox-token resolution use the same Supabase user ID as the client analytics identity, preserving a per-user denominator without adding identity to event properties; only genuinely userless jobs use a `system:*` identity. CAS event properties expose only allowlisted outcome/reason codes, parser dialect, status, environment, and bucketed fund/transaction/write-failure counts. They never include user/import/transaction/fund identifiers, recipient or filename data, raw payloads, exception text, or financial values. Direct HTTP capture from the function adds no JSR dependency or cold-start import. Server env: `POSTHOG_PROJECT_KEY`, `POSTHOG_HOST`, `APP_ENVIRONMENT`.
+  - **Supabase Edge Functions**: `cas_parse_success` / `cas_parse_failed` (parse-cas-pdf), `cas_inbound_imported` / `cas_inbound_failed` / `cas_inbound_crashed` (cas-webhook-resend), `sync_completed` / `sync_failed` per cron job. Direct-upload events and inbound events emitted after inbox-token resolution use the same Supabase user ID as the client analytics identity, preserving a per-user denominator without adding identity to event properties; only genuinely userless jobs use a `system:*` identity. CAS event properties expose only allowlisted outcome/reason codes, parser dialect, status, environment, and bucketed fund/added/already-present/removed/rejected/write-failure counts. They never include user/import/transaction/fund identifiers, recipient or filename data, raw payloads, exception text, or financial values. Direct HTTP capture from the function adds no JSR dependency or cold-start import. Server env: `POSTHOG_PROJECT_KEY`, `POSTHOG_HOST`, `APP_ENVIRONMENT`.
   - **Vercel Python parser**: `cas_parser_python_outcome` reports an allowlisted outcome/reason, parser dialect, and bucketed counts. It follows the same CAS privacy boundary as the Edge Functions and never emits raw parser errors or statement data. Reads `EXPO_PUBLIC_POSTHOG_KEY` / `EXPO_PUBLIC_POSTHOG_HOST` from the same Vercel project env vars that the Expo web build inlines, so a single setting powers both consumers. (`APP_ENVIRONMENT` stays non-prefixed since there's no Expo equivalent.)
 - **Vercel Speed Insights + Web Analytics** — Web Vitals (LCP / INP / CLS) per-route and infrastructure-side page views for the Vercel-served web build. Complements PostHog (which captures user-journey events but not Web Vitals).
 - **Supabase Logs** — Auth, Edge Function, and Database logs viewable in the dashboard. Auth log level is set to "errors only" by default; set to "info" temporarily when debugging sign-in flows.

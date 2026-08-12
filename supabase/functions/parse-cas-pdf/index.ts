@@ -247,6 +247,9 @@ Deno.serve(async (req) => {
   const {
     fundsUpdated,
     transactionsAdded,
+    transactionsDuplicate,
+    transactionsRemoved,
+    reconciliationConflicts,
     catalogHydrationRequested,
     errors,
   } = await importCASData(
@@ -258,6 +261,9 @@ Deno.serve(async (req) => {
     dialect: preflightSummary.dialect,
     fundsUpdated,
     transactionsAdded,
+    transactionsDuplicate,
+    transactionsRemoved,
+    reconciliationConflicts,
     errors,
   });
   const status = outcome.status;
@@ -291,7 +297,11 @@ Deno.serve(async (req) => {
       user.id,
     );
     return json(
-      { error: userMessageForCASFailure(failureReason), reason: failureReason },
+      {
+        ...outcome.response,
+        error: userMessageForCASFailure(failureReason),
+        reason: failureReason,
+      },
       { status: importFailureHttpStatus(failureReason) },
     );
   }

@@ -63,6 +63,7 @@ export interface CASImportResult {
   fundsUpdated: number;
   transactionsAdded: number;
   transactionsDuplicate: number;
+  transactionsRemoved: number;
   reconciliationConflicts: number;
   catalogHydrationRequested: number;
   errors: string[];
@@ -220,6 +221,7 @@ function reconciliationFailure(reason: CASWriteFailureReason): CASImportResult {
     fundsUpdated: 0,
     transactionsAdded: 0,
     transactionsDuplicate: 0,
+    transactionsRemoved: 0,
     reconciliationConflicts: 0,
     catalogHydrationRequested: 0,
     errors: [auditErrorCode(reason)],
@@ -238,6 +240,7 @@ export async function importCASData(
   let fundsUpdated = 0;
   let transactionsAdded = 0;
   let transactionsDuplicate = 0;
+  let transactionsRemoved = 0;
   let reconciliationConflicts = 0;
   let catalogHydrationRequested = 0;
   const errors: string[] = [];
@@ -253,8 +256,8 @@ export async function importCASData(
   // Deployment is function-first, then migration. During that short window the
   // capability RPC is absent and the new function must reject before the first
   // domain read/write rather than running against the legacy uniqueness shape.
-  const schemaCapability = await supabase.rpc('cas_import_schema_version_v2');
-  if (schemaCapability.error || schemaCapability.data !== 2) {
+  const schemaCapability = await supabase.rpc('cas_import_schema_version_v3');
+  if (schemaCapability.error || schemaCapability.data !== 3) {
     return reconciliationFailure('reconciliation_read_failed');
   }
 
@@ -352,6 +355,7 @@ export async function importCASData(
       fundsUpdated: 0,
       transactionsAdded: 0,
       transactionsDuplicate,
+      transactionsRemoved: 0,
       reconciliationConflicts,
       catalogHydrationRequested: 0,
       errors: [auditErrorCode('reconciliation_conflict')],
@@ -411,6 +415,7 @@ export async function importCASData(
       const funds = Number(payload?.fund_count ?? 0);
       const provisionalSchemes = Number(payload?.provisional_scheme_count ?? 0);
       transactionsAdded += Number.isInteger(inserted) && inserted >= 0 ? inserted : 0;
+      transactionsRemoved += Number.isInteger(deleted) && deleted >= 0 ? deleted : 0;
       fundsUpdated += Number.isInteger(funds) && funds >= 0 ? funds : 0;
       catalogHydrationRequested += Number.isInteger(provisionalSchemes)
         && provisionalSchemes >= 0
@@ -422,10 +427,11 @@ export async function importCASData(
   }
 
   console.log(
-    '[import-cas] completed funds=%s transactions=%s duplicates=%s conflicts=%s write_failures=%s',
+    '[import-cas] completed funds=%s added=%s duplicates=%s removed=%s conflicts=%s write_failures=%s',
     bucketCount(fundsUpdated),
     bucketCount(transactionsAdded),
     bucketCount(transactionsDuplicate),
+    bucketCount(transactionsRemoved),
     bucketCount(reconciliationConflicts),
     bucketCount(errors.length),
   );
@@ -433,6 +439,7 @@ export async function importCASData(
     fundsUpdated,
     transactionsAdded,
     transactionsDuplicate,
+    transactionsRemoved,
     reconciliationConflicts,
     catalogHydrationRequested,
     errors,

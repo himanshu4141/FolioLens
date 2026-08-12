@@ -138,6 +138,11 @@ Activation recency must be decided before closing-balance value: stale positive,
 zero, and missing evidence preserves an existing holding's prior state only while
 the committed post-plan ledger remains non-empty, while current or new-holding
 evidence uses the shared resolver's balance/transaction rules.
+Keep the exact import-outcome audit fields when translating this path: added,
+already-present, removed, and rejected/conflict counts must come from the committed
+atomic result, not attempted rows. The Q5 v3 capability is a deployment-order guard,
+not a Supabase-specific business dependency, and can become an ordinary schema-version
+check in a replacement backend.
 
 Update `src/lib/functions/index.ts` to point at the new endpoints. Consumer code
 should stay on the wrapper.

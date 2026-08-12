@@ -111,12 +111,12 @@ sequenceDiagram
       loop phase 2: validated payloads
         SB->>DB: page existing affected transactions
         SB->>SB: reconcile gross cash + units<br/>before any domain mutation
-        SB->>DB: exact-ID reversal deletes<br/>+ planned user_fund/transaction writes
+        SB->>DB: one atomic catalog/holding/activation/<br/>exact reversal + transaction plan
       end
       SB->>DB: UPDATE cas_import<br/>(status='success', exact counts)
     end
 
-    SB->>SB: build notify body<br/>(generic status, safe reason,<br/>exact success counts, environment)
+    SB->>SB: build notify body<br/>(generic status, safe reason,<br/>added/already-present/removed/rejected,<br/>environment)
     SB->>SB: sign HMAC-SHA256<br/>(FOLIOLENS_INBOUND_ROUTER_SECRET)
     SB->>N: POST signed body<br/>x-foliolens-signature<br/>x-foliolens-timestamp
     N->>N: verify FolioLens HMAC
@@ -139,6 +139,7 @@ sequenceDiagram
 8. **Depository schemas are header-owned.** CDSL/NSDL issuer text from the first three pages is a routing and diagnostic hint only. Financial fields come from a validated table-local map or a leading page-header map that covers sibling tables on that page; scheme-local maps cannot leak into a new table. Repeated headers/page breaks are supported, while missing or ambiguous required headers fail with `unsupported_layout`.
 9. **Password fallback is optional.** Profile-based imports try PAN first and PAN plus DOB only when DOB is available. A custom password override is used exclusively, so missing DOB does not block a first attempt.
 10. **Economic reconciliation is provider-neutral and complete before mutation.** The shared importer pages affected history, then requires gross cash and units together for exact or split/combined equivalence. Genuine identical rows retain deterministic ordinals. Partial overlap and ambiguous same-day or reversal candidates return an allowlisted conflict before any domain write; a historical reversal can delete only one exact transaction ID.
+11. **Outcome and later freshness are explicit.** The audit and signed notification share exact added, already-present, removed, and rejected counts from the atomic result. Because inbound import occurs outside an open client request, native initial-session/foreground immutable-ID sync and the web persisted-cache freshness probe refresh transaction-derived views; no-op/conflict outcomes create no server transaction drift.
 
 ## Diagnostic answers per the issue
 
