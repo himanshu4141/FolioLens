@@ -18,6 +18,7 @@ import { fundViewRepo } from '@/src/lib/data/userFund';
 import { useSession } from '@/src/hooks/useSession';
 import { STALE_TIMES } from '@/src/lib/queryStaleTimes';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
+import { bucketCount } from '@/src/lib/uxTelemetry';
 
 export interface UserFundRow {
   id: string | null;
@@ -45,7 +46,7 @@ export async function fetchUserFunds(userId: string): Promise<UserFundRow[]> {
     .from()
     .select(FUND_COLUMNS)
     .eq('user_id', userId);
-  perfEnd(fundsSpanId, { rows: data?.length ?? 0 });
+  perfEnd(fundsSpanId, { rows_bucket: bucketCount(data?.length ?? 0) });
   if (error) throw error;
   return (data ?? []) as UserFundRow[];
 }

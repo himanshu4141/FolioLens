@@ -1,5 +1,6 @@
 \set ON_ERROR_STOP on
 \set QUIET 1
+\getenv target_import_id Q5_TARGET_IMPORT_ID
 
 \if :{?target_import_id}
 \else
@@ -11,8 +12,19 @@ begin transaction isolation level repeatable read read only;
 
 with target_guard as (
   -- The primary key guarantees at most one row; division by zero makes a
-  -- missing target a hard failure without a temp table in read-only mode.
-  select 1 / count(*) as value
+  -- missing target or cross-owner attribution a hard failure without a temp
+  -- table in read-only mode.
+  select 1 / case
+    when count(*) = 1 and not exists (
+      select 1
+      from public.transaction as t
+      join public.cas_import as owned_import
+        on owned_import.id = :'target_import_id'::uuid
+      where t.cas_import_id = :'target_import_id'::uuid
+        and t.user_id is distinct from owned_import.user_id
+    ) then 1
+    else 0
+  end as value
   from public.cas_import
   where id = :'target_import_id'::uuid
 ), target_rows as (

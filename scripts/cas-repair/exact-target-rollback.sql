@@ -1,5 +1,6 @@
 \set ON_ERROR_STOP on
 \set QUIET 1
+\getenv expected_restore_count Q5_EXPECTED_RESTORE_COUNT
 
 \if :{?expected_restore_count}
 \else
@@ -31,6 +32,15 @@ begin
   end if;
   if (select count(distinct cas_import_id) from q5_restore) <> 1 then
     raise exception using errcode = 'P0001', message = 'q5_restore_scope_invalid';
+  end if;
+  if exists (
+    select 1
+    from q5_restore as backup_row
+    left join public.cas_import as owned_import on owned_import.id = backup_row.cas_import_id
+    where owned_import.id is null
+      or backup_row.user_id is distinct from owned_import.user_id
+  ) then
+    raise exception using errcode = 'P0001', message = 'q5_restore_owner_mismatch';
   end if;
 end;
 $$;

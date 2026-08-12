@@ -16,20 +16,24 @@ The repair is not part of a normal deployment. Do not put runtime values in shel
 
 ## Safety model
 
-The only deletion predicate is `transaction.cas_import_id = target`. The dry run hashes the complete exact-target row set and every unrelated transaction row. The apply step takes a short table lock, recomputes the approved counts and hashes, requires the literal immediate-approval phrase, deletes only the exact provenance target, and proves the unrelated count and digest are unchanged before commit. Any mismatch aborts the database transaction.
+The only deletion predicate is `transaction.cas_import_id = target`. The dry run first proves the target audit exists and every attributed row belongs to that audit's owner, then hashes the complete exact-target row set and every unrelated transaction row. The apply step takes a short table lock, repeats the ownership proof, recomputes the approved counts and hashes, requires the literal immediate-approval phrase, deletes only the exact provenance target, and proves the unrelated count and digest are unchanged before commit. Any mismatch aborts the database transaction.
 
 The encrypted backup contains the complete target rows and is private. The helper pipes database output directly to AES-256 encryption, writes both backup and key with mode 0600, and prints only the encrypted file's SHA-256 digest. Never run the backup SQL by itself because its standard output is intentionally the recoverable row stream.
 
 ## Private local setup
 
-Populate these values without echoing them:
+Install the PostgreSQL client (`libpq`) locally, or set `Q5_PSQL_BIN` to an executable `psql` path. Populate these values without echoing them:
 
-    Q5_DEV_DB_URL
+    Q5_DEV_DB_HOST
+    Q5_DEV_DB_PORT          # optional; defaults to 5432
+    Q5_DEV_DB_NAME          # optional; defaults to postgres
+    Q5_DEV_DB_USER
+    Q5_DEV_DB_PASSWORD
     Q5_TARGET_IMPORT_ID
     Q5_BACKUP_PATH
     Q5_BACKUP_KEY_FILE
 
-The wrapper refuses a database URL that does not contain the documented shared-dev Supabase project reference. Keep the encrypted backup and key in separate local locations outside the repository. Do not place either in a cloud-synchronized directory.
+The wrapper passes the password, exact import ID, approved manifest, and approval phrase only through the child process environment, never in command arguments. It accepts either the exact direct shared-dev database host/user pair or an official Supabase pooler host with the exact shared-dev project-scoped user and refuses every other target. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
 
 ## Read-only dry run
 
@@ -54,6 +58,8 @@ Run:
     scripts/cas-repair/run-exact-target-repair.sh backup
 
 The only permitted output is `backup_sha256`. Confirm the encrypted backup and key both exist, are non-empty, are mode 0600, and are not inside the repository. Perform a recovery rehearsal against a disposable local database before requesting live mutation approval. The rehearsal must prove the complete target digest is restored and that a duplicate primary key aborts the rollback.
+
+The wrapper creates the encrypted backup through a same-directory temporary file and renames it only after both database export and encryption succeed. It refuses to overwrite an existing backup.
 
 ## Immediate approval gate
 
@@ -83,15 +89,15 @@ Then run immediately:
 
     scripts/cas-repair/run-exact-target-repair.sh apply
 
-Permitted output is only the deleted count and `unrelated_unchanged: true`. Any other result is a stop condition.
+Before contacting the database, the wrapper recomputes the encrypted file digest and proves the supplied key can decrypt it. Inside the same serializable transaction as the deletion, the apply SQL loads the backup into a temporary table and proves its exact row count, import scope, and complete-row digest match the approved target manifest. The plaintext temporary file is mode 0600 and is deleted on every exit. Permitted output is only the deleted count and `unrelated_unchanged: true`. Any other result is a stop condition.
 
 ## Recovery
 
-Rollback is for a verified repair failure, not routine testing. Populate `Q5_EXPECTED_RESTORE_COUNT`, then run:
+Rollback is for a verified repair failure, not routine testing. Populate `Q5_EXPECTED_RESTORE_COUNT` and the approved `Q5_BACKUP_SHA256`, then run:
 
     scripts/cas-repair/run-exact-target-repair.sh rollback
 
-The helper decrypts to a mode-0600 temporary file, restores all columns in one serializable transaction only when every backed-up primary key is absent, and deletes the plaintext on exit. It reports only restored count and conflict status.
+The helper decrypts to a mode-0600 temporary file, restores all columns in one serializable transaction only when every backed-up primary key is absent and every row still belongs to the target audit owner, and deletes the plaintext on exit. It reports only restored count and conflict status.
 
 ## Post-repair proof
 

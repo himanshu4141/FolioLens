@@ -213,11 +213,31 @@ describe('sync.reconcileTransactionSnapshot — orchestration', () => {
     expect(analytics.track).toHaveBeenCalledWith(
       'tx_cache_reconciled',
       expect.objectContaining({
-        local_count: 2,
-        server_count: 1,
-        drift: -1,
+        local_count_bucket: '1-10',
+        server_count_bucket: '1-10',
+        drift_bucket: '1-10',
+        drift_direction: 'server_lower',
         rebuilt: true,
       }),
+    );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'tx_cache_reconciled',
+      expect.objectContaining({ local_count: expect.anything() }),
+    );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'perf_mark',
+      expect.objectContaining({ user_id_hint: expect.anything() }),
+    );
+    expect(analytics.track).toHaveBeenCalledWith(
+      'db_sync_complete',
+      expect.objectContaining({
+        tx_inserted_bucket: '0',
+        error_count_bucket: '0',
+      }),
+    );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'db_sync_complete',
+      expect.objectContaining({ tx_inserted: expect.anything() }),
     );
   });
 

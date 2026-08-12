@@ -1499,6 +1499,8 @@ function DoneStep({
                 <Text style={styles.bold}>{result!.removed} removed</Text>
               </>
             ) : null}
+            {' · '}
+            <Text style={styles.bold}>{result!.rejected} rejected</Text>
           </Text>
         ) : autoRefreshReady ? (
           <Text style={styles.successBody}>

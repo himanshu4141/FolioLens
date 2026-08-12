@@ -208,6 +208,7 @@ export default function PDFScreen() {
             <Text style={styles.successText}>
               {result.transactionsAdded} added · {result.transactionsAlreadyPresent} already present
               {result.transactionsRemoved > 0 ? ` · ${result.transactionsRemoved} removed` : ''}
+              {' · '}{result.transactionsRejected} rejected
             </Text>
             <TouchableOpacity style={styles.doneBtn} onPress={goBackToImportOptions}>
               <Text style={styles.doneBtnText}>Back to import setup</Text>
