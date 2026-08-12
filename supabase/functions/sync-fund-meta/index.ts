@@ -15,7 +15,7 @@
  *   mfdata.in — backup for fields where OpenFolio status != 'value' /
  *               'officially_absent' / 'not_applicable'; also provides
  *               mfdata_family_id.
- *   mfapi.in  — fallback for ISIN only.
+ *   mfapi.in  — canonical AMFI identity for provisional CAS rows and ISIN fallback.
  *
  * Staleness: schemes synced within META_STALE_DAYS days are skipped.
  * Schedule: daily cron (existing pg_cron job, unchanged cadence).
@@ -35,6 +35,15 @@ import { isSchemeMetaFresh } from '../_shared/scheme-meta-cache.ts';
 import { resolveB1Field } from '../_shared/b1-field-resolution.ts';
 import { resolveSebiCategory, broadCategoryFromSebi } from '../_shared/portfolio-utils.ts';
 import { mergeMfdataReturns, mergeOfReturns } from '../_shared/period-returns.ts';
+import {
+  benchmarkForCategory,
+  categoryNameForHydration,
+  parseMfapiSchemeIdentity,
+  pendingIdentityIsDue,
+  uniqueSchemeCodes,
+  type BenchmarkIdentity,
+  type MfapiSchemeIdentity,
+} from '../_shared/scheme-identity.ts';
 
 const META_STALE_DAYS = 7;
 const MFDATA_USER_AGENT = 'Mozilla/5.0 (compatible; FolioLens/1.0; +https://foliolens.app)';
@@ -104,13 +113,12 @@ async function fetchMFDataScheme(schemeCode: number): Promise<MFDataSchemePayloa
   return body ?? null;
 }
 
-async function fetchMfapiIsin(schemeCode: number): Promise<string | null> {
+async function fetchMfapiIdentity(schemeCode: number): Promise<MfapiSchemeIdentity | null> {
   const res = await fetchWithTimeout(`https://api.mfapi.in/mf/${schemeCode}`, {
     headers: { 'User-Agent': MFDATA_USER_AGENT },
   });
   if (!res.ok) throw new Error(`mfapi HTTP ${res.status}`);
-  const body = await res.json();
-  return body?.meta?.isin_growth ?? null;
+  return parseMfapiSchemeIdentity(await res.json());
 }
 
 // ── Per-field status helper ────────────────────────────────────────────────
@@ -134,9 +142,26 @@ Deno.serve(async (req) => {
     return new Response('Method not allowed', { status: 405, headers: CORS });
   }
 
-  console.log('[sync-fund-meta] invoked, method=%s', req.method);
+  const requestBody = req.method === 'POST'
+    ? await req.json().catch(() => null) as { mode?: unknown } | null
+    : null;
+  const pendingIdentityOnly = requestBody?.mode === 'pending-cas-identities';
+  console.log(
+    '[sync-fund-meta] invoked, method=%s mode=%s',
+    req.method,
+    pendingIdentityOnly ? 'pending-cas-identities' : 'all',
+  );
 
   const supabase = createServiceClient();
+
+  // This Edge function is deployed before migrations. Fail explicitly before
+  // reading Q4 columns so the old-schema/new-function window is bounded and
+  // diagnosable rather than breaking midway through the scheduled job.
+  const capability = await supabase.rpc('cas_import_schema_version_v2');
+  if (capability.error || capability.data !== 2) {
+    console.error('[sync-fund-meta] cas_identity_schema_unavailable');
+    return json({ success: false, error: 'schema_version_unavailable' }, { status: 503 });
+  }
 
   // ── OpenFolio client (optional — degrades to mfdata if not configured) ──
   let openfolio: ReturnType<typeof createOpenFolioClient> | null = null;
@@ -158,12 +183,36 @@ Deno.serve(async (req) => {
     return json({ success: false, error: fundsError.message }, { status: 500 });
   }
 
-  if (!funds?.length) {
-    console.log('[sync-fund-meta] no active funds found');
+  const { data: pendingIdentityRows, error: pendingIdentityError } = await supabase
+    .from('scheme_master')
+    .select('scheme_code, cas_identity_hydration_attempted_at')
+    .not('cas_identity_created_at', 'is', null)
+    .is('cas_identity_hydrated_at', null);
+
+  if (pendingIdentityError) {
+    console.error('[sync-fund-meta] failed to load provisional identities:', pendingIdentityError.message);
+    return json({ success: false, error: pendingIdentityError.message }, { status: 500 });
+  }
+
+  if ((pendingIdentityOnly || !funds?.length) && !pendingIdentityRows?.length) {
+    console.log('[sync-fund-meta] no active funds or provisional identities found');
     return json({ success: true, updated: 0 });
   }
 
-  const allSchemeCodes = [...new Set((funds ?? []).map((f) => f.scheme_code as number))];
+  const now = Date.now();
+  const pendingIdentityCodes = (pendingIdentityRows ?? [])
+    .filter((row) => pendingIdentityIsDue(
+      row.cas_identity_hydration_attempted_at as string | null,
+      now,
+    ))
+    .map((row) => row.scheme_code as number);
+  const pendingIdentityCodeSet = new Set(pendingIdentityCodes);
+  const allSchemeCodes = pendingIdentityOnly
+    ? uniqueSchemeCodes([], pendingIdentityCodes)
+    : uniqueSchemeCodes(
+      (funds ?? []).map((fund) => fund.scheme_code as number),
+      pendingIdentityCodes,
+    );
 
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
@@ -183,13 +232,15 @@ Deno.serve(async (req) => {
     ]),
   );
 
-  const now = Date.now();
   const freshCodes = new Set(
     (masterRows ?? [])
       .filter((r) => isSchemeMetaFresh(r, META_STALE_DAYS, now))
       .map((r) => r.scheme_code as number),
   );
-  const schemeCodes = allSchemeCodes.filter((c) => !freshCodes.has(c));
+  const schemeCodes = allSchemeCodes.filter((code) =>
+    pendingIdentityCodeSet.has(code) || !freshCodes.has(code)
+  );
+  const skippedCount = allSchemeCodes.length - schemeCodes.length;
 
   // Pre-load existing risk_ratios so we can merge OF volatility without
   // wiping mfdata beta (used by mfdataGuards.ts → useFundDetail.ts).
@@ -211,15 +262,40 @@ Deno.serve(async (req) => {
     }
   }
 
+  const benchmarksByCategory = new Map<string, BenchmarkIdentity>();
+  if (pendingIdentityCodes.length > 0) {
+    const { data: benchmarkRows, error: benchmarkError } = await supabase
+      .from('benchmark_mapping')
+      .select('scheme_category, benchmark_index, benchmark_index_symbol')
+      .not('scheme_category', 'is', null);
+    if (benchmarkError) {
+      console.error('[sync-fund-meta] benchmark_mapping_read_failed');
+      return json({ success: false, error: 'benchmark_mapping_read_failed' }, { status: 500 });
+    }
+    for (const row of benchmarkRows ?? []) {
+      // Seed rows use AMFI display labels while hydration persists canonical
+      // SEBI keys. Resolve the seed through the same alias vocabulary before
+      // the one-shot pending-identity lookup.
+      const category = typeof row.scheme_category === 'string'
+        ? resolveSebiCategory(row.scheme_category, null) ?? ''
+        : '';
+      if (!category || benchmarksByCategory.has(category)) continue;
+      benchmarksByCategory.set(category, {
+        benchmarkIndex: row.benchmark_index as string,
+        benchmarkIndexSymbol: row.benchmark_index_symbol as string,
+      });
+    }
+  }
+
   console.log(
-    '[sync-fund-meta] %d active — %d fresh (skipped), %d stale/new (processing)',
+    '[sync-fund-meta] %d active/pending — %d fresh (skipped), %d stale/new (processing)',
     allSchemeCodes.length,
-    freshCodes.size,
+    skippedCount,
     schemeCodes.length,
   );
 
   if (!schemeCodes.length) {
-    return json({ success: true, updated: 0, skipped: freshCodes.size });
+    return json({ success: true, updated: 0, skipped: skippedCount });
   }
 
   let updated = 0;
@@ -231,25 +307,19 @@ Deno.serve(async (req) => {
     try {
       // ── 1. OpenFolio primary ──────────────────────────────────────────────
       let ofMeta: FundMetadata | null = null;
-      let ofError: string | null = null;
 
       if (openfolio) {
         try {
           ofMeta = await openfolio.getMetadata(schemeCode);
           if (ofMeta === null) {
-            ofError = 'OpenFolio 404 (not indexed)';
-            console.log('[sync-fund-meta] scheme %d: OpenFolio 404', schemeCode);
+            console.log('[sync-fund-meta] provider_result source=openfolio status=missing');
           } else {
             console.log(
-              '[sync-fund-meta] scheme %d: OpenFolio ok (aum=%s ret_1y=%s)',
-              schemeCode,
-              ofMeta.metrics?.aum_cr ?? 'null',
-              ofMeta.metrics?.returns?.ret_1y ?? 'null',
+              '[sync-fund-meta] provider_result source=openfolio status=ok',
             );
           }
-        } catch (err) {
-          ofError = (err as Error).message;
-          console.warn('[sync-fund-meta] scheme %d: OpenFolio error (%s)', schemeCode, ofError);
+        } catch {
+          console.warn('[sync-fund-meta] provider_result source=openfolio status=error');
         }
       }
 
@@ -273,18 +343,23 @@ Deno.serve(async (req) => {
       if (needsMfdata) {
         try {
           mfdata = await fetchMFDataScheme(schemeCode);
-        } catch (err) {
-          console.warn('[sync-fund-meta] scheme %d: mfdata error (%s)', schemeCode, (err as Error).message);
+        } catch {
+          console.warn('[sync-fund-meta] provider_result source=mfdata status=error');
         }
       }
 
-      // ── 4. ISIN from mfapi if not in mfdata ──────────────────────────────
+      // ── 4. Canonical AMFI identity from mfapi ────────────────────────────
+      // Pending CAS-created identities must fetch the canonical name even if
+      // mfdata already supplied an ISIN. They remain pending until that name
+      // succeeds, so a partial provider response is retried on the next run.
+      let mfapiIdentity: MfapiSchemeIdentity | null = null;
       let isin = mfdata?.isin ?? null;
-      if (!isin) {
+      if (!isin || pendingIdentityCodeSet.has(schemeCode)) {
         try {
-          isin = await fetchMfapiIsin(schemeCode);
-        } catch (err) {
-          console.warn('[sync-fund-meta] scheme %d: mfapi isin error (%s)', schemeCode, (err as Error).message);
+          mfapiIdentity = await fetchMfapiIdentity(schemeCode);
+          isin ??= mfapiIdentity?.isin ?? null;
+        } catch {
+          console.warn('[sync-fund-meta] provider_result source=mfapi status=error');
         }
       }
 
@@ -292,16 +367,29 @@ Deno.serve(async (req) => {
       // Use ofMeta (not hasOfMetrics) — a sparse-but-present OF record still
       // stamps openfolio_meta_synced_at and must not be counted as failed.
       const hasMfdata = mfdata != null;
-      if (!ofMeta && !hasMfdata && !isin) {
-        console.warn('[sync-fund-meta] scheme %d: no data from any source — skipping', schemeCode);
+      if (!ofMeta && !hasMfdata && !isin && !mfapiIdentity) {
+        if (pendingIdentityCodeSet.has(schemeCode)) {
+          await supabase
+            .from('scheme_master')
+            .update({ cas_identity_hydration_attempted_at: new Date().toISOString() })
+            .eq('scheme_code', schemeCode);
+        }
+        console.warn('[sync-fund-meta] provider_result status=no_data');
         failed++;
         continue;
       }
 
       const syncedAt = new Date().toISOString();
       const payload: Record<string, unknown> = { fund_meta_synced_at: syncedAt };
+      if (pendingIdentityCodeSet.has(schemeCode)) {
+        payload.cas_identity_hydration_attempted_at = syncedAt;
+      }
 
       if (isin) payload.isin = isin;
+      if (pendingIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
+        payload.scheme_name = mfapiIdentity.schemeName;
+        payload.cas_identity_hydrated_at = syncedAt;
+      }
 
       // ── Metrics from OpenFolio (when available), mfdata fallback ─────────
       if (ofMeta) {
@@ -472,14 +560,26 @@ Deno.serve(async (req) => {
       // through. Writes into the same `payload` upserted below.
       {
         const existingMaster = masterByCode.get(schemeCode);
+        const categoryName = categoryNameForHydration(
+          pendingIdentityCodeSet.has(schemeCode),
+          mfapiIdentity?.schemeName,
+          existingMaster?.scheme_name,
+        );
         const sebiCategory = resolveSebiCategory(
           mfdata?.category ?? existingMaster?.scheme_category ?? null,
-          existingMaster?.scheme_name ?? null,
+          categoryName,
         );
         if (sebiCategory) {
           payload.sebi_category = sebiCategory;
           const broad = broadCategoryFromSebi(sebiCategory);
           if (broad) payload.scheme_category = broad;
+          const benchmark = pendingIdentityCodeSet.has(schemeCode)
+            ? benchmarkForCategory(sebiCategory, benchmarksByCategory)
+            : null;
+          if (benchmark) {
+            payload.benchmark_index = benchmark.benchmarkIndex;
+            payload.benchmark_index_symbol = benchmark.benchmarkIndexSymbol;
+          }
         }
       }
 
@@ -490,22 +590,18 @@ Deno.serve(async (req) => {
         .eq('scheme_code', schemeCode);
 
       if (updateError) {
-        console.error('[sync-fund-meta] scheme %d: update error: %s', schemeCode, updateError.message);
+        console.error('[sync-fund-meta] catalog_update_failed');
         failed++;
       } else {
         const source = ofMeta ? 'openfolio' : 'mfdata';
         console.log(
-          '[sync-fund-meta] scheme %d: updated (source=%s er=%s aum=%s ret_1y=%s)',
-          schemeCode,
+          '[sync-fund-meta] catalog_update_succeeded source=%s',
           source,
-          payload.expense_ratio ?? 'null',
-          payload.aum_cr ?? 'null',
-          (ofMeta?.metrics?.returns?.ret_1y ?? 'null'),
         );
         updated++;
       }
-    } catch (err) {
-      console.error('[sync-fund-meta] scheme %d: unexpected error: %s', schemeCode, String(err));
+    } catch {
+      console.error('[sync-fund-meta] catalog_update_unexpected_error');
       failed++;
     }
   }
@@ -515,7 +611,7 @@ Deno.serve(async (req) => {
     '[sync-fund-meta] done — updated=%d failed=%d skipped=%d elapsed_ms=%d',
     updated,
     failed,
-    freshCodes.size,
+    skippedCount,
     elapsedMs,
   );
 
@@ -525,11 +621,11 @@ Deno.serve(async (req) => {
       job: 'sync-fund-meta',
       updated,
       failed,
-      skipped: freshCodes.size,
+      skipped: skippedCount,
       elapsed_ms: elapsedMs,
     },
     'system:sync-fund-meta',
   );
 
-  return json({ success: true, updated, failed, skipped: freshCodes.size });
+  return json({ success: true, updated, failed, skipped: skippedCount });
 });

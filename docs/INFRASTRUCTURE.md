@@ -127,8 +127,8 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 
 | Function | Trigger | Purpose | Status |
 |---------|---------|---------|--------|
-| `parse-cas-pdf` | Native upload from app | Forwards a binary PDF to the Vercel-hosted Python parser, enforces the shared CAS preflight before any domain operation, then runs `_shared/import-cas.ts` | Active |
-| `cas-webhook-resend` | Vercel inbound router | Receives FolioLens-signed CAS payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, parses and preflights every PDF, then imports only if the whole message is safe | Active |
+| `parse-cas-pdf` | Native upload from app | Forwards a binary PDF to the Vercel-hosted Python parser, enforces the shared CAS preflight before any domain operation, then runs the catalog-isolated atomic plan in `_shared/import-cas.ts`; newly created provisional identities trigger `sync-fund-meta` | Active |
+| `cas-webhook-resend` | Vercel inbound router | Receives FolioLens-signed CAS payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, parses and preflights every PDF, rejects cross-attachment scheme overlap, then combines only disjoint statements into one atomic import plan | Active |
 | `delete-account` | Settings → account deletion | Deletes app/user data and then removes the Supabase auth user via admin APIs | Active |
 | `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Calls OpenFolio `/health` first and skips schemes already current through `db_nav_latest`; missing/stale held schemes use OpenFolio `/v1/nav/delta` in ≤500-scheme batches with per-scheme watermarks. Failed delta batches fall back to per-scheme OpenFolio; missing/truncated schemes from a successful delta batch fall back to mfapi. | Active |
 | `sync-index` | pg_cron (hourly weekdays) | Pulls benchmark closes into `index_history` using NSE TRI first, EODHD backup, and Yahoo Finance for legacy price-return symbols | Active |
@@ -138,7 +138,7 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
 | `universe-backfill` | GitHub Actions (monthly 16th @ 01:00 UTC, hourly resume on the 16th–17th) + manual `workflow_dispatch` | Bulk-syncs OpenFolio composition + metadata for the full active AMFI universe, not just held funds. Cursor state + done markers live in `app_config`; the pg_cron marker on the 15th @ 23:00 UTC starts a fresh monthly cycle. | Active |
 | `sync-fund-portfolios` | pg_cron (daily, 02:10 UTC) | Backup holdings source: mfdata.in portfolio composition → `source='category_fallback'`; category-rules sentinel rows updated daily. Legacy `source='amfi'` rows can still be read and ranked by the selector. | Active |
-| `sync-fund-meta` | pg_cron (daily) | Refreshes held-fund scheme metadata from OF `/v1/metadata` (AUM, expense ratio, risk, family_name, plan_type, option_type, of_family_id) then fills any remaining unresolved B1 fields from mfdata.in. OF values take precedence; mfdata only writes fields still NULL after the OF pass. | Active |
+| `sync-fund-meta` | pg_cron (daily) + CAS provisional-identity trigger | Refreshes held-fund scheme metadata from OF `/v1/metadata`, includes due CAS-created identities until canonical hydration succeeds, obtains canonical AMFI name/ISIN from mfapi, derives category from canonical identity, and fills the benchmark pair from `benchmark_mapping`. Failed canonical attempts back off 24 hours. OF values take precedence; mfdata fills unresolved B1 fields. | Active |
 | `regenerate-index-snapshots` | pg_cron (weekdays 14:00 UTC) | Regenerates public JSON index-history snapshots in `static-snapshots` after index sync. | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
 | `freshness-check` | pg_cron daily + monthly | Daily audit of silent failures plus monthly OpenFolio coverage reconciliation. Sends consolidated alert via Resend router on failure. See "Runbook: Freshness check" below. | Active |
@@ -154,6 +154,12 @@ callers (`sync-nav`, `sync-index`, `nav-retention`, `openfolio-sync`,
 also intentional for public app boundaries such as `demo-signup`,
 `fetch-fund-nav`, and `fetch-fund-snapshot`, which validate their own payloads and
 use service-role access only server-side.
+
+CAS domain mutation uses `cas_import_schema_version_v2()` and
+`apply_cas_import_plans_v2(uuid, uuid, jsonb)`. Both functions are
+`SECURITY INVOKER`, executable only by `service_role`, and absent from client
+wrappers. Function-first deployment is intentional: new Edge code probes the v2
+capability and fails before domain access until the migration has been applied.
 
 
 ### One-time per-project bootstrap: `public.app_config`

@@ -211,6 +211,11 @@ export function deriveSchemeCategoryFromName(
 export const SEBI_CATEGORY_ALIASES: Record<string, string> = {
   'large & mid-cap': 'large & mid cap fund',  // hyphenated, no "fund" suffix
   'large & mid cap': 'large & mid cap fund',   // missing "fund" suffix
+  // benchmark_mapping uses these AMFI display labels while CATEGORY_RULES and
+  // name-derived hydration use the canonical values on the right.
+  'sectoral/thematic fund': 'sectoral/thematic',
+  'index fund': 'index funds',
+  'etf': 'other etfs',
 };
 
 /**

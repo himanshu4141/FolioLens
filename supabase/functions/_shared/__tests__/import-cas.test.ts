@@ -23,8 +23,13 @@ import {
  */
 function buildMockSupabase({
   fundId = 'fund-id-1',
-  benchmarkRows = [],
   existingFundRows,
+  existingSchemeRows = [{
+    scheme_code: 119551,
+    scheme_name: 'Authoritative DSP Small Cap Fund',
+    scheme_category: 'Equity: Small Cap',
+    benchmark_index: 'Nifty Smallcap 250 TRI',
+  }],
   existingTransactionRows = [],
   fundReadError = null,
   transactionReadError = null,
@@ -37,12 +42,8 @@ function buildMockSupabase({
   rpcMutationError = null,
 }: {
   fundId?: string;
-  benchmarkRows?: Array<{
-    scheme_category: string;
-    benchmark_index: string;
-    benchmark_index_symbol: string;
-  }>;
   existingFundRows?: Array<Record<string, unknown>>;
+  existingSchemeRows?: Array<Record<string, unknown>>;
   existingTransactionRows?: Array<Record<string, unknown>>;
   fundReadError?: { message: string } | null;
   transactionReadError?: { message: string } | null;
@@ -59,7 +60,13 @@ function buildMockSupabase({
   let upsertedSchemeRow: Record<string, unknown> | null = null;
   const fundUpdateCalls: Array<Record<string, unknown>> = [];
   const storedTransactions = [...existingTransactionRows];
-  const storedFunds = existingFundRows ?? [{ id: fundId, scheme_code: 119551 }];
+  const storedFunds = existingFundRows ?? [{
+    id: fundId,
+    user_id: 'user-1',
+    scheme_code: 119551,
+    is_active: true,
+  }];
+  const storedSchemes = existingSchemeRows.map((row) => ({ ...row }));
 
   function makeDeleteChain(): Record<string, unknown> {
     const eqLog: Array<[string, unknown]> = [];
@@ -114,15 +121,23 @@ function buildMockSupabase({
     return { error: schemeMasterError };
   });
 
-  const benchmarkSelectMock = jest.fn(() => ({ data: benchmarkRows }));
   const existingFundSelectMock = jest.fn(() => {
-    const result = { data: storedFunds, error: fundReadError };
+    let requestedUserId: unknown = null;
     const chain: { eq: jest.Mock; in: jest.Mock } = {
       eq: jest.fn(),
       in: jest.fn(),
     };
-    chain.eq.mockImplementation(() => chain);
-    chain.in.mockImplementation(() => result);
+    chain.eq.mockImplementation((column: string, value: unknown) => {
+      if (column === 'user_id') requestedUserId = value;
+      return chain;
+    });
+    chain.in.mockImplementation((_column: string, values: unknown[]) => ({
+      data: storedFunds.filter((row) =>
+        (row.user_id ?? 'user-1') === requestedUserId
+        && values.includes(row.scheme_code)
+      ),
+      error: fundReadError,
+    }));
     return chain;
   });
   const existingTransactionRangeMock = jest.fn((from: number, to: number) => ({
@@ -141,7 +156,6 @@ function buildMockSupabase({
   });
 
   const fromMock = jest.fn((table: string) => {
-    if (table === 'benchmark_mapping') return { select: benchmarkSelectMock };
     if (table === 'scheme_master') return { upsert: schemeMasterUpsertMock };
     if (table === 'user_fund') {
       return {
@@ -164,25 +178,38 @@ function buildMockSupabase({
     functionName: string,
     args?: Record<string, unknown>,
   ) => {
-    if (functionName === 'cas_reconciliation_schema_version_v1') {
+    if (functionName === 'cas_import_schema_version_v2') {
       return {
-        data: schemaCapabilityError ? null : 1,
+        data: schemaCapabilityError ? null : 2,
         error: schemaCapabilityError,
       };
     }
-    if (functionName !== 'apply_cas_transaction_plans_v1') {
+    if (functionName !== 'apply_cas_import_plans_v2') {
       return { data: null, error: { message: 'unknown rpc' } };
     }
 
     const plans = (args?.p_plans ?? []) as Array<{
-      fund_id: string;
+      scheme_code: number;
+      provisional_scheme_name: string;
+      expected_fund_id: string | null;
       expected_transaction_ids: string[];
+      closing_units: number | null;
+      closing_balance_is_current: boolean;
       delete_ids: string[];
       inserts: Record<string, unknown>[];
     }>;
     for (const plan of plans) {
+      const currentFund = storedFunds.find((row) =>
+        row.scheme_code === plan.scheme_code
+        && (row.user_id ?? 'user-1') === args?.p_user_id
+      );
+      const currentFundId = typeof currentFund?.id === 'string' ? currentFund.id : null;
+      if (currentFundId !== plan.expected_fund_id) {
+        return { data: null, error: { message: 'cas_snapshot_conflict' } };
+      }
+      if (currentFundId === null) continue;
       const currentIds = storedTransactions
-        .filter((row) => row.fund_id === plan.fund_id)
+        .filter((row) => row.fund_id === currentFundId)
         .map((row) => String(row.id))
         .sort();
       if (JSON.stringify(currentIds) !== JSON.stringify([...plan.expected_transaction_ids].sort())) {
@@ -192,22 +219,53 @@ function buildMockSupabase({
 
     // The real RPC is one Postgres transaction. Injected failures are checked
     // before this mock mutates its shared state so tests prove all-or-nothing.
-    if (rpcMutationError || txDeleteError || txUpsertError) {
+    if (
+      rpcMutationError || schemeMasterError || fundUpsertError
+      || txDeleteError || txUpsertError
+    ) {
       return {
         data: null,
-        error: rpcMutationError ?? txDeleteError ?? txUpsertError,
+        error: rpcMutationError ?? schemeMasterError ?? fundUpsertError
+          ?? txDeleteError ?? txUpsertError,
       };
     }
 
     let deletedCount = 0;
     let insertedCount = 0;
+    let provisionalSchemeCount = 0;
     for (const plan of plans) {
+      if (!storedSchemes.some((row) => row.scheme_code === plan.scheme_code)) {
+        storedSchemes.push({
+          scheme_code: plan.scheme_code,
+          scheme_name: plan.provisional_scheme_name,
+          scheme_category: null,
+          benchmark_index: null,
+          benchmark_index_symbol: null,
+          cas_identity_created_at: '2026-08-11T00:00:00.000Z',
+          cas_identity_hydrated_at: null,
+        });
+        provisionalSchemeCount++;
+      }
+      let currentFund = storedFunds.find((row) =>
+        row.scheme_code === plan.scheme_code
+        && (row.user_id ?? 'user-1') === args?.p_user_id
+      );
+      if (!currentFund) {
+        currentFund = {
+          id: storedFunds.length === 0 ? fundId : `fund-id-${storedFunds.length + 1}`,
+          user_id: args?.p_user_id,
+          scheme_code: plan.scheme_code,
+          is_active: false,
+        };
+        storedFunds.push(currentFund);
+      }
+      const currentFundId = String(currentFund.id);
       for (const id of plan.delete_ids) {
         const chain = deleteMock() as { eq: (col: string, val: unknown) => unknown };
         chain.eq('id', id);
-        chain.eq('fund_id', plan.fund_id);
+        chain.eq('fund_id', currentFundId);
         const index = storedTransactions.findIndex((row) =>
-          row.id === id && row.fund_id === plan.fund_id
+          row.id === id && row.fund_id === currentFundId
         );
         if (index >= 0) {
           storedTransactions.splice(index, 1);
@@ -217,16 +275,28 @@ function buildMockSupabase({
       if (plan.inserts.length > 0) {
         const rows = plan.inserts.map((row) => ({
           user_id: args?.p_user_id,
-          fund_id: plan.fund_id,
+          fund_id: currentFundId,
           cas_import_id: args?.p_import_id,
           ...row,
         }));
         const response = txUpsertMock(rows);
         insertedCount += response.count ?? 0;
       }
+      const isActive = plan.closing_units === 0 && !plan.closing_balance_is_current
+        ? Boolean(currentFund.is_active)
+        : plan.closing_units === null
+        ? storedTransactions.some((row) => row.fund_id === currentFundId)
+        : plan.closing_units > 0;
+      currentFund.is_active = isActive;
+      fundUpdateCalls.push({ id: currentFundId, is_active: isActive });
     }
     return {
-      data: { inserted_count: insertedCount, deleted_count: deletedCount },
+      data: {
+        fund_count: plans.length,
+        inserted_count: insertedCount,
+        deleted_count: deletedCount,
+        provisional_scheme_count: provisionalSchemeCount,
+      },
       error: null,
     };
   });
@@ -243,6 +313,8 @@ function buildMockSupabase({
     userFundUpdateMock,
     fundUpdateCalls,
     storedTransactions,
+    storedFunds,
+    storedSchemes,
     rpcMock,
     getUpsertedRows: () => upsertedRows,
     getUpsertedSchemeRow: () => upsertedSchemeRow,
@@ -488,16 +560,20 @@ describe('importCASData()', () => {
     expect(rows[0].transaction_date).toBe('2024-01-10');
   });
 
-  it('uses benchmark mapping when the scheme category is present', async () => {
-    const { supabase, getUpsertedSchemeRow } = buildMockSupabase({
-      benchmarkRows: [
-        {
-          scheme_category: 'Equity',
-          benchmark_index: 'Nifty 100',
-          benchmark_index_symbol: '^NIFTY100',
-        },
-      ],
+  it('does not let CAS name, category, or benchmark claims change an existing catalog row', async () => {
+    const existingCatalog = {
+      scheme_code: 119551,
+      scheme_name: 'Authoritative Catalog Name',
+      scheme_category: 'Equity: Small Cap',
+      benchmark_index: 'Nifty Smallcap 250 TRI',
+      benchmark_index_symbol: '^NIFTYSC250',
+      cas_identity_created_at: null,
+      cas_identity_hydrated_at: null,
+    };
+    const { supabase, storedSchemes, schemeMasterUpsertMock } = buildMockSupabase({
+      existingSchemeRows: [existingCatalog],
     });
+    const beforeDigest = JSON.stringify(storedSchemes);
 
     const parsed = minimalCAS([
       { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
@@ -505,13 +581,72 @@ describe('importCASData()', () => {
 
     await importCASData(supabase, 'user-1', 'import-1', parsed);
 
-    expect(getUpsertedSchemeRow()).toMatchObject({
+    expect(JSON.stringify(storedSchemes)).toBe(beforeDigest);
+    expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('creates only a marked minimal identity for a missing scheme and converges on retry', async () => {
+    const {
+      supabase,
+      storedSchemes,
+      storedFunds,
+      storedTransactions,
+    } = buildMockSupabase({ existingFundRows: [], existingSchemeRows: [] });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const first = await importCASData(supabase, 'user-1', 'import-1', parsed);
+    const second = await importCASData(supabase, 'user-1', 'import-2', parsed);
+
+    expect(first).toMatchObject({
+      fundsUpdated: 1,
+      transactionsAdded: 1,
+      catalogHydrationRequested: 1,
+      errors: [],
+    });
+    expect(second).toMatchObject({
+      fundsUpdated: 1,
+      transactionsAdded: 0,
+      transactionsDuplicate: 1,
+      catalogHydrationRequested: 0,
+      errors: [],
+    });
+    expect(storedSchemes).toEqual([{
       scheme_code: 119551,
       scheme_name: 'DSP Small Cap Fund - Regular Plan - Growth',
-      scheme_category: 'Equity',
-      benchmark_index: 'Nifty 100',
-      benchmark_index_symbol: '^NIFTY100',
+      scheme_category: null,
+      benchmark_index: null,
+      benchmark_index_symbol: null,
+      cas_identity_created_at: '2026-08-11T00:00:00.000Z',
+      cas_identity_hydrated_at: null,
+    }]);
+    expect(storedFunds).toHaveLength(1);
+    expect(storedFunds[0]).toMatchObject({ is_active: true });
+    expect(storedTransactions).toHaveLength(1);
+  });
+
+  it('keeps one user CAS from changing the provisional catalog identity created by another user', async () => {
+    const { supabase, storedSchemes, storedFunds } = buildMockSupabase({
+      existingFundRows: [],
+      existingSchemeRows: [],
     });
+    const firstPayload = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 10, amount: 1000, nav: 100 },
+    ]);
+    await importCASData(supabase, 'user-1', 'import-1', firstPayload);
+    const digestAfterFirstUser = JSON.stringify(storedSchemes);
+
+    const secondPayload = minimalCAS([
+      { date: '2024-02-10', type: 'PURCHASE', units: 20, amount: 2000, nav: 100 },
+    ]);
+    secondPayload.mutual_funds![0].schemes![0].name = 'Untrusted Cross-User Rename';
+    secondPayload.mutual_funds![0].schemes![0].type = 'Other';
+    const second = await importCASData(supabase, 'user-2', 'import-2', secondPayload);
+
+    expect(JSON.stringify(storedSchemes)).toBe(digestAfterFirstUser);
+    expect(second.catalogHydrationRequested).toBe(0);
+    expect(storedFunds.filter((row) => row.scheme_code === 119551)).toHaveLength(2);
   });
 
   it('applies Math.abs to negative units and amounts from the CAS', async () => {
@@ -732,14 +867,14 @@ describe('importCASData()', () => {
 
     await importCASData(supabase, 'user-1', 'import-1', parsed);
 
-    expect(userFundUpdateMock).toHaveBeenCalledTimes(1);
+    expect(userFundUpdateMock).not.toHaveBeenCalled();
     expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
     // No transaction upsert should happen
     expect(txUpsertMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT mark inactive when closing units are 0 but real transactions exist (full redemption)', async () => {
-    const { supabase, userFundUpdateMock, getUpsertedRows } = buildMockSupabase();
+  it('marks a fully redeemed fund inactive from the complete zero closing balance', async () => {
+    const { supabase, userFundUpdateMock, fundUpdateCalls, getUpsertedRows } = buildMockSupabase();
 
     // Fully redeemed fund: real purchase + real redemption, closing = 0
     const parsed = minimalCASWithUnits(0, [
@@ -749,13 +884,51 @@ describe('importCASData()', () => {
 
     await importCASData(supabase, 'user-1', 'import-1', parsed);
 
-    // Real transactions remain → is_active NOT set to false
+    // Historical transactions remain, but a complete zero balance is stronger
+    // evidence for current holding activation.
     expect(userFundUpdateMock).not.toHaveBeenCalled();
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
     expect(getUpsertedRows()).toHaveLength(2);
   });
 
-  it('does NOT mark inactive when mf.units is undefined (no closing balance in CAS)', async () => {
-    const { supabase, userFundUpdateMock } = buildMockSupabase();
+  it('does not let an older zero-balance statement hide a holding with newer history', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingTransactionRows: [
+        storedPurchase({ id: 'older', transaction_date: '2024-01-10' }),
+        storedPurchase({
+          id: 'newer',
+          transaction_date: '2024-02-10',
+          units: 20,
+          amount: 2400,
+        }),
+      ],
+    });
+    const parsed = minimalCASWithUnits(0, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
+  });
+
+  it('preserves activation when a zero-balance statement is only equal-date evidence', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingTransactionRows: [storedPurchase({ id: 'same-day' })],
+    });
+    const parsed = minimalCASWithUnits(0, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
+  });
+
+  it('derives active state from committed transactions when closing balance is absent', async () => {
+    const { supabase, userFundUpdateMock, fundUpdateCalls } = buildMockSupabase();
 
     // No units field — should not trigger inactive marking
     const parsed = minimalCAS([
@@ -765,10 +938,11 @@ describe('importCASData()', () => {
     await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(userFundUpdateMock).not.toHaveBeenCalled();
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
   });
 
   it('sums closing units for the same scheme across folios before inactivation', async () => {
-    const { supabase, userFundUpdateMock } = buildMockSupabase();
+    const { supabase, userFundUpdateMock, fundUpdateCalls } = buildMockSupabase();
     const parsed: CASParseResult = {
       mutual_funds: [
         {
@@ -792,6 +966,7 @@ describe('importCASData()', () => {
 
     expect(result.reconciliationConflicts).toBe(0);
     expect(userFundUpdateMock).not.toHaveBeenCalled();
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
   });
 
   // ── Null-type filtering ────────────────────────────────────────────────────
@@ -867,7 +1042,7 @@ describe('importCASData()', () => {
     expect(fromMock).not.toHaveBeenCalled();
   });
 
-  it('records an error when the fund upsert fails and continues to next scheme', async () => {
+  it('rolls back the atomic import when holding creation fails', async () => {
     const { supabase } = buildMockSupabase({
       fundUpsertError: { message: 'DB error' },
     });
@@ -879,11 +1054,11 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toBe('cas_import:fund_write_failed');
+    expect(result.errors[0]).toBe('cas_import:transaction_write_failed');
     expect(result.fundsUpdated).toBe(0);
   });
 
-  it('records an error when the shared scheme upsert fails and skips fund creation', async () => {
+  it('rolls back the atomic import when provisional catalog creation fails', async () => {
     const { supabase, userFundUpsertMock } = buildMockSupabase({
       schemeMasterError: { message: 'scheme write failed' },
     });
@@ -895,13 +1070,15 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toBe('cas_import:scheme_write_failed');
+    expect(result.errors[0]).toBe('cas_import:transaction_write_failed');
     expect(result.fundsUpdated).toBe(0);
     expect(userFundUpsertMock).not.toHaveBeenCalled();
   });
 
-  it('records an error when transaction upsert fails after fund creation', async () => {
-    const { supabase } = buildMockSupabase({
+  it('leaves no provisional catalog or holding row when transaction insertion fails', async () => {
+    const { supabase, storedSchemes, storedFunds } = buildMockSupabase({
+      existingFundRows: [],
+      existingSchemeRows: [],
       txUpsertError: { message: 'transaction write failed' },
     });
 
@@ -913,8 +1090,11 @@ describe('importCASData()', () => {
 
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toBe('cas_import:transaction_write_failed');
-    expect(result.fundsUpdated).toBe(1);
+    expect(result.fundsUpdated).toBe(0);
     expect(result.transactionsAdded).toBe(0);
+    expect(result.catalogHydrationRequested).toBe(0);
+    expect(storedSchemes).toEqual([]);
+    expect(storedFunds).toEqual([]);
   });
 
   it('returns correct counts for funds and transactions', async () => {
@@ -1008,6 +1188,7 @@ describe('importCASData()', () => {
       transactionsAdded: 0,
       transactionsDuplicate: 0,
       reconciliationConflicts: 0,
+      catalogHydrationRequested: 0,
       errors: ['cas_import:reconciliation_read_failed'],
     });
     expect(schemeMasterUpsertMock).not.toHaveBeenCalled();

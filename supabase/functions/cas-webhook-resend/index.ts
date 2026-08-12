@@ -35,6 +35,7 @@ import {
   isGmailForwardingVerification,
 } from '../_shared/gmail-verification.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
+import { hasCrossAttachmentSchemeOverlap } from '../_shared/cas-attachment-boundary.ts';
 import {
   CASPreflightError,
   assertCASPreflight,
@@ -305,6 +306,7 @@ async function processImportInBackground(args: BackgroundJobArgs) {
   const authEmailPromise = getAuthEmail(supabase, userId);
   let totalFunds = 0;
   let totalTransactions = 0;
+  let totalCatalogHydrationRequested = 0;
   const allErrors: string[] = [];
 
   try {
@@ -387,6 +389,15 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       }
     }
 
+    // Q3 multiplicity and closing-balance aggregation are statement-scoped.
+    // Keep disjoint attachments in one atomic call, but fail closed when two
+    // independent statements mention the same scheme rather than flattening
+    // their rows/balances into one synthetic statement.
+    if (allErrors.length === 0 && hasCrossAttachmentSchemeOverlap(parsedPayloads)) {
+      allErrors.push(auditErrorCode('reconciliation_conflict'));
+      console.warn('[cas-webhook-resend] attachment_overlap_rejected');
+    }
+
     if (allErrors.length > 0) {
       await finalizeImportRow(supabase, importId, 'failed', 0, 0, allErrors);
       const firstReason = reasonFromAuditError(allErrors[0]);
@@ -411,23 +422,35 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       return;
     }
 
-    // Phase 2 begins only after the complete attachment set passed preflight.
-    for (const parsedResult of parsedPayloads) {
-      const { fundsUpdated, transactionsAdded, errors } = await importCASData(
-        supabase,
-        userId,
-        importId,
-        parsedResult,
-      );
-      totalFunds += fundsUpdated;
-      totalTransactions += transactionsAdded;
-      allErrors.push(...errors);
-    }
-
     const firstDialect = dialects[0] ?? 'unknown_standard';
     const dialect = dialects.every((value) => value === firstDialect)
       ? firstDialect
       : 'unknown_standard';
+
+    // Phase 2 begins only after the complete attachment set passed preflight.
+    // Disjoint validated statements can share one atomic plan without losing
+    // statement-scoped multiplicity or closing-balance semantics.
+    const combinedPayload: CanonicalCASParseResult = {
+      contract_version: 1,
+      source_dialect: dialect,
+      mutual_funds: parsedPayloads.flatMap((payload) => payload.mutual_funds),
+    };
+    const {
+      fundsUpdated,
+      transactionsAdded,
+      catalogHydrationRequested,
+      errors,
+    } = await importCASData(
+      supabase,
+      userId,
+      importId,
+      combinedPayload,
+    );
+    totalFunds = fundsUpdated;
+    totalTransactions = transactionsAdded;
+    totalCatalogHydrationRequested = catalogHydrationRequested;
+    allErrors.push(...errors);
+
     const outcome = buildImportOutcome({
       source: 'email',
       dialect,
@@ -471,10 +494,24 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     }
 
     if (totalFunds > 0) {
+      const headers = { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` };
       fetch(`${SUPABASE_URL}/functions/v1/sync-nav`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+        headers,
       }).catch(() => console.error('[cas-webhook-resend] sync_nav_trigger_failed'));
+
+      if (totalCatalogHydrationRequested > 0) {
+        try {
+          const response = await fetch(`${SUPABASE_URL}/functions/v1/sync-fund-meta`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'pending-cas-identities' }),
+          });
+          if (!response.ok) console.error('[cas-webhook-resend] sync_fund_meta_trigger_failed');
+        } catch {
+          console.error('[cas-webhook-resend] sync_fund_meta_trigger_failed');
+        }
+      }
     }
   } catch {
     const outcome = buildImportCrashOutcome({

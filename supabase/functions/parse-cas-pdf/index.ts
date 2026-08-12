@@ -30,6 +30,8 @@ import {
   type CASPreflightSummary,
 } from '../_shared/cas-import-contract.ts';
 
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
+
 const LOCAL_CAS_PARSER_URL = Deno.env.get('LOCAL_CAS_PARSER_URL') ?? '';
 const CAS_PARSER_SHARED_SECRET = Deno.env.get('CAS_PARSER_SHARED_SECRET') ?? '';
 const VERCEL_PROTECTION_BYPASS_TOKEN = Deno.env.get('VERCEL_PROTECTION_BYPASS_TOKEN') ?? '';
@@ -242,7 +244,12 @@ Deno.serve(async (req) => {
     return json(outcome.response.body, { status: outcome.response.status });
   }
 
-  const { fundsUpdated, transactionsAdded, errors } = await importCASData(
+  const {
+    fundsUpdated,
+    transactionsAdded,
+    catalogHydrationRequested,
+    errors,
+  } = await importCASData(
     supabase, user.id, importId, parsed,
   );
 
@@ -303,6 +310,19 @@ Deno.serve(async (req) => {
       method: 'POST',
       headers,
     }).catch(() => console.error('[parse-cas-pdf] sync_index_trigger_failed'));
+
+    if (catalogHydrationRequested > 0) {
+      console.log('[parse-cas-pdf] triggering sync-fund-meta for provisional catalog identity');
+      EdgeRuntime.waitUntil(
+        fetch(`${SUPABASE_URL}/functions/v1/sync-fund-meta`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'pending-cas-identities' }),
+        }).then((response) => {
+          if (!response.ok) console.error('[parse-cas-pdf] sync_fund_meta_trigger_failed');
+        }).catch(() => console.error('[parse-cas-pdf] sync_fund_meta_trigger_failed')),
+      );
+    }
   }
 
   trackServerEvent(
