@@ -60,7 +60,12 @@ function buildMockSupabase({
   let upsertedSchemeRow: Record<string, unknown> | null = null;
   const fundUpdateCalls: Array<Record<string, unknown>> = [];
   const storedTransactions = [...existingTransactionRows];
-  const storedFunds = existingFundRows ?? [{ id: fundId, user_id: 'user-1', scheme_code: 119551 }];
+  const storedFunds = existingFundRows ?? [{
+    id: fundId,
+    user_id: 'user-1',
+    scheme_code: 119551,
+    is_active: true,
+  }];
   const storedSchemes = existingSchemeRows.map((row) => ({ ...row }));
 
   function makeDeleteChain(): Record<string, unknown> {
@@ -189,6 +194,7 @@ function buildMockSupabase({
       expected_fund_id: string | null;
       expected_transaction_ids: string[];
       closing_units: number | null;
+      closing_balance_is_current: boolean;
       delete_ids: string[];
       inserts: Record<string, unknown>[];
     }>;
@@ -276,7 +282,9 @@ function buildMockSupabase({
         const response = txUpsertMock(rows);
         insertedCount += response.count ?? 0;
       }
-      const isActive = plan.closing_units === null
+      const isActive = plan.closing_units === 0 && !plan.closing_balance_is_current
+        ? Boolean(currentFund.is_active)
+        : plan.closing_units === null
         ? storedTransactions.some((row) => row.fund_id === currentFundId)
         : plan.closing_units > 0;
       currentFund.is_active = isActive;
@@ -881,6 +889,42 @@ describe('importCASData()', () => {
     expect(userFundUpdateMock).not.toHaveBeenCalled();
     expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
     expect(getUpsertedRows()).toHaveLength(2);
+  });
+
+  it('does not let an older zero-balance statement hide a holding with newer history', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingTransactionRows: [
+        storedPurchase({ id: 'older', transaction_date: '2024-01-10' }),
+        storedPurchase({
+          id: 'newer',
+          transaction_date: '2024-02-10',
+          units: 20,
+          amount: 2400,
+        }),
+      ],
+    });
+    const parsed = minimalCASWithUnits(0, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
+  });
+
+  it('preserves activation when a zero-balance statement is only equal-date evidence', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingTransactionRows: [storedPurchase({ id: 'same-day' })],
+    });
+    const parsed = minimalCASWithUnits(0, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
   });
 
   it('derives active state from committed transactions when closing balance is absent', async () => {

@@ -60,13 +60,13 @@ The supplied private statements may be used only as independent, transient, aggr
 
 ## Approach
 
-Add nullable `cas_identity_created_at` and `cas_identity_hydrated_at` columns to `scheme_master`. Existing rows remain byte-for-byte unchanged with both columns null. The atomic function may insert a missing row with only `scheme_code`, validated `scheme_name`, and `cas_identity_created_at`; `scheme_category`, benchmarks, and all provider metadata remain null. It uses `ON CONFLICT DO NOTHING`, so a CAS can never update an existing catalog row, including a provisional row created by a different user.
+Add nullable CAS identity creation, hydration, and last-attempt timestamps to `scheme_master`. Existing rows remain unchanged with all three columns null. The atomic function may insert a missing row with only `scheme_code`, validated `scheme_name`, and `cas_identity_created_at`; category, benchmarks, and provider metadata remain null until the provider writer runs. It uses `ON CONFLICT DO NOTHING`, so a CAS can never update an existing catalog row, including a provisional row created by a different user.
 
 Replace the Q3 capability and transaction-plan call in the importer with a Q4 capability and `apply_cas_import_plans_v2` call. The Edge function still performs preflight, reads the current fund/transaction snapshot, and builds the complete provider-neutral reconciliation plan before any write. Each database plan includes scheme code, provisional name, expected existing fund ID, expected transaction IDs, closing units or null, exact delete IDs, and canonical inserts.
 
 The database function validates the JSON shape and acquires deterministic advisory transaction locks for every user-and-scheme pair. After all locks are held, it inserts missing provisional catalog rows, resolves or creates each `user_fund`, and rejects a changed expected fund identity. It then revalidates every immutable transaction-ID snapshot before applying any delete or insert. A validation failure or injected database error aborts the whole PostgreSQL transaction, including catalog and holding inserts.
 
-Activation is calculated only after transaction mutation. A complete numeric closing balance greater than zero sets the holding active; a complete zero balance sets it inactive. When closing balance is unavailable, the final presence of at least one persisted economic transaction sets it active, otherwise inactive. This makes full redemptions inactive, preserves transaction-backed holdings from incomplete statements, and prevents active empty phantoms.
+Activation is calculated only after transaction mutation. A complete positive balance sets the holding active. A zero balance sets it inactive only when the latest statement transaction is newer than committed history or no history exists; stale/equal-date zero-balance imports preserve the current activation. When closing balance is unavailable, final persisted transaction presence decides. This makes a newly observed full redemption inactive without letting an older statement hide a later holding.
 
 The function returns exact inserted/deleted transaction counts, processed holding count, and count of newly created provisional catalog rows. `importCASData` reports zero funds and zero transactions on any function failure. A snapshot conflict retains the Q3 conflict result; other failures use the existing privacy-safe write reason. A successful retry rereads the committed state, produces duplicates rather than inserts, and returns no new provisional identities.
 
@@ -146,22 +146,24 @@ The isolated database proof must use the repository migration itself, not a rewr
 - 2026-08-11: Preserve origin and completion separately with `cas_identity_created_at` and `cas_identity_hydrated_at` rather than overwriting one source marker.
 - 2026-08-11: Authoritative identity hydration stays in `sync-fund-meta`; mfapi supplies canonical AMFI name/ISIN while OpenFolio and mfdata retain their existing metadata precedence.
 - 2026-08-11: Trigger the existing hydration job by aggregate provisional-creation result and let the job select pending rows; do not pass raw scheme-code targets through the external function contract.
-- 2026-08-11: A complete zero closing balance means inactive even when historical transactions remain. Without a complete balance, post-plan transaction existence is the activation fallback.
+- 2026-08-12: A complete zero closing balance means inactive only when the statement has newer activity than committed history (or no history exists). Equal-date ambiguity preserves current activation. This amends the initial decision after review proved statement closing balances lack independent period metadata.
 - 2026-08-11: No client cache version changes because the new columns and atomic result details do not enter client query payloads or persisted keys.
 - 2026-08-11: Keep the existing aggregate import outcome analytics unchanged. Q4 adds no user-facing step or safe diagnostic that needs a new PostHog event, and provider hydration logs remain aggregate-only.
 
 ## Amendments
 
-- Inbound email now combines every preflight-passed attachment into one canonical payload before calling the importer. This closes an attachment-level partial-commit gap that would otherwise remain outside the database transaction while preserving each statement row's independent preflight validation.
+- Inbound email combines only disjoint preflight-passed attachments into one atomic payload. Cross-attachment overlap on any normalized scheme code fails closed because Q3 multiplicity and closing balances are statement-scoped.
 - Immediate metadata hydration uses an explicit `pending-cas-identities` mode. The function still selects identifiers from the database and accepts no caller-supplied scheme-code list, but this avoids scanning unrelated active holdings after each CAS import. The scheduled/default mode continues to process active holdings plus pending identities.
+- Round-one review added a function-first capability guard to `sync-fund-meta`, canonical-name-only pending category derivation, provider-owned benchmark-pair hydration, aggregate-only operational logs, and 24-hour retry backoff for unresolved identities.
 
 ## Evidence
 
-- Focused Q4 importer, catalog-boundary, and identity tests: 3 suites, 113 tests passed.
-- Full Jest regression: 109 suites, 2,211 tests passed.
+- Focused round-one correction tests: 4 suites, 124 tests passed.
+- Full Jest regression after round-one corrections: 110 suites, 2,223 tests passed.
 - TypeScript typecheck, zero-warning lint, and `git diff --check`: passed.
 - The repository migration was applied to disposable isolated local Supabase/PostgreSQL stacks. Live SQL confirmed service-role-only execution, `SECURITY INVOKER`, existing-row catalog immutability across two users, positive/zero/missing-balance activation, minimal provisional creation, retry convergence, import ownership and closing-balance validation, and full rollback after an injected transaction-enum failure. Controlled overlapping sessions also proved one immutable identity with separate cross-user holdings and same-user stale-plan rejection without duplicates. Both stacks, databases, session logs, and proof files were deleted immediately afterward; no shared database was contacted.
-- Each supplied statement independently passed the current parser, financial preflight, and Q4 database-plan input contract. The local helper read credentials directly, emitted only separate statement pass/fail markers, held no combined statement payload, and was deleted with its scratch directory immediately afterward. No credential, filename, holder data, extracted row, statement-derived count, or financial value is retained in repository evidence.
+- Each supplied statement independently passed the current parser, financial preflight, and Q4 database-plan input contract before review and again after the round-one activation correction. For the final run the complete public AMFI catalog was downloaded before protected-file handling, network access was disabled while statement data was in memory, and the helper emitted only separate statement pass/fail markers. The helper, public catalog copy, and scratch directory were deleted immediately. No credential, filename, holder data, extracted row, statement-derived count, or financial value is retained in repository evidence.
+- Round-one Codex and Claude review produced eight actionable threads at `8c2deb471ea5d43bed59e3a548350d1de175e088`. One batch now rejects cross-attachment scheme overlap, protects activation from stale zero balances, derives pending category only from canonical identity, guards function-first schema ordering, hydrates benchmark pairs in the provider path, removes identifier-bearing per-scheme logs, and applies a 24-hour unresolved-identity backoff. The revised repository migration passed a fresh isolated live SQL proof for grants, stale/current zero activation, existing-catalog immutability, and injected-failure rollback; that stack and proof scratch were deleted.
 
 ## Progress
 

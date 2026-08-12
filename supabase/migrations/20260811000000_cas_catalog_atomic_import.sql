@@ -4,13 +4,17 @@
 
 alter table public.scheme_master
   add column cas_identity_created_at timestamptz,
-  add column cas_identity_hydrated_at timestamptz;
+  add column cas_identity_hydrated_at timestamptz,
+  add column cas_identity_hydration_attempted_at timestamptz;
 
 comment on column public.scheme_master.cas_identity_created_at is
   'Set only when CAS import had to create a minimal provisional scheme identity.';
 
 comment on column public.scheme_master.cas_identity_hydrated_at is
   'Set when an authoritative metadata writer replaces a CAS-provisional scheme identity.';
+
+comment on column public.scheme_master.cas_identity_hydration_attempted_at is
+  'Last canonical-identity attempt; bounds retries for unresolved provisional rows.';
 
 -- Edge deployment intentionally precedes migrations. The Q4 Edge code probes
 -- this function before its first domain read and fails closed while absent.
@@ -110,6 +114,12 @@ begin
       )
     then
       raise exception using errcode = 'P0001', message = 'cas_invalid_closing_units';
+    end if;
+
+    if not (plan_row ? 'closing_balance_is_current')
+      or jsonb_typeof(plan_row -> 'closing_balance_is_current') <> 'boolean'
+    then
+      raise exception using errcode = 'P0001', message = 'cas_invalid_closing_balance_recency';
     end if;
 
     if nullif(plan_row ->> 'expected_fund_id', '') is null then
@@ -252,7 +262,16 @@ begin
     select count(*)::integer into current_insert_count from inserted_rows;
     inserted_count := inserted_count + current_insert_count;
 
-    if jsonb_typeof(plan_row -> 'closing_units') = 'number' then
+    if jsonb_typeof(plan_row -> 'closing_units') = 'number'
+      and (plan_row ->> 'closing_units')::numeric = 0
+      and not (plan_row ->> 'closing_balance_is_current')::boolean
+    then
+      -- A stale zero-balance statement must not hide a holding whose current
+      -- history contains later activity. Preserve its existing activation.
+      select user_fund_row.is_active into final_is_active
+      from public.user_fund as user_fund_row
+      where user_fund_row.id = fund_uuid;
+    elsif jsonb_typeof(plan_row -> 'closing_units') = 'number' then
       closing_units_value := (plan_row ->> 'closing_units')::numeric;
       final_is_active := closing_units_value > 0;
     else

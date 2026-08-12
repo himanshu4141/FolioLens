@@ -35,6 +35,7 @@ import {
   isGmailForwardingVerification,
 } from '../_shared/gmail-verification.ts';
 import { trackServerEvent } from '../_shared/analytics.ts';
+import { hasCrossAttachmentSchemeOverlap } from '../_shared/cas-attachment-boundary.ts';
 import {
   CASPreflightError,
   assertCASPreflight,
@@ -388,6 +389,15 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       }
     }
 
+    // Q3 multiplicity and closing-balance aggregation are statement-scoped.
+    // Keep disjoint attachments in one atomic call, but fail closed when two
+    // independent statements mention the same scheme rather than flattening
+    // their rows/balances into one synthetic statement.
+    if (allErrors.length === 0 && hasCrossAttachmentSchemeOverlap(parsedPayloads)) {
+      allErrors.push(auditErrorCode('reconciliation_conflict'));
+      console.warn('[cas-webhook-resend] attachment_overlap_rejected');
+    }
+
     if (allErrors.length > 0) {
       await finalizeImportRow(supabase, importId, 'failed', 0, 0, allErrors);
       const firstReason = reasonFromAuditError(allErrors[0]);
@@ -418,8 +428,8 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       : 'unknown_standard';
 
     // Phase 2 begins only after the complete attachment set passed preflight.
-    // Import the validated folios as one plan so a later attachment cannot
-    // leave earlier catalog/holding/transaction writes committed on failure.
+    // Disjoint validated statements can share one atomic plan without losing
+    // statement-scoped multiplicity or closing-balance semantics.
     const combinedPayload: CanonicalCASParseResult = {
       contract_version: 1,
       source_dialect: dialect,

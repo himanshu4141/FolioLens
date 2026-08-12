@@ -54,11 +54,29 @@ describe('Q4 CAS catalog and atomic-write boundary', () => {
     expect(metadataWriter).toContain(".is('cas_identity_hydrated_at', null)");
     expect(metadataWriter).toContain('payload.scheme_name = mfapiIdentity.schemeName');
     expect(metadataWriter).toContain('payload.cas_identity_hydrated_at = syncedAt');
+    expect(metadataWriter).toContain('payload.cas_identity_hydration_attempted_at = syncedAt');
     expect(metadataWriter).not.toMatch(/scheme[_-]?codes?[^\n]*requestBody/i);
   });
 
-  it('combines all preflight-passed email attachments into one importer call', () => {
+  it('keeps disjoint email attachments atomic but rejects cross-attachment scheme overlap', () => {
+    expect(inboundEntry).toContain('hasCrossAttachmentSchemeOverlap(parsedPayloads)');
     expect(inboundEntry).toContain('parsedPayloads.flatMap((payload) => payload.mutual_funds)');
     expect(inboundEntry.match(/await importCASData\(/g)).toHaveLength(1);
+  });
+
+  it('probes Q4 capability before reading migration-owned identity columns', () => {
+    const capability = metadataWriter.indexOf("supabase.rpc('cas_import_schema_version_v2')");
+    const pendingRead = metadataWriter.indexOf(".not('cas_identity_created_at', 'is', null)");
+    expect(capability).toBeGreaterThan(-1);
+    expect(pendingRead).toBeGreaterThan(capability);
+  });
+
+  it('hydrates benchmark identity and keeps raw scheme codes out of metadata logs', () => {
+    expect(metadataWriter).toContain(".from('benchmark_mapping')");
+    expect(metadataWriter).toContain('payload.benchmark_index = benchmark.benchmarkIndex');
+    expect(metadataWriter).toContain(
+      'payload.benchmark_index_symbol = benchmark.benchmarkIndexSymbol',
+    );
+    expect(metadataWriter).not.toContain('scheme %d');
   });
 });

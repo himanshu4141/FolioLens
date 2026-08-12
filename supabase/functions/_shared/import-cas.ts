@@ -72,6 +72,7 @@ interface PreparedScheme {
   schemeCode: number;
   schemeName: string;
   closingUnits: number | null;
+  latestStatementDate: string | null;
   incomingRows: IncomingEconomicRow[];
   reversals: ReversalRequest[];
 }
@@ -106,6 +107,7 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
         schemeCode,
         schemeName: scheme.name ?? 'Unknown Fund',
         closingUnits: 0,
+        latestStatementDate: null,
         incomingRows: [],
         reversals: [],
       };
@@ -121,6 +123,10 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
       }
 
       for (const transaction of scheme.transactions) {
+        if (
+          prepared.latestStatementDate === null
+          || transaction.date > prepared.latestStatementDate
+        ) prepared.latestStatementDate = transaction.date;
         const currentSourceIndex = sourceIndex++;
         if (transaction.type.toUpperCase().trim() === 'REVERSAL') {
           prepared.reversals.push({
@@ -163,6 +169,7 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
 interface ExistingSnapshotRow {
   id: string;
   fundId: string;
+  transactionDate: string;
   economicRow: ExistingEconomicRow | null;
 }
 
@@ -200,7 +207,12 @@ function existingSnapshotRow(value: Record<string, unknown>): ExistingSnapshotRo
       eventOrdinal,
       casImportId: typeof value.cas_import_id === 'string' ? value.cas_import_id : null,
     };
-  return { id: value.id, fundId: value.fund_id, economicRow };
+  return {
+    id: value.id,
+    fundId: value.fund_id,
+    transactionDate: value.transaction_date,
+    economicRow,
+  };
 }
 
 function reconciliationFailure(reason: CASWriteFailureReason): CASImportResult {
@@ -272,6 +284,7 @@ export async function importCASData(
 
   const existingTransactions: ExistingEconomicRow[] = [];
   const snapshotIdsByFund = new Map<string, string[]>();
+  const latestDateByFund = new Map<string, string>();
   const existingFundIds = [...existingFundByScheme.values()];
   for (
     let from = 0;
@@ -297,6 +310,10 @@ export async function importCASData(
       const ids = snapshotIdsByFund.get(snapshotRow.fundId) ?? [];
       ids.push(snapshotRow.id);
       snapshotIdsByFund.set(snapshotRow.fundId, ids);
+      const latestDate = latestDateByFund.get(snapshotRow.fundId);
+      if (!latestDate || snapshotRow.transactionDate > latestDate) {
+        latestDateByFund.set(snapshotRow.fundId, snapshotRow.transactionDate);
+      }
       if (snapshotRow.economicRow) existingTransactions.push(snapshotRow.economicRow);
     }
     if (page.length < RECONCILIATION_PAGE_SIZE) break;
@@ -351,6 +368,12 @@ export async function importCASData(
     expected_fund_id: scheme.existingFundId,
     expected_transaction_ids: scheme.expectedTransactionIds,
     closing_units: scheme.closingUnits,
+    closing_balance_is_current: scheme.existingFundId === null
+      || latestDateByFund.get(scheme.existingFundId) === undefined
+      || (
+        scheme.latestStatementDate !== null
+        && scheme.latestStatementDate > latestDateByFund.get(scheme.existingFundId)!
+      ),
     delete_ids: scheme.plan.reversalDeleteIds,
     inserts: scheme.plan.inserts.map((transaction) => ({
       transaction_date: transaction.transactionDate,

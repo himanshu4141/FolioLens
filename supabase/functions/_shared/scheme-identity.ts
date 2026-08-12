@@ -3,6 +3,13 @@ export interface MfapiSchemeIdentity {
   isin: string | null;
 }
 
+export interface BenchmarkIdentity {
+  benchmarkIndex: string;
+  benchmarkIndexSymbol: string;
+}
+
+export const CAS_IDENTITY_RETRY_MS = 24 * 60 * 60 * 1000;
+
 export function uniqueSchemeCodes(
   activeSchemeCodes: number[],
   pendingIdentityCodes: number[],
@@ -26,4 +33,31 @@ export function parseMfapiSchemeIdentity(value: unknown): MfapiSchemeIdentity | 
       ? rawIsin.trim()
       : null,
   };
+}
+
+export function pendingIdentityIsDue(
+  attemptedAt: string | null | undefined,
+  nowMs: number,
+  retryMs = CAS_IDENTITY_RETRY_MS,
+): boolean {
+  if (!attemptedAt) return true;
+  const attemptedMs = Date.parse(attemptedAt);
+  return Number.isNaN(attemptedMs) || nowMs - attemptedMs >= retryMs;
+}
+
+export function categoryNameForHydration(
+  isPendingIdentity: boolean,
+  canonicalName: string | null | undefined,
+  existingName: string | null | undefined,
+): string | null {
+  if (isPendingIdentity) return canonicalName?.trim() || null;
+  return existingName?.trim() || null;
+}
+
+export function benchmarkForCategory(
+  category: string | null | undefined,
+  mappings: Map<string, BenchmarkIdentity>,
+): BenchmarkIdentity | null {
+  const key = category?.trim().toLowerCase();
+  return key ? mappings.get(key) ?? null : null;
 }

@@ -163,15 +163,20 @@ benchmark, ISIN, and provider metadata stay null. `sync-fund-meta` includes ever
 CAS-created row whose `cas_identity_created_at` is set and
 `cas_identity_hydrated_at` is still null, obtains canonical AMFI identity
 from mfapi, keeps OpenFolio-first/mfdata-fallback metadata precedence, and records
-successful identity hydration. Both import entry points trigger that provider route
-after creating a provisional identity.
+successful identity hydration. The same provider-owned update derives category only
+from canonical identity and fills the benchmark pair from `benchmark_mapping`.
+Failed identity attempts are timestamped and backed off for 24 hours. Both import
+entry points trigger that provider route after creating a provisional identity.
 
 Catalog insertion, user-holding creation, transaction snapshot revalidation, exact
 reversal deletes, transaction inserts, and holding activation run in one
 service-role-only PostgreSQL transaction. A complete positive closing balance marks
-the holding active and a complete zero balance marks it inactive; without a complete
-balance, committed post-plan transaction history decides. Any error rolls the whole
-plan back, so retry begins from either the old state or the complete new state.
+the holding active; a zero balance deactivates only when its latest statement row is
+newer than committed history (or no history exists), so an out-of-order statement cannot hide a current
+holding. Without a complete balance, committed post-plan transaction history decides.
+Any error rolls the whole plan back, so retry begins from either the old state or the
+complete new state. Inbound email rejects cross-attachment scheme overlap rather than
+merging independent statement multiplicity or closing balances.
 
 Rejected approaches remain rejected:
 
