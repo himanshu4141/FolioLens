@@ -273,8 +273,11 @@ Deno.serve(async (req) => {
       return json({ success: false, error: 'benchmark_mapping_read_failed' }, { status: 500 });
     }
     for (const row of benchmarkRows ?? []) {
+      // Seed rows use AMFI display labels while hydration persists canonical
+      // SEBI keys. Resolve the seed through the same alias vocabulary before
+      // the one-shot pending-identity lookup.
       const category = typeof row.scheme_category === 'string'
-        ? row.scheme_category.trim().toLowerCase()
+        ? resolveSebiCategory(row.scheme_category, null) ?? ''
         : '';
       if (!category || benchmarksByCategory.has(category)) continue;
       benchmarksByCategory.set(category, {

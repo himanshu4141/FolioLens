@@ -5,6 +5,7 @@ import {
   pendingIdentityIsDue,
   uniqueSchemeCodes,
 } from '../scheme-identity';
+import { resolveSebiCategory } from '../portfolio-utils';
 
 describe('CAS provisional scheme identity hydration', () => {
   it('includes pending provisional identities even when no active holding references them', () => {
@@ -55,4 +56,43 @@ describe('CAS provisional scheme identity hydration', () => {
     });
     expect(benchmarkForCategory(null, mappings)).toBeNull();
   });
+
+  it.each([
+    {
+      canonicalName: 'UTI Nifty 50 Index Fund - Direct Plan - Growth',
+      seededCategory: 'Index Fund',
+      expectedCategory: 'index funds',
+    },
+    {
+      canonicalName: 'Nippon India ETF Nifty BeES',
+      seededCategory: 'ETF',
+      expectedCategory: 'other etfs',
+    },
+    {
+      canonicalName: 'Nippon India Banking & Financial Services Fund - Growth',
+      seededCategory: 'Sectoral/Thematic Fund',
+      expectedCategory: 'sectoral/thematic',
+    },
+  ])(
+    'normalizes the $seededCategory benchmark row for canonical-name hydration',
+    ({ canonicalName, seededCategory, expectedCategory }) => {
+      const benchmark = {
+        benchmarkIndex: 'Canonical Benchmark TRI',
+        benchmarkIndexSymbol: '^CANONICAL',
+      };
+      const canonicalSeedKey = resolveSebiCategory(seededCategory, null);
+      expect(canonicalSeedKey).toBe(expectedCategory);
+
+      const mappings = new Map([[canonicalSeedKey as string, benchmark]]);
+      const categoryName = categoryNameForHydration(
+        true,
+        canonicalName,
+        'Untrusted Provisional CAS Name',
+      );
+      const hydratedCategory = resolveSebiCategory(null, categoryName);
+
+      expect(hydratedCategory).toBe(expectedCategory);
+      expect(benchmarkForCategory(hydratedCategory, mappings)).toEqual(benchmark);
+    },
+  );
 });

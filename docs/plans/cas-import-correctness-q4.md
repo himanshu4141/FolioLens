@@ -155,15 +155,17 @@ The isolated database proof must use the repository migration itself, not a rewr
 - Inbound email combines only disjoint preflight-passed attachments into one atomic payload. Cross-attachment overlap on any normalized scheme code fails closed because Q3 multiplicity and closing balances are statement-scoped.
 - Immediate metadata hydration uses an explicit `pending-cas-identities` mode. The function still selects identifiers from the database and accepts no caller-supplied scheme-code list, but this avoids scanning unrelated active holdings after each CAS import. The scheduled/default mode continues to process active holdings plus pending identities.
 - Round-one review added a function-first capability guard to `sync-fund-meta`, canonical-name-only pending category derivation, provider-owned benchmark-pair hydration, aggregate-only operational logs, and 24-hour retry backoff for unresolved identities.
+- Round-two review showed that the provider-owned benchmark writer still compared canonical hydration keys with unnormalized AMFI display labels from `benchmark_mapping`. Seed rows now pass through the same category alias resolver before lookup, with end-to-end canonical-name fixtures for index funds, ETFs, and sectoral/thematic funds.
 
 ## Evidence
 
-- Focused round-one correction tests: 4 suites, 124 tests passed.
-- Full Jest regression after round-one corrections: 110 suites, 2,223 tests passed.
+- Focused round-two benchmark correction tests: 2 suites, 166 tests passed.
+- Full Jest regression after the round-two correction: 110 suites, 2,226 tests passed.
 - TypeScript typecheck, zero-warning lint, and `git diff --check`: passed.
 - The repository migration was applied to disposable isolated local Supabase/PostgreSQL stacks. Live SQL confirmed service-role-only execution, `SECURITY INVOKER`, existing-row catalog immutability across two users, positive/zero/missing-balance activation, minimal provisional creation, retry convergence, import ownership and closing-balance validation, and full rollback after an injected transaction-enum failure. Controlled overlapping sessions also proved one immutable identity with separate cross-user holdings and same-user stale-plan rejection without duplicates. Both stacks, databases, session logs, and proof files were deleted immediately afterward; no shared database was contacted.
 - Each supplied statement independently passed the current parser, financial preflight, and Q4 database-plan input contract before review and again after the round-one activation correction. For the final run the complete public AMFI catalog was downloaded before protected-file handling, network access was disabled while statement data was in memory, and the helper emitted only separate statement pass/fail markers. The helper, public catalog copy, and scratch directory were deleted immediately. No credential, filename, holder data, extracted row, statement-derived count, or financial value is retained in repository evidence.
 - Round-one Codex and Claude review produced eight actionable threads at `8c2deb471ea5d43bed59e3a548350d1de175e088`. One batch now rejects cross-attachment scheme overlap, protects activation from stale zero balances, derives pending category only from canonical identity, guards function-first schema ordering, hydrates benchmark pairs in the provider path, removes identifier-bearing per-scheme logs, and applies a 24-hour unresolved-identity backoff. The revised repository migration passed a fresh isolated live SQL proof for grants, stale/current zero activation, existing-catalog immutability, and injected-failure rollback; that stack and proof scratch were deleted.
+- At round-two head `149d2a31a35f044d86a068e58d0ce86d99bd73e5`, Codex and Claude independently found the same remaining P1 benchmark-category vocabulary mismatch. The correction normalizes seeded mapping labels through `resolveSebiCategory` and locks the three previously unreachable common categories with end-to-end provider-name fixtures.
 
 ## Progress
 
@@ -175,4 +177,6 @@ The isolated database proof must use the repository migration itself, not a rewr
 - [x] Add authoritative provisional-identity hydration and safe entry-point triggers.
 - [x] Update architecture, infrastructure, cache, exit-readiness, and plan evidence.
 - [x] Complete focused, full, isolated-database, concurrency, and independent private validations.
-- [ ] Freeze the exact SHA and begin dual independent review.
+- [x] Freeze the initial exact SHA, complete two dual-review rounds, and batch every actionable finding only after both reviewers reported.
+- [x] Validate the round-two correction with focused tests, full Jest, typecheck, zero-warning lint, and diff checks.
+- [ ] Freeze one new exact SHA for dual independent re-review.
