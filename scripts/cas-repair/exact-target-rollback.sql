@@ -9,6 +9,7 @@
 \endif
 
 begin transaction isolation level serializable;
+lock table public.user_fund in share row exclusive mode;
 lock table public.transaction in share row exclusive mode;
 
 create temporary table q5_restore (like public.transaction including defaults) on commit drop;
@@ -74,8 +75,51 @@ select
   created_at
 from q5_restore;
 
+create temporary table q5_restored_holding_count on commit drop as
+with touched_funds as (
+  select distinct backup_row.fund_id
+  from q5_restore as backup_row
+), updated_holdings as (
+  update public.user_fund as holding
+  set is_active = exists (
+    select 1
+    from public.transaction as current_row
+    where current_row.user_id = holding.user_id
+      and current_row.fund_id = holding.id
+  )
+  from touched_funds
+  where holding.id = touched_funds.fund_id
+    and holding.is_active is distinct from exists (
+      select 1
+      from public.transaction as current_row
+      where current_row.user_id = holding.user_id
+        and current_row.fund_id = holding.id
+    )
+  returning holding.id
+)
+select count(*)::integer as value from updated_holdings;
+
+do $$
+begin
+  if exists (
+    select 1
+    from (select distinct fund_id from q5_restore) as touched
+    join public.user_fund as holding on holding.id = touched.fund_id
+    where holding.is_active is distinct from exists (
+      select 1
+      from public.transaction as current_row
+      where current_row.user_id = holding.user_id
+        and current_row.fund_id = holding.id
+    )
+  ) then
+    raise exception using errcode = 'P0001', message = 'q5_restore_holding_activation_mismatch';
+  end if;
+end;
+$$;
+
 select json_build_object(
   'restored_count', count(*),
+  'holdings_changed', (select value from q5_restored_holding_count),
   'primary_keys_conflicted', false
 )::text
 from q5_restore;

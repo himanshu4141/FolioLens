@@ -138,7 +138,7 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
 | `universe-backfill` | GitHub Actions (monthly 16th @ 01:00 UTC, hourly resume on the 16th–17th) + manual `workflow_dispatch` | Bulk-syncs OpenFolio composition + metadata for the full active AMFI universe, not just held funds. Cursor state + done markers live in `app_config`; the pg_cron marker on the 15th @ 23:00 UTC starts a fresh monthly cycle. | Active |
 | `sync-fund-portfolios` | pg_cron (daily, 02:10 UTC) | Backup holdings source: mfdata.in portfolio composition → `source='category_fallback'`; category-rules sentinel rows updated daily. Legacy `source='amfi'` rows can still be read and ranked by the selector. | Active |
-| `sync-fund-meta` | pg_cron (daily) + CAS provisional-identity trigger | Refreshes held-fund scheme metadata from OF `/v1/metadata`, includes due CAS-created identities until canonical hydration succeeds, obtains canonical AMFI name/ISIN from mfapi, derives category from canonical identity, and fills the benchmark pair from `benchmark_mapping`. Failed canonical attempts back off 24 hours. OF values take precedence; mfdata fills unresolved B1 fields. | Active |
+| `sync-fund-meta` | pg_cron (daily) + CAS provisional-identity trigger + guarded Q5 repair helper | Refreshes held-fund scheme metadata from OF `/v1/metadata`, includes due CAS-created identities until canonical hydration succeeds, obtains canonical AMFI name/ISIN from mfapi, derives category from canonical identity, and fills the benchmark pair from `benchmark_mapping`. Its service-role-authenticated `exact-target-repair` mode accepts only runtime scheme codes derived from the encrypted repair backup, bypasses freshness for exactly that scope, and returns aggregate hydrated/unresolved counts without logging identifiers. Failed ordinary canonical attempts back off 24 hours. OF values take precedence; mfdata fills unresolved B1 fields. | Active |
 | `regenerate-index-snapshots` | pg_cron (weekdays 14:00 UTC) | Regenerates public JSON index-history snapshots in `static-snapshots` after index sync. | Active |
 | `notify-feedback` | AFTER INSERT trigger on `public.user_feedback` (via `pg_net.http_post`) | Sign-and-forward relay: looks up the user's auth email (for reply-to), signs a payload with `FOLIOLENS_INBOUND_ROUTER_SECRET`, and POSTs to the Vercel router's `/api/feedback-notify` endpoint which performs the actual Resend send | Active |
 | `freshness-check` | pg_cron daily + monthly | Daily audit of silent failures plus monthly OpenFolio coverage reconciliation. Sends consolidated alert via Resend router on failure. See "Runbook: Freshness check" below. | Active |
@@ -156,20 +156,21 @@ also intentional for public app boundaries such as `demo-signup`,
 use service-role access only server-side.
 
 CAS domain mutation uses `cas_import_schema_version_v3()` and
-`apply_cas_import_plans_v2(uuid, uuid, jsonb)`. Both functions are
+`apply_cas_import_plans_v3(uuid, uuid, jsonb)`. Both functions are
 `SECURITY INVOKER`, executable only by `service_role`, and absent from client
-wrappers. v3 proves the additive exact-outcome audit columns are present; the atomic
-plan remains v2 because its domain contract is unchanged. Function-first deployment
-is intentional: new Edge code probes v3 and fails before domain access until the
-migration has been applied.
+wrappers. The v3 plan wrapper calls Q4's atomic v2 writer in the same transaction
+and adds an exact holding-created/activation-changed count, so a zero-transaction
+holding change cannot be treated as a cache no-op. The v3 capability proves the
+additive exact-outcome audit columns and wrapper are present. Function-first
+deployment is intentional: new Edge code probes v3 and fails before domain access
+until the migration has been applied.
 The atomic writer delegates final `user_fund.is_active` state to the plain-Postgres
 `resolve_user_fund_activation_v1` policy, also `SECURITY INVOKER` and
 service-role-only. Existing holdings preserve activation for every non-current
 closing-balance shape before positive, zero, or missing units are interpreted, but
 an empty committed post-plan ledger is a deactivation floor. Q5 repair must use the
 same resolver when applying delete-only activation changes; rollback restores the
-captured prior activation instead of deriving a second policy. The C1 migration
-changes no Edge request or response contract, so the v2 writer remains valid.
+captured prior activation instead of deriving a second policy.
 
 
 ### One-time per-project bootstrap: `public.app_config`

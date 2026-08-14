@@ -246,8 +246,10 @@ Deno.serve(async (req) => {
 
   const {
     fundsUpdated,
+    holdingsChanged,
     transactionsAdded,
     transactionsDuplicate,
+    transactionsRejected,
     transactionsRemoved,
     reconciliationConflicts,
     catalogHydrationRequested,
@@ -260,8 +262,10 @@ Deno.serve(async (req) => {
     source: 'pdf',
     dialect: preflightSummary.dialect,
     fundsUpdated,
+    holdingsChanged,
     transactionsAdded,
     transactionsDuplicate,
+    transactionsRejected,
     transactionsRemoved,
     reconciliationConflicts,
     errors,

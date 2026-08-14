@@ -293,8 +293,10 @@ async function finalizeImportRow(
   importId: string,
   status: 'success' | 'failed',
   funds: number,
+  holdingsChanged: number,
   transactions: number,
   alreadyPresent: number,
+  rejectedTransactions: number,
   rejected: number,
   removed: number,
   errors: string[],
@@ -304,9 +306,11 @@ async function finalizeImportRow(
     .update({
       import_status: status,
       funds_updated: funds,
+      holdings_changed: holdingsChanged,
       transactions_added: transactions,
       transactions_duplicate: alreadyPresent,
       reconciliation_conflicts: rejected,
+      transactions_rejected: rejectedTransactions,
       transactions_removed: removed,
       error_message: errors.length > 0 ? errors.join('; ') : null,
     })
@@ -320,8 +324,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
   const { supabase, importId, userId, pan, dob, attachments } = args;
   const authEmailPromise = getAuthEmail(supabase, userId);
   let totalFunds = 0;
+  let totalHoldingsChanged = 0;
   let totalTransactions = 0;
   let totalTransactionsDuplicate = 0;
+  let totalTransactionsRejected = 0;
   let totalTransactionsRemoved = 0;
   let totalReconciliationConflicts = 0;
   let totalCatalogHydrationRequested = 0;
@@ -339,7 +345,9 @@ async function processImportInBackground(args: BackgroundJobArgs) {
 
     if (pdfAttachments.length === 0) {
       const reason: CASFailureReason = 'no_pdf_attachments';
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, 0, 0, 0, [auditErrorCode(reason)]);
+      await finalizeImportRow(
+        supabase, importId, 'failed', 0, 0, 0, 0, 0, 0, 0, [auditErrorCode(reason)],
+      );
       await sendImportNotification({
         to: await authEmailPromise,
         importId,
@@ -420,7 +428,9 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     }
 
     if (allErrors.length > 0) {
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, 0, 0, 0, allErrors);
+      await finalizeImportRow(
+        supabase, importId, 'failed', 0, 0, 0, 0, 0, 0, 0, allErrors,
+      );
       const firstReason = reasonFromAuditError(allErrors[0]);
       trackServerEvent(
         'cas_inbound_failed',
@@ -461,8 +471,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     };
     const {
       fundsUpdated,
+      holdingsChanged,
       transactionsAdded,
       transactionsDuplicate,
+      transactionsRejected,
       transactionsRemoved,
       reconciliationConflicts,
       catalogHydrationRequested,
@@ -474,8 +486,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       combinedPayload,
     );
     totalFunds = fundsUpdated;
+    totalHoldingsChanged = holdingsChanged;
     totalTransactions = transactionsAdded;
     totalTransactionsDuplicate = transactionsDuplicate;
+    totalTransactionsRejected = transactionsRejected;
     totalTransactionsRemoved = transactionsRemoved;
     totalReconciliationConflicts = reconciliationConflicts;
     totalCatalogHydrationRequested = catalogHydrationRequested;
@@ -485,8 +499,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       source: 'email',
       dialect,
       fundsUpdated: totalFunds,
+      holdingsChanged: totalHoldingsChanged,
       transactionsAdded: totalTransactions,
       transactionsDuplicate: totalTransactionsDuplicate,
+      transactionsRejected: totalTransactionsRejected,
       transactionsRemoved: totalTransactionsRemoved,
       reconciliationConflicts: totalReconciliationConflicts,
       errors: allErrors,
@@ -498,8 +514,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       importId,
       status,
       totalFunds,
+      totalHoldingsChanged,
       totalTransactions,
       totalTransactionsDuplicate,
+      totalTransactionsRejected,
       totalReconciliationConflicts,
       totalTransactionsRemoved,
       allErrors,
@@ -563,8 +581,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     const outcome = buildImportCrashOutcome({
       source: 'email',
       fundsUpdated: totalFunds,
+      holdingsChanged: totalHoldingsChanged,
       transactionsAdded: totalTransactions,
       transactionsDuplicate: totalTransactionsDuplicate,
+      transactionsRejected: totalTransactionsRejected,
       transactionsRemoved: totalTransactionsRemoved,
       reconciliationConflicts: totalReconciliationConflicts,
     });
@@ -580,8 +600,10 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         importId,
         outcome.audit.import_status,
         outcome.audit.funds_updated,
+        outcome.audit.holdings_changed,
         outcome.audit.transactions_added,
         outcome.audit.transactions_duplicate,
+        outcome.audit.transactions_rejected,
         outcome.audit.reconciliation_conflicts,
         outcome.audit.transactions_removed,
         [outcome.audit.error_message],

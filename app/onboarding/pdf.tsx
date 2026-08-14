@@ -220,7 +220,7 @@ export default function PDFScreen() {
           <View style={styles.errorCard}>
             <Text style={styles.errorTitle}>Import failed</Text>
             <Text style={styles.errorText}>{errorMsg}</Text>
-            {result && (
+            {result && result.transactionsRejected > 0 && (
               <Text style={styles.errorText}>
                 {result.transactionsAdded} added · {result.transactionsAlreadyPresent} already present ·{' '}
                 {result.transactionsRejected} rejected

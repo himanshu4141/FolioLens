@@ -38,6 +38,7 @@ type LastImport = {
   transactions_added: number;
   transactions_duplicate: number;
   reconciliation_conflicts: number;
+  transactions_rejected: number;
   transactions_removed: number;
 };
 
@@ -76,7 +77,7 @@ async function fetchLastImport(userId: string): Promise<LastImport | null> {
   const { data, error } = await casImportRepo
     .from()
     .select(
-      'created_at, import_source, import_status, funds_updated, transactions_added, transactions_duplicate, reconciliation_conflicts, transactions_removed',
+      'created_at, import_source, import_status, funds_updated, transactions_added, transactions_duplicate, reconciliation_conflicts, transactions_rejected, transactions_removed',
     )
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
@@ -259,7 +260,7 @@ export default function PortfolioImportScreen() {
                     {formattedLastImport} · {lastImport!.import_status} ·{' '}
                     {lastImport!.transactions_added} added ·{' '}
                     {lastImport!.transactions_duplicate} already present ·{' '}
-                    {lastImport!.reconciliation_conflicts} rejected
+                    {lastImport!.transactions_rejected} rejected
                     {lastImport!.transactions_removed > 0
                       ? ` · ${lastImport!.transactions_removed} removed`
                       : ''}

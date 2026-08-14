@@ -143,13 +143,54 @@ Deno.serve(async (req) => {
   }
 
   const requestBody = req.method === 'POST'
-    ? await req.json().catch(() => null) as { mode?: unknown } | null
+    ? await req.json().catch(() => null) as {
+      mode?: unknown;
+      scheme_codes?: unknown;
+    } | null
     : null;
   const pendingIdentityOnly = requestBody?.mode === 'pending-cas-identities';
+  const exactTargetRepair = requestBody?.mode === 'exact-target-repair';
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  if (
+    exactTargetRepair
+    && (
+      req.method !== 'POST'
+      || serviceRoleKey.length === 0
+      || req.headers.get('Authorization') !== `Bearer ${serviceRoleKey}`
+    )
+  ) {
+    console.warn('[sync-fund-meta] exact_target_repair_unauthorized');
+    return json({ success: false, error: 'unauthorized' }, { status: 401 });
+  }
+
+  const repairSchemeCodes = exactTargetRepair && Array.isArray(requestBody?.scheme_codes)
+    ? uniqueSchemeCodes(
+      [],
+      requestBody.scheme_codes.filter(
+        (value): value is number => typeof value === 'number'
+          && Number.isInteger(value)
+          && value > 0,
+      ),
+    )
+    : [];
+  if (
+    exactTargetRepair
+    && (
+      !Array.isArray(requestBody?.scheme_codes)
+      || repairSchemeCodes.length === 0
+      || repairSchemeCodes.length !== requestBody.scheme_codes.length
+      || repairSchemeCodes.length > 1000
+    )
+  ) {
+    console.warn('[sync-fund-meta] exact_target_repair_scope_invalid');
+    return json({ success: false, error: 'invalid_repair_scope' }, { status: 400 });
+  }
   console.log(
     '[sync-fund-meta] invoked, method=%s mode=%s',
     req.method,
-    pendingIdentityOnly ? 'pending-cas-identities' : 'all',
+    exactTargetRepair
+      ? 'exact-target-repair'
+      : pendingIdentityOnly ? 'pending-cas-identities' : 'all',
   );
 
   const supabase = createServiceClient();
@@ -194,7 +235,7 @@ Deno.serve(async (req) => {
     return json({ success: false, error: pendingIdentityError.message }, { status: 500 });
   }
 
-  if ((pendingIdentityOnly || !funds?.length) && !pendingIdentityRows?.length) {
+  if (!exactTargetRepair && (pendingIdentityOnly || !funds?.length) && !pendingIdentityRows?.length) {
     console.log('[sync-fund-meta] no active funds or provisional identities found');
     return json({ success: true, updated: 0 });
   }
@@ -207,7 +248,13 @@ Deno.serve(async (req) => {
     ))
     .map((row) => row.scheme_code as number);
   const pendingIdentityCodeSet = new Set(pendingIdentityCodes);
-  const allSchemeCodes = pendingIdentityOnly
+  const authoritativeIdentityCodeSet = new Set([
+    ...pendingIdentityCodes,
+    ...repairSchemeCodes,
+  ]);
+  const allSchemeCodes = exactTargetRepair
+    ? repairSchemeCodes
+    : pendingIdentityOnly
     ? uniqueSchemeCodes([], pendingIdentityCodes)
     : uniqueSchemeCodes(
       (funds ?? []).map((fund) => fund.scheme_code as number),
@@ -237,10 +284,15 @@ Deno.serve(async (req) => {
       .filter((r) => isSchemeMetaFresh(r, META_STALE_DAYS, now))
       .map((r) => r.scheme_code as number),
   );
+  const masterCodeSet = new Set((masterRows ?? []).map((row) => row.scheme_code as number));
+  const missingRepairCount = exactTargetRepair
+    ? allSchemeCodes.filter((code) => !masterCodeSet.has(code)).length
+    : 0;
   const schemeCodes = allSchemeCodes.filter((code) =>
-    pendingIdentityCodeSet.has(code) || !freshCodes.has(code)
+    masterCodeSet.has(code)
+    && (exactTargetRepair || pendingIdentityCodeSet.has(code) || !freshCodes.has(code))
   );
-  const skippedCount = allSchemeCodes.length - schemeCodes.length;
+  const skippedCount = exactTargetRepair ? 0 : allSchemeCodes.length - schemeCodes.length;
 
   // Pre-load existing risk_ratios so we can merge OF volatility without
   // wiping mfdata beta (used by mfdataGuards.ts → useFundDetail.ts).
@@ -263,7 +315,7 @@ Deno.serve(async (req) => {
   }
 
   const benchmarksByCategory = new Map<string, BenchmarkIdentity>();
-  if (pendingIdentityCodes.length > 0) {
+  if (authoritativeIdentityCodeSet.size > 0) {
     const { data: benchmarkRows, error: benchmarkError } = await supabase
       .from('benchmark_mapping')
       .select('scheme_category, benchmark_index, benchmark_index_symbol')
@@ -295,11 +347,16 @@ Deno.serve(async (req) => {
   );
 
   if (!schemeCodes.length) {
-    return json({ success: true, updated: 0, skipped: skippedCount });
+    return json({
+      success: missingRepairCount === 0,
+      updated: 0,
+      failed: missingRepairCount,
+      skipped: skippedCount,
+    });
   }
 
   let updated = 0;
-  let failed = 0;
+  let failed = missingRepairCount;
 
   for (const schemeCode of schemeCodes) {
     await delay(INTER_SCHEME_DELAY_MS);
@@ -354,7 +411,7 @@ Deno.serve(async (req) => {
       // succeeds, so a partial provider response is retried on the next run.
       let mfapiIdentity: MfapiSchemeIdentity | null = null;
       let isin = mfdata?.isin ?? null;
-      if (!isin || pendingIdentityCodeSet.has(schemeCode)) {
+      if (!isin || authoritativeIdentityCodeSet.has(schemeCode)) {
         try {
           mfapiIdentity = await fetchMfapiIdentity(schemeCode);
           isin ??= mfapiIdentity?.isin ?? null;
@@ -386,7 +443,7 @@ Deno.serve(async (req) => {
       }
 
       if (isin) payload.isin = isin;
-      if (pendingIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
+      if (authoritativeIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
         payload.scheme_name = mfapiIdentity.schemeName;
         payload.cas_identity_hydrated_at = syncedAt;
       }
@@ -561,7 +618,7 @@ Deno.serve(async (req) => {
       {
         const existingMaster = masterByCode.get(schemeCode);
         const categoryName = categoryNameForHydration(
-          pendingIdentityCodeSet.has(schemeCode),
+          authoritativeIdentityCodeSet.has(schemeCode),
           mfapiIdentity?.schemeName,
           existingMaster?.scheme_name,
         );
@@ -573,7 +630,7 @@ Deno.serve(async (req) => {
           payload.sebi_category = sebiCategory;
           const broad = broadCategoryFromSebi(sebiCategory);
           if (broad) payload.scheme_category = broad;
-          const benchmark = pendingIdentityCodeSet.has(schemeCode)
+          const benchmark = authoritativeIdentityCodeSet.has(schemeCode)
             ? benchmarkForCategory(sebiCategory, benchmarksByCategory)
             : null;
           if (benchmark) {
@@ -627,5 +684,10 @@ Deno.serve(async (req) => {
     'system:sync-fund-meta',
   );
 
-  return json({ success: true, updated, failed, skipped: skippedCount });
+  return json({
+    success: !exactTargetRepair || failed === 0,
+    updated,
+    failed,
+    skipped: skippedCount,
+  });
 });

@@ -11,6 +11,7 @@ export interface SyncChangeSummary {
   navInserted: number;
   idxInserted: number;
   txRebuiltFromDrift?: boolean;
+  holdingsChanged?: number;
 }
 
 export interface SyncInvalidationClient {
@@ -119,7 +120,9 @@ export function syncVisibleRoute(pathname: string): SyncVisibleRoute {
 
 export function syncInvalidationPrefixes(result: SyncChangeSummary): readonly string[] {
   const prefixes = new Set<string>();
-  const transactionChanged = result.txInserted > 0 || result.txRebuiltFromDrift === true;
+  const transactionChanged = result.txInserted > 0
+    || result.txRebuiltFromDrift === true
+    || (result.holdingsChanged ?? 0) > 0;
 
   if (transactionChanged) {
     for (const prefix of SYNC_INVALIDATION_PREFIXES.transaction) prefixes.add(prefix);

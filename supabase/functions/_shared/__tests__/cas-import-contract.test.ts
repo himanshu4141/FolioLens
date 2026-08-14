@@ -473,7 +473,9 @@ describe('privacy-safe caller outcomes', () => {
       source: 'pdf',
       dialect: 'cams',
       fundsUpdated: 13,
+      holdingsChanged: 4,
       transactionsAdded: 57,
+      transactionsRejected: 3,
       writeFailures: 0,
     });
     expect(telemetry).toEqual({
@@ -484,7 +486,9 @@ describe('privacy-safe caller outcomes', () => {
       transactions_bucket: '21-100',
       duplicates_bucket: '0',
       conflicts_bucket: '0',
+      rejected_rows_bucket: '2-5',
       removed_bucket: '0',
+      holdings_changed_bucket: '2-5',
       write_failures_bucket: '0',
       validation_reason: 'validated',
     });
@@ -531,8 +535,10 @@ describe('privacy-safe caller outcomes', () => {
     expect(outcome.audit).toEqual({
       import_status: 'failed',
       funds_updated: 2,
+      holdings_changed: 0,
       transactions_added: 7,
       transactions_duplicate: 0,
+      transactions_rejected: 0,
       reconciliation_conflicts: 0,
       transactions_removed: 0,
       error_message: 'cas_import:background_crashed',

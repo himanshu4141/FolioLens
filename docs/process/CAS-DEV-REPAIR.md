@@ -16,7 +16,7 @@ The repair is not part of a normal deployment. Do not put runtime values in shel
 
 ## Safety model
 
-The only deletion predicate is `transaction.cas_import_id = target`. The dry run first proves the target audit exists and every attributed row belongs to that audit's owner, then hashes the complete exact-target row set and every unrelated transaction row. The apply step takes a short table lock, repeats the ownership proof, recomputes the approved counts and hashes, requires the literal immediate-approval phrase, deletes only the exact provenance target, and proves the unrelated count and digest are unchanged before commit. Any mismatch aborts the database transaction.
+The only deletion predicate is `transaction.cas_import_id = target`. The dry run first proves the target audit exists and every attributed row belongs to that audit's owner, then hashes the complete exact-target row set and every unrelated transaction row. The apply step takes short holding/transaction locks, repeats the ownership proof, recomputes the approved counts and hashes, requires the literal immediate-approval phrase, deletes only the exact provenance target, recomputes `user_fund.is_active` for exactly the backed-up fund IDs, and proves both the holding invariant and unrelated transaction digest before commit. Any mismatch aborts the database transaction.
 
 The encrypted backup contains the complete target rows and is private. The helper pipes database output directly to AES-256 encryption, writes both backup and key with mode 0600, and prints only the encrypted file's SHA-256 digest. Never run the backup SQL by itself because its standard output is intentionally the recoverable row stream.
 
@@ -33,7 +33,12 @@ Install the PostgreSQL client (`libpq`) locally, or set `Q5_PSQL_BIN` to an exec
     Q5_BACKUP_PATH
     Q5_BACKUP_KEY_FILE
 
-The wrapper passes the password, exact import ID, approved manifest, and approval phrase only through the child process environment, never in command arguments. It accepts either the exact direct shared-dev database host/user pair or an official Supabase pooler host with the exact shared-dev project-scoped user and refuses every other target. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
+Authoritative post-delete hydration additionally requires these runtime-only values:
+
+    Q5_DEV_FUNCTIONS_URL
+    Q5_DEV_SERVICE_ROLE_KEY
+
+The wrapper passes the password, exact import ID, approved manifest, approval phrase, and service-role credential only through the child process environment or mode-0600 temporary configuration, never in command arguments. It accepts either the exact direct shared-dev database host/user pair or an official Supabase pooler host with the exact shared-dev project-scoped user, and accepts only the exact shared-dev `sync-fund-meta` URL. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
 
 ## Read-only dry run
 
@@ -89,7 +94,13 @@ Then run immediately:
 
     scripts/cas-repair/run-exact-target-repair.sh apply
 
-Before contacting the database, the wrapper recomputes the encrypted file digest and proves the supplied key can decrypt it. Inside the same serializable transaction as the deletion, the apply SQL loads the backup into a temporary table and proves its exact row count, import scope, and complete-row digest match the approved target manifest. The plaintext temporary file is mode 0600 and is deleted on every exit. Permitted output is only the deleted count and `unrelated_unchanged: true`. Any other result is a stop condition.
+Before contacting the database, the wrapper recomputes the encrypted file digest and proves the supplied key can decrypt it with the exact expected header. Inside the same serializable transaction as the deletion, the apply SQL loads the backup into a temporary table and proves its exact row count, import scope, and complete-row digest match the approved target manifest. It then recomputes activation for exactly the touched holdings and asserts every touched row agrees with remaining transactions. The plaintext temporary file is mode 0600 and is deleted on every exit. Permitted output is only the deleted count, aggregate holdings-changed count, and `unrelated_unchanged: true`. Any other result is a stop condition.
+
+Immediately after a successful apply, run:
+
+    scripts/cas-repair/run-exact-target-repair.sh hydrate
+
+The wrapper re-verifies and decrypts the approved backup, resolves only its fund IDs to scheme codes inside shared dev, sends that runtime-only scope to the service-role-authenticated `exact-target-repair` mode of `sync-fund-meta`, bypasses ordinary freshness for those schemes, and deletes the scope, response, credential config, and plaintext on every exit. No identifier is printed or logged. Permitted output contains only aggregate `updated`, `failed`, and `skipped` counts; `failed` is the unresolved count and must be carried into the field evidence.
 
 ## Recovery
 
@@ -97,15 +108,15 @@ Rollback is for a verified repair failure, not routine testing. Populate `Q5_EXP
 
     scripts/cas-repair/run-exact-target-repair.sh rollback
 
-The helper decrypts to a mode-0600 temporary file, restores all columns in one serializable transaction only when every backed-up primary key is absent and every row still belongs to the target audit owner, and deletes the plaintext on exit. It reports only restored count and conflict status.
+The helper decrypts to a mode-0600 temporary file, restores all columns in one serializable transaction only when every backed-up primary key is absent and every row still belongs to the target audit owner, recomputes the same touched holding activations, and deletes the plaintext on exit. It reports only restored count, aggregate holdings-changed count, and conflict status.
 
 ## Post-repair proof
 
 After deletion:
 
 1. Repeat the dry run. It must report zero target rows and the previously approved unrelated count/digest.
-2. Invoke `sync-fund-meta` through its existing provider-owned path for the touched shared schemes. Do not supply CAS metadata and do not log scheme identifiers.
-3. Record only aggregate hydrated and explicitly unresolved counts. Review the previously broad-category subset against provider output without posting names.
+2. Confirm the exact-target `hydrate` command completed through the provider-owned writer. Do not supply CAS metadata and do not log scheme identifiers.
+3. Record only its aggregate updated and explicitly unresolved counts. Review the previously broad-category subset against provider output without posting names.
 4. Run the private CDSL statement alone through parser-only transient validation, destroy its process and scratch, then run the private NSDL statement alone only after its separate approved repaired-account mutation gate.
 5. Run the sanitized synthetic CDSL insert/re-import proof in an isolated dev test account.
 6. Verify web reload, persisted-cache restore, native foreground/SQLite sync, Portfolio value/gain/XIRR, transaction count, Money Trail, Funds, and timelines against the repaired transaction source.

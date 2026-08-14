@@ -591,18 +591,11 @@ def _notification_variables(payload: dict[str, Any]) -> dict[str, str]:
         if success
         else "We received your CAS email, but the PDF could not be imported into your portfolio."
     )
-    detail_text = (
-        (
-            f"Transactions: {transactions} added, {already_present} already present, "
-            f"{removed} removed, {rejected} rejected."
-        )
-        if success
-        else (
-            f"{problem} Transactions: {transactions} added, "
-            f"{already_present} already present, {removed} removed, "
-            f"{rejected} rejected."
-        )
+    tally = (
+        f"Transactions: {transactions} added, {already_present} already present, "
+        f"{removed} removed, {rejected} rejected."
     )
+    detail_text = tally if success else f"{problem} {tally}" if rejected > 0 else problem
     next_step = (
         "Open FolioLens to review your portfolio."
         if success

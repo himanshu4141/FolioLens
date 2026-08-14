@@ -241,6 +241,34 @@ describe('sync.reconcileTransactionSnapshot — orchestration', () => {
     );
   });
 
+  it('surfaces an immutable-ID rebuild failure instead of reporting an unchanged cache', async () => {
+    const local = MOCK_TX_ROW({
+      fund_id: 'f1',
+      date: '2026-04-01',
+      created_at: '2026-04-01T00:00:00Z',
+      amount: 1000,
+      units: 10,
+      id: 'local-only',
+    });
+    await txRepo.bulkInsert([local]);
+
+    const queue = makeChainQueue([
+      { data: [], error: null },
+      { data: [], error: null },
+      { data: null, error: { message: 'authoritative snapshot unavailable' } },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    const result = await bootstrap('user-1', [], []);
+
+    expect(result.txRebuiltFromDrift).toBe(false);
+    expect(result.errors).toEqual([
+      'tx-reconcile: authoritative_snapshot_rebuild_failed',
+    ]);
+    expect((await txRepo.readAll()).map((row) => row.id)).toEqual(['local-only']);
+  });
+
   it('analytics is silent when counts match exactly — no noise on the healthy path', async () => {
     await txRepo.bulkInsert([
       MOCK_TX_ROW({ fund_id: 'f1', date: '2026-04-01', created_at: '2026-04-01T00:00:00Z', amount: 1000, units: 10 }),

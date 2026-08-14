@@ -12,6 +12,7 @@ const changedOutcome = {
   transactionsAlreadyPresent: 2,
   transactionsRejected: 0,
   transactionsRemoved: 0,
+  holdingsChanged: 0,
 };
 
 describe('refreshAfterDirectCasImport', () => {
@@ -61,7 +62,13 @@ describe('refreshAfterDirectCasImport', () => {
     expect(result).toEqual({ serverChanged: true, localChanged: true, errors: [] });
     expect(invalidate).toHaveBeenCalledWith(
       queryClient,
-      { txInserted: 1, navInserted: 0, idxInserted: 0, errors: [] },
+      {
+        txInserted: 1,
+        navInserted: 0,
+        idxInserted: 0,
+        holdingsChanged: 0,
+        errors: [],
+      },
       'unknown',
     );
   });
@@ -93,7 +100,11 @@ describe('refreshAfterDirectCasImport', () => {
 
     expect(order).toEqual(['sync', 'invalidate']);
     expect(syncNative).toHaveBeenCalledWith('user-id');
-    expect(invalidate).toHaveBeenCalledWith(queryClient, syncResult, 'unknown');
+    expect(invalidate).toHaveBeenCalledWith(
+      queryClient,
+      { ...syncResult, holdingsChanged: 0 },
+      'unknown',
+    );
     expect(result).toEqual({ serverChanged: true, localChanged: true, errors: [] });
   });
 
@@ -121,7 +132,41 @@ describe('refreshAfterDirectCasImport', () => {
       localChanged: false,
       errors: ['transaction sync failed'],
     });
-    expect(invalidate).toHaveBeenCalledWith(queryClient, syncResult, 'unknown');
+    expect(invalidate).toHaveBeenCalledWith(
+      queryClient,
+      { ...syncResult, holdingsChanged: 0 },
+      'unknown',
+    );
+  });
+
+  it('refreshes holding caches when a zero-transaction import changes activation', async () => {
+    const invalidate = jest.fn(async () => undefined);
+
+    await expect(refreshAfterDirectCasImport(
+      queryClient,
+      'user-id',
+      {
+        transactionsAdded: 0,
+        transactionsAlreadyPresent: 0,
+        transactionsRejected: 0,
+        transactionsRemoved: 0,
+        holdingsChanged: 1,
+      },
+      'unknown',
+      { platform: 'web', invalidate },
+    )).resolves.toEqual({ serverChanged: true, localChanged: true, errors: [] });
+
+    expect(invalidate).toHaveBeenCalledWith(
+      queryClient,
+      {
+        txInserted: 0,
+        navInserted: 0,
+        idxInserted: 0,
+        holdingsChanged: 1,
+        errors: [],
+      },
+      'unknown',
+    );
   });
 
   it('does not reinterpret a committed import as failed when refresh throws', async () => {

@@ -445,7 +445,7 @@ function OnboardingWizard() {
           ? 'Your saved PAN was not accepted. Add your date of birth, then try again.'
           : errorKind === 'read_error'
           ? 'Could not read the PDF file. Re-download and try again.'
-          : outcome
+          : outcome?.transactionsRejected
             ? `${msg} ${outcome.transactionsAdded} added, ${outcome.transactionsAlreadyPresent} already present, ${outcome.transactionsRejected} rejected.`
             : msg,
       );

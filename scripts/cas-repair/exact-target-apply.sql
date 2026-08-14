@@ -48,6 +48,7 @@ begin transaction isolation level serializable;
 
 -- A short table lock prevents unrelated concurrent writes from invalidating
 -- the approved digest between verification and commit.
+lock table public.user_fund in share row exclusive mode;
 lock table public.transaction in share row exclusive mode;
 
 create temporary table q5_approved_manifest on commit drop as
@@ -163,6 +164,35 @@ with deleted as (
 )
 select count(*)::integer as value from deleted;
 
+create temporary table q5_holding_change_count on commit drop as
+with touched_funds as (
+  select distinct backup_row.fund_id
+  from q5_approved_backup as backup_row
+), updated_holdings as (
+  update public.user_fund as holding
+  set is_active = exists (
+    select 1
+    from public.transaction as current_row
+    where current_row.user_id = holding.user_id
+      and current_row.fund_id = holding.id
+  )
+  from touched_funds
+  where holding.id = touched_funds.fund_id
+    and holding.user_id = (
+      select owned_import.user_id
+      from public.cas_import as owned_import
+      join q5_approved_manifest as approved on approved.import_id = owned_import.id
+    )
+    and holding.is_active is distinct from exists (
+      select 1
+      from public.transaction as current_row
+      where current_row.user_id = holding.user_id
+        and current_row.fund_id = holding.id
+    )
+  returning holding.id
+)
+select count(*)::integer as value from updated_holdings;
+
 do $$
 declare
   approved q5_approved_manifest%rowtype;
@@ -177,6 +207,19 @@ begin
   end if;
   if exists (select 1 from public.transaction where cas_import_id = approved.import_id) then
     raise exception using errcode = 'P0001', message = 'q5_target_rows_remain';
+  end if;
+  if exists (
+    select 1
+    from (select distinct fund_id from q5_approved_backup) as touched
+    join public.user_fund as holding on holding.id = touched.fund_id
+    where holding.is_active is distinct from exists (
+      select 1
+      from public.transaction as current_row
+      where current_row.user_id = holding.user_id
+        and current_row.fund_id = holding.id
+    )
+  ) then
+    raise exception using errcode = 'P0001', message = 'q5_holding_activation_mismatch';
   end if;
 
   select
@@ -198,6 +241,7 @@ $$;
 
 select json_build_object(
   'deleted_count', value,
+  'holdings_changed', (select value from q5_holding_change_count),
   'unrelated_unchanged', true
 )::text
 from q5_deleted_count;

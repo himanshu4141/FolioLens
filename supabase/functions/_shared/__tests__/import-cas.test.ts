@@ -60,6 +60,7 @@ function buildMockSupabase({
   txDeleteError = null,
   schemaCapabilityError = null,
   rpcMutationError = null,
+  holdingChangedCount = 0,
 }: {
   fundId?: string;
   existingFundRows?: Array<Record<string, unknown>>;
@@ -74,6 +75,7 @@ function buildMockSupabase({
   txDeleteError?: { message: string } | null;
   schemaCapabilityError?: { message: string } | null;
   rpcMutationError?: { message: string } | null;
+  holdingChangedCount?: number;
 } = {}) {
   const deleteCalls: Array<Array<[string, unknown]>> = [];
   let upsertedRows: Record<string, unknown>[] = [];
@@ -204,7 +206,7 @@ function buildMockSupabase({
         error: schemaCapabilityError,
       };
     }
-    if (functionName !== 'apply_cas_import_plans_v2') {
+    if (functionName !== 'apply_cas_import_plans_v3') {
       return { data: null, error: { message: 'unknown rpc' } };
     }
 
@@ -319,6 +321,7 @@ function buildMockSupabase({
         fund_count: plans.length,
         inserted_count: insertedCount,
         deleted_count: deletedCount,
+        holding_changed_count: holdingChangedCount,
         provisional_scheme_count: provisionalSchemeCount,
       },
       error: null,
@@ -1323,8 +1326,10 @@ describe('importCASData()', () => {
 
     expect(result).toEqual({
       fundsUpdated: 0,
+      holdingsChanged: 0,
       transactionsAdded: 0,
       transactionsDuplicate: 0,
+      transactionsRejected: 0,
       transactionsRemoved: 0,
       reconciliationConflicts: 0,
       catalogHydrationRequested: 0,
@@ -1468,6 +1473,31 @@ describe('importCASData()', () => {
     expect(txUpsertMock).not.toHaveBeenCalled();
   });
 
+  it('reports an atomic holding activation change even when no transaction row changes', async () => {
+    const { supabase, txUpsertMock } = buildMockSupabase({
+      existingTransactionRows: [storedPurchase()],
+      holdingChangedCount: 1,
+    });
+
+    const result = await importCASData(
+      supabase,
+      'user-1',
+      'import-1',
+      minimalCAS([
+        { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      ]),
+    );
+
+    expect(result).toMatchObject({
+      holdingsChanged: 1,
+      transactionsAdded: 0,
+      transactionsDuplicate: 1,
+      transactionsRemoved: 0,
+      reconciliationConflicts: 0,
+    });
+    expect(txUpsertMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: 'partial row overlap',
@@ -1505,6 +1535,7 @@ describe('importCASData()', () => {
 
     expect(result.transactionsAdded).toBe(0);
     expect(result.reconciliationConflicts).toBe(1);
+    expect(result.transactionsRejected).toBe(incoming.length);
     expect(result.errors).toEqual(['cas_import:reconciliation_conflict']);
     expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
     expect(userFundUpsertMock).not.toHaveBeenCalled();
@@ -1578,6 +1609,7 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.reconciliationConflicts).toBe(1);
+    expect(result.transactionsRejected).toBe(1);
     expect(result.errors).toEqual(['cas_import:reconciliation_conflict']);
     expect(schemeMasterUpsertMock).not.toHaveBeenCalled();
     expect(userFundUpsertMock).not.toHaveBeenCalled();
@@ -1651,6 +1683,7 @@ describe('importCASData()', () => {
     );
 
     expect(result.reconciliationConflicts).toBe(1);
+    expect(result.transactionsRejected).toBe(1);
     expect(result.errors).toContain('cas_import:reconciliation_conflict');
     expect(storedTransactions).toEqual([]);
   });

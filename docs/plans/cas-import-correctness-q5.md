@@ -50,7 +50,7 @@ The known bad shared-dev rows are attributable to one `cas_import` record throug
 - Preserve exact added, already-present, removed, and rejected counts through direct upload, inbound email, audit history, notifications, operational logs, and privacy-safe bucketed telemetry.
 - Keep the legacy `transactions` response field as the added count for compatibility while making the named fields authoritative.
 - Show the four named outcomes honestly in standalone upload, onboarding completion/recovery copy, import history, and inbound email detail text.
-- Replace broad onboarding invalidation with an explicit direct-import freshness helper. Web marks the transaction fan-out stale; native runs the server-to-SQLite delta/ID-set repair first, then invalidates only families that actually changed. Added or removed rows trigger refresh; no-op and conflict results do not.
+- Replace broad onboarding invalidation with an explicit direct-import freshness helper. Web marks the transaction/holding fan-out stale; native runs the server-to-SQLite delta/ID-set repair first, then invalidates only families that actually changed. Added/removed rows or holding activation changes trigger refresh; only a zero-transaction, zero-holding-change result is a no-op.
 - Document the additive audit and onboarding-draft shapes, query ownership, persistence behavior, lifecycle behavior, telemetry, and buster rationale.
 - Create a generic, exact-target repair procedure whose committed source contains no target. The private runtime helper must perform read-only identity/ownership checks, exact-target count, unrelated digest, encrypted backup, rollback validation, and guarded mutation.
 - Prove the deployed Q1-Q4 prevention rejects the known malformed layout before financial/domain writes using only synthetic or transient private aggregate evidence.
@@ -74,7 +74,7 @@ Add `transactions_duplicate`, `reconciliation_conflicts`, and `transactions_remo
 
 Carry the database function's exact `deleted_count` into `CASImportResult`. Extend `buildImportOutcome` so audit rows, API responses, email notifications, and telemetry agree on all four transaction outcomes. Keep `transactions` as an additive compatibility alias for `transactions_added`. Conflict responses include named aggregate counts even though the HTTP status remains a failure; client code wraps such failures in a typed `CasUploadError` so screens can display the counts without exposing internal error bodies.
 
-Introduce a direct-import freshness helper with injected sync and query-client dependencies for focused tests. It treats added or removed rows as a server transaction change. On web it calls the existing granular transaction fan-out directly. On native it calls `syncDeltaForUser`, whose immutable ID comparison observes inserts and deletes and repairs SQLite atomically, then passes the real `SyncResult` to `invalidateQueriesForSync`. No-op and conflict results return without sync, invalidation, or refetch. Call both upload screens with the signed-in user and an `unknown` visible route so affected caches are stale but hidden screens do not wake; the Done screen's normal Portfolio query then fetches the fresh inputs when it mounts.
+Introduce a direct-import freshness helper with injected sync and query-client dependencies for focused tests. It treats added/removed rows or an atomic holding creation/activation change as a server change. On web it calls the existing granular transaction/holding fan-out directly. On native it calls `syncDeltaForUser`, whose immutable ID comparison observes inserts and deletes and repairs SQLite atomically, then passes the real `SyncResult` plus the server holding-change signal to `invalidateQueriesForSync`. A failed rebuild remains an error. Only a true zero-transaction, zero-holding-change result returns without sync, invalidation, or refetch. Call both upload screens with the signed-in user and an `unknown` visible route so affected caches are stale but hidden screens do not wake; the Done screen's normal Portfolio query then fetches the fresh inputs when it mounts.
 
 Extend the persisted onboarding result additively. Existing v1 drafts remain readable because the original `funds` and `transactions` fields retain their meaning and missing named fields default to zero. No AsyncStorage key bump is needed: no field is removed or reinterpreted, and the loader repairs old payloads into the complete in-memory shape. React Query server payloads and SQLite schema do not change, so the persisted React Query `__BUSTER__` and native SQLite schema version remain unchanged.
 
@@ -177,6 +177,7 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 - 2026-08-12: Require the encrypted backup itself to match the approved target count, owner, import scope, and full-row digest inside the serializable deletion transaction; a valid-looking or merely decryptable file is insufficient.
 - 2026-08-12: Keep database passwords, the exact import ID, approved digests, and the approval phrase out of process arguments. The runner uses `PGPASSWORD` and psql `\getenv` values, and accepts only the exact dev direct-host/user pair or project-scoped Supabase pooler user.
 - 2026-08-12: Bucket native sync/fund-roster analytics and remove the user-ID hint because direct post-import native refresh exercises that path; exact values remain only in the signed-in result UI.
+- 2026-08-14: Round-one dual review found seven actionable gaps. Preserve exact rejected-row count separately from conflict groups; report holding creation/activation from the atomic database plan; propagate immutable-ID rebuild failures; suppress reconciliation tallies for failures that never reconciled; recompute touched holding activation during apply/rollback; verify the complete decrypted backup header; and derive authoritative catalog hydration only from the encrypted exact-target backup through a service-role-only, identifier-silent mode.
 
 ## Evidence
 
@@ -186,6 +187,7 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 - Current focused validation: seven Jest suites / 289 tests passed after repair-runner, native-sync privacy, and UI outcome hardening. Full Jest passed 112 suites / 2,245 tests; the complete Python API suite passed 360 tests plus 3 subtests; typecheck and zero-warning lint passed.
 - The actual migration replayed with every repository migration in a disposable database-only Supabase stack. Live SQL confirmed v3, zero defaults, non-negative constraints, service-role execution, and anon denial.
 - Synthetic exact-target proof in PostgreSQL 17 produced one target plus one unrelated row, created a complete backup, deleted exactly one target with the unrelated digest unchanged, and restored the identical target and unrelated digests through rollback. A mismatched backup aborted with `q5_backup_manifest_mismatch`, unrelated drift aborted with `q5_approved_manifest_changed`, and a cross-owner target aborted before emitting a dry-run manifest; each retained the target. The disposable databases, backup fixtures, copied scripts, and temporary files were destroyed immediately afterward.
+- Round-one review correction evidence: nine focused suites / 337 tests pass for exact-row conflict, holding-only freshness, failed native rebuild, preflight-versus-reconciliation notification, wrong-backup-header, and secret-safe exact-target hydration. Full Jest passes 112 suites / 2,251 tests; the complete Python API suite passes 362 tests plus 3 subtests; typecheck, zero-warning lint, shell syntax, and diff checks pass. A disposable PostgreSQL 17 database applied the real Q5 migration, proved holding-only v3 change/no-change outcomes, deleted the sole synthetic target transaction while deactivating only its touched holding, and restored that transaction plus holding activation through the real rollback SQL; the container, plaintext backup, and proof helper were destroyed immediately.
 
 ## Progress
 
@@ -199,8 +201,10 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 - [x] Prove deployed malformed-layout rejection before any repair approval.
 - [x] Open Q5 draft PR #296, post the allowed implementation comment, and update the control tracking row.
 - [x] Complete final local implementation evidence for one consolidated head.
-- [ ] Push the consolidated implementation head and require all exact-head CI before review.
-- [ ] Complete frozen-head Codex and Claude convergence.
+- [x] Push the initial consolidated implementation head and require all exact-head CI before review.
+- [x] Complete frozen-head Codex and Claude round one at the same exact SHA; preserve all seven reviewer-owned threads unresolved.
+- [ ] Validate and push one batched correction for every round-one finding, then start exact-SHA re-review.
+- [ ] Complete exact-SHA Codex and Claude convergence.
 - [ ] Run the non-mutating shared-dev dry run and encrypted backup, then stop for immediate human approval.
 - [ ] After approval, execute shared-dev repair, authoritative hydration, private/synthetic proofs, and cache/portfolio field validation.
 - [ ] Merge Q5, record exact main deployment, and complete the seven-day observation window.

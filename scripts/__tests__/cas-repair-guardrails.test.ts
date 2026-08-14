@@ -44,6 +44,7 @@ describe('Q5 exact-target repair guardrails', () => {
     const source = read('exact-target-apply.sql');
 
     expect(source).toContain('transaction isolation level serializable');
+    expect(source).toContain('lock table public.user_fund in share row exclusive mode');
     expect(source).toContain('lock table public.transaction in share row exclusive mode');
     expect(source).toContain('q5_immediate_approval_missing');
     expect(source).toContain('q5_target_count_invalid');
@@ -52,6 +53,7 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(source).toContain('q5_approved_manifest_changed');
     expect(source).toContain('q5_unrelated_rows_changed');
     expect(source).toContain("'APPROVE_Q5_EXACT_TARGET_DELETE'");
+    expect(source).toContain('q5_holding_activation_mismatch');
   });
 
   it('keeps database passwords out of argv and rejects non-dev connections', () => {
@@ -111,6 +113,22 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(source).toContain('q5_restore_primary_key_conflict');
     expect(source).toContain('q5_restore_scope_invalid');
     expect(source).toContain('q5_restore_owner_mismatch');
+    expect(source).toContain('q5_restore_holding_activation_mismatch');
+    expect(source).toContain('update public.user_fund as holding');
+  });
+
+  it('derives authoritative hydration scope only from the encrypted exact-target backup', () => {
+    const runner = read('run-exact-target-repair.sh');
+    const scope = read('exact-target-hydration-scope.sql');
+
+    expect(scope).toContain('q5_hydration_scope_mismatch');
+    expect(scope).toContain('q5_hydration_owner_mismatch');
+    expect(scope).toContain("'mode', 'exact-target-repair'");
+    expect(scope).toContain("'scheme_codes'");
+    expect(scope).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    expect(runner).toContain('refusing non-dev function target');
+    expect(runner).toContain('trap cleanup_plaintext EXIT INT TERM');
+    expect(runner).not.toContain('--header "Authorization: Bearer');
   });
 
   it('runs psql without placing the database password in argv', () => {
@@ -219,6 +237,144 @@ printf '{"deleted_count":1,"unrelated_unchanged":true}\n'
       expect(fs.existsSync(marker)).toBe(true);
       const plaintextPath = fs.readFileSync(marker, 'utf8');
       expect(fs.existsSync(plaintextPath)).toBe(false);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an encrypted backup with the wrong CSV header before psql', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-runner-header-'));
+    try {
+      const fakePsql = path.join(temp, 'psql');
+      const marker = path.join(temp, 'psql-invoked');
+      const backup = path.join(temp, 'rows.enc');
+      const key = path.join(temp, 'rows.key');
+      writeExecutable(fakePsql, `#!/usr/bin/env bash
+touch "$Q5_FAKE_PSQL_MARKER"
+`);
+      fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
+      const encrypted = spawnSync(
+        'openssl',
+        ['enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-pass', `file:${key}`, '-out', backup],
+        { input: 'wrong,header\n', encoding: 'utf8' },
+      );
+      expect(encrypted.status).toBe(0);
+      const backupSha = crypto.createHash('sha256').update(fs.readFileSync(backup)).digest('hex');
+
+      const result = spawnSync(RUNNER, ['apply'], {
+        env: {
+          ...baseEnv(fakePsql),
+          Q5_FAKE_PSQL_MARKER: marker,
+          Q5_BACKUP_PATH: backup,
+          Q5_BACKUP_KEY_FILE: key,
+          Q5_BACKUP_SHA256: backupSha,
+          Q5_EXPECTED_TARGET_COUNT: '1',
+          Q5_EXPECTED_TARGET_DIGEST: '0'.repeat(64),
+          Q5_EXPECTED_UNRELATED_COUNT: '1',
+          Q5_EXPECTED_UNRELATED_DIGEST: '1'.repeat(64),
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(4);
+      expect(result.stderr).toContain('encrypted backup cannot be verified');
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the hydration service key out of argv and removes local secret files', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-runner-hydrate-'));
+    const tempPrefixes = [
+      'foliolens-q5-restore.',
+      'foliolens-q5-hydration-payload.',
+      'foliolens-q5-hydration-response.',
+      'foliolens-q5-hydration-curl.',
+    ];
+    const privateTemps = () => new Set(
+      fs.readdirSync('/tmp').filter((name) => tempPrefixes.some((prefix) => name.startsWith(prefix))),
+    );
+    const before = privateTemps();
+    try {
+      const fakePsql = path.join(temp, 'psql');
+      const fakeCurl = path.join(temp, 'curl');
+      const curlArgs = path.join(temp, 'curl-args');
+      const backup = path.join(temp, 'rows.enc');
+      const key = path.join(temp, 'rows.key');
+      const serviceKey = 'synthetic-service-key-never-print';
+      writeExecutable(fakePsql, `#!/usr/bin/env bash
+printf '{"mode":"exact-target-repair","scheme_codes":[123]}\n'
+`);
+      writeExecutable(fakeCurl, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$Q5_FAKE_CURL_ARGS"
+config="$2"
+output="$(awk -F'"' '/^output = / {print $2}' "$config")"
+printf '%s' "$Q5_FAKE_HYDRATION_RESPONSE" > "$output"
+printf '200'
+`);
+      fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
+      const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at\n';
+      const encrypted = spawnSync(
+        'openssl',
+        ['enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-pass', `file:${key}`, '-out', backup],
+        { input: header, encoding: 'utf8' },
+      );
+      expect(encrypted.status).toBe(0);
+      const backupSha = crypto.createHash('sha256').update(fs.readFileSync(backup)).digest('hex');
+
+      const result = spawnSync(RUNNER, ['hydrate'], {
+        env: {
+          ...baseEnv(fakePsql),
+          PATH: `${temp}:${process.env.PATH ?? ''}`,
+          Q5_FAKE_CURL_ARGS: curlArgs,
+          Q5_FAKE_HYDRATION_RESPONSE:
+            '{"success":true,"updated":1,"failed":0,"skipped":0}',
+          Q5_BACKUP_PATH: backup,
+          Q5_BACKUP_KEY_FILE: key,
+          Q5_BACKUP_SHA256: backupSha,
+          Q5_EXPECTED_TARGET_COUNT: '1',
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+          Q5_DEV_FUNCTIONS_URL:
+            'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
+          Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('{"success":true,"updated":1,"failed":0,"skipped":0}\n');
+      expect(result.stdout).not.toContain(serviceKey);
+      expect(result.stderr).not.toContain(serviceKey);
+      expect(fs.readFileSync(curlArgs, 'utf8')).not.toContain(serviceKey);
+
+      const unresolved = spawnSync(RUNNER, ['hydrate'], {
+        env: {
+          ...baseEnv(fakePsql),
+          PATH: `${temp}:${process.env.PATH ?? ''}`,
+          Q5_FAKE_CURL_ARGS: curlArgs,
+          Q5_FAKE_HYDRATION_RESPONSE:
+            '{"success":false,"updated":0,"failed":1,"skipped":0}',
+          Q5_BACKUP_PATH: backup,
+          Q5_BACKUP_KEY_FILE: key,
+          Q5_BACKUP_SHA256: backupSha,
+          Q5_EXPECTED_TARGET_COUNT: '1',
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+          Q5_DEV_FUNCTIONS_URL:
+            'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
+          Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+        },
+        encoding: 'utf8',
+      });
+      expect(unresolved.status).toBe(4);
+      expect(unresolved.stdout).toBe(
+        '{"success":false,"updated":0,"failed":1,"skipped":0}\n',
+      );
+      expect(unresolved.stderr).toContain('left unresolved targets');
+      const after = privateTemps();
+      expect([...after].filter((name) => !before.has(name))).toEqual([]);
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }

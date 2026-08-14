@@ -43,12 +43,14 @@ export type Database = {
           created_at: string
           error_message: string | null
           funds_updated: number
+          holdings_changed: number
           id: string
           import_source: Database["public"]["Enums"]["import_source"]
           import_status: Database["public"]["Enums"]["import_status"]
           imported_at: string
           raw_payload: Json | null
           reconciliation_conflicts: number
+          transactions_rejected: number
           transactions_added: number
           transactions_duplicate: number
           transactions_removed: number
@@ -58,12 +60,14 @@ export type Database = {
           created_at?: string
           error_message?: string | null
           funds_updated?: number
+          holdings_changed?: number
           id?: string
           import_source: Database["public"]["Enums"]["import_source"]
           import_status?: Database["public"]["Enums"]["import_status"]
           imported_at?: string
           raw_payload?: Json | null
           reconciliation_conflicts?: number
+          transactions_rejected?: number
           transactions_added?: number
           transactions_duplicate?: number
           transactions_removed?: number
@@ -73,12 +77,14 @@ export type Database = {
           created_at?: string
           error_message?: string | null
           funds_updated?: number
+          holdings_changed?: number
           id?: string
           import_source?: Database["public"]["Enums"]["import_source"]
           import_status?: Database["public"]["Enums"]["import_status"]
           imported_at?: string
           raw_payload?: Json | null
           reconciliation_conflicts?: number
+          transactions_rejected?: number
           transactions_added?: number
           transactions_duplicate?: number
           transactions_removed?: number

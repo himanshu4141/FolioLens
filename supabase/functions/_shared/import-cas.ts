@@ -61,8 +61,10 @@ export function countParsedTransactions(parsed: CASParseResult): number {
 
 export interface CASImportResult {
   fundsUpdated: number;
+  holdingsChanged: number;
   transactionsAdded: number;
   transactionsDuplicate: number;
+  transactionsRejected: number;
   transactionsRemoved: number;
   reconciliationConflicts: number;
   catalogHydrationRequested: number;
@@ -219,8 +221,10 @@ function existingSnapshotRow(value: Record<string, unknown>): ExistingSnapshotRo
 function reconciliationFailure(reason: CASWriteFailureReason): CASImportResult {
   return {
     fundsUpdated: 0,
+    holdingsChanged: 0,
     transactionsAdded: 0,
     transactionsDuplicate: 0,
+    transactionsRejected: 0,
     transactionsRemoved: 0,
     reconciliationConflicts: 0,
     catalogHydrationRequested: 0,
@@ -238,8 +242,10 @@ export async function importCASData(
   const { parsed: canonical, summary } = assertCASPreflight(parsed);
   const preparedSchemes = prepareSchemes(canonical);
   let fundsUpdated = 0;
+  let holdingsChanged = 0;
   let transactionsAdded = 0;
   let transactionsDuplicate = 0;
+  let transactionsRejected = 0;
   let transactionsRemoved = 0;
   let reconciliationConflicts = 0;
   let catalogHydrationRequested = 0;
@@ -345,6 +351,13 @@ export async function importCASData(
     (total, scheme) => total + scheme.plan.conflicts.length,
     0,
   );
+  transactionsRejected = plannedSchemes.reduce(
+    (total, scheme) => total + scheme.plan.conflicts.reduce(
+      (schemeTotal, conflict) => schemeTotal + conflict.incomingRows,
+      0,
+    ),
+    0,
+  );
   if (reconciliationConflicts > 0) {
     console.warn(
       '[import-cas] reconciliation_rejected conflicts=%s duplicates=%s',
@@ -353,8 +366,10 @@ export async function importCASData(
     );
     return {
       fundsUpdated: 0,
+      holdingsChanged: 0,
       transactionsAdded: 0,
       transactionsDuplicate,
+      transactionsRejected,
       transactionsRemoved: 0,
       reconciliationConflicts,
       catalogHydrationRequested: 0,
@@ -391,7 +406,7 @@ export async function importCASData(
   }));
 
   if (importPlans.length > 0) {
-    const mutationResult = await supabase.rpc('apply_cas_import_plans_v2', {
+    const mutationResult = await supabase.rpc('apply_cas_import_plans_v3', {
       p_user_id: userId,
       p_import_id: importId,
       p_plans: importPlans,
@@ -402,6 +417,10 @@ export async function importCASData(
         : '';
       if (message.includes('cas_snapshot_conflict')) {
         reconciliationConflicts += 1;
+        transactionsRejected = plannedSchemes.reduce(
+          (total, scheme) => total + scheme.incomingRows.length + scheme.reversals.length,
+          0,
+        );
         errors.push(auditErrorCode('reconciliation_conflict'));
       } else {
         errors.push(auditErrorCode('transaction_write_failed'));
@@ -413,10 +432,12 @@ export async function importCASData(
       const inserted = Number(payload?.inserted_count ?? 0);
       const deleted = Number(payload?.deleted_count ?? 0);
       const funds = Number(payload?.fund_count ?? 0);
+      const holdings = Number(payload?.holding_changed_count ?? 0);
       const provisionalSchemes = Number(payload?.provisional_scheme_count ?? 0);
       transactionsAdded += Number.isInteger(inserted) && inserted >= 0 ? inserted : 0;
       transactionsRemoved += Number.isInteger(deleted) && deleted >= 0 ? deleted : 0;
       fundsUpdated += Number.isInteger(funds) && funds >= 0 ? funds : 0;
+      holdingsChanged += Number.isInteger(holdings) && holdings >= 0 ? holdings : 0;
       catalogHydrationRequested += Number.isInteger(provisionalSchemes)
         && provisionalSchemes >= 0
         ? provisionalSchemes
@@ -437,8 +458,10 @@ export async function importCASData(
   );
   return {
     fundsUpdated,
+    holdingsChanged,
     transactionsAdded,
     transactionsDuplicate,
+    transactionsRejected,
     transactionsRemoved,
     reconciliationConflicts,
     catalogHydrationRequested,

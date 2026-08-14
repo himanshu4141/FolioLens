@@ -92,10 +92,10 @@ verify_backup_digest() {
   fi
   if ! openssl enc -d -aes-256-cbc -pbkdf2 \
     -pass "file:$Q5_BACKUP_KEY_FILE" -in "$Q5_BACKUP_PATH" \
-    | {
+      | {
         IFS= read -r header
-        [[ "$header" == "$expected_header" ]]
         cat >/dev/null
+        [[ "$header" == "$expected_header" ]]
       }
   then
     printf 'encrypted backup cannot be verified with the supplied key\n' >&2
@@ -110,6 +110,9 @@ decrypt_backup_to_temp() {
   plaintext_path="$(mktemp /tmp/foliolens-q5-restore.XXXXXX)"
   cleanup_plaintext() {
     rm -f -- "$plaintext_path"
+    [[ -z "${hydration_payload_path:-}" ]] || rm -f -- "$hydration_payload_path"
+    [[ -z "${hydration_response_path:-}" ]] || rm -f -- "$hydration_response_path"
+    [[ -z "${hydration_curl_config_path:-}" ]] || rm -f -- "$hydration_curl_config_path"
   }
   trap cleanup_plaintext EXIT INT TERM
   openssl enc -d -aes-256-cbc -pbkdf2 \
@@ -202,6 +205,57 @@ case "$MODE" in
     "${PSQL_BASE[@]}" --file="$SCRIPT_DIR/exact-target-apply.sql"
     ;;
 
+  hydrate)
+    require_var Q5_EXPECTED_TARGET_COUNT
+    require_var Q5_BACKUP_SHA256
+    require_var Q5_APPROVE_EXACT_TARGET_DELETE
+    require_var Q5_DEV_FUNCTIONS_URL
+    require_var Q5_DEV_SERVICE_ROLE_KEY
+    if [[ "$Q5_APPROVE_EXACT_TARGET_DELETE" != 'APPROVE_Q5_EXACT_TARGET_DELETE' ]]; then
+      printf 'immediate approval is required before authoritative hydration\n' >&2
+      exit 2
+    fi
+    if [[ "$Q5_DEV_FUNCTIONS_URL" != "https://$DEV_PROJECT_REF.supabase.co/functions/v1/sync-fund-meta" ]]; then
+      printf 'refusing non-dev function target\n' >&2
+      exit 3
+    fi
+    require_backup_material
+    verify_backup_digest
+    decrypt_backup_to_temp
+    hydration_payload_path="$(mktemp /tmp/foliolens-q5-hydration-payload.XXXXXX)"
+    hydration_response_path="$(mktemp /tmp/foliolens-q5-hydration-response.XXXXXX)"
+    hydration_curl_config_path="$(mktemp /tmp/foliolens-q5-hydration-curl.XXXXXX)"
+    chmod 600 "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
+    "${PSQL_BASE[@]}" --file="$SCRIPT_DIR/exact-target-hydration-scope.sql" \
+      >"$hydration_payload_path"
+    if [[ ! -s "$hydration_payload_path" ]]; then
+      printf 'authoritative hydration scope is empty\n' >&2
+      exit 4
+    fi
+    printf '%s\n' \
+      'silent' \
+      'show-error' \
+      'request = "POST"' \
+      "url = \"$Q5_DEV_FUNCTIONS_URL\"" \
+      "header = \"Authorization: Bearer $Q5_DEV_SERVICE_ROLE_KEY\"" \
+      'header = "Content-Type: application/json"' \
+      "data-binary = \"@$hydration_payload_path\"" \
+      "output = \"$hydration_response_path\"" \
+      'write-out = "%{http_code}"' \
+      >"$hydration_curl_config_path"
+    hydration_http_status="$(curl --config "$hydration_curl_config_path")"
+    if [[ "$hydration_http_status" != '200' ]]; then
+      printf 'authoritative hydration failed\n' >&2
+      exit 4
+    fi
+    cat "$hydration_response_path"
+    printf '\n'
+    if ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$hydration_response_path"; then
+      printf 'authoritative hydration left unresolved targets\n' >&2
+      exit 4
+    fi
+    ;;
+
   rollback)
     require_var Q5_EXPECTED_RESTORE_COUNT
     require_backup_material
@@ -211,7 +265,7 @@ case "$MODE" in
     ;;
 
   *)
-    printf 'usage: %s {dry-run|backup|apply|rollback}\n' "$0" >&2
+    printf 'usage: %s {dry-run|backup|apply|hydrate|rollback}\n' "$0" >&2
     exit 2
     ;;
 esac

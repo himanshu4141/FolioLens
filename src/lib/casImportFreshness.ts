@@ -8,6 +8,7 @@ import {
 } from '@/src/lib/syncInvalidation';
 
 export interface CasTransactionOutcome {
+  holdingsChanged?: number;
   transactionsAdded: number;
   transactionsAlreadyPresent: number;
   transactionsRejected: number;
@@ -51,7 +52,9 @@ export async function refreshAfterDirectCasImport(
   visibleRoute: SyncVisibleRoute = 'unknown',
   dependencies: CasImportFreshnessDependencies = {},
 ): Promise<CasImportFreshnessResult> {
-  const serverChanged = outcome.transactionsAdded > 0 || outcome.transactionsRemoved > 0;
+  const transactionChanged = outcome.transactionsAdded > 0 || outcome.transactionsRemoved > 0;
+  const holdingsChanged = outcome.holdingsChanged ?? 0;
+  const serverChanged = transactionChanged || holdingsChanged > 0;
   if (!serverChanged) return EMPTY_REFRESH;
 
   const invalidate = dependencies.invalidate ?? invalidateQueriesForSync;
@@ -59,17 +62,26 @@ export async function refreshAfterDirectCasImport(
     if ((dependencies.platform ?? Platform.OS) === 'web') {
       await invalidate(
         queryClient,
-        { txInserted: 1, navInserted: 0, idxInserted: 0, errors: [] },
+        {
+          txInserted: transactionChanged ? 1 : 0,
+          navInserted: 0,
+          idxInserted: 0,
+          holdingsChanged,
+          errors: [],
+        },
         visibleRoute,
       );
       return { serverChanged: true, localChanged: true, errors: [] };
     }
 
     const syncResult = await (dependencies.syncNative ?? syncDeltaForUser)(userId);
-    await invalidate(queryClient, syncResult, visibleRoute);
+    const refreshResult = { ...syncResult, holdingsChanged };
+    await invalidate(queryClient, refreshResult, visibleRoute);
     return {
       serverChanged: true,
-      localChanged: syncResult.txInserted > 0 || syncResult.txRebuiltFromDrift === true,
+      localChanged: syncResult.txInserted > 0
+        || syncResult.txRebuiltFromDrift === true
+        || holdingsChanged > 0,
       errors: syncResult.errors,
     };
   } catch {

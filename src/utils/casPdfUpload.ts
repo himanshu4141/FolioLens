@@ -11,6 +11,7 @@ import { bucketBytes, bucketCount } from '@/src/lib/uxTelemetry';
 
 export interface CasUploadResult {
   funds: number;
+  holdingsChanged: number;
   /** Backward-compatible alias for transactionsAdded. */
   transactions: number;
   transactionsAdded: number;
@@ -31,6 +32,7 @@ export class CasUploadError extends Error {
 
 interface UploadResponse {
   funds?: number;
+  holdings_changed?: number;
   transactions?: number;
   transactions_added?: number;
   transactions_already_present?: number;
@@ -47,6 +49,7 @@ function uploadResult(body: UploadResponse): CasUploadResult {
   const transactionsAdded = exactCount(body.transactions_added ?? body.transactions);
   return {
     funds: exactCount(body.funds),
+    holdingsChanged: exactCount(body.holdings_changed),
     transactions: transactionsAdded,
     transactionsAdded,
     transactionsAlreadyPresent: exactCount(body.transactions_already_present),
@@ -131,6 +134,7 @@ function parseUploadResponse(status: number, bodyText: string): CasUploadResult 
     analytics.track('portfolio_imported', {
       source: 'cas_pdf',
       funds_count_bucket: bucketCount(result.funds),
+      holdings_changed_count_bucket: bucketCount(result.holdingsChanged),
       transactions_count_bucket: bucketCount(result.transactionsAdded),
       already_present_count_bucket: bucketCount(result.transactionsAlreadyPresent),
       rejected_count_bucket: bucketCount(result.transactionsRejected),

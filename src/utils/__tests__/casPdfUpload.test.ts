@@ -139,6 +139,7 @@ describe('uploadCasPdf — native path', () => {
       transactionsAlreadyPresent: 0,
       transactionsRejected: 0,
       transactionsRemoved: 0,
+      holdingsChanged: 0,
     });
     expect(mockedUpload).toHaveBeenCalledWith(
       'https://example.supabase.co/functions/v1/parse-cas-pdf',
@@ -235,6 +236,7 @@ describe('uploadCasPdf — native path', () => {
       transactionsAlreadyPresent: 0,
       transactionsRejected: 0,
       transactionsRemoved: 0,
+      holdingsChanged: 0,
     });
   });
 
@@ -369,6 +371,7 @@ describe('uploadCasPdf — web path', () => {
       transactionsAlreadyPresent: 0,
       transactionsRejected: 0,
       transactionsRemoved: 0,
+      holdingsChanged: 0,
     });
   });
 
@@ -390,6 +393,7 @@ describe('uploadCasPdf — web path', () => {
       transactionsAlreadyPresent: 0,
       transactionsRejected: 0,
       transactionsRemoved: 0,
+      holdingsChanged: 0,
     });
     expect(arrayBuffer).toHaveBeenCalled();
   });
