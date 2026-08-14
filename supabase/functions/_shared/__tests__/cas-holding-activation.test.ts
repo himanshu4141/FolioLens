@@ -25,7 +25,7 @@ describe('C1 authoritative CAS holding activation', () => {
     );
   });
 
-  it('applies recency before interpreting positive, zero, or missing closing units', () => {
+  it('keeps recency ahead of balance interpretation and the post-plan ledger as an activation floor', () => {
     const recencyGuard = migration.indexOf(
       'if p_holding_existed and not p_closing_balance_is_current then',
     );
@@ -37,6 +37,9 @@ describe('C1 authoritative CAS holding activation', () => {
     expect(recencyGuard).toBeGreaterThan(-1);
     expect(numericBalance).toBeGreaterThan(recencyGuard);
     expect(transactionFallback).toBeGreaterThan(numericBalance);
+    expect(migration).toContain(
+      'return p_existing_is_active and p_has_transactions;',
+    );
   });
 
   it('delegates persisted activation to the shared policy owner after transaction mutation', () => {

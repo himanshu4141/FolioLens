@@ -27,9 +27,10 @@ begin
   end if;
 
   -- Recency is evaluated before balance type. An older statement cannot
-  -- activate or deactivate a holding that already has newer committed state.
+  -- activate a holding that already has newer committed state, and the
+  -- committed post-plan ledger is the floor for preserving an active row.
   if p_holding_existed and not p_closing_balance_is_current then
-    return p_existing_is_active;
+    return p_existing_is_active and p_has_transactions;
   end if;
 
   if jsonb_typeof(p_closing_units) = 'number' then

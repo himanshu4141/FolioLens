@@ -135,8 +135,9 @@ missing identities are explicitly provisional, the user-and-scheme roster plus
 transaction snapshot is revalidated under deterministic locks, and catalog,
 holding, transaction, reversal, and activation changes commit or roll back together.
 Activation recency must be decided before closing-balance value: stale positive,
-zero, and missing evidence preserves an existing holding's prior state, while current
-or new-holding evidence uses the shared resolver's balance/transaction rules.
+zero, and missing evidence preserves an existing holding's prior state only while
+the committed post-plan ledger remains non-empty, while current or new-holding
+evidence uses the shared resolver's balance/transaction rules.
 
 Update `src/lib/functions/index.ts` to point at the new endpoints. Consumer code
 should stay on the wrapper.

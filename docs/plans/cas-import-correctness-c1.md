@@ -38,7 +38,7 @@ The deployed Q4 function consults this recency flag only when closing units are 
 
 - Add one forward-only migration that replaces the deployed v2 atomic function without rewriting Q4 migration history.
 - Gate activation recency before interpreting positive, zero, or missing closing units.
-- Preserve prior activation for every existing holding when balance evidence is stale.
+- Preserve prior activation for an existing holding when balance evidence is stale and the committed post-plan ledger remains non-empty.
 - Keep current positive activation, current zero deactivation, stale-zero preservation, and first-import behavior unchanged.
 - Keep missing-balance fallback to committed post-plan transaction existence when the evidence is current.
 - Define one reusable database activation resolver so Q5 repair can deliberately recompute through the same owner instead of duplicating policy.
@@ -61,7 +61,7 @@ Create a pure, service-role-only, security-invoker SQL function that resolves fi
 
 The resolver applies rules in this order:
 
-1. If the holding existed and balance evidence is stale, return the prior activation without interpreting closing units.
+1. If the holding existed and balance evidence is stale, preserve prior activation without interpreting closing units, subject to a non-empty committed post-plan ledger.
 2. Otherwise, if closing units are numeric, return whether they are positive.
 3. Otherwise, return whether committed post-plan transactions exist.
 
@@ -125,8 +125,8 @@ After merge, use the existing authorized main workflows to deploy C1 to Supabase
 ## Risks And Mitigations
 
 - **New holdings remain inactive.** The recency-preserve branch requires a pre-existing holding. A first import follows numeric balance or post-plan transaction evidence; fixtures pin both paths.
-- **Current redemptions stop deactivating holdings.** Current numeric zero still resolves to false; only stale evidence preserves state.
-- **A stale statement changes activation through a missing-balance branch.** Recency is checked before JSON type, so positive, zero, and missing stale values all preserve.
+- **Current redemptions stop deactivating holdings.** Current numeric zero still resolves to false; stale evidence preserves state only while the post-plan ledger remains non-empty.
+- **A stale statement changes activation through a missing-balance branch.** Recency is checked before JSON type, so positive, zero, and missing stale values preserve prior state without interpreting the balance; the post-plan ledger still prevents an active empty holding.
 - **The hotfix weakens Q4 atomicity or grants.** The new migration copies the deployed RPC signature and transactional body, changes only activation resolution, and has static plus live grant/rollback checks.
 - **Q5 drifts from C1.** The resolver is a database policy function and the Q5 ExecPlan/repair must call it rather than duplicate an activation expression.
 - **A server value changes but the app stays stale.** Existing user-fund/portfolio invalidation is retained and exact-SHA dev/main evidence must include a cache-visible assertion.
@@ -139,6 +139,12 @@ After merge, use the existing authorized main workflows to deploy C1 to Supabase
 - 2026-08-14: Keep activation ownership in the database transaction. Introduce a reusable resolver so Q5 repair can recompute through the same policy owner.
 - 2026-08-14: Keep the public RPC signature and capability at v2 because the Edge payload and result contract do not change; deploy ordering remains safe with old Edge code plus the forward migration.
 - 2026-08-14: No new analytics event is needed. The user-visible behavior becomes correct without a new flow, and existing aggregate import telemetry remains sufficient.
+- 2026-08-14: Round-one review found that unconditional stale-state preservation could leave `is_active = true` after the same plan removed every transaction. Keep recency ahead of balance interpretation, but make committed post-plan transaction presence a floor for preserving `true`. Add executable pgTAP coverage for all 36 valid resolver configurations plus invalid evidence instead of relying on SQL source-text assertions for policy behavior.
+
+## Amendments
+
+- Round one tightened the stale-evidence rule from unconditional prior-state preservation to `prior activation AND committed post-plan transaction presence`. This does not change the three intended stale exited-holding fixes, current balance behavior, or first imports; it prevents the atomic writer and the later delete-only Q5 repair from leaving an active holding with an empty ledger.
+- The initial Jest contract file remains responsible only for structural boundaries such as grants, RPC signature, and delegation order. Executable policy coverage now lives in `supabase/tests/cas_holding_activation_test.sql` and runs through `supabase test db` after a full local migration replay in CI.
 
 ## Evidence
 
@@ -148,6 +154,8 @@ After merge, use the existing authorized main workflows to deploy C1 to Supabase
 - Migration integrity found 60 repository migrations, no duplicate versions, and the one new version newer than main's `20260811000000` maximum.
 - A structural diff of the deployed Q4 atomic function against C1 showed only the activation-state capture, resolver delegation, and resolver grants changed; locking, catalog authority, snapshot validation, transaction mutation, and result counts stayed identical.
 - The real Q4 migration followed by the real C1 migration ran in disposable PostgreSQL 17. Live service-role execution proved stale positive and stale missing preserve an inactive existing holding, stale zero preserves an active holding, current positive activates, current zero deactivates, current missing uses committed transactions, and a first missing-balance import creates one active holding. Anon/authenticated execute grants were absent. The container and both scratch files were deleted; no shared database or private data was used.
+- Round-one correction validation passed the focused C1 suites with 118 tests, including an end-to-end stale missing-balance reversal that removes the final transaction; the full regression passed 111 suites / 2,236 tests; typecheck, zero-warning lint, migration integrity, and diff checks passed.
+- The actual corrected migration and committed pgTAP file ran in an isolated no-port Supabase PostgreSQL 17 container. All 41 assertions passed: the complete 24-case existing-holding table, complete 12-case new-holding table, and five invalid-evidence cases. The disposable container was removed immediately afterward; no shared database or private data was used.
 
 ## Progress
 
@@ -159,4 +167,6 @@ After merge, use the existing authorized main workflows to deploy C1 to Supabase
 - [x] Update architecture and infrastructure documentation.
 - [x] Complete focused, full, migration, isolated-database, typecheck, lint, and diff validation.
 - [x] Open draft C1 PR #297 and post the allowed control START comment.
-- [ ] Freeze an exact head for dual independent review and make no further push until both round results arrive.
+- [x] Freeze an exact round-one head and receive both independent results without pushing during review.
+- [x] Batch both round-one P2 findings and validate one correction without touching reviewer-owned threads.
+- [ ] Push the single correction, post evidence without resolving threads, and start an exact-SHA re-review.

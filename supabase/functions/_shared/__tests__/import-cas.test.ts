@@ -21,7 +21,9 @@ function resolveMockHoldingActivation({
   closingBalanceIsCurrent: boolean;
   hasTransactions: boolean;
 }): boolean {
-  if (holdingExisted && !closingBalanceIsCurrent) return existingIsActive;
+  if (holdingExisted && !closingBalanceIsCurrent) {
+    return existingIsActive && hasTransactions;
+  }
   if (closingUnits !== null) return closingUnits > 0;
   return hasTransactions;
 }
@@ -988,6 +990,27 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
+  });
+
+  it('does not preserve an active holding after a stale missing-balance plan removes its last transaction', async () => {
+    const { supabase, fundUpdateCalls, storedTransactions } = buildMockSupabase({
+      existingFundRows: [{
+        id: 'fund-id-1',
+        user_id: 'user-1',
+        scheme_code: 119551,
+        is_active: true,
+      }],
+      existingTransactionRows: [storedPurchase()],
+    });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'REVERSAL', units: -100, amount: -10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(storedTransactions).toEqual([]);
     expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
   });
 

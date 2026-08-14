@@ -172,9 +172,10 @@ Catalog insertion, user-holding creation, transaction snapshot revalidation, exa
 reversal deletes, transaction inserts, and holding activation run in one
 service-role-only PostgreSQL transaction. Balance recency is evaluated before its
 value: for an existing holding, any stale positive, zero, or missing closing balance
-preserves the previously committed activation. Current positive units activate and
-current zero units deactivate. A current statement without a complete balance, or a
-new holding, uses committed post-plan transaction presence. The shared
+preserves the previously committed activation only while the committed post-plan
+ledger still contains a transaction. Current positive units activate and current
+zero units deactivate. A current statement without a complete balance, or a new
+holding, uses committed post-plan transaction presence. The shared
 `resolve_user_fund_activation_v1` database policy owns this decision for CAS
 transaction writers, so an out-of-order statement cannot make an exited holding
 visible again. Any error rolls the whole plan back, so retry begins from either the
