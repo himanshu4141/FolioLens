@@ -170,13 +170,16 @@ entry points trigger that provider route after creating a provisional identity.
 
 Catalog insertion, user-holding creation, transaction snapshot revalidation, exact
 reversal deletes, transaction inserts, and holding activation run in one
-service-role-only PostgreSQL transaction. A complete positive closing balance marks
-the holding active; a zero balance deactivates only when its latest statement row is
-newer than committed history (or no history exists), so an out-of-order statement cannot hide a current
-holding. Without a complete balance, committed post-plan transaction history decides.
-Any error rolls the whole plan back, so retry begins from either the old state or the
-complete new state. Inbound email rejects cross-attachment scheme overlap rather than
-merging independent statement multiplicity or closing balances.
+service-role-only PostgreSQL transaction. Balance recency is evaluated before its
+value: for an existing holding, any stale positive, zero, or missing closing balance
+preserves the previously committed activation. Current positive units activate and
+current zero units deactivate. A current statement without a complete balance, or a
+new holding, uses committed post-plan transaction presence. The shared
+`resolve_user_fund_activation_v1` database policy owns this decision for CAS
+transaction writers, so an out-of-order statement cannot make an exited holding
+visible again. Any error rolls the whole plan back, so retry begins from either the
+old state or the complete new state. Inbound email rejects cross-attachment scheme
+overlap rather than merging independent statement multiplicity or closing balances.
 
 Rejected approaches remain rejected:
 

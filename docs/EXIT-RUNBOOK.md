@@ -22,7 +22,7 @@ listed below.
 | **Storage** | Low | One private bucket (`user-feedback-attachments`) + one public bucket (`static-snapshots`). All client access goes through `storageClient` (`src/lib/storage/index.ts`). |
 | **pg_cron + pg_net** | Medium | Scheduled sync/audit jobs target Edge Functions through `public.app_config_get('supabase_functions_base_url')`, so URLs are already parameterised. GitHub Actions owns the longer-running universe backfill. |
 | **Realtime / Vault** | None | Not used. Keep it that way. |
-| **Server-only RPC** | Low | CAS reconciliation uses two plain-Postgres, `SECURITY INVOKER`, service-role-only functions: a deployment capability probe and one atomic catalog/holding/transaction plan. They have no client grant or wrapper surface and can move with the database. |
+| **Server-only RPC** | Low | CAS reconciliation uses three plain-Postgres, `SECURITY INVOKER`, service-role-only functions: a deployment capability probe, one atomic catalog/holding/transaction plan, and one pure holding-activation policy resolver shared by transaction-changing workflows. They have no client grant or wrapper surface and can move with the database. |
 | **Client transport (hostname)** | Low | Every client-originated backend call (native + web) goes through a first-party Cloudflare Worker reverse proxy (`workers/api-proxy/`, `api.foliolens.in` / `api-dev.foliolens.in`) rather than the raw `*.supabase.co` host — see the Backend Domain Proxy program (`docs/plans/backend-domain-proxy.md`, `docs/INFRASTRUCTURE.md` "Backend Domain Proxy"). Server-to-server calls (Resend inbound router, pg_cron/pg_net, `universe-backfill.yml`) intentionally stay direct. Not a security boundary — RLS + the publishable key remain the only enforcement point; this only changes the hostname the app talks to. |
 
 Because every client-originated call already flows through the first-party
@@ -127,13 +127,16 @@ The functions, roughly ordered by simplicity:
 16. `freshness-check` — daily silent-failure audit + monthly upstream coverage reconciliation.
 17. `seed-scheme-master` — manual/admin scheme-master seeding or repair.
 
-The CAS import function pair moves with the plain PostgreSQL database rather than
+The CAS import functions move with the plain PostgreSQL database rather than
 the Edge runtime. A replacement backend can call the same transaction initially,
 then translate it into an equivalent application transaction. Preserve these
 invariants during that translation: existing catalog rows are immutable to CAS,
 missing identities are explicitly provisional, the user-and-scheme roster plus
 transaction snapshot is revalidated under deterministic locks, and catalog,
 holding, transaction, reversal, and activation changes commit or roll back together.
+Activation recency must be decided before closing-balance value: stale positive,
+zero, and missing evidence preserves an existing holding's prior state, while current
+or new-holding evidence uses the shared resolver's balance/transaction rules.
 
 Update `src/lib/functions/index.ts` to point at the new endpoints. Consumer code
 should stay on the wrapper.
