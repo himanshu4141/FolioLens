@@ -160,6 +160,14 @@ CAS domain mutation uses `cas_import_schema_version_v2()` and
 `SECURITY INVOKER`, executable only by `service_role`, and absent from client
 wrappers. Function-first deployment is intentional: new Edge code probes the v2
 capability and fails before domain access until the migration has been applied.
+The atomic writer delegates final `user_fund.is_active` state to the plain-Postgres
+`resolve_user_fund_activation_v1` policy, also `SECURITY INVOKER` and
+service-role-only. Existing holdings preserve activation for every non-current
+closing-balance shape before positive, zero, or missing units are interpreted, but
+an empty committed post-plan ledger is a deactivation floor. Q5 repair must use the
+same resolver when deliberately recomputing activation after transaction deletion
+or restoration. This C1 migration changes no Edge request or response contract, so
+the v2 capability remains valid.
 
 
 ### One-time per-project bootstrap: `public.app_config`

@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'supabase/migrations/**'
+      - 'supabase/tests/**'
       - 'supabase/config.toml'
       - '.github/workflows/supabase-validate.yml'
       - '.github/workflows/supabase-deploy-dev.yml'
@@ -37,6 +38,9 @@ jobs:
 
       - name: Reset local Supabase database from migrations
         run: supabase db reset
+
+      - name: Execute database policy tests
+        run: supabase test db
 
       - name: Lint local database schema
         run: supabase db lint --local --fail-on error --schema public

@@ -8,6 +8,26 @@ import {
   type SupabaseClient,
 } from '../import-cas';
 
+function resolveMockHoldingActivation({
+  holdingExisted,
+  existingIsActive,
+  closingUnits,
+  closingBalanceIsCurrent,
+  hasTransactions,
+}: {
+  holdingExisted: boolean;
+  existingIsActive: boolean;
+  closingUnits: number | null;
+  closingBalanceIsCurrent: boolean;
+  hasTransactions: boolean;
+}): boolean {
+  if (holdingExisted && !closingBalanceIsCurrent) {
+    return existingIsActive && hasTransactions;
+  }
+  if (closingUnits !== null) return closingUnits > 0;
+  return hasTransactions;
+}
+
 // ---------------------------------------------------------------------------
 // Mock Supabase client builder
 // ---------------------------------------------------------------------------
@@ -250,6 +270,8 @@ function buildMockSupabase({
         row.scheme_code === plan.scheme_code
         && (row.user_id ?? 'user-1') === args?.p_user_id
       );
+      const holdingExisted = currentFund !== undefined;
+      const existingIsActive = Boolean(currentFund?.is_active);
       if (!currentFund) {
         currentFund = {
           id: storedFunds.length === 0 ? fundId : `fund-id-${storedFunds.length + 1}`,
@@ -282,11 +304,13 @@ function buildMockSupabase({
         const response = txUpsertMock(rows);
         insertedCount += response.count ?? 0;
       }
-      const isActive = plan.closing_units === 0 && !plan.closing_balance_is_current
-        ? Boolean(currentFund.is_active)
-        : plan.closing_units === null
-        ? storedTransactions.some((row) => row.fund_id === currentFundId)
-        : plan.closing_units > 0;
+      const isActive = resolveMockHoldingActivation({
+        holdingExisted,
+        existingIsActive,
+        closingUnits: plan.closing_units,
+        closingBalanceIsCurrent: plan.closing_balance_is_current,
+        hasTransactions: storedTransactions.some((row) => row.fund_id === currentFundId),
+      });
       currentFund.is_active = isActive;
       fundUpdateCalls.push({ id: currentFundId, is_active: isActive });
     }
@@ -910,6 +934,120 @@ describe('importCASData()', () => {
     const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
 
     expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
+  });
+
+  it('does not let an older positive-balance statement reactivate an exited holding', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingFundRows: [{
+        id: 'fund-id-1',
+        user_id: 'user-1',
+        scheme_code: 119551,
+        is_active: false,
+      }],
+      existingTransactionRows: [
+        storedPurchase({ id: 'older' }),
+        storedPurchase({
+          id: 'newer',
+          transaction_date: '2024-02-10',
+          units: 20,
+          amount: 2400,
+        }),
+      ],
+    });
+    const parsed = minimalCASWithUnits(100, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
+  });
+
+  it('does not let an older missing-balance statement reactivate an exited holding', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingFundRows: [{
+        id: 'fund-id-1',
+        user_id: 'user-1',
+        scheme_code: 119551,
+        is_active: false,
+      }],
+      existingTransactionRows: [
+        storedPurchase({ id: 'older' }),
+        storedPurchase({
+          id: 'newer',
+          transaction_date: '2024-02-10',
+          units: 20,
+          amount: 2400,
+        }),
+      ],
+    });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
+  });
+
+  it('does not preserve an active holding after a stale missing-balance plan removes its last transaction', async () => {
+    const { supabase, fundUpdateCalls, storedTransactions } = buildMockSupabase({
+      existingFundRows: [{
+        id: 'fund-id-1',
+        user_id: 'user-1',
+        scheme_code: 119551,
+        is_active: true,
+      }],
+      existingTransactionRows: [storedPurchase()],
+    });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'REVERSAL', units: -100, amount: -10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(storedTransactions).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: false });
+  });
+
+  it('lets a newer positive balance reactivate an existing holding', async () => {
+    const { supabase, fundUpdateCalls } = buildMockSupabase({
+      existingFundRows: [{
+        id: 'fund-id-1',
+        user_id: 'user-1',
+        scheme_code: 119551,
+        is_active: false,
+      }],
+      existingTransactionRows: [storedPurchase({ id: 'older' })],
+    });
+    const parsed = minimalCASWithUnits(120, [
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+      { date: '2024-02-10', type: 'PURCHASE', units: 20, amount: 2400, nav: 120 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
+  });
+
+  it('keeps a first import with missing closing units active from committed transactions', async () => {
+    const { supabase, storedFunds, fundUpdateCalls } = buildMockSupabase({
+      existingFundRows: [],
+      existingTransactionRows: [],
+    });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    const result = await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(result.errors).toEqual([]);
+    expect(storedFunds).toHaveLength(1);
     expect(fundUpdateCalls[0]).toMatchObject({ is_active: true });
   });
 
