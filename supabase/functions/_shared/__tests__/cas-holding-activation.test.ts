@@ -80,6 +80,31 @@ describe('C1 authoritative CAS holding activation', () => {
     expect(migration).toContain("'provisional_scheme_count', provisional_scheme_count");
   });
 
+  it('locks every scheme before the Q5 holding-change snapshot', () => {
+    const wrapperStart = q5Migration.indexOf(
+      'create or replace function public.apply_cas_import_plans_v3(',
+    );
+    const lock = q5Migration.indexOf(
+      'perform pg_advisory_xact_lock(',
+      wrapperStart,
+    );
+    const snapshot = q5Migration.indexOf(
+      'select user_fund_row.is_active',
+      wrapperStart,
+    );
+    const v2Call = q5Migration.indexOf(
+      'mutation_result := public.apply_cas_import_plans_v2(',
+      wrapperStart,
+    );
+
+    expect(lock).toBeGreaterThan(wrapperStart);
+    expect(snapshot).toBeGreaterThan(lock);
+    expect(v2Call).toBeGreaterThan(snapshot);
+    expect(q5Migration).toContain(
+      "hashtextextended(p_user_id::text || ':' || scheme_code_value::text, 0)",
+    );
+  });
+
   it('validates activation evidence before making a decision', () => {
     expect(migration).toContain("message = 'cas_invalid_activation_evidence'");
     expect(migration).toContain(

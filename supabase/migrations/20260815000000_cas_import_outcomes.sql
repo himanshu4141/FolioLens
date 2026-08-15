@@ -76,6 +76,21 @@ begin
     raise exception using errcode = 'P0001', message = 'cas_invalid_import_plan';
   end if;
 
+  -- The before/after comparison is part of the same per-user/scheme critical
+  -- section as v2. Without taking these locks before the snapshot, a
+  -- concurrent import can change a holding between the v3 read and v2's lock,
+  -- causing holding_changed_count to incorrectly report zero. The locks are
+  -- transaction-reentrant when v2 acquires the same sorted keys again.
+  for scheme_code_value in
+    select distinct (value ->> 'scheme_code')::integer
+    from jsonb_array_elements(p_plans)
+    order by 1
+  loop
+    perform pg_advisory_xact_lock(
+      hashtextextended(p_user_id::text || ':' || scheme_code_value::text, 0)
+    );
+  end loop;
+
   for plan_row in select value from jsonb_array_elements(p_plans)
   loop
     scheme_code_value := (plan_row ->> 'scheme_code')::integer;
