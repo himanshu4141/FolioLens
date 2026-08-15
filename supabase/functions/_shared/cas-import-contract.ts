@@ -827,6 +827,9 @@ export function buildPreflightFailureOutcome(
       import_status: 'failed' as const,
       funds_updated: 0,
       transactions_added: 0,
+      transactions_duplicate: 0,
+      reconciliation_conflicts: 0,
+      transactions_removed: 0,
       error_message: auditErrorCode(error.reason),
     },
     response: {
@@ -834,12 +837,21 @@ export function buildPreflightFailureOutcome(
       body: {
         error: userMessageForCASFailure(error.reason),
         reason: error.reason,
+        funds: 0,
+        transactions: 0,
+        transactions_added: 0,
+        transactions_already_present: 0,
+        transactions_rejected: 0,
+        transactions_removed: 0,
       },
     },
     notification: {
       status: 'failed' as const,
       funds: 0,
       transactions: 0,
+      alreadyPresent: 0,
+      rejected: 0,
+      removed: 0,
       errors: [userMessageForCASFailure(error.reason)],
     },
     telemetry: {
@@ -858,14 +870,24 @@ export function buildImportSuccessTelemetry({
   source,
   dialect,
   fundsUpdated,
+  holdingsChanged = 0,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  transactionsRejected = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
   writeFailures,
   failureReason,
 }: {
   source: CASImportSource;
   dialect: CASSourceDialect;
   fundsUpdated: number;
+  holdingsChanged?: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  transactionsRejected?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
   writeFailures: number;
   failureReason?: CASFailureReason;
 }) {
@@ -878,7 +900,12 @@ export function buildImportSuccessTelemetry({
         ? 'rejected'
         : 'partial',
     funds_bucket: bucketCount(fundsUpdated),
+    holdings_changed_bucket: bucketCount(holdingsChanged),
     transactions_bucket: bucketCount(transactionsAdded),
+    duplicates_bucket: bucketCount(transactionsDuplicate),
+    rejected_rows_bucket: bucketCount(transactionsRejected),
+    conflicts_bucket: bucketCount(reconciliationConflicts),
+    removed_bucket: bucketCount(transactionsRemoved),
     write_failures_bucket: bucketCount(writeFailures),
     validation_reason: 'validated',
     ...(failureReason ? { failure_reason: failureReason } : {}),
@@ -889,13 +916,23 @@ export function buildImportOutcome({
   source,
   dialect,
   fundsUpdated,
+  holdingsChanged = 0,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  transactionsRejected = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
   errors,
 }: {
   source: CASImportSource;
   dialect: CASSourceDialect;
   fundsUpdated: number;
+  holdingsChanged?: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  transactionsRejected?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
   errors: string[];
 }) {
   const status: 'success' | 'failed' = errors.length > 0 && fundsUpdated === 0
@@ -907,7 +944,12 @@ export function buildImportOutcome({
     audit: {
       import_status: status,
       funds_updated: fundsUpdated,
+      holdings_changed: holdingsChanged,
       transactions_added: transactionsAdded,
+      transactions_duplicate: transactionsDuplicate,
+      reconciliation_conflicts: reconciliationConflicts,
+      transactions_rejected: transactionsRejected,
+      transactions_removed: transactionsRemoved,
       error_message: errors.length > 0
         ? safeReasons.map(auditErrorCode).join('; ')
         : null,
@@ -915,19 +957,32 @@ export function buildImportOutcome({
     response: {
       ok: status === 'success',
       funds: fundsUpdated,
+      holdings_changed: holdingsChanged,
       transactions: transactionsAdded,
+      transactions_added: transactionsAdded,
+      transactions_already_present: transactionsDuplicate,
+      transactions_rejected: transactionsRejected,
+      transactions_removed: transactionsRemoved,
     },
     notification: {
       status,
       funds: fundsUpdated,
       transactions: transactionsAdded,
+      alreadyPresent: transactionsDuplicate,
+      rejected: transactionsRejected,
+      removed: transactionsRemoved,
       errors: safeReasons.map(userMessageForCASFailure),
     },
     telemetry: buildImportSuccessTelemetry({
       source,
       dialect,
       fundsUpdated,
+      holdingsChanged,
       transactionsAdded,
+      transactionsDuplicate,
+      transactionsRejected,
+      reconciliationConflicts,
+      transactionsRemoved,
       writeFailures: errors.length,
       failureReason: safeReasons[0],
     }),
@@ -937,24 +992,42 @@ export function buildImportOutcome({
 export function buildImportCrashOutcome({
   source,
   fundsUpdated,
+  holdingsChanged = 0,
   transactionsAdded,
+  transactionsDuplicate = 0,
+  transactionsRejected = 0,
+  reconciliationConflicts = 0,
+  transactionsRemoved = 0,
 }: {
   source: CASImportSource;
   fundsUpdated: number;
+  holdingsChanged?: number;
   transactionsAdded: number;
+  transactionsDuplicate?: number;
+  transactionsRejected?: number;
+  reconciliationConflicts?: number;
+  transactionsRemoved?: number;
 }) {
   const reason: CASFailureReason = 'background_crashed';
   return {
     audit: {
       import_status: 'failed' as const,
       funds_updated: fundsUpdated,
+      holdings_changed: holdingsChanged,
       transactions_added: transactionsAdded,
+      transactions_duplicate: transactionsDuplicate,
+      reconciliation_conflicts: reconciliationConflicts,
+      transactions_rejected: transactionsRejected,
+      transactions_removed: transactionsRemoved,
       error_message: auditErrorCode(reason),
     },
     notification: {
       status: 'failed' as const,
       funds: fundsUpdated,
       transactions: transactionsAdded,
+      alreadyPresent: transactionsDuplicate,
+      rejected: transactionsRejected,
+      removed: transactionsRemoved,
       errors: [userMessageForCASFailure(reason)],
     },
     telemetry: {
@@ -962,7 +1035,12 @@ export function buildImportCrashOutcome({
       status: 'crashed',
       failure_reason: reason,
       funds_bucket: bucketCount(fundsUpdated),
+      holdings_changed_bucket: bucketCount(holdingsChanged),
       transactions_bucket: bucketCount(transactionsAdded),
+      duplicates_bucket: bucketCount(transactionsDuplicate),
+      rejected_rows_bucket: bucketCount(transactionsRejected),
+      conflicts_bucket: bucketCount(reconciliationConflicts),
+      removed_bucket: bucketCount(transactionsRemoved),
     },
   };
 }

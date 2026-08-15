@@ -36,6 +36,10 @@ type LastImport = {
   import_status: 'pending' | 'success' | 'failed';
   funds_updated: number;
   transactions_added: number;
+  transactions_duplicate: number;
+  reconciliation_conflicts: number;
+  transactions_rejected: number;
+  transactions_removed: number;
 };
 
 const PORTFOLIO_TIPS: { icon: keyof typeof Ionicons.glyphMap; text: string }[] = [
@@ -72,7 +76,9 @@ function formatImportSource(source: LastImport['import_source']): string {
 async function fetchLastImport(userId: string): Promise<LastImport | null> {
   const { data, error } = await casImportRepo
     .from()
-    .select('created_at, import_source, import_status, funds_updated, transactions_added')
+    .select(
+      'created_at, import_source, import_status, funds_updated, transactions_added, transactions_duplicate, reconciliation_conflicts, transactions_rejected, transactions_removed',
+    )
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -251,7 +257,13 @@ export default function PortfolioImportScreen() {
                 <View style={styles.rowLeft}>
                   <Text style={styles.rowValue}>{formatImportSource(lastImport!.import_source)}</Text>
                   <Text style={styles.rowSub}>
-                    {formattedLastImport} · {lastImport!.import_status} · {lastImport!.transactions_added} transactions
+                    {formattedLastImport} · {lastImport!.import_status} ·{' '}
+                    {lastImport!.transactions_added} added ·{' '}
+                    {lastImport!.transactions_duplicate} already present ·{' '}
+                    {lastImport!.transactions_rejected} rejected
+                    {lastImport!.transactions_removed > 0
+                      ? ` · ${lastImport!.transactions_removed} removed`
+                      : ''}
                   </Text>
                 </View>
               </View>

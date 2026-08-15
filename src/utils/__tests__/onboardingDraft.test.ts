@@ -141,9 +141,18 @@ describe('reduceOnboarding', () => {
       type: 'import_complete',
       funds: 4,
       transactions: 17,
+      alreadyPresent: 6,
+      rejected: 0,
+      removed: 1,
     });
     expect(next.step).toBe('done');
-    expect(next.importResult).toEqual({ funds: 4, transactions: 17 });
+    expect(next.importResult).toEqual({
+      funds: 4,
+      transactions: 17,
+      alreadyPresent: 6,
+      rejected: 0,
+      removed: 1,
+    });
   });
 
   it('reset returns to empty draft', () => {
@@ -151,7 +160,13 @@ describe('reduceOnboarding', () => {
       ...EMPTY_DRAFT,
       step: 'done',
       pan: 'ABCDE1234F',
-      importResult: { funds: 1, transactions: 2 },
+      importResult: {
+        funds: 1,
+        transactions: 2,
+        alreadyPresent: 0,
+        rejected: 0,
+        removed: 0,
+      },
     };
     const next = reduceOnboarding(seeded, { type: 'reset' });
     expect(next).toEqual(EMPTY_DRAFT);
@@ -176,10 +191,34 @@ describe('loadOnboardingDraft', () => {
       step: 'identity',
       pan: 'ABCDE1234F',
       dob: '1990-04-12',
-      importResult: { funds: 3, transactions: 9 },
+      importResult: {
+        funds: 3,
+        transactions: 9,
+        alreadyPresent: 4,
+        rejected: 0,
+        removed: 1,
+      },
     };
     mockedStorage.getItem.mockResolvedValueOnce(JSON.stringify(stored));
     await expect(loadOnboardingDraft()).resolves.toEqual(stored);
+  });
+
+  it('repairs a legacy v1 import result with additive outcome defaults', async () => {
+    mockedStorage.getItem.mockResolvedValueOnce(JSON.stringify({
+      step: 'done',
+      pan: '',
+      dob: null,
+      importResult: { funds: 3, transactions: 9 },
+    }));
+    await expect(loadOnboardingDraft()).resolves.toMatchObject({
+      importResult: {
+        funds: 3,
+        transactions: 9,
+        alreadyPresent: 0,
+        rejected: 0,
+        removed: 0,
+      },
+    });
   });
 
   it('falls back to defaults for missing or wrong-typed fields', async () => {

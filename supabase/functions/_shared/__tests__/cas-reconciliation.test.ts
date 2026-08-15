@@ -190,6 +190,7 @@ describe('CAS economic reconciliation', () => {
 
     expect(plan.conflicts).toEqual([{
       reason: 'partial_overlap',
+      incomingRows: 2,
       incomingRowsBucket: '2-5',
       existingRowsBucket: '2-5',
     }]);

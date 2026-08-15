@@ -23,6 +23,7 @@
 import { navHistoryRepo } from '@/src/lib/data/navHistory';
 import { indexHistoryRepo } from '@/src/lib/data/indexHistory';
 import { analytics } from '@/src/lib/analytics';
+import { bucketCount } from '@/src/lib/uxTelemetry';
 import { perfEnd, perfStart } from '@/src/lib/perfMark';
 import { beginSyncActivity } from '@/src/lib/performanceRuntimeState';
 import { fetchUserFunds } from '@/src/hooks/useUserFunds';
@@ -119,6 +120,8 @@ export interface SyncResult {
    * truth and SQLite was atomically replaced from a full server snapshot.
    */
   txRebuiltFromDrift?: boolean;
+  /** Exact holding roster/activation changes supplied by a committed mutation. */
+  holdingsChanged?: number;
 }
 
 /**
@@ -136,7 +139,8 @@ export function didSyncChangeData(result: SyncResult): boolean {
     result.txInserted > 0 ||
     result.navInserted > 0 ||
     result.idxInserted > 0 ||
-    result.txRebuiltFromDrift === true
+    result.txRebuiltFromDrift === true ||
+    (result.holdingsChanged ?? 0) > 0
   );
 }
 
@@ -170,20 +174,18 @@ async function reconcileTransactionSnapshot(
   }
 
   console.warn(
-    '[db/sync] tx snapshot drift detected: local=%d server=%d drift=%d; rebuilding',
-    localCount, serverCount, drift,
+    '[db/sync] tx snapshot drift detected local=%s server=%s drift=%s direction=%s; rebuilding',
+    bucketCount(localCount),
+    bucketCount(serverCount),
+    bucketCount(Math.abs(drift)),
+    drift < 0 ? 'server_lower' : drift > 0 ? 'server_higher' : 'ids_changed',
   );
-  try {
-    const fresh = await fetchUserTransactionsRemote(userId, null);
-    await txRepo.replaceAll(fresh, {
-      scope: writeScope,
-      operation: `${mode}_tx_repair`,
-    });
-    return { drift, rebuilt: true, serverCount, localCount };
-  } catch (err) {
-    console.warn('[db/sync] tx rebuild after drift failed', err);
-    return { drift, rebuilt: false, serverCount, localCount };
-  }
+  const fresh = await fetchUserTransactionsRemote(userId, null);
+  await txRepo.replaceAll(fresh, {
+    scope: writeScope,
+    operation: `${mode}_tx_repair`,
+  });
+  return { drift, rebuilt: true, serverCount, localCount };
 }
 
 /**
@@ -285,9 +287,14 @@ async function runSync(
     if (reconciliation.rebuilt || reconciliation.drift !== 0) {
       analytics.track('tx_cache_reconciled', {
         mode: options.mode,
-        local_count: reconciliation.localCount,
-        server_count: reconciliation.serverCount,
-        drift: reconciliation.drift,
+        local_count_bucket: bucketCount(reconciliation.localCount),
+        server_count_bucket: bucketCount(reconciliation.serverCount),
+        drift_bucket: bucketCount(Math.abs(reconciliation.drift ?? 0)),
+        drift_direction: (reconciliation.drift ?? 0) < 0
+          ? 'server_lower'
+          : (reconciliation.drift ?? 0) > 0
+            ? 'server_higher'
+            : 'ids_changed',
         rebuilt: reconciliation.rebuilt,
       });
     }
@@ -304,10 +311,9 @@ async function runSync(
         { scope: writeScope, operation: `${options.mode}_tx_repair_sync_state` },
       );
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    errors.push(`tx-reconcile: ${msg}`);
-    console.warn('[db/sync] tx reconciliation failed', err);
+  } catch {
+    errors.push('tx-reconcile: authoritative_snapshot_rebuild_failed');
+    console.warn('[db/sync] tx reconciliation failed');
   }
 
   // ── NAV per scheme ────────────────────────────────────────────────
@@ -406,18 +412,17 @@ async function runSync(
 
   const result: SyncResult = { txInserted, navInserted, idxInserted, errors, txRebuiltFromDrift };
   perfEnd(syncSpanId, {
-    tx_inserted: txInserted,
-    nav_inserted: navInserted,
-    idx_inserted: idxInserted,
-    error_count: errors.length,
-    user_id_hint: userId.slice(0, 8),
+    tx_inserted_bucket: bucketCount(txInserted),
+    nav_inserted_bucket: bucketCount(navInserted),
+    idx_inserted_bucket: bucketCount(idxInserted),
+    error_count_bucket: bucketCount(errors.length),
   });
   analytics.track('db_sync_complete', {
     mode: options.mode,
-    tx_inserted: txInserted,
-    nav_inserted: navInserted,
-    idx_inserted: idxInserted,
-    error_count: errors.length,
+    tx_inserted_bucket: bucketCount(txInserted),
+    nav_inserted_bucket: bucketCount(navInserted),
+    idx_inserted_bucket: bucketCount(idxInserted),
+    error_count_bucket: bucketCount(errors.length),
   });
   return result;
 }

@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from api._resend_inbound_router import (
+    _notification_variables,
     MissingConfigError,
     SignatureError,
     UpstreamError,
@@ -22,6 +23,60 @@ from api._resend_inbound_router import (
 
 
 class ResendInboundRouterTest(unittest.TestCase):
+    def test_import_notification_reports_named_transaction_outcomes(self):
+        variables = _notification_variables(
+            {
+                "status": "success",
+                "funds_updated": 3,
+                "transactions_added": 2,
+                "transactions_already_present": 7,
+                "transactions_removed": 1,
+                "transactions_rejected": 0,
+                "environment": "dev",
+            }
+        )
+
+        self.assertEqual(variables["TRANSACTIONS_IMPORTED"], "2")
+        self.assertEqual(
+            variables["DETAIL_TEXT"],
+            "Transactions: 2 added, 7 already present, 1 removed, 0 rejected.",
+        )
+
+    def test_preflight_failure_does_not_claim_zero_reconciliation_outcomes(self):
+        variables = _notification_variables(
+            {
+                "status": "failed",
+                "transactions_added": 0,
+                "transactions_already_present": 0,
+                "transactions_removed": 0,
+                "transactions_rejected": 0,
+                "errors": ["The statement failed validation."],
+                "environment": "dev",
+            }
+        )
+
+        self.assertEqual(variables["DETAIL_TEXT"], "The statement failed validation.")
+        self.assertNotIn("Transactions:", variables["DETAIL_TEXT"])
+
+    def test_reconciliation_failure_reports_exact_rejected_row_tally(self):
+        variables = _notification_variables(
+            {
+                "status": "failed",
+                "transactions_added": 0,
+                "transactions_already_present": 1,
+                "transactions_removed": 0,
+                "transactions_rejected": 3,
+                "errors": ["The statement could not be reconciled."],
+                "environment": "dev",
+            }
+        )
+
+        self.assertEqual(
+            variables["DETAIL_TEXT"],
+            "The statement could not be reconciled. Transactions: 0 added, "
+            "1 already present, 0 removed, 3 rejected.",
+        )
+
     def test_extract_recipients_handles_display_names_and_arrays(self):
         event = {
             "data": {

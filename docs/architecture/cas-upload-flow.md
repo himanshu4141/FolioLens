@@ -84,11 +84,19 @@ sequenceDiagram
       SB->>DB: UPDATE pending cas_import<br/>(status='failed', reconciliation reason)
       SB-->>App: HTTP 422 safe error response
     else one complete mutation plan
-      SB->>DB: exact-ID reversal deletes<br/>+ planned transaction/user_fund writes
-      SB->>DB: UPDATE cas_import(status='success', exact counts)
-      DB-->>SB: import_id
-      SB-->>App: { funds: N, transactions: M }
-      App->>U: "Import complete: N funds, M transactions"
+      SB->>DB: one atomic catalog/holding/activation/<br/>exact reversal + transaction plan
+      DB-->>SB: exact added + removed counts
+      SB->>DB: UPDATE cas_import(status='success',<br/>added/already-present/removed/rejected)
+      SB-->>App: named exact outcome counts<br/>(transactions remains added alias)
+      alt web and added/removed > 0
+        App->>App: mark granular transaction-derived queries stale<br/>without hidden-screen refetch
+      else native and added/removed > 0
+        App->>DB: immutable-ID delta / SQLite repair
+        App->>App: invalidate only observed changed inputs
+      else no-op or conflict
+        App->>App: no cache or SQLite work
+      end
+      App->>U: "N added · M already present<br/>· R removed · C rejected"
     end
   end
 ```
@@ -125,4 +133,4 @@ uniquely matched historical transaction by exact ID.
 | Notification email | None — UI shows result inline | Yes — via `/api/cas-import-notify` |
 | Background processor | Not needed (sync, fast enough) | Yes (`EdgeRuntime.waitUntil`) — Resend has 15s Svix timeout |
 
-The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. A rejection may update only the already-created `cas_import` audit row to `failed`, using an allowlisted reason code and bucketed counts. No raw CAS payload, filename, identifier, amount, upstream response body, or exception text is persisted or emitted for diagnosis. Client `portfolio_imported` analytics also use bucketed fund and transaction counts.
+The two paths converge at `supabase/functions/_shared/import-cas.ts:importCASData()`. A rejection may update only the already-created `cas_import` audit row to `failed`, using an allowlisted reason code and bucketed counts. No raw CAS payload, filename, identifier, amount, upstream response body, or exception text is persisted or emitted for diagnosis. The audit/API/notification contract distinguishes added, already-present, removed, exact rejected incoming rows, reconciliation conflict groups, and atomic holding changes. Failures that stop before reconciliation do not display a misleading all-zero transaction tally. Client `portfolio_imported` analytics bucket each count; exact values appear only in the signed-in user's result UI.

@@ -5,7 +5,7 @@ import {
   uploadAsync,
 } from 'expo-file-system/legacy';
 import { authClient } from '@/src/lib/auth';
-import { uploadCasPdf } from '../casPdfUpload';
+import { CasUploadError, uploadCasPdf } from '../casPdfUpload';
 
 jest.mock('react-native', () => ({ Platform: { OS: 'ios' } }), { virtual: true });
 
@@ -132,7 +132,15 @@ describe('uploadCasPdf — native path', () => {
 
     const result = await uploadCasPdf(ASSET_NATIVE);
 
-    expect(result).toEqual({ funds: 5, transactions: 42 });
+    expect(result).toEqual({
+      funds: 5,
+      transactions: 42,
+      transactionsAdded: 42,
+      transactionsAlreadyPresent: 0,
+      transactionsRejected: 0,
+      transactionsRemoved: 0,
+      holdingsChanged: 0,
+    });
     expect(mockedUpload).toHaveBeenCalledWith(
       'https://example.supabase.co/functions/v1/parse-cas-pdf',
       ASSET_NATIVE.uri,
@@ -149,6 +157,33 @@ describe('uploadCasPdf — native path', () => {
     );
     const headers = mockedUpload.mock.calls[0]![2]!.headers as Record<string, string>;
     expect(headers).not.toHaveProperty('x-password-override');
+  });
+
+  it('preserves exact named add, duplicate, conflict, and removal outcomes', async () => {
+    mockedGetInfo.mockResolvedValueOnce({
+      exists: true,
+      isDirectory: false,
+      size: 1024,
+    } as never);
+    mockedUpload.mockResolvedValueOnce({
+      status: 200,
+      body: JSON.stringify({
+        funds: 3,
+        transactions: 2,
+        transactions_added: 2,
+        transactions_already_present: 7,
+        transactions_rejected: 0,
+        transactions_removed: 1,
+      }),
+    } as never);
+
+    await expect(uploadCasPdf(ASSET_NATIVE)).resolves.toMatchObject({
+      transactions: 2,
+      transactionsAdded: 2,
+      transactionsAlreadyPresent: 7,
+      transactionsRejected: 0,
+      transactionsRemoved: 1,
+    });
   });
 
   it('falls back to cas.pdf when asset has no name', async () => {
@@ -197,6 +232,11 @@ describe('uploadCasPdf — native path', () => {
     await expect(uploadCasPdf(ASSET_NATIVE)).resolves.toEqual({
       funds: 0,
       transactions: 0,
+      transactionsAdded: 0,
+      transactionsAlreadyPresent: 0,
+      transactionsRejected: 0,
+      transactionsRemoved: 0,
+      holdingsChanged: 0,
     });
   });
 
@@ -211,6 +251,33 @@ describe('uploadCasPdf — native path', () => {
       body: JSON.stringify({ error: 'Invalid PDF password' }),
     } as never);
     await expect(uploadCasPdf(ASSET_NATIVE)).rejects.toThrow('Invalid PDF password');
+  });
+
+  it('retains safe conflict counts on a typed failure', async () => {
+    mockedGetInfo.mockResolvedValueOnce({
+      exists: true,
+      isDirectory: false,
+      size: 1,
+    } as never);
+    mockedUpload.mockResolvedValueOnce({
+      status: 422,
+      body: JSON.stringify({
+        error: 'This statement could not be reconciled.',
+        transactions_added: 0,
+        transactions_already_present: 2,
+        transactions_rejected: 1,
+        transactions_removed: 0,
+      }),
+    } as never);
+
+    const error = await uploadCasPdf(ASSET_NATIVE).catch((caught) => caught);
+    expect(error).toBeInstanceOf(CasUploadError);
+    expect((error as CasUploadError).result).toMatchObject({
+      transactionsAdded: 0,
+      transactionsAlreadyPresent: 2,
+      transactionsRejected: 1,
+      transactionsRemoved: 0,
+    });
   });
 
   it('surfaces a generic status-only message when error body has no error field', async () => {
@@ -297,7 +364,15 @@ describe('uploadCasPdf — web path', () => {
   it('uses asset.file.arrayBuffer when available', async () => {
     installXhr('load', 200, JSON.stringify({ funds: 1, transactions: 2 }));
     const result = await uploadCasPdf(buildBlobAsset(64));
-    expect(result).toEqual({ funds: 1, transactions: 2 });
+    expect(result).toEqual({
+      funds: 1,
+      transactions: 2,
+      transactionsAdded: 2,
+      transactionsAlreadyPresent: 0,
+      transactionsRejected: 0,
+      transactionsRemoved: 0,
+      holdingsChanged: 0,
+    });
   });
 
   it('falls back to fetch().arrayBuffer() when asset.file is missing', async () => {
@@ -311,7 +386,15 @@ describe('uploadCasPdf — web path', () => {
       name: 'sample.pdf',
     } as unknown as Parameters<typeof uploadCasPdf>[0];
     const result = await uploadCasPdf(asset);
-    expect(result).toEqual({ funds: 0, transactions: 0 });
+    expect(result).toEqual({
+      funds: 0,
+      transactions: 0,
+      transactionsAdded: 0,
+      transactionsAlreadyPresent: 0,
+      transactionsRejected: 0,
+      transactionsRemoved: 0,
+      holdingsChanged: 0,
+    });
     expect(arrayBuffer).toHaveBeenCalled();
   });
 

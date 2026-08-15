@@ -213,12 +213,60 @@ describe('sync.reconcileTransactionSnapshot — orchestration', () => {
     expect(analytics.track).toHaveBeenCalledWith(
       'tx_cache_reconciled',
       expect.objectContaining({
-        local_count: 2,
-        server_count: 1,
-        drift: -1,
+        local_count_bucket: '1-10',
+        server_count_bucket: '1-10',
+        drift_bucket: '1-10',
+        drift_direction: 'server_lower',
         rebuilt: true,
       }),
     );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'tx_cache_reconciled',
+      expect.objectContaining({ local_count: expect.anything() }),
+    );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'perf_mark',
+      expect.objectContaining({ user_id_hint: expect.anything() }),
+    );
+    expect(analytics.track).toHaveBeenCalledWith(
+      'db_sync_complete',
+      expect.objectContaining({
+        tx_inserted_bucket: '0',
+        error_count_bucket: '0',
+      }),
+    );
+    expect(analytics.track).not.toHaveBeenCalledWith(
+      'db_sync_complete',
+      expect.objectContaining({ tx_inserted: expect.anything() }),
+    );
+  });
+
+  it('surfaces an immutable-ID rebuild failure instead of reporting an unchanged cache', async () => {
+    const local = MOCK_TX_ROW({
+      fund_id: 'f1',
+      date: '2026-04-01',
+      created_at: '2026-04-01T00:00:00Z',
+      amount: 1000,
+      units: 10,
+      id: 'local-only',
+    });
+    await txRepo.bulkInsert([local]);
+
+    const queue = makeChainQueue([
+      { data: [], error: null },
+      { data: [], error: null },
+      { data: null, error: { message: 'authoritative snapshot unavailable' } },
+    ]);
+    (transactionRepo.from as jest.Mock).mockImplementation(queue.next);
+    emptyRepoMocks();
+
+    const result = await bootstrap('user-1', [], []);
+
+    expect(result.txRebuiltFromDrift).toBe(false);
+    expect(result.errors).toEqual([
+      'tx-reconcile: authoritative_snapshot_rebuild_failed',
+    ]);
+    expect((await txRepo.readAll()).map((row) => row.id)).toEqual(['local-only']);
   });
 
   it('analytics is silent when counts match exactly — no noise on the healthy path', async () => {

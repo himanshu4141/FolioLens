@@ -222,6 +222,9 @@ async function sendImportNotification({
   status,
   funds,
   transactions,
+  alreadyPresent,
+  rejected,
+  removed,
   errors,
 }: {
   to: string | null;
@@ -229,6 +232,9 @@ async function sendImportNotification({
   status: 'success' | 'failed';
   funds: number;
   transactions: number;
+  alreadyPresent: number;
+  rejected: number;
+  removed: number;
   errors: string[];
 }) {
   if (!to) {
@@ -242,6 +248,9 @@ async function sendImportNotification({
     status,
     funds_updated: funds,
     transactions_added: transactions,
+    transactions_already_present: alreadyPresent,
+    transactions_rejected: rejected,
+    transactions_removed: removed,
     errors,
     environment: NOTIFY_ENVIRONMENT,
   });
@@ -284,7 +293,12 @@ async function finalizeImportRow(
   importId: string,
   status: 'success' | 'failed',
   funds: number,
+  holdingsChanged: number,
   transactions: number,
+  alreadyPresent: number,
+  rejectedTransactions: number,
+  rejected: number,
+  removed: number,
   errors: string[],
 ) {
   const { error: updateErr } = await supabase
@@ -292,7 +306,12 @@ async function finalizeImportRow(
     .update({
       import_status: status,
       funds_updated: funds,
+      holdings_changed: holdingsChanged,
       transactions_added: transactions,
+      transactions_duplicate: alreadyPresent,
+      reconciliation_conflicts: rejected,
+      transactions_rejected: rejectedTransactions,
+      transactions_removed: removed,
       error_message: errors.length > 0 ? errors.join('; ') : null,
     })
     .eq('id', importId);
@@ -305,7 +324,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
   const { supabase, importId, userId, pan, dob, attachments } = args;
   const authEmailPromise = getAuthEmail(supabase, userId);
   let totalFunds = 0;
+  let totalHoldingsChanged = 0;
   let totalTransactions = 0;
+  let totalTransactionsDuplicate = 0;
+  let totalTransactionsRejected = 0;
+  let totalTransactionsRemoved = 0;
+  let totalReconciliationConflicts = 0;
   let totalCatalogHydrationRequested = 0;
   const allErrors: string[] = [];
 
@@ -321,13 +345,18 @@ async function processImportInBackground(args: BackgroundJobArgs) {
 
     if (pdfAttachments.length === 0) {
       const reason: CASFailureReason = 'no_pdf_attachments';
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, [auditErrorCode(reason)]);
+      await finalizeImportRow(
+        supabase, importId, 'failed', 0, 0, 0, 0, 0, 0, 0, [auditErrorCode(reason)],
+      );
       await sendImportNotification({
         to: await authEmailPromise,
         importId,
         status: 'failed',
         funds: 0,
         transactions: 0,
+        alreadyPresent: 0,
+        rejected: 0,
+        removed: 0,
         errors: [userMessageForCASFailure(reason)],
       });
       return;
@@ -399,7 +428,9 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     }
 
     if (allErrors.length > 0) {
-      await finalizeImportRow(supabase, importId, 'failed', 0, 0, allErrors);
+      await finalizeImportRow(
+        supabase, importId, 'failed', 0, 0, 0, 0, 0, 0, 0, allErrors,
+      );
       const firstReason = reasonFromAuditError(allErrors[0]);
       trackServerEvent(
         'cas_inbound_failed',
@@ -417,6 +448,9 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         status: 'failed',
         funds: 0,
         transactions: 0,
+        alreadyPresent: 0,
+        rejected: 0,
+        removed: 0,
         errors: allErrors.map((code) => userMessageForCASFailure(reasonFromAuditError(code))),
       });
       return;
@@ -437,7 +471,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     };
     const {
       fundsUpdated,
+      holdingsChanged,
       transactionsAdded,
+      transactionsDuplicate,
+      transactionsRejected,
+      transactionsRemoved,
+      reconciliationConflicts,
       catalogHydrationRequested,
       errors,
     } = await importCASData(
@@ -447,7 +486,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       combinedPayload,
     );
     totalFunds = fundsUpdated;
+    totalHoldingsChanged = holdingsChanged;
     totalTransactions = transactionsAdded;
+    totalTransactionsDuplicate = transactionsDuplicate;
+    totalTransactionsRejected = transactionsRejected;
+    totalTransactionsRemoved = transactionsRemoved;
+    totalReconciliationConflicts = reconciliationConflicts;
     totalCatalogHydrationRequested = catalogHydrationRequested;
     allErrors.push(...errors);
 
@@ -455,18 +499,38 @@ async function processImportInBackground(args: BackgroundJobArgs) {
       source: 'email',
       dialect,
       fundsUpdated: totalFunds,
+      holdingsChanged: totalHoldingsChanged,
       transactionsAdded: totalTransactions,
+      transactionsDuplicate: totalTransactionsDuplicate,
+      transactionsRejected: totalTransactionsRejected,
+      transactionsRemoved: totalTransactionsRemoved,
+      reconciliationConflicts: totalReconciliationConflicts,
       errors: allErrors,
     });
     const status = outcome.status;
 
-    await finalizeImportRow(supabase, importId, status, totalFunds, totalTransactions, allErrors);
+    await finalizeImportRow(
+      supabase,
+      importId,
+      status,
+      totalFunds,
+      totalHoldingsChanged,
+      totalTransactions,
+      totalTransactionsDuplicate,
+      totalTransactionsRejected,
+      totalReconciliationConflicts,
+      totalTransactionsRemoved,
+      allErrors,
+    );
 
     console.log(
-      '[cas-webhook-resend] background_completed status=%s funds=%s transactions=%s write_failures=%s',
+      '[cas-webhook-resend] background_completed status=%s funds=%s added=%s duplicates=%s removed=%s conflicts=%s write_failures=%s',
       status,
       bucketCount(totalFunds),
       bucketCount(totalTransactions),
+      bucketCount(totalTransactionsDuplicate),
+      bucketCount(totalTransactionsRemoved),
+      bucketCount(totalReconciliationConflicts),
       bucketCount(allErrors.length),
     );
 
@@ -517,7 +581,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
     const outcome = buildImportCrashOutcome({
       source: 'email',
       fundsUpdated: totalFunds,
+      holdingsChanged: totalHoldingsChanged,
       transactionsAdded: totalTransactions,
+      transactionsDuplicate: totalTransactionsDuplicate,
+      transactionsRejected: totalTransactionsRejected,
+      transactionsRemoved: totalTransactionsRemoved,
+      reconciliationConflicts: totalReconciliationConflicts,
     });
     console.error('[cas-webhook-resend] background_crashed');
     trackServerEvent(
@@ -531,7 +600,12 @@ async function processImportInBackground(args: BackgroundJobArgs) {
         importId,
         outcome.audit.import_status,
         outcome.audit.funds_updated,
+        outcome.audit.holdings_changed,
         outcome.audit.transactions_added,
+        outcome.audit.transactions_duplicate,
+        outcome.audit.transactions_rejected,
+        outcome.audit.reconciliation_conflicts,
+        outcome.audit.transactions_removed,
         [outcome.audit.error_message],
       );
       await sendImportNotification({

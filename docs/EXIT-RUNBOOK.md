@@ -22,7 +22,7 @@ listed below.
 | **Storage** | Low | One private bucket (`user-feedback-attachments`) + one public bucket (`static-snapshots`). All client access goes through `storageClient` (`src/lib/storage/index.ts`). |
 | **pg_cron + pg_net** | Medium | Scheduled sync/audit jobs target Edge Functions through `public.app_config_get('supabase_functions_base_url')`, so URLs are already parameterised. GitHub Actions owns the longer-running universe backfill. |
 | **Realtime / Vault** | None | Not used. Keep it that way. |
-| **Server-only RPC** | Low | CAS reconciliation uses three plain-Postgres, `SECURITY INVOKER`, service-role-only functions: a deployment capability probe, one atomic catalog/holding/transaction plan, and one pure holding-activation policy resolver shared by transaction-changing workflows. They have no client grant or wrapper surface and can move with the database. |
+| **Server-only RPC** | Low | CAS reconciliation uses plain-Postgres, `SECURITY INVOKER`, service-role-only functions: a deployment capability probe, the Q4 atomic catalog/holding/transaction plan, the Q5 same-transaction wrapper that reports holding-state changes, and one holding-activation policy resolver shared by transaction-changing workflows. They have no client grant or wrapper surface and can move with the database. |
 | **Client transport (hostname)** | Low | Every client-originated backend call (native + web) goes through a first-party Cloudflare Worker reverse proxy (`workers/api-proxy/`, `api.foliolens.in` / `api-dev.foliolens.in`) rather than the raw `*.supabase.co` host — see the Backend Domain Proxy program (`docs/plans/backend-domain-proxy.md`, `docs/INFRASTRUCTURE.md` "Backend Domain Proxy"). Server-to-server calls (Resend inbound router, pg_cron/pg_net, `universe-backfill.yml`) intentionally stay direct. Not a security boundary — RLS + the publishable key remain the only enforcement point; this only changes the hostname the app talks to. |
 
 Because every client-originated call already flows through the first-party
@@ -138,6 +138,11 @@ Activation recency must be decided before closing-balance value: stale positive,
 zero, and missing evidence preserves an existing holding's prior state only while
 the committed post-plan ledger remains non-empty, while current or new-holding
 evidence uses the shared resolver's balance/transaction rules.
+Keep the exact import-outcome audit fields when translating this path: added,
+already-present, removed, and rejected/conflict counts must come from the committed
+atomic result, not attempted rows. The Q5 v3 capability is a deployment-order guard,
+not a Supabase-specific business dependency, and can become an ordinary schema-version
+check in a replacement backend.
 
 Update `src/lib/functions/index.ts` to point at the new endpoints. Consumer code
 should stay on the wrapper.

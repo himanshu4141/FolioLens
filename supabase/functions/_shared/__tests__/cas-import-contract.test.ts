@@ -437,6 +437,9 @@ describe('privacy-safe caller outcomes', () => {
       import_status: 'failed',
       funds_updated: 0,
       transactions_added: 0,
+      transactions_duplicate: 0,
+      reconciliation_conflicts: 0,
+      transactions_removed: 0,
       error_message: 'cas_import:nav_price_mismatch',
     });
     expect(outcome.response.status).toBe(422);
@@ -470,7 +473,9 @@ describe('privacy-safe caller outcomes', () => {
       source: 'pdf',
       dialect: 'cams',
       fundsUpdated: 13,
+      holdingsChanged: 4,
       transactionsAdded: 57,
+      transactionsRejected: 3,
       writeFailures: 0,
     });
     expect(telemetry).toEqual({
@@ -479,6 +484,11 @@ describe('privacy-safe caller outcomes', () => {
       status: 'accepted',
       funds_bucket: '6-20',
       transactions_bucket: '21-100',
+      duplicates_bucket: '0',
+      conflicts_bucket: '0',
+      rejected_rows_bucket: '2-5',
+      removed_bucket: '0',
+      holdings_changed_bucket: '2-5',
       write_failures_bucket: '0',
       validation_reason: 'validated',
     });
@@ -491,14 +501,28 @@ describe('privacy-safe caller outcomes', () => {
       dialect: 'cams',
       fundsUpdated: 1,
       transactionsAdded: 0,
+      transactionsDuplicate: 7,
+      transactionsRemoved: 1,
+      reconciliationConflicts: 0,
       errors: [],
     });
 
     expect(outcome.status).toBe('success');
     expect(outcome.audit.transactions_added).toBe(0);
     expect(outcome.response.transactions).toBe(0);
+    expect(outcome.response.transactions_added).toBe(0);
+    expect(outcome.response.transactions_already_present).toBe(7);
+    expect(outcome.response.transactions_rejected).toBe(0);
+    expect(outcome.response.transactions_removed).toBe(1);
     expect(outcome.notification.transactions).toBe(0);
+    expect(outcome.notification).toMatchObject({
+      alreadyPresent: 7,
+      rejected: 0,
+      removed: 1,
+    });
     expect(outcome.telemetry.transactions_bucket).toBe('0');
+    expect(outcome.telemetry.duplicates_bucket).toBe('6-20');
+    expect(outcome.telemetry.removed_bucket).toBe('1');
   });
 
   it('preserves committed counts across an inbound crash outcome', () => {
@@ -511,7 +535,12 @@ describe('privacy-safe caller outcomes', () => {
     expect(outcome.audit).toEqual({
       import_status: 'failed',
       funds_updated: 2,
+      holdings_changed: 0,
       transactions_added: 7,
+      transactions_duplicate: 0,
+      transactions_rejected: 0,
+      reconciliation_conflicts: 0,
+      transactions_removed: 0,
       error_message: 'cas_import:background_crashed',
     });
     expect(outcome.notification).toMatchObject({ funds: 2, transactions: 7 });

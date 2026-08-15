@@ -5,6 +5,10 @@ const migration = readFileSync(
   resolve(__dirname, '../../../migrations/20260814000000_cas_holding_activation_recency.sql'),
   'utf8',
 );
+const q5Migration = readFileSync(
+  resolve(__dirname, '../../../migrations/20260815000000_cas_import_outcomes.sql'),
+  'utf8',
+);
 const importer = readFileSync(resolve(__dirname, '../import-cas.ts'), 'utf8');
 
 describe('C1 authoritative CAS holding activation', () => {
@@ -57,16 +61,48 @@ describe('C1 authoritative CAS holding activation', () => {
     );
   });
 
-  it('keeps the Edge RPC contract unchanged while replacing only database policy', () => {
-    expect(importer).toContain("supabase.rpc('apply_cas_import_plans_v2'");
+  it('keeps C1 as the v2 policy core while Q5 adds only an outcome wrapper', () => {
+    expect(importer).toContain("supabase.rpc('apply_cas_import_plans_v3'");
     expect(importer).toContain('closing_balance_is_current:');
     expect(migration).toContain(
       'create or replace function public.apply_cas_import_plans_v2(',
     );
+    expect(q5Migration).toContain(
+      'create or replace function public.apply_cas_import_plans_v3(',
+    );
+    expect(q5Migration).toContain(
+      'mutation_result := public.apply_cas_import_plans_v2(p_user_id, p_import_id, p_plans);',
+    );
+    expect(q5Migration).toContain("'holding_changed_count', holding_changed_count");
     expect(migration).toContain("'fund_count', fund_count");
     expect(migration).toContain("'inserted_count', inserted_count");
     expect(migration).toContain("'deleted_count', deleted_count");
     expect(migration).toContain("'provisional_scheme_count', provisional_scheme_count");
+  });
+
+  it('locks every scheme before the Q5 holding-change snapshot', () => {
+    const wrapperStart = q5Migration.indexOf(
+      'create or replace function public.apply_cas_import_plans_v3(',
+    );
+    const lock = q5Migration.indexOf(
+      'perform pg_advisory_xact_lock(',
+      wrapperStart,
+    );
+    const snapshot = q5Migration.indexOf(
+      'select user_fund_row.is_active',
+      wrapperStart,
+    );
+    const v2Call = q5Migration.indexOf(
+      'mutation_result := public.apply_cas_import_plans_v2(',
+      wrapperStart,
+    );
+
+    expect(lock).toBeGreaterThan(wrapperStart);
+    expect(snapshot).toBeGreaterThan(lock);
+    expect(v2Call).toBeGreaterThan(snapshot);
+    expect(q5Migration).toContain(
+      "hashtextextended(p_user_id::text || ':' || scheme_code_value::text, 0)",
+    );
   });
 
   it('validates activation evidence before making a decision', () => {

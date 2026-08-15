@@ -577,6 +577,9 @@ def _notification_variables(payload: dict[str, Any]) -> dict[str, str]:
     success = status == "success"
     funds = int(payload.get("funds_updated") or 0)
     transactions = int(payload.get("transactions_added") or 0)
+    already_present = int(payload.get("transactions_already_present") or 0)
+    rejected = int(payload.get("transactions_rejected") or 0)
+    removed = int(payload.get("transactions_removed") or 0)
     errors = payload.get("errors") or []
     if not isinstance(errors, list):
         errors = []
@@ -588,11 +591,11 @@ def _notification_variables(payload: dict[str, Any]) -> dict[str, str]:
         if success
         else "We received your CAS email, but the PDF could not be imported into your portfolio."
     )
-    detail_text = (
-        "Your portfolio was updated from the CAS PDF received in your private import inbox."
-        if success
-        else str(problem)
+    tally = (
+        f"Transactions: {transactions} added, {already_present} already present, "
+        f"{removed} removed, {rejected} rejected."
     )
+    detail_text = tally if success else f"{problem} {tally}" if rejected > 0 else problem
     next_step = (
         "Open FolioLens to review your portfolio."
         if success

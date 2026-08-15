@@ -49,7 +49,8 @@ import {
   reduceOnboarding,
   saveOnboardingDraft,
 } from '@/src/utils/onboardingDraft';
-import { uploadCasPdf } from '@/src/utils/casPdfUpload';
+import { CasUploadError, uploadCasPdf } from '@/src/utils/casPdfUpload';
+import { refreshAfterDirectCasImport } from '@/src/lib/casImportFreshness';
 import { wizardStepAfterCasUploadFailure } from '@/src/utils/casPdfPasswordHelp';
 import {
   onboardingCasUploadOutcomeDiagnostics,
@@ -390,22 +391,31 @@ function OnboardingWizard() {
           elapsed_ms: elapsed,
         });
       }
-      // Invalidate the pre-import portfolio caches (typically an empty
-      // portfolio for first-time users) so Done's fund preview and the
-      // eventual dashboard mount both refetch against the freshly
-      // imported funds. Done's portfolio query picks the marking up
-      // synchronously and starts fetching while the user reads the
-      // success copy.
-      void queryClient.invalidateQueries();
+      if (session?.user.id) {
+        const refresh = await refreshAfterDirectCasImport(
+          queryClient,
+          session.user.id,
+          result,
+        );
+        if (refresh.errors.length > 0) {
+          console.warn('[onboarding:upload] post_import_refresh_delayed', {
+            error_count: refresh.errors.length,
+          });
+        }
+      }
       dispatch({
         type: 'import_complete',
         funds: result.funds,
-        transactions: result.transactions,
+        transactions: result.transactionsAdded,
+        alreadyPresent: result.transactionsAlreadyPresent,
+        rejected: result.transactionsRejected,
+        removed: result.transactionsRemoved,
       });
       setPickedAsset(null);
     } catch (err) {
       const elapsed = Date.now() - startedAt;
       const msg = err instanceof Error ? err.message : 'Upload failed.';
+      const outcome = err instanceof CasUploadError ? err.result : null;
       const errorKind = categorizeUploadError(msg);
       console.warn(
         '[onboarding:upload] failed',
@@ -435,7 +445,9 @@ function OnboardingWizard() {
           ? 'Your saved PAN was not accepted. Add your date of birth, then try again.'
           : errorKind === 'read_error'
           ? 'Could not read the PDF file. Re-download and try again.'
-          : msg,
+          : outcome?.transactionsRejected
+            ? `${msg} ${outcome.transactionsAdded} added, ${outcome.transactionsAlreadyPresent} already present, ${outcome.transactionsRejected} rejected.`
+            : msg,
       );
       if (recoveryStep) {
         dispatch({ type: 'goto', step: recoveryStep });
@@ -1478,15 +1490,17 @@ function DoneStep({
         </Text>
         {imported ? (
           <Text style={styles.successBody}>
-            We pulled in{' '}
-            <Text style={styles.bold}>
-              {result!.funds} fund{result!.funds === 1 ? '' : 's'}
-            </Text>{' '}
-            across{' '}
-            <Text style={styles.bold}>
-              {result!.transactions} transaction{result!.transactions === 1 ? '' : 's'}
-            </Text>
-            .
+            <Text style={styles.bold}>{result!.transactions} added</Text>
+            {' · '}
+            <Text style={styles.bold}>{result!.alreadyPresent} already present</Text>
+            {result!.removed > 0 ? (
+              <>
+                {' · '}
+                <Text style={styles.bold}>{result!.removed} removed</Text>
+              </>
+            ) : null}
+            {' · '}
+            <Text style={styles.bold}>{result!.rejected} rejected</Text>
           </Text>
         ) : autoRefreshReady ? (
           <Text style={styles.successBody}>

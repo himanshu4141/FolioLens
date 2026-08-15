@@ -43,36 +43,51 @@ export type Database = {
           created_at: string
           error_message: string | null
           funds_updated: number
+          holdings_changed: number
           id: string
           import_source: Database["public"]["Enums"]["import_source"]
           import_status: Database["public"]["Enums"]["import_status"]
           imported_at: string
           raw_payload: Json | null
+          reconciliation_conflicts: number
+          transactions_rejected: number
           transactions_added: number
+          transactions_duplicate: number
+          transactions_removed: number
           user_id: string
         }
         Insert: {
           created_at?: string
           error_message?: string | null
           funds_updated?: number
+          holdings_changed?: number
           id?: string
           import_source: Database["public"]["Enums"]["import_source"]
           import_status?: Database["public"]["Enums"]["import_status"]
           imported_at?: string
           raw_payload?: Json | null
+          reconciliation_conflicts?: number
+          transactions_rejected?: number
           transactions_added?: number
+          transactions_duplicate?: number
+          transactions_removed?: number
           user_id: string
         }
         Update: {
           created_at?: string
           error_message?: string | null
           funds_updated?: number
+          holdings_changed?: number
           id?: string
           import_source?: Database["public"]["Enums"]["import_source"]
           import_status?: Database["public"]["Enums"]["import_status"]
           imported_at?: string
           raw_payload?: Json | null
+          reconciliation_conflicts?: number
+          transactions_rejected?: number
           transactions_added?: number
+          transactions_duplicate?: number
+          transactions_removed?: number
           user_id?: string
         }
         Relationships: []
@@ -549,11 +564,17 @@ export type Database = {
       }
     }
     Functions: {
+      apply_cas_import_plans_v2: {
+        Args: { p_import_id: string; p_plans: Json; p_user_id: string }
+        Returns: Json
+      }
       apply_cas_transaction_plans_v1: {
         Args: { p_import_id: string; p_plans: Json; p_user_id: string }
         Returns: Json
       }
       cas_reconciliation_schema_version_v1: { Args: never; Returns: number }
+      cas_import_schema_version_v2: { Args: never; Returns: number }
+      cas_import_schema_version_v3: { Args: never; Returns: number }
       gen_cas_inbox_token: { Args: { p_user_id: string }; Returns: string }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }

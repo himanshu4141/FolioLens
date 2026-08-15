@@ -62,6 +62,8 @@ export type ReconciliationCountBucket =
 
 export interface ReconciliationConflict {
   reason: ReconciliationConflictReason;
+  /** Exact incoming statement rows refused by this conflict. Never logged raw. */
+  incomingRows: number;
   incomingRowsBucket: ReconciliationCountBucket;
   existingRowsBucket: ReconciliationCountBucket;
 }
@@ -195,6 +197,7 @@ function conflict(
 ): ReconciliationConflict {
   return {
     reason,
+    incomingRows,
     incomingRowsBucket: reconciliationCountBucket(incomingRows),
     existingRowsBucket: reconciliationCountBucket(existingRows),
   };
