@@ -6,7 +6,7 @@ const migration = readFileSync(
   'utf8',
 );
 const q5Migration = readFileSync(
-  resolve(__dirname, '../../../migrations/20260812000000_cas_import_outcomes.sql'),
+  resolve(__dirname, '../../../migrations/20260815000000_cas_import_outcomes.sql'),
   'utf8',
 );
 const importer = readFileSync(resolve(__dirname, '../import-cas.ts'), 'utf8');

@@ -61,9 +61,32 @@ select
   :'backup_sha256'::text as backup_sha256,
   :'approve_exact_target_delete'::text as approval;
 
+create temporary table q5_approved_backup_input
+  (like public.transaction including defaults) on commit drop;
+alter table q5_approved_backup_input
+  add column prior_holding_is_active boolean not null;
+\copy q5_approved_backup_input (id, user_id, fund_id, transaction_date, transaction_type, units, nav_at_transaction, amount, folio_number, cas_import_id, cas_event_ordinal, created_at, prior_holding_is_active) from program 'cat "$Q5_BACKUP_PLAINTEXT_PATH"' with (format csv, header true)
+
 create temporary table q5_approved_backup
   (like public.transaction including defaults) on commit drop;
-\copy q5_approved_backup (id, user_id, fund_id, transaction_date, transaction_type, units, nav_at_transaction, amount, folio_number, cas_import_id, cas_event_ordinal, created_at) from program 'cat "$Q5_BACKUP_PLAINTEXT_PATH"' with (format csv, header true)
+insert into q5_approved_backup (
+  id, user_id, fund_id, transaction_date, transaction_type, units,
+  nav_at_transaction, amount, folio_number, cas_import_id,
+  cas_event_ordinal, created_at
+)
+select
+  id, user_id, fund_id, transaction_date, transaction_type, units,
+  nav_at_transaction, amount, folio_number, cas_import_id,
+  cas_event_ordinal, created_at
+from q5_approved_backup_input;
+
+create temporary table q5_approved_holding_state on commit drop as
+select
+  user_id,
+  fund_id,
+  min(prior_holding_is_active::text)::boolean as prior_is_active
+from q5_approved_backup_input
+group by user_id, fund_id;
 
 do $$
 declare
@@ -121,6 +144,21 @@ begin
       join public.cas_import as owned_import on owned_import.id = expected.import_id
       where backup_row.user_id is distinct from owned_import.user_id
     )
+    or exists (
+      select 1
+      from q5_approved_backup_input
+      group by user_id, fund_id
+      having count(distinct prior_holding_is_active) <> 1
+    )
+    or exists (
+      select 1
+      from q5_approved_holding_state as backed_up_holding
+      left join public.user_fund as current_holding
+        on current_holding.id = backed_up_holding.fund_id
+        and current_holding.user_id = backed_up_holding.user_id
+      where current_holding.id is null
+        or current_holding.is_active is distinct from backed_up_holding.prior_is_active
+    )
   then
     raise exception using errcode = 'P0001', message = 'q5_backup_manifest_mismatch';
   end if;
@@ -165,30 +203,33 @@ with deleted as (
 select count(*)::integer as value from deleted;
 
 create temporary table q5_holding_change_count on commit drop as
-with touched_funds as (
-  select distinct backup_row.fund_id
-  from q5_approved_backup as backup_row
+with holding_decisions as (
+  select
+    holding.id,
+    holding.user_id,
+    public.resolve_user_fund_activation_v1(
+      true,
+      backed_up_holding.prior_is_active,
+      'null'::jsonb,
+      false,
+      exists (
+        select 1
+        from public.transaction as current_row
+        where current_row.user_id = holding.user_id
+          and current_row.fund_id = holding.id
+      )
+    ) as final_is_active
+  from q5_approved_holding_state as backed_up_holding
+  join public.user_fund as holding
+    on holding.id = backed_up_holding.fund_id
+    and holding.user_id = backed_up_holding.user_id
 ), updated_holdings as (
   update public.user_fund as holding
-  set is_active = exists (
-    select 1
-    from public.transaction as current_row
-    where current_row.user_id = holding.user_id
-      and current_row.fund_id = holding.id
-  )
-  from touched_funds
-  where holding.id = touched_funds.fund_id
-    and holding.user_id = (
-      select owned_import.user_id
-      from public.cas_import as owned_import
-      join q5_approved_manifest as approved on approved.import_id = owned_import.id
-    )
-    and holding.is_active is distinct from exists (
-      select 1
-      from public.transaction as current_row
-      where current_row.user_id = holding.user_id
-        and current_row.fund_id = holding.id
-    )
+  set is_active = decision.final_is_active
+  from holding_decisions as decision
+  where holding.id = decision.id
+    and holding.user_id = decision.user_id
+    and holding.is_active is distinct from decision.final_is_active
   returning holding.id
 )
 select count(*)::integer as value from updated_holdings;
@@ -210,13 +251,21 @@ begin
   end if;
   if exists (
     select 1
-    from (select distinct fund_id from q5_approved_backup) as touched
-    join public.user_fund as holding on holding.id = touched.fund_id
-    where holding.is_active is distinct from exists (
-      select 1
-      from public.transaction as current_row
-      where current_row.user_id = holding.user_id
-        and current_row.fund_id = holding.id
+    from q5_approved_holding_state as backed_up_holding
+    join public.user_fund as holding
+      on holding.id = backed_up_holding.fund_id
+      and holding.user_id = backed_up_holding.user_id
+    where holding.is_active is distinct from public.resolve_user_fund_activation_v1(
+      true,
+      backed_up_holding.prior_is_active,
+      'null'::jsonb,
+      false,
+      exists (
+        select 1
+        from public.transaction as current_row
+        where current_row.user_id = holding.user_id
+          and current_row.fund_id = holding.id
+      )
     )
   ) then
     raise exception using errcode = 'P0001', message = 'q5_holding_activation_mismatch';

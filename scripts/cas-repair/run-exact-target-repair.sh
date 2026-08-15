@@ -84,7 +84,7 @@ require_backup_material() {
 verify_backup_digest() {
   require_var Q5_BACKUP_SHA256
   local actual
-  local -r expected_header='id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at'
+  local -r expected_header='id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at,prior_holding_is_active'
   actual="$(shasum -a 256 "$Q5_BACKUP_PATH" | awk '{print $1}')"
   if [[ "$actual" != "$Q5_BACKUP_SHA256" ]]; then
     printf 'encrypted backup digest mismatch\n' >&2

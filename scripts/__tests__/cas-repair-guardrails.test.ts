@@ -54,6 +54,9 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(source).toContain('q5_unrelated_rows_changed');
     expect(source).toContain("'APPROVE_Q5_EXACT_TARGET_DELETE'");
     expect(source).toContain('q5_holding_activation_mismatch');
+    expect(source).toContain('public.resolve_user_fund_activation_v1(');
+    expect(source).toContain('backed_up_holding.prior_is_active');
+    expect(source).not.toContain('set is_active = exists (');
   });
 
   it('keeps database passwords out of argv and rejects non-dev connections', () => {
@@ -88,6 +91,7 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(backupSql).toContain('q5_backup_target_import_not_unique');
     expect(backupSql).toContain('q5_backup_target_empty');
     expect(backupSql).toContain('q5_backup_target_ownership_mismatch');
+    expect(backupSql).toContain('prior_holding_is_active');
     expect(source).toMatch(
       /apply\)[\s\S]*?require_backup_material[\s\S]*?verify_backup_digest[\s\S]*?;;/,
     );
@@ -113,8 +117,12 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(source).toContain('q5_restore_primary_key_conflict');
     expect(source).toContain('q5_restore_scope_invalid');
     expect(source).toContain('q5_restore_owner_mismatch');
+    expect(source).toContain('q5_restore_holding_state_invalid');
+    expect(source).toContain('q5_restore_holding_state_changed');
     expect(source).toContain('q5_restore_holding_activation_mismatch');
-    expect(source).toContain('update public.user_fund as holding');
+    expect(source).toContain('set is_active = backed_up_holding.prior_is_active');
+    expect(source).toContain('public.resolve_user_fund_activation_v1(');
+    expect(source).not.toContain('set is_active = exists (');
   });
 
   it('derives authoritative hydration scope only from the encrypted exact-target backup', () => {
@@ -202,7 +210,7 @@ printf '%s' "$Q5_BACKUP_PLAINTEXT_PATH" > "$Q5_FAKE_PSQL_MARKER"
 printf '{"deleted_count":1,"unrelated_unchanged":true}\n'
 `);
       fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
-      const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at\n';
+      const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at,prior_holding_is_active\n';
       const encrypted = spawnSync(
         'openssl',
         ['enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-pass', `file:${key}`, '-out', backup],
@@ -316,7 +324,7 @@ printf '%s' "$Q5_FAKE_HYDRATION_RESPONSE" > "$output"
 printf '200'
 `);
       fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
-      const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at\n';
+      const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at,prior_holding_is_active\n';
       const encrypted = spawnSync(
         'openssl',
         ['enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-pass', `file:${key}`, '-out', backup],

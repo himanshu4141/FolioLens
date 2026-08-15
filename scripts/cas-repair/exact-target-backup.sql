@@ -32,6 +32,17 @@ begin
   ) then
     raise exception using errcode = 'P0001', message = 'q5_backup_target_ownership_mismatch';
   end if;
+  if exists (
+    select 1
+    from public.transaction as t
+    left join public.user_fund as holding
+      on holding.id = t.fund_id
+      and holding.user_id = t.user_id
+    where t.cas_import_id = target_id
+      and holding.id is null
+  ) then
+    raise exception using errcode = 'P0001', message = 'q5_backup_holding_scope_mismatch';
+  end if;
 end;
 $$;
 
@@ -48,8 +59,12 @@ copy (
     t.folio_number,
     t.cas_import_id,
     t.cas_event_ordinal,
-    t.created_at
+    t.created_at,
+    holding.is_active as prior_holding_is_active
   from public.transaction as t
+  join public.user_fund as holding
+    on holding.id = t.fund_id
+    and holding.user_id = t.user_id
   where t.cas_import_id = :'target_import_id'::uuid
   order by t.id
 ) to stdout with (format csv, header true);

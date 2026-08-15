@@ -17,7 +17,9 @@
 begin;
 create temporary table q5_hydration_backup
   (like public.transaction including defaults) on commit drop;
-\copy q5_hydration_backup (id, user_id, fund_id, transaction_date, transaction_type, units, nav_at_transaction, amount, folio_number, cas_import_id, cas_event_ordinal, created_at) from program 'cat "$Q5_BACKUP_PLAINTEXT_PATH"' with (format csv, header true)
+alter table q5_hydration_backup
+  add column prior_holding_is_active boolean not null;
+\copy q5_hydration_backup (id, user_id, fund_id, transaction_date, transaction_type, units, nav_at_transaction, amount, folio_number, cas_import_id, cas_event_ordinal, created_at, prior_holding_is_active) from program 'cat "$Q5_BACKUP_PLAINTEXT_PATH"' with (format csv, header true)
 
 do $$
 begin

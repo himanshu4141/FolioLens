@@ -5,6 +5,10 @@ const migration = readFileSync(
   resolve(__dirname, '../../../migrations/20260814000000_cas_holding_activation_recency.sql'),
   'utf8',
 );
+const q5Migration = readFileSync(
+  resolve(__dirname, '../../../migrations/20260815000000_cas_import_outcomes.sql'),
+  'utf8',
+);
 const importer = readFileSync(resolve(__dirname, '../import-cas.ts'), 'utf8');
 
 describe('C1 authoritative CAS holding activation', () => {
@@ -57,12 +61,19 @@ describe('C1 authoritative CAS holding activation', () => {
     );
   });
 
-  it('keeps the Edge RPC contract unchanged while replacing only database policy', () => {
-    expect(importer).toContain("supabase.rpc('apply_cas_import_plans_v2'");
+  it('keeps C1 as the v2 policy core while Q5 adds only an outcome wrapper', () => {
+    expect(importer).toContain("supabase.rpc('apply_cas_import_plans_v3'");
     expect(importer).toContain('closing_balance_is_current:');
     expect(migration).toContain(
       'create or replace function public.apply_cas_import_plans_v2(',
     );
+    expect(q5Migration).toContain(
+      'create or replace function public.apply_cas_import_plans_v3(',
+    );
+    expect(q5Migration).toContain(
+      'mutation_result := public.apply_cas_import_plans_v2(p_user_id, p_import_id, p_plans);',
+    );
+    expect(q5Migration).toContain("'holding_changed_count', holding_changed_count");
     expect(migration).toContain("'fund_count', fund_count");
     expect(migration).toContain("'inserted_count', inserted_count");
     expect(migration).toContain("'deleted_count', deleted_count");
