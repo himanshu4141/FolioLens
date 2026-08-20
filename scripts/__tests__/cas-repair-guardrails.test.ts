@@ -6,6 +6,7 @@ import path from 'node:path';
 
 const ROOT = path.join(process.cwd(), 'scripts', 'cas-repair');
 const RUNNER = path.join(ROOT, 'run-exact-target-repair.sh');
+const PROJECT_REF = 'imkgazlrxtlhkfptkzjc';
 
 function read(name: string): string {
   return fs.readFileSync(path.join(ROOT, name), 'utf8');
@@ -167,6 +168,21 @@ printf '{"target_count":1}\n'
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
+  });
+
+  it('uses the intended CLI-target refusal when the session port is unset', () => {
+    const env = baseEnv('/must-not-run');
+    env.Q5_REPAIR_AUTH_MODE = 'cli-temporary';
+    env.Q5_CLI_ROLE_EXPIRES_AT_EPOCH = String(Math.floor(Date.now() / 1000) + 300);
+    env.Q5_DEV_DB_HOST = 'aws-0-eu-west-1.pooler.supabase.com';
+    env.Q5_DEV_DB_USER = `cli_login_postgres.${PROJECT_REF}`;
+    delete env.Q5_DEV_DB_PORT;
+
+    const result = spawnSync(RUNNER, ['dry-run'], { env, encoding: 'utf8' });
+
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('refusing invalid or expired Supabase CLI database target');
+    expect(result.stderr).not.toContain('unbound variable');
   });
 
   it('never publishes a partial encrypted backup when export fails', () => {

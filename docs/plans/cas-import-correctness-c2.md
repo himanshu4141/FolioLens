@@ -56,7 +56,7 @@ Add a Node CommonJS transport with injectable dependencies for tests. It verifie
 
 The pooler response must contain exactly one primary PostgreSQL connection whose host ends in `.pooler.supabase.com`, database is `postgres`, and username is `postgres.<exact-project-ref>`. The login response must contain role `cli_login_postgres`, a non-empty control-character-free password, and a lifetime between one and ten minutes. The transport derives `cli_login_postgres.<exact-project-ref>`, uses session port 5432 like the Supabase CLI, and sets an expiry epoch for the low-level runner to verify.
 
-The Docker psql adapter copies allowlisted environment variable names, never values, on its command line. `--rm` removes the container record after each psql invocation. It mounts the committed repair directory read-only and mounts a generated plaintext backup file read-only only when apply, hydrate, or rollback needs it. The Node parent caps the complete child runtime below the login expiry and scrubs its child-environment references in a `finally` block.
+The Docker psql adapter copies allowlisted environment variable names, never values, on its command line. `--rm` removes the container record after each psql invocation. It mounts the committed repair directory read-only and mounts a generated plaintext backup file read-only only when apply, hydrate, or rollback needs it. CLI mode rejects an inherited psql adapter override and always selects this reviewed adapter. The Node parent anchors expiry to the start of the bounded login request, caps the complete child runtime below that conservative deadline, and terminates the detached runner process group so foreground psql or Docker work cannot outlive the cap. It scrubs its child-environment references in a `finally` block.
 
 ## Alternatives Considered
 
@@ -117,7 +117,7 @@ The live probe may execute only `select 1` against the exact dev project and may
 
 - **A credential appears in argv or a file.** Keychain output, API responses, and temporary login values remain inside the Node process; child argv contains only hosts, usernames, flags, and environment variable names. Tests scan every spawned argument.
 - **The pooler points to another project.** Hard-coded project, hostname suffix, database, and project-scoped username validation fail closed.
-- **The temporary role expires mid-operation.** C2 validates the reported lifetime and kills the child with a safety margin. Exact-target scope is deliberately small; expiry still causes a transaction rollback or an unpublished backup.
+- **The temporary role expires mid-operation.** C2 validates the reported lifetime, anchors it conservatively before the bounded login request, and terminates the complete detached process group with a safety margin. Exact-target scope is deliberately small; expiry still causes a transaction rollback or an unpublished backup.
 - **The pooler has not refreshed the new role.** A bounded, silent `select 1` retry runs before the repair runner.
 - **Docker retains the credential.** Every psql invocation uses `--rm`, no named container, no volume, and no credential file. The password is copied only to the ephemeral container environment.
 - **A future CLI changes credential storage or API shape.** The minimum CLI version, token normalization, exact response validation, and focused tests stop with generic errors instead of falling back to a password.
@@ -129,13 +129,18 @@ The live probe may execute only `select 1` against the exact dev project and may
 - 2026-08-15: Preserve the reviewed psql scripts and bridge only authentication, because `supabase db query` does not implement psql metacommands.
 - 2026-08-15: Match Supabase CLI's session-pooler fallback and exact temporary-role format rather than inventing a long-lived credential.
 - 2026-08-15: Keep the direct-password low-level runner for backward compatibility and testing, but make the CLI wrapper the documented owner-facing entry point.
+- 2026-08-20: Round-one review required the CLI wrapper to pin the reviewed Docker adapter, anchor expiry before login-role issuance, and terminate the complete runner process group rather than relying on `spawnSync` child-only signalling.
+
+## Amendments
+
+- 2026-08-20: The initial implementation used a synchronous child-only timeout and allowed an inherited `Q5_PSQL_BIN`. Round-one review proved that the timeout could report a completed mutation as stopped and could leave foreground database work running. C2 now rejects the inherited adapter, derives expiry from the start of the bounded login request, runs the low-level runner in a detached process group, signals the complete group at the cap, and escalates to a group kill after a bounded grace period. Synthetic tests prove both the conservative deadline and that post-timeout work does not complete.
 
 ## Evidence
 
 - Supabase CLI was upgraded to 2.114.0. A Management API shape probe read the existing `supabase` profile from the macOS Keychain in process memory, normalized the CLI's keyring encoding, and confirmed one official primary pooler, exact project-scoped user, exact `cli_login_postgres` role, and 300-second lifetime using only non-secret booleans and the lifetime value.
-- Focused Jest passes 2 suites / 20 tests for both the new transport and all existing Q5 repair guardrails. The tests cover keyring normalization, wrong-project rejection, exact role and lifetime validation, argv containment, readiness-only behavior, inherited-password refusal, readiness exhaustion, Docker auto-removal, allowlisted environment names, and low-level expiry validation.
+- Focused Jest passes 2 suites / 24 tests for both the new transport and all existing Q5 repair guardrails. The tests cover keyring normalization, wrong-project rejection, exact role and lifetime validation, argv containment, readiness-only behavior, inherited-password and adapter refusal, bounded login timing, process-group termination, readiness exhaustion, Docker auto-removal, allowlisted environment names, and low-level expiry validation.
 - Shell syntax and Node syntax checks pass. The live C2 `probe` used the exact dev project, ran only `select 1` through the temporary role and Docker psql, and emitted only `{"cli_transport":"ready"}`. No repair-domain data or shared-dev mutation was involved.
-- Full local validation passes 114 Jest suites / 2,270 tests, typecheck, zero-warning lint, shell and Node syntax checks, and `git diff --check`.
+- Full round-one correction validation passes 114 Jest suites / 2,274 tests, typecheck, zero-warning lint, shell and Node syntax checks, and `git diff --check`.
 
 ## Progress
 
@@ -145,6 +150,8 @@ The live probe may execute only `select 1` against the exact dev project and may
 - [x] Add focused secret-containment, target, expiry, retry, and failure-path tests.
 - [x] Update the Q5 plan and repair runbook.
 - [x] Complete full local validation; the harmless live probe is green.
-- [ ] Open the draft C2 PR and freeze an exact review head.
+- [x] Open the draft C2 PR and freeze an exact review head.
+- [x] Batch and validate all round-one review corrections.
+- [ ] Freeze one exact re-review head.
 - [ ] Obtain exact-SHA Codex and Claude convergence and merge only on the green gate.
 - [ ] Resume Q5 field proof without a permanent database password.

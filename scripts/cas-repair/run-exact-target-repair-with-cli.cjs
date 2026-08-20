@@ -15,6 +15,8 @@ const MINIMUM_TTL_SECONDS = 60;
 const MAXIMUM_TTL_SECONDS = 600;
 const EXPIRY_SAFETY_SECONDS = 45;
 const MAX_CHILD_RUNTIME_MS = 240_000;
+const MANAGEMENT_REQUEST_TIMEOUT_MS = 30_000;
+const CHILD_TERMINATION_GRACE_MS = 2_000;
 const MODES = new Set(['probe', 'dry-run', 'backup', 'apply', 'hydrate', 'rollback']);
 const SCRIPT_DIR = path.dirname(require.resolve('./run-exact-target-repair-with-cli.cjs'));
 const LOW_LEVEL_RUNNER = path.join(SCRIPT_DIR, 'run-exact-target-repair.sh');
@@ -112,10 +114,125 @@ function parseTemporaryRole(value) {
 
 function safeSpawn(spawnSync, command, args, options, failureMessage) {
   const result = spawnSync(command, args, options);
-  if (result?.error && result.error.code !== 'ETIMEDOUT') {
+  if (result?.error) {
     throw controlledError(failureMessage);
   }
   return result;
+}
+
+async function fetchJsonWithTimeout({
+  fetchFn,
+  url,
+  init,
+  label,
+  setTimer,
+  clearTimer,
+}) {
+  const controller = new AbortController();
+  const timeout = setTimer(() => controller.abort(), MANAGEMENT_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetchFn(url, { ...init, signal: controller.signal });
+    return await readJsonResponse(response, label);
+  } catch {
+    throw controlledError(`${label} request failed`);
+  } finally {
+    clearTimer(timeout);
+  }
+}
+
+function runBoundedProcessGroup({
+  spawn,
+  kill,
+  setTimer,
+  clearTimer,
+  command,
+  args,
+  env,
+  timeoutMs,
+}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, { env, stdio: 'inherit', detached: true });
+    } catch {
+      reject(controlledError('unable to start the exact-target repair runner'));
+      return;
+    }
+
+    let deadlineTimer;
+    let forceTimer;
+    let settled = false;
+    let stopSent = false;
+
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      if (deadlineTimer) clearTimer(deadlineTimer);
+      if (forceTimer) clearTimer(forceTimer);
+      callback();
+    };
+
+    const failStop = () =>
+      finish(() => reject(controlledError('unable to confirm the exact-target repair stopped')));
+
+    child.once('error', () => {
+      if (stopSent) {
+        finish(() =>
+          reject(controlledError('exact-target repair stopped before temporary login expiry')),
+        );
+      } else {
+        finish(() => reject(controlledError('unable to start the exact-target repair runner')));
+      }
+    });
+
+    child.once('close', (code) => {
+      if (!stopSent) {
+        if (typeof code === 'number') finish(() => resolve(code));
+        else finish(() => reject(controlledError('exact-target repair runner ended unexpectedly')));
+        return;
+      }
+
+      try {
+        kill(-child.pid, 0);
+      } catch (error) {
+        if (error?.code === 'ESRCH') {
+          finish(() =>
+            reject(controlledError('exact-target repair stopped before temporary login expiry')),
+          );
+        } else {
+          failStop();
+        }
+      }
+    });
+
+    deadlineTimer = setTimer(() => {
+      if (!Number.isInteger(child.pid) || child.pid <= 0) {
+        failStop();
+        return;
+      }
+      try {
+        kill(-child.pid, 'SIGTERM');
+        stopSent = true;
+      } catch (error) {
+        if (error?.code !== 'ESRCH') failStop();
+        return;
+      }
+
+      forceTimer = setTimer(() => {
+        try {
+          kill(-child.pid, 'SIGKILL');
+        } catch (error) {
+          if (error?.code !== 'ESRCH') {
+            failStop();
+            return;
+          }
+        }
+        finish(() =>
+          reject(controlledError('exact-target repair stopped before temporary login expiry')),
+        );
+      }, CHILD_TERMINATION_GRACE_MS);
+    }, timeoutMs);
+  });
 }
 
 async function waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, deadlineMs, now }) {
@@ -147,6 +264,10 @@ async function waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, dead
 async function runCliTransport(options = {}) {
   const env = options.env ?? process.env;
   const spawnSync = options.spawnSync ?? childProcess.spawnSync;
+  const spawn = options.spawn ?? childProcess.spawn;
+  const kill = options.kill ?? process.kill.bind(process);
+  const setTimer = options.setTimer ?? setTimeout;
+  const clearTimer = options.clearTimer ?? clearTimeout;
   const fetchFn = options.fetchFn ?? globalThis.fetch;
   const sleep = options.sleep ?? ((milliseconds) => sleepTimer(milliseconds));
   const now = options.now ?? (() => Date.now());
@@ -172,8 +293,11 @@ async function runCliTransport(options = {}) {
       'Q5_DEV_DB_USER',
       'Q5_DEV_DB_PORT',
       'Q5_DEV_DB_NAME',
+      'Q5_PSQL_BIN',
     ]) {
-      if (env[name]) throw controlledError('database password and connection overrides are forbidden in CLI mode');
+      if (env[name]) {
+        throw controlledError('database connection and adapter overrides are forbidden in CLI mode');
+      }
     }
 
     const versionResult = safeSpawn(
@@ -206,26 +330,33 @@ async function runCliTransport(options = {}) {
 
     if (typeof fetchFn !== 'function') throw controlledError('Node fetch support is required');
     const authorization = `Bearer ${token}`;
-    const poolerResponse = await fetchFn(`${MANAGEMENT_API_BASE}/config/database/pooler`, {
-      headers: { Authorization: authorization },
-    });
-    const pooler = parsePrimaryPooler(
-      await readJsonResponse(poolerResponse, 'pooler configuration'),
-    );
-    const loginResponse = await fetchFn(`${MANAGEMENT_API_BASE}/cli/login-role`, {
-      method: 'POST',
-      headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ read_only: false }),
+    const pooler = parsePrimaryPooler(await fetchJsonWithTimeout({
+      fetchFn,
+      url: `${MANAGEMENT_API_BASE}/config/database/pooler`,
+      init: { headers: { Authorization: authorization } },
+      label: 'pooler configuration',
+      setTimer,
+      clearTimer,
+    }));
+    const loginRequestedAtMs = now();
+    const loginValue = await fetchJsonWithTimeout({
+      fetchFn,
+      url: `${MANAGEMENT_API_BASE}/cli/login-role`,
+      init: {
+        method: 'POST',
+        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ read_only: false }),
+      },
+      label: 'temporary login',
+      setTimer,
+      clearTimer,
     });
     token = '';
-    const temporary = parseTemporaryRole(
-      await readJsonResponse(loginResponse, 'temporary login'),
-    );
+    const temporary = parseTemporaryRole(loginValue);
     temporaryPassword = temporary.password;
-    const issuedAtMs = now();
-    const deadlineMs = issuedAtMs + temporary.ttlSeconds * 1_000;
+    const deadlineMs = loginRequestedAtMs + temporary.ttlSeconds * 1_000;
     const expiresAtEpoch = Math.floor(deadlineMs / 1_000);
-    const psqlBin = env.Q5_PSQL_BIN || dockerPsql;
+    const psqlBin = dockerPsql;
 
     childEnv = { ...env };
     delete childEnv.SUPABASE_ACCESS_TOKEN;
@@ -255,20 +386,16 @@ async function runCliTransport(options = {}) {
     const remainingMs = deadlineMs - now() - EXPIRY_SAFETY_SECONDS * 1_000;
     const timeout = Math.min(MAX_CHILD_RUNTIME_MS, remainingMs);
     if (timeout < 15_000) throw controlledError('temporary login lifetime was insufficient');
-    const result = safeSpawn(
-      spawnSync,
-      lowLevelRunner,
-      [mode],
-      { env: childEnv, stdio: 'inherit', timeout, killSignal: 'SIGTERM' },
-      'unable to start the exact-target repair runner',
-    );
-    if (result.error?.code === 'ETIMEDOUT') {
-      throw controlledError('exact-target repair stopped before temporary login expiry');
-    }
-    if (typeof result.status !== 'number') {
-      throw controlledError('exact-target repair runner ended unexpectedly');
-    }
-    return result.status;
+    return await runBoundedProcessGroup({
+      spawn,
+      kill,
+      setTimer,
+      clearTimer,
+      command: lowLevelRunner,
+      args: [mode],
+      env: childEnv,
+      timeoutMs: timeout,
+    });
   } finally {
     token = '';
     temporaryPassword = '';
@@ -286,6 +413,7 @@ module.exports = {
   normalizeStoredToken,
   parsePrimaryPooler,
   parseTemporaryRole,
+  runBoundedProcessGroup,
   runCliTransport,
 };
 

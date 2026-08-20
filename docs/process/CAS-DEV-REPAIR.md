@@ -37,7 +37,7 @@ Authoritative post-delete hydration additionally requires these runtime-only val
     Q5_DEV_FUNCTIONS_URL
     Q5_DEV_SERVICE_ROLE_KEY
 
-The CLI wrapper validates the hard-coded shared-dev project, official primary pooler suffix, project-scoped pooler user, exact temporary-role name, server-reported lifetime, and session-mode port before starting the low-level runner. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
+The CLI wrapper validates the hard-coded shared-dev project, official primary pooler suffix, project-scoped pooler user, exact temporary-role name, server-reported lifetime, and session-mode port before starting the low-level runner. It rejects a caller-selected psql adapter, anchors the expiry deadline before the bounded login-role request, and stops the complete detached runner process group before that conservative deadline. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
 
 ## Read-only dry run
 

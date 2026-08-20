@@ -131,7 +131,7 @@ if [[ "${Q5_REPAIR_AUTH_MODE:-password}" == 'cli-temporary' ]]; then
   if [[ ! "$Q5_CLI_ROLE_EXPIRES_AT_EPOCH" =~ ^[0-9]+$ \
     || "$Q5_CLI_ROLE_EXPIRES_AT_EPOCH" -le "$(( $(date +%s) + 30 ))" \
     || "$Q5_DEV_DB_HOST" != *.pooler.supabase.com \
-    || "$Q5_DEV_DB_PORT" != '5432' \
+    || "${Q5_DEV_DB_PORT:-}" != '5432' \
     || "$Q5_DEV_DB_USER" != "cli_login_postgres.$DEV_PROJECT_REF" ]]
   then
     printf 'refusing invalid or expired Supabase CLI database target\n' >&2
