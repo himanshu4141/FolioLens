@@ -181,6 +181,10 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 - 2026-08-15: C1 merged and deployed to the authorized dev/main surfaces. Q5 repair now calls the shared activation resolver for delete-only apply, captures prior touched-holding activation in the encrypted backup, and restores that value exactly on rollback. This replaces the unsafe `exists(transaction)` recomputation and makes the crossed-axis inactive/partially-target case reversible.
 - 2026-08-15: The Q5 v3 outcome wrapper must acquire the same sorted per-user/scheme advisory locks as v2 before capturing its holding before-state. The locks are transaction-reentrant when v2 takes them again. This keeps `holding_changed_count` inside the mutation's concurrency boundary so a duplicate-only import cannot change activation while reporting a cache no-op.
 
+## Amendments
+
+- 2026-08-15: Q5 merged and deployed before the field repair. The owner then selected C2, a separately reviewed CLI-authenticated transport, instead of providing a persistent database password. C2 does not change the Q5 SQL, exact-target selector, encrypted backup, rollback, hydration, recovery rehearsal, or immediate-approval gates. It uses the existing Supabase CLI Keychain login to obtain the exact dev pooler and a server-expiring temporary role, then invokes this plan's low-level runner through ephemeral Docker psql. `docs/plans/cas-import-correctness-c2.md` owns that transport implementation and review.
+
 ## Evidence
 
 - Exact Q4 main deployment: GitHub Actions run `31636923994` completed successfully at `43159a3d9e9abb8dde62bbad574fe4048e84e32a`; Typecheck/Lint/Test and the `foliolens-main` EAS update both passed. The exact-head Supabase dev deployment also passed. No production workflow was invoked.
@@ -210,7 +214,8 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 - [x] Validate and push one batched correction for every round-one finding; pause re-review when C1 exposed the remaining activation-policy coupling.
 - [x] Rebase onto exact C1 main, integrate the shared resolver and exact activation rollback, validate, and start one exact-SHA re-review.
 - [x] Address the exact-head advisory-lock snapshot race with the shared sorted lock boundary and an executable two-session regression; validate and prepare the next frozen head.
-- [ ] Complete exact-SHA Codex and Claude convergence.
+- [x] Complete exact-SHA Codex and Claude convergence.
 - [ ] Run the non-mutating shared-dev dry run and encrypted backup, then stop for immediate human approval.
 - [ ] After approval, execute shared-dev repair, authoritative hydration, private/synthetic proofs, and cache/portfolio field validation.
-- [ ] Merge Q5, record exact main deployment, and complete the seven-day observation window.
+- [x] Merge Q5 and record the exact authorized dev/main deployment.
+- [ ] Complete the seven-day observation window.
