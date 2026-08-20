@@ -145,6 +145,7 @@ function runBoundedProcessGroup({
   kill,
   setTimer,
   clearTimer,
+  signalSource,
   command,
   args,
   env,
@@ -163,23 +164,74 @@ function runBoundedProcessGroup({
     let forceTimer;
     let settled = false;
     let stopSent = false;
+    let stopMessage = 'exact-target repair stopped before temporary login expiry';
+
+    const onOperatorInterrupt = () => {
+      requestStop('exact-target repair stopped after operator interrupt');
+    };
+
+    const removeSignalHandlers = () => {
+      signalSource.removeListener('SIGINT', onOperatorInterrupt);
+      signalSource.removeListener('SIGTERM', onOperatorInterrupt);
+    };
 
     const finish = (callback) => {
       if (settled) return;
       settled = true;
       if (deadlineTimer) clearTimer(deadlineTimer);
       if (forceTimer) clearTimer(forceTimer);
+      removeSignalHandlers();
       callback();
     };
 
     const failStop = () =>
       finish(() => reject(controlledError('unable to confirm the exact-target repair stopped')));
 
+    const completeStop = () => finish(() => reject(controlledError(stopMessage)));
+
+    const forceStop = () => {
+      try {
+        kill(-child.pid, 'SIGKILL');
+      } catch (error) {
+        if (error?.code !== 'ESRCH') {
+          failStop();
+          return;
+        }
+      }
+      completeStop();
+    };
+
+    function requestStop(message) {
+      if (settled) return;
+      stopMessage = message;
+      if (!Number.isInteger(child.pid) || child.pid <= 0) {
+        failStop();
+        return;
+      }
+      if (stopSent) {
+        forceStop();
+        return;
+      }
+      try {
+        kill(-child.pid, 'SIGTERM');
+        stopSent = true;
+      } catch (error) {
+        if (error?.code === 'ESRCH') {
+          completeStop();
+        } else {
+          failStop();
+        }
+        return;
+      }
+      forceTimer = setTimer(forceStop, CHILD_TERMINATION_GRACE_MS);
+    }
+
+    signalSource.on('SIGINT', onOperatorInterrupt);
+    signalSource.on('SIGTERM', onOperatorInterrupt);
+
     child.once('error', () => {
       if (stopSent) {
-        finish(() =>
-          reject(controlledError('exact-target repair stopped before temporary login expiry')),
-        );
+        failStop();
       } else {
         finish(() => reject(controlledError('unable to start the exact-target repair runner')));
       }
@@ -196,42 +248,17 @@ function runBoundedProcessGroup({
         kill(-child.pid, 0);
       } catch (error) {
         if (error?.code === 'ESRCH') {
-          finish(() =>
-            reject(controlledError('exact-target repair stopped before temporary login expiry')),
-          );
+          completeStop();
         } else {
           failStop();
         }
       }
     });
 
-    deadlineTimer = setTimer(() => {
-      if (!Number.isInteger(child.pid) || child.pid <= 0) {
-        failStop();
-        return;
-      }
-      try {
-        kill(-child.pid, 'SIGTERM');
-        stopSent = true;
-      } catch (error) {
-        if (error?.code !== 'ESRCH') failStop();
-        return;
-      }
-
-      forceTimer = setTimer(() => {
-        try {
-          kill(-child.pid, 'SIGKILL');
-        } catch (error) {
-          if (error?.code !== 'ESRCH') {
-            failStop();
-            return;
-          }
-        }
-        finish(() =>
-          reject(controlledError('exact-target repair stopped before temporary login expiry')),
-        );
-      }, CHILD_TERMINATION_GRACE_MS);
-    }, timeoutMs);
+    deadlineTimer = setTimer(
+      () => requestStop('exact-target repair stopped before temporary login expiry'),
+      timeoutMs,
+    );
   });
 }
 
@@ -247,13 +274,14 @@ async function waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, dead
     '--command=select 1',
   ];
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const result = safeSpawn(
-      spawnSync,
-      psqlBin,
-      args,
-      { env: childEnv, stdio: 'ignore', timeout: 20_000 },
-      'unable to start the psql readiness probe',
-    );
+    const result = spawnSync(psqlBin, args, {
+      env: childEnv,
+      stdio: 'ignore',
+      timeout: 20_000,
+    });
+    if (result?.error && result.error.code !== 'ETIMEDOUT') {
+      throw controlledError('unable to start the psql readiness probe');
+    }
     if (result.status === 0) return;
     if (now() + 15_000 >= deadlineMs) break;
     await sleep(Math.min(3_000 * 1.5 ** attempt, 10_000));
@@ -268,6 +296,7 @@ async function runCliTransport(options = {}) {
   const kill = options.kill ?? process.kill.bind(process);
   const setTimer = options.setTimer ?? setTimeout;
   const clearTimer = options.clearTimer ?? clearTimeout;
+  const signalSource = options.signalSource ?? process;
   const fetchFn = options.fetchFn ?? globalThis.fetch;
   const sleep = options.sleep ?? ((milliseconds) => sleepTimer(milliseconds));
   const now = options.now ?? (() => Date.now());
@@ -391,6 +420,7 @@ async function runCliTransport(options = {}) {
       kill,
       setTimer,
       clearTimer,
+      signalSource,
       command: lowLevelRunner,
       args: [mode],
       env: childEnv,

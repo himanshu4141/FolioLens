@@ -233,6 +233,36 @@ describe('C2 CLI-authenticated repair transport', () => {
     expect(commands).not.toContain('/must-not-run');
   });
 
+  it('retries a timed-out readiness probe within the temporary-role deadline', async () => {
+    let probeAttempts = 0;
+    const spawnSync = jest.fn((command: string) => {
+      if (command === 'supabase') return { status: 0, stdout: '2.114.0\n' };
+      if (command === '/usr/bin/security') return { status: 0, stdout: ACCESS_TOKEN };
+      probeAttempts += 1;
+      if (probeAttempts === 1) return { status: null, error: { code: 'ETIMEDOUT' } };
+      return { status: 0 };
+    });
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(response(poolerResponse()))
+      .mockResolvedValueOnce(response(roleResponse()));
+
+    await expect(
+      transport.runCliTransport({
+        mode: 'probe',
+        env: {},
+        platform: 'darwin',
+        spawnSync,
+        fetchFn,
+        sleep: async () => undefined,
+        now: () => 1_000_000,
+        dockerPsql: '/synthetic/psql',
+        stdout: () => undefined,
+      }),
+    ).resolves.toBe(0);
+    expect(probeAttempts).toBe(2);
+  });
+
   it('anchors expiry before the bounded login request begins', async () => {
     const asyncCalls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
     const spawn = successfulAsyncSpawn(asyncCalls);
@@ -284,6 +314,7 @@ describe('C2 CLI-authenticated repair transport', () => {
           kill: process.kill.bind(process),
           setTimer: setTimeout,
           clearTimer: clearTimeout,
+          signalSource: process,
           command: '/bin/sh',
           args: ['-c', 'sleep 0.6; : > "$C2_MARKER"'],
           env: { ...process.env, C2_MARKER: marker },
@@ -293,6 +324,45 @@ describe('C2 CLI-authenticated repair transport', () => {
       await new Promise((resolve) => setTimeout(resolve, 700));
       expect(fs.existsSync(marker)).toBe(false);
     } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards an operator interrupt and stays alive until detached work stops', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c2-operator-interrupt-'));
+    const started = path.join(temp, 'work-started');
+    const committed = path.join(temp, 'work-committed');
+    const modulePath = path.join(ROOT, 'run-exact-target-repair-with-cli.cjs');
+    const wrapperSource = `
+const childProcess = require('node:child_process');
+const transport = require(${JSON.stringify(modulePath)});
+transport.runBoundedProcessGroup({
+  spawn: childProcess.spawn,
+  kill: process.kill.bind(process),
+  setTimer: setTimeout,
+  clearTimer: clearTimeout,
+  signalSource: process,
+  command: '/bin/sh',
+  args: ['-c', ': > "$C2_STARTED"; sleep 1.2; : > "$C2_COMMITTED"'],
+  env: { ...process.env, C2_STARTED: ${JSON.stringify(started)}, C2_COMMITTED: ${JSON.stringify(committed)} },
+  timeoutMs: 10_000,
+}).then((code) => { process.exitCode = code; }).catch(() => { process.exitCode = 2; });
+`;
+    const wrapper = nodeSpawn(process.execPath, ['-e', wrapperSource], { stdio: 'ignore' });
+    try {
+      for (let attempt = 0; attempt < 40 && !fs.existsSync(started); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(fs.existsSync(started)).toBe(true);
+      process.kill(wrapper.pid!, 'SIGINT');
+      const exitCode = await new Promise<number | null>((resolve) => {
+        wrapper.once('close', (code) => resolve(code));
+      });
+      expect(exitCode).toBe(2);
+      await new Promise((resolve) => setTimeout(resolve, 1_400));
+      expect(fs.existsSync(committed)).toBe(false);
+    } finally {
+      if (wrapper.exitCode === null && wrapper.pid) wrapper.kill('SIGKILL');
       fs.rmSync(temp, { recursive: true, force: true });
     }
   });
