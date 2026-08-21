@@ -126,10 +126,21 @@ require_var Q5_DEV_DB_USER
 require_var Q5_DEV_DB_PASSWORD
 require_var Q5_TARGET_IMPORT_ID
 
-if [[ ! ( "$Q5_DEV_DB_HOST" == "db.$DEV_PROJECT_REF.supabase.co" \
-    && "$Q5_DEV_DB_USER" == 'postgres' ) \
-  && ! ( "$Q5_DEV_DB_HOST" == *.pooler.supabase.com \
-    && "$Q5_DEV_DB_USER" == "postgres.$DEV_PROJECT_REF" ) ]]
+if [[ "${Q5_REPAIR_AUTH_MODE:-password}" == 'cli-temporary' ]]; then
+  require_var Q5_CLI_ROLE_EXPIRES_AT_EPOCH
+  if [[ ! "$Q5_CLI_ROLE_EXPIRES_AT_EPOCH" =~ ^[0-9]+$ \
+    || "$Q5_CLI_ROLE_EXPIRES_AT_EPOCH" -le "$(( $(date +%s) + 30 ))" \
+    || "$Q5_DEV_DB_HOST" != *.pooler.supabase.com \
+    || "${Q5_DEV_DB_PORT:-}" != '5432' \
+    || "$Q5_DEV_DB_USER" != "cli_login_postgres.$DEV_PROJECT_REF" ]]
+  then
+    printf 'refusing invalid or expired Supabase CLI database target\n' >&2
+    exit 3
+  fi
+elif [[ ! ( "$Q5_DEV_DB_HOST" == "db.$DEV_PROJECT_REF.supabase.co" \
+      && "$Q5_DEV_DB_USER" == 'postgres' ) \
+    && ! ( "$Q5_DEV_DB_HOST" == *.pooler.supabase.com \
+      && "$Q5_DEV_DB_USER" == "postgres.$DEV_PROJECT_REF" ) ]]
 then
   printf 'refusing non-dev database target\n' >&2
   exit 3

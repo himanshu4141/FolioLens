@@ -22,29 +22,28 @@ The encrypted backup contains the complete target rows plus the prior `is_active
 
 ## Private local setup
 
-Install the PostgreSQL client (`libpq`) locally, or set `Q5_PSQL_BIN` to an executable `psql` path. Populate these values without echoing them:
+Install Supabase CLI 2.114.0 or later, log in with `supabase login`, and keep Docker running. The owner-facing C2 wrapper reads the selected CLI profile from the macOS Keychain, obtains the exact shared-dev pooler plus a five-minute `cli_login_postgres` role from the Supabase Management API, and runs psql in an auto-removed `postgres:17-alpine` container. It refuses caller-supplied database host, user, port, name, or password overrides. No database password file is needed or permitted in this path.
 
-    Q5_DEV_DB_HOST
-    Q5_DEV_DB_PORT          # optional; defaults to 5432
-    Q5_DEV_DB_NAME          # optional; defaults to postgres
-    Q5_DEV_DB_USER
-    Q5_DEV_DB_PASSWORD
+Populate these non-connection values without echoing them:
+
     Q5_TARGET_IMPORT_ID
     Q5_BACKUP_PATH
     Q5_BACKUP_KEY_FILE
+
+`SUPABASE_PROFILE` is optional and defaults to `supabase`. The low-level `run-exact-target-repair.sh` remains the reviewed implementation and direct-password compatibility entry point, but the field repair must use `run-exact-target-repair-with-cli.cjs`. The wrapper passes the temporary database password, exact import ID, approved manifest, approval phrase, and service-role credential only through child-process environments or existing mode-0600 temporary configuration, never command arguments. Its harmless `probe` mode runs only `select 1` and prints only `{"cli_transport":"ready"}`.
 
 Authoritative post-delete hydration additionally requires these runtime-only values:
 
     Q5_DEV_FUNCTIONS_URL
     Q5_DEV_SERVICE_ROLE_KEY
 
-The wrapper passes the password, exact import ID, approved manifest, approval phrase, and service-role credential only through the child process environment or mode-0600 temporary configuration, never in command arguments. It accepts either the exact direct shared-dev database host/user pair or an official Supabase pooler host with the exact shared-dev project-scoped user, and accepts only the exact shared-dev `sync-fund-meta` URL. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
+The CLI wrapper validates the hard-coded shared-dev project, official primary pooler suffix, project-scoped pooler user, exact temporary-role name, server-reported lifetime, and session-mode port before starting the low-level runner. It rejects a caller-selected psql adapter, anchors the expiry deadline before the bounded login-role request, and stops the complete detached runner process group before that conservative deadline. Operator `SIGINT` or `SIGTERM` is forwarded to that group, and the wrapper remains alive until group shutdown is confirmed. A timed-out readiness probe is retried only while the temporary-role deadline still permits it; version, keychain, and other process-start failures remain fail-closed. Keep the encrypted backup and key at different local paths outside the repository. Do not place either in a cloud-synchronized directory.
 
 ## Read-only dry run
 
 Run:
 
-    scripts/cas-repair/run-exact-target-repair.sh dry-run
+    scripts/cas-repair/run-exact-target-repair-with-cli.cjs dry-run
 
 The only permitted output is one JSON object containing:
 
@@ -60,7 +59,7 @@ Stop if the exact target and touched-scheme counts do not match the accepted pro
 
 Run:
 
-    scripts/cas-repair/run-exact-target-repair.sh backup
+    scripts/cas-repair/run-exact-target-repair-with-cli.cjs backup
 
 The only permitted output is `backup_sha256`. Confirm the encrypted backup and key both exist, are non-empty, are mode 0600, and are not inside the repository. Perform a recovery rehearsal against a disposable local database before requesting live mutation approval. The rehearsal must prove the complete target digest and every touched holding's prior activation are restored, include an already-inactive holding with both target and surviving unrelated rows, and prove that a duplicate primary key aborts rollback.
 
@@ -92,13 +91,13 @@ After approval, populate the approved manifest without echoing values:
 
 Then run immediately:
 
-    scripts/cas-repair/run-exact-target-repair.sh apply
+    scripts/cas-repair/run-exact-target-repair-with-cli.cjs apply
 
 Before contacting the database, the wrapper recomputes the encrypted file digest and proves the supplied key can decrypt it with the exact expected header. Inside the same serializable transaction as the deletion, the apply SQL loads the backup into temporary transaction and holding-state tables and proves their exact row count, import scope, complete-row digest, and captured activation match the approved target. It then calls the shared C1 resolver for exactly those holdings and asserts the stored result equals the resolver decision. The plaintext temporary file is mode 0600 and is deleted on every exit. Permitted output is only the deleted count, aggregate holdings-changed count, and `unrelated_unchanged: true`. Any other result is a stop condition.
 
 Immediately after a successful apply, run:
 
-    scripts/cas-repair/run-exact-target-repair.sh hydrate
+    scripts/cas-repair/run-exact-target-repair-with-cli.cjs hydrate
 
 The wrapper re-verifies and decrypts the approved backup, resolves only its fund IDs to scheme codes inside shared dev, sends that runtime-only scope to the service-role-authenticated `exact-target-repair` mode of `sync-fund-meta`, bypasses ordinary freshness for those schemes, and deletes the scope, response, credential config, and plaintext on every exit. No identifier is printed or logged. Permitted output contains only aggregate `updated`, `failed`, and `skipped` counts; `failed` is the unresolved count and must be carried into the field evidence.
 
@@ -106,7 +105,7 @@ The wrapper re-verifies and decrypts the approved backup, resolves only its fund
 
 Rollback is for a verified repair failure, not routine testing. Populate `Q5_EXPECTED_RESTORE_COUNT` and the approved `Q5_BACKUP_SHA256`, then run:
 
-    scripts/cas-repair/run-exact-target-repair.sh rollback
+    scripts/cas-repair/run-exact-target-repair-with-cli.cjs rollback
 
 The helper decrypts to a mode-0600 temporary file and restores all transaction columns plus the captured prior holding activation in one serializable transaction. Before restoration it proves every backed-up primary key is absent, every row still belongs to the target audit owner, and every touched holding still equals the shared resolver's expected post-apply state; concurrent activation drift aborts. After inserting the rows it restores the captured prior activation exactly and asserts the full touched-holding state before commit. It deletes plaintext on exit and reports only restored count, aggregate holdings-changed count, and conflict status.
 
@@ -124,4 +123,4 @@ After deletion:
 
 ## Stop conditions
 
-Stop without mutation if any prerequisite, environment check, expected count, digest, backup check, recovery rehearsal, or immediate approval is absent or changed. Stop the entire program as a correctness interrupt if unrelated data changes, authoritative hydration writes CAS-derived metadata, either private statement crosses its allowed boundary, or any production surface is contacted.
+Stop without mutation if the CLI login, exact pooler, temporary role, lifetime, readiness probe, prerequisite, environment check, expected count, digest, backup check, recovery rehearsal, or immediate approval is absent or changed. Stop the entire program as a correctness interrupt if unrelated data changes, authoritative hydration writes CAS-derived metadata, either private statement crosses its allowed boundary, or any production surface is contacted.
