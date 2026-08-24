@@ -594,6 +594,7 @@ transport.runBoundedProcessGroup({
       const cliArgs = fs.readFileSync(capture, 'utf8').trim().split('\n');
       const psqlIndex = cliArgs.indexOf('psql');
       expect(cliArgs.slice(psqlIndex + 1)).toEqual([
+        '-q',
         '-v',
         'ON_ERROR_STOP=1',
         '-c',
@@ -639,6 +640,57 @@ transport.runBoundedProcessGroup({
     }
   });
 
+  it.each([
+    ['/synthetic/backup.sql', 'id,amount\nsynthetic-id,10.5\n'],
+    ['/synthetic/hydration.sql', '{"funds":["synthetic"]}\n'],
+  ])('keeps cli-temporary stdout data-only for %s', (file, expected) => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c3-data-stream-'));
+    const fakeDocker = path.join(temp, 'docker');
+    fs.writeFileSync(
+      fakeDocker,
+      `#!/bin/sh
+quiet=0
+payload=''
+for arg in "$@"; do
+  case "$arg" in
+    -q) quiet=1 ;;
+    --file=/synthetic/backup.sql) payload='backup' ;;
+    --file=/synthetic/hydration.sql) payload='hydration' ;;
+  esac
+done
+if [ "$quiet" -ne 1 ]; then
+  printf 'SET\\n'
+fi
+case "$payload" in
+  backup) printf 'id,amount\\nsynthetic-id,10.5\\n' ;;
+  hydration) printf '{"funds":["synthetic"]}\\n' ;;
+  *) exit 2 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+
+    try {
+      const result = nodeSpawnSync(path.join(ROOT, 'docker-psql.sh'), [`--file=${file}`], {
+        env: {
+          NODE_ENV: 'test',
+          PATH: `${temp}:${process.env.PATH ?? ''}`,
+          PGPASSWORD: 'synthetic-password-not-in-argv',
+          Q5_REPAIR_AUTH_MODE: 'cli-temporary',
+        },
+        encoding: 'utf8',
+      });
+      expect({ status: result.status, stderr: result.stderr }).toEqual({
+        status: 0,
+        stderr: '',
+      });
+      expect(result.stdout).toBe(expected);
+      expect(result.stdout).not.toContain('SET');
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it('stops before any later command or file when the injected role command fails', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c3-role-failure-'));
     const fakeDocker = path.join(temp, 'docker');
@@ -648,7 +700,7 @@ transport.runBoundedProcessGroup({
       `#!/bin/sh
 while [ "$1" != "psql" ]; do shift; done
 shift
-if [ "$1" = "-v" ] && [ "$2" = "ON_ERROR_STOP=1" ] && [ "$3" = "-c" ] && [ "$4" = "SET ROLE postgres" ]; then
+if [ "$1" = "-q" ] && [ "$2" = "-v" ] && [ "$3" = "ON_ERROR_STOP=1" ] && [ "$4" = "-c" ] && [ "$5" = "SET ROLE postgres" ]; then
   exit 1
 fi
 : > "$C3_MARKER"

@@ -52,6 +52,7 @@ fi
 case "${Q5_REPAIR_AUTH_MODE:-password}" in
   cli-temporary)
     exec docker "${docker_args[@]}" "$POSTGRES_IMAGE" psql \
+      -q \
       -v ON_ERROR_STOP=1 \
       -c 'SET ROLE postgres' \
       "$@"
