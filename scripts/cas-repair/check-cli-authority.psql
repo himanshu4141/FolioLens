@@ -1,0 +1,49 @@
+\set ON_ERROR_STOP on
+\o /dev/null
+
+select current_role = 'postgres' as c3_role_applied
+\gset
+\if :c3_role_applied
+\else
+  select 1 / 0;
+\endif
+
+select
+  has_table_privilege(current_user, 'public.transaction', 'SELECT')
+  and has_table_privilege(current_user, 'public.cas_import', 'SELECT')
+  and has_table_privilege(current_user, 'public.user_fund', 'SELECT')
+  as c3_has_table_authority
+\gset
+\if :c3_has_table_authority
+\else
+  select 1 / 0;
+\endif
+
+select has_function_privilege(
+  current_user,
+  'public.resolve_user_fund_activation_v1(boolean,boolean,jsonb,boolean,boolean)',
+  'EXECUTE'
+) as c3_has_resolver_authority
+\gset
+\if :c3_has_resolver_authority
+\else
+  select 1 / 0;
+\endif
+
+select 1 / ((
+  transaction_scope.row_count = 0
+  and import_scope.row_count = 0
+  and holding_scope.row_count = 0
+  and public.resolve_user_fund_activation_v1(
+    false,
+    null,
+    'null'::jsonb,
+    true,
+    false
+  ) is false
+)::integer)
+from (select count(*) as row_count from public.transaction where false) as transaction_scope,
+     (select count(*) as row_count from public.cas_import where false) as import_scope,
+     (select count(*) as row_count from public.user_fund where false) as holding_scope;
+
+\quit 0

@@ -17,13 +17,33 @@ const EXPIRY_SAFETY_SECONDS = 45;
 const MAX_CHILD_RUNTIME_MS = 240_000;
 const MANAGEMENT_REQUEST_TIMEOUT_MS = 30_000;
 const CHILD_TERMINATION_GRACE_MS = 2_000;
-const MODES = new Set(['probe', 'dry-run', 'backup', 'apply', 'hydrate', 'rollback']);
+const MODES = new Set(['diagnose', 'probe', 'dry-run', 'backup', 'apply', 'hydrate', 'rollback']);
 const SCRIPT_DIR = path.dirname(require.resolve('./run-exact-target-repair-with-cli.cjs'));
 const LOW_LEVEL_RUNNER = path.join(SCRIPT_DIR, 'run-exact-target-repair.sh');
 const DOCKER_PSQL = path.join(SCRIPT_DIR, 'docker-psql.sh');
+const DIAGNOSTIC_PSQL = path.join(SCRIPT_DIR, 'diagnose-cli-authority.psql');
+const AUTHORITY_PROBE_PSQL = path.join(SCRIPT_DIR, 'check-cli-authority.psql');
 const ACCESS_TOKEN_PATTERN = /^sbp_(oauth_)?[a-f0-9]{40}$/;
 const PROFILE_PATTERN = /^[A-Za-z0-9._-]+$/;
-
+const DIAGNOSTIC_CODES = new Set([
+  'role_assumption_missing',
+  'role_assumption_not_applied',
+  'table_authority_missing',
+  'resolver_authority_missing',
+  'ready',
+  'readiness_statement_failed',
+]);
+const DIAGNOSTIC_STRIPPED_ENV = [
+  'Q5_TARGET_IMPORT_ID',
+  'Q5_EXPECTED_TARGET_COUNT',
+  'Q5_EXPECTED_TARGET_DIGEST',
+  'Q5_EXPECTED_UNRELATED_COUNT',
+  'Q5_EXPECTED_UNRELATED_DIGEST',
+  'Q5_BACKUP_SHA256',
+  'Q5_APPROVE_EXACT_TARGET_DELETE',
+  'Q5_EXPECTED_RESTORE_COUNT',
+  'Q5_BACKUP_PLAINTEXT_PATH',
+];
 function controlledError(message) {
   return new Error(message);
 }
@@ -271,7 +291,7 @@ async function waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, dead
     '--no-psqlrc',
     '--tuples-only',
     '--no-align',
-    '--command=select 1',
+    `--file=${AUTHORITY_PROBE_PSQL}`,
   ];
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const result = spawnSync(psqlBin, args, {
@@ -287,6 +307,38 @@ async function waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, dead
     await sleep(Math.min(3_000 * 1.5 ** attempt, 10_000));
   }
   throw controlledError('temporary Supabase CLI login did not become ready');
+}
+
+function parseDiagnosticResult(result) {
+  if (result?.error || result?.status !== 0) return 'readiness_statement_failed';
+  const match = String(result.stdout ?? '').match(/^([a-z_]+)\n?$/);
+  if (!match || !DIAGNOSTIC_CODES.has(match[1])) return 'readiness_statement_failed';
+  return match[1];
+}
+
+function runCliDiagnostic({ spawnSync, psqlBin, childEnv }) {
+  const args = [
+    `--host=${childEnv.Q5_DEV_DB_HOST}`,
+    `--port=${childEnv.Q5_DEV_DB_PORT}`,
+    `--dbname=${childEnv.Q5_DEV_DB_NAME}`,
+    `--username=${childEnv.Q5_DEV_DB_USER}`,
+    '--no-psqlrc',
+    '--tuples-only',
+    '--no-align',
+    `--file=${DIAGNOSTIC_PSQL}`,
+  ];
+  try {
+    const result = spawnSync(psqlBin, args, {
+      env: childEnv,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 20_000,
+      maxBuffer: 1_024,
+    });
+    return parseDiagnosticResult(result);
+  } catch {
+    return 'readiness_statement_failed';
+  }
 }
 
 async function runCliTransport(options = {}) {
@@ -310,10 +362,13 @@ async function runCliTransport(options = {}) {
 
   try {
     if (!MODES.has(mode)) {
-      throw controlledError('usage: run-exact-target-repair-with-cli.cjs {probe|dry-run|backup|apply|hydrate|rollback}');
+      throw controlledError('usage: run-exact-target-repair-with-cli.cjs {diagnose|probe|dry-run|backup|apply|hydrate|rollback}');
     }
     if (platform !== 'darwin') {
       throw controlledError('the C2 CLI credential bridge currently requires macOS Keychain');
+    }
+    if (Object.prototype.hasOwnProperty.call(env, 'PGOPTIONS')) {
+      throw controlledError('database connection and adapter overrides are forbidden in CLI mode');
     }
     for (const name of [
       'Q5_DEV_DB_PASSWORD',
@@ -405,6 +460,16 @@ async function runCliTransport(options = {}) {
       PGAPPNAME: 'foliolens-q5-exact-target-repair',
     });
 
+    if (mode === 'diagnose') {
+      childEnv.Q5_REPAIR_AUTH_MODE = 'cli-diagnostic';
+      childEnv.PGAPPNAME = 'foliolens-c3-cli-diagnostic';
+      for (const name of DIAGNOSTIC_STRIPPED_ENV) delete childEnv[name];
+      const code = runCliDiagnostic({ spawnSync, psqlBin, childEnv });
+      if (options.stdout) options.stdout(`${code}\n`);
+      else process.stdout.write(`${code}\n`);
+      return 0;
+    }
+
     await waitForTemporaryLogin({ spawnSync, sleep, psqlBin, childEnv, deadlineMs, now });
     if (mode === 'probe') {
       if (options.stdout) options.stdout('{"cli_transport":"ready"}\n');
@@ -443,6 +508,8 @@ module.exports = {
   normalizeStoredToken,
   parsePrimaryPooler,
   parseTemporaryRole,
+  parseDiagnosticResult,
+  runCliDiagnostic,
   runBoundedProcessGroup,
   runCliTransport,
 };
