@@ -184,6 +184,7 @@ Field validation must record only aggregate pass/fail evidence. The private CDSL
 ## Amendments
 
 - 2026-08-15: Q5 merged and deployed before the field repair. The owner then selected C2, a separately reviewed CLI-authenticated transport, instead of providing a persistent database password. C2 does not change the Q5 SQL, exact-target selector, encrypted backup, rollback, hydration, recovery rehearsal, or immediate-approval gates. It uses the existing Supabase CLI Keychain login to obtain the exact dev pooler and a server-expiring temporary role, then invokes this plan's low-level runner through ephemeral Docker psql. `docs/plans/cas-import-correctness-c2.md` owns that transport implementation and review.
+- 2026-08-23: Q5 field proof paused before dry run when the C2 temporary login authenticated but lacked inherited protected-table authority. C3 is a correctness interrupt that pins exact CLI-only role assumption and proves effective role plus complete zero-row repair authority before the low-level runner can start. No target rows were queried and no shared-dev mutation occurred. Field proof may resume only after C3 merges; every dry-run, encrypted-backup, recovery-rehearsal, rollback, hydration, and fresh immediate-approval gate remains unchanged.
 
 ## Evidence
 

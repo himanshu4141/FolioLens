@@ -49,4 +49,21 @@ if [[ -n "${Q5_BACKUP_PLAINTEXT_PATH:-}" ]]; then
   docker_args+=(--volume "$Q5_BACKUP_PLAINTEXT_PATH:$Q5_BACKUP_PLAINTEXT_PATH:ro")
 fi
 
-exec docker "${docker_args[@]}" "$POSTGRES_IMAGE" psql "$@"
+case "${Q5_REPAIR_AUTH_MODE:-password}" in
+  cli-temporary)
+    exec docker "${docker_args[@]}" "$POSTGRES_IMAGE" psql \
+      -q \
+      -v ON_ERROR_STOP=1 \
+      -c 'SET ROLE postgres' \
+      "$@"
+    ;;
+  cli-diagnostic)
+    exec docker "${docker_args[@]}" "$POSTGRES_IMAGE" psql \
+      -q \
+      -c 'SET ROLE postgres' \
+      "$@"
+    ;;
+  *)
+    exec docker "${docker_args[@]}" "$POSTGRES_IMAGE" psql "$@"
+    ;;
+esac

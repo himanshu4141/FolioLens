@@ -136,6 +136,7 @@ The live probe may execute only `select 1` against the exact dev project and may
 
 - 2026-08-20: The initial implementation used a synchronous child-only timeout and allowed an inherited `Q5_PSQL_BIN`. Round-one review proved that the timeout could report a completed mutation as stopped and could leave foreground database work running. C2 now rejects the inherited adapter, derives expiry from the start of the bounded login request, runs the low-level runner in a detached process group, signals the complete group at the cap, and escalates to a group kill after a bounded grace period. Synthetic tests prove both the conservative deadline and that post-timeout work does not complete.
 - 2026-08-20: Round-two review found that terminal interrupts could end the wrapper while leaving its detached group alive, and that making all synchronous subprocess failures strict unintentionally disabled readiness retries. C2 now traps `SIGINT` and `SIGTERM`, forwards shutdown to the complete repair group, keeps supervision alive until shutdown is confirmed, and retries only readiness-probe `ETIMEDOUT` failures within the existing temporary-role deadline. Synthetic tests prove interrupted work cannot reach its completion marker and a single readiness timeout is retried.
+- 2026-08-23: Field-proof preparation showed that the temporary `cli_login_postgres` login authenticates with `NOINHERIT`; C2's `select 1` probe therefore proved connectivity but not the protected-table authority required by Q5. A fixed libpq startup option passed disposable PostgreSQL validation but failed closed through the exact-dev session pooler. C3 owns the separately reviewed correction: reject inherited startup options without forwarding them; in exact CLI-temporary mode inject command-line `ON_ERROR_STOP` followed by one fixed same-session `SET ROLE postgres`; and require exact effective role plus zero-row permission analysis for all three repair tables and resolver execute authority before starting the low-level runner. The five Q5 SQL files and direct-password compatibility path remain unchanged.
 
 ## Evidence
 
@@ -143,6 +144,7 @@ The live probe may execute only `select 1` against the exact dev project and may
 - Focused Jest passes 2 suites / 26 tests for both the new transport and all existing Q5 repair guardrails. The tests cover keyring normalization, wrong-project rejection, exact role and lifetime validation, argv containment, readiness-only behavior, inherited-password and adapter refusal, bounded login timing, process-group termination on deadline or operator interrupt, bounded readiness timeout retry and exhaustion, Docker auto-removal, allowlisted environment names, and low-level expiry validation.
 - Shell syntax and Node syntax checks pass. The live C2 `probe` used the exact dev project, ran only `select 1` through the temporary role and Docker psql, and emitted only `{"cli_transport":"ready"}`. No repair-domain data or shared-dev mutation was involved.
 - Full round-two correction validation passes 114 Jest suites / 2,276 tests, typecheck, zero-warning lint, shell and Node syntax checks, and `git diff --check`. The harmless exact-dev `select 1` probe also remains green and emitted only the readiness object.
+- C3 supersedes the underpowered C2 readiness evidence. See `docs/plans/cas-import-correctness-c3.md`; Q5 field proof remains paused until that correction merges through exact-SHA dual review.
 
 ## Progress
 
@@ -155,6 +157,6 @@ The live probe may execute only `select 1` against the exact dev project and may
 - [x] Open the draft C2 PR and freeze an exact review head.
 - [x] Batch and validate all round-one review corrections.
 - [x] Batch and validate all round-two review corrections.
-- [ ] Freeze one exact re-review head.
-- [ ] Obtain exact-SHA Codex and Claude convergence and merge only on the green gate.
+- [x] Freeze one exact re-review head.
+- [x] Obtain exact-SHA Codex and Claude convergence and merge only on the green gate.
 - [ ] Resume Q5 field proof without a permanent database password.
