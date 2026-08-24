@@ -25,6 +25,7 @@ Run the focused repair suites, full Jest, typecheck, zero-warning lint, SQL/diff
 - [x] Prove through a target-free aggregate diagnostic that the dependency exists in the hosted extension namespace but is not visible in the temporary session.
 - [x] Implement explicit dependency qualification and focused regression coverage.
 - [x] Complete local validation and the exact-dev non-mutating proof.
+- [x] Batch round-one readiness coverage findings into one fail-before-runner correction.
 - [ ] Open and converge a frozen exact-head correctness-hotfix PR.
 - [ ] Present the aggregate manifest and obtain fresh immediate approval before mutation.
 
@@ -34,3 +35,8 @@ Run the focused repair suites, full Jest, typecheck, zero-warning lint, SQL/diff
 - Focused repair validation passes 2 suites / 44 tests. Full Jest passes 114 suites / 2,294 tests; typecheck, zero-warning lint, and diff checks pass.
 - The corrected exact-target dry run emitted only the approved aggregate manifest. The backup streamed directly to encryption, its digest was recorded, and no-output checks proved mode-0600, non-empty, outside-repository, decryptable artifacts with the exact reviewed header.
 - A disposable PostgreSQL 17 rehearsal restored the exact approved count and target digest, restored every captured holding activation, and rejected a second restore through the primary-key conflict guard. Plaintext and the disposable container were destroyed automatically. Shared dev remained unchanged.
+- The round-one correction passes focused 2 suites / 44 tests, full 114 suites / 2,294 tests, typecheck, zero-warning lint, and diff checks. A disposable PostgreSQL 17 authority proof passed with digest access and failed closed when only schema usage was removed; the target-free exact-dev readiness probe then passed without invoking a repair runner.
+
+## Amendments
+
+Round-one review found that the staged readiness scripts could report success even when the newly explicit digest dependency was inaccessible. Both readiness paths now execute one fixed empty-string qualified digest call after the zero-row table and resolver proof. `ON_ERROR_STOP` maps an inaccessible schema or function to the existing fail-before-runner behavior; no repair-domain row, manifest input, or mutation path is added.

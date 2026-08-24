@@ -156,6 +156,7 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
     expect(readiness).toContain(
       'public.resolve_user_fund_activation_v1(boolean,boolean,jsonb,boolean,boolean)',
     );
+    expect(readiness).toContain("extensions.digest('', 'sha256')");
     expect(probe?.args).toContain('--port=5432');
     expect(probe?.env?.PGPASSWORD).toBe(TEMP_PASSWORD);
     expect(probe?.env).not.toHaveProperty('PGOPTIONS');
@@ -384,13 +385,22 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
     },
   );
 
-  it('fails closed on readiness exhaustion without invoking the repair runner', async () => {
+  it('fails before the repair runner when the manifest digest dependency is unavailable', async () => {
     const commands: string[] = [];
-    const spawnSync = jest.fn((command: string) => {
+    const spawnSync = jest.fn((command: string, args: string[] = []) => {
       commands.push(command);
       if (command === 'supabase') return { status: 0, stdout: '2.114.0\n' };
       if (command === '/usr/bin/security') return { status: 0, stdout: ACCESS_TOKEN };
+      const readinessPath = args
+        .find((arg) => arg.startsWith('--file='))
+        ?.slice('--file='.length);
+      expect(fs.readFileSync(readinessPath!, 'utf8')).toContain(
+        "extensions.digest('', 'sha256')",
+      );
       return { status: 1 };
+    });
+    const spawn = jest.fn(() => {
+      throw new Error('low-level runner must not start');
     });
     const fetchFn = jest
       .fn()
@@ -404,6 +414,7 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
         env: {},
         platform: 'darwin',
         spawnSync,
+        spawn,
         fetchFn,
         sleep: async () => {
           clock += 60_000;
@@ -414,6 +425,7 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
       }),
     ).rejects.toThrow('temporary Supabase CLI login did not become ready');
     expect(commands).not.toContain('/must-not-run');
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('retries a timed-out readiness probe within the temporary-role deadline', async () => {
@@ -762,6 +774,7 @@ exit 1
       'from (select count(*) as row_count from public.transaction where false)',
     );
     const resolverCall = source.lastIndexOf('public.resolve_user_fund_activation_v1(');
+    const digestCall = source.indexOf("extensions.digest('', 'sha256')");
 
     expect(membership).toBeGreaterThan(-1);
     expect(appliedRole).toBeGreaterThan(membership);
@@ -769,6 +782,7 @@ exit 1
     expect(resolverCatalog).toBeGreaterThan(tableCatalog);
     expect(protectedReference).toBeGreaterThan(resolverCatalog);
     expect(resolverCall).toBeGreaterThan(resolverCatalog);
+    expect(digestCall).toBeGreaterThan(resolverCall);
     expect(source).not.toMatch(/\bcase\b/i);
     expect(source).not.toContain('Q5_TARGET_IMPORT_ID');
     expect(source).toContain('\\set ON_ERROR_STOP on');
@@ -785,12 +799,14 @@ exit 1
       'from (select count(*) as row_count from public.transaction where false)',
     );
     const resolverCall = source.lastIndexOf('public.resolve_user_fund_activation_v1(');
+    const digestCall = source.indexOf("extensions.digest('', 'sha256')");
 
     expect(appliedRole).toBeGreaterThan(-1);
     expect(tableCatalog).toBeGreaterThan(appliedRole);
     expect(resolverCatalog).toBeGreaterThan(tableCatalog);
     expect(protectedReference).toBeGreaterThan(resolverCatalog);
     expect(resolverCall).toBeGreaterThan(resolverCatalog);
+    expect(digestCall).toBeGreaterThan(resolverCall);
     expect(source).not.toMatch(/\bcase\b/i);
     expect(source).not.toContain('\\echo');
     expect(source).toContain('\\set ON_ERROR_STOP on');
