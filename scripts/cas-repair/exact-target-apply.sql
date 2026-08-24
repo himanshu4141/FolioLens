@@ -124,8 +124,8 @@ begin
   select
     count(*)::integer,
     coalesce(
-      encode(digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
-      encode(digest('', 'sha256'), 'hex')
+      encode(extensions.digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
+      encode(extensions.digest('', 'sha256'), 'hex')
     )
   into backup_count, backup_digest
   from q5_approved_backup as t;
@@ -166,8 +166,8 @@ begin
   select
     count(*)::integer,
     coalesce(
-      encode(digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
-      encode(digest('', 'sha256'), 'hex')
+      encode(extensions.digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
+      encode(extensions.digest('', 'sha256'), 'hex')
     )
   into actual_target_count, actual_target_digest
   from public.transaction as t
@@ -176,8 +176,8 @@ begin
   select
     count(*)::integer,
     coalesce(
-      encode(digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
-      encode(digest('', 'sha256'), 'hex')
+      encode(extensions.digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
+      encode(extensions.digest('', 'sha256'), 'hex')
     )
   into actual_unrelated_count, actual_unrelated_digest
   from public.transaction as t
@@ -274,8 +274,8 @@ begin
   select
     count(*)::integer,
     coalesce(
-      encode(digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
-      encode(digest('', 'sha256'), 'hex')
+      encode(extensions.digest(string_agg(to_jsonb(t)::text, E'\n' order by t.id), 'sha256'), 'hex'),
+      encode(extensions.digest('', 'sha256'), 'hex')
     )
   into actual_unrelated_count, actual_unrelated_digest
   from public.transaction as t;
