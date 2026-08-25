@@ -18,7 +18,7 @@ export async function hasServiceRoleCapability(
 
   try {
     const result = await probe(match[1], authorization);
-    return result.error == null && result.data === 2;
+    return result.error === null && result.data === 2;
   } catch {
     return false;
   }

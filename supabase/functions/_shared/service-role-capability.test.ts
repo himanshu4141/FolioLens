@@ -28,6 +28,7 @@ describe('hasServiceRoleCapability', () => {
   it.each([
     [{ data: 1, error: null }],
     [{ data: 2, error: { message: 'denied' } }],
+    [{ data: 2, error: undefined }],
     [{ data: null, error: null }],
   ])('fails closed for a non-service capability result', async (result) => {
     const probe = jest.fn().mockResolvedValue(result);

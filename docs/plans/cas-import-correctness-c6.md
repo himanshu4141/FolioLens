@@ -32,9 +32,11 @@ Run focused helper and repair suites, full Jest, typecheck, zero-warning lint, d
 
 - 2026-08-25: Do not try alternate keys or weaken the authorization boundary. Replace credential-byte equality with an executable capability already restricted by database grants to service role.
 - 2026-08-25: Reuse the read-only schema-version capability rather than add a new RPC, secret, migration, or dynamic authorization query.
+- 2026-08-25: Round-one Codex review required the exact Supabase success sentinel. C6 now accepts only `error === null`; a missing or undefined error field fails closed. Claude reported no other actionable finding.
 
 ## Evidence
 
-- Focused validation passes 3 suites / 56 tests across capability authorization, exact-target guardrails, and CLI transport.
+- Focused round-one correction validation passes 4 suites / 65 tests across capability authorization, catalog atomicity, exact-target guardrails, and CLI transport.
+- Full validation passes 115 suites / 2,307 tests, typecheck, zero-warning lint, and diff checks.
 - Full validation passes 115 Jest suites / 2,306 tests, typecheck, zero-warning lint, and diff checks.
 - The capability matrix proves missing or malformed bearer input, denied capability, unexpected version, returned error, and thrown probe all fail closed; only exact service-role schema capability succeeds.
