@@ -22,9 +22,10 @@
  * Deploy with --no-verify-jwt.
  */
 
-import { createServiceClient } from '../_shared/supabase-client.ts';
+import { createBearerClient, createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import { trackServerEventAwait } from '../_shared/analytics.ts';
+import { hasServiceRoleCapability } from '../_shared/service-role-capability.ts';
 import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
@@ -150,13 +151,19 @@ Deno.serve(async (req) => {
     : null;
   const pendingIdentityOnly = requestBody?.mode === 'pending-cas-identities';
   const exactTargetRepair = requestBody?.mode === 'exact-target-repair';
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  const exactTargetRepairAuthorized = !exactTargetRepair || await hasServiceRoleCapability(
+    req.headers.get('Authorization'),
+    async (apiKey, authorization) => {
+      const caller = createBearerClient(apiKey, authorization);
+      const result = await caller.rpc('cas_import_schema_version_v2');
+      return { data: result.data, error: result.error };
+    },
+  );
   if (
     exactTargetRepair
     && (
       req.method !== 'POST'
-      || serviceRoleKey.length === 0
-      || req.headers.get('Authorization') !== `Bearer ${serviceRoleKey}`
+      || !exactTargetRepairAuthorized
     )
   ) {
     console.warn('[sync-fund-meta] exact_target_repair_unauthorized');
