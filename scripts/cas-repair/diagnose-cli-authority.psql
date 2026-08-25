@@ -61,5 +61,7 @@ from (select count(*) as row_count from public.transaction where false) as trans
      (select count(*) as row_count from public.cas_import where false) as import_scope,
      (select count(*) as row_count from public.user_fund where false) as holding_scope;
 
+select 1 / (length(encode(extensions.digest('', 'sha256'), 'hex')) / 64);
+
 \o
 \echo ready

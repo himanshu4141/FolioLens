@@ -41,12 +41,12 @@ with target_guard as (
     (select count(distinct fund_id)::integer from target_rows) as touched_scheme_count,
     (select count(*)::integer from unrelated_rows) as unrelated_count,
     coalesce(
-      (select encode(digest(string_agg(to_jsonb(row_value)::text, E'\n' order by row_value.id), 'sha256'), 'hex') from target_rows as row_value),
-      encode(digest('', 'sha256'), 'hex')
+      (select encode(extensions.digest(string_agg(to_jsonb(row_value)::text, E'\n' order by row_value.id), 'sha256'), 'hex') from target_rows as row_value),
+      encode(extensions.digest('', 'sha256'), 'hex')
     ) as target_digest,
     coalesce(
-      (select encode(digest(string_agg(to_jsonb(row_value)::text, E'\n' order by row_value.id), 'sha256'), 'hex') from unrelated_rows as row_value),
-      encode(digest('', 'sha256'), 'hex')
+      (select encode(extensions.digest(string_agg(to_jsonb(row_value)::text, E'\n' order by row_value.id), 'sha256'), 'hex') from unrelated_rows as row_value),
+      encode(extensions.digest('', 'sha256'), 'hex')
     ) as unrelated_digest
   from target_guard
   where target_guard.value = 1

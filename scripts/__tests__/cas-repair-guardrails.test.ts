@@ -60,6 +60,13 @@ describe('Q5 exact-target repair guardrails', () => {
     expect(source).not.toContain('set is_active = exists (');
   });
 
+  it('pins the shared-dev digest dependency instead of relying on session search_path', () => {
+    const digestSql = [read('exact-target-dry-run.sql'), read('exact-target-apply.sql')].join('\n');
+
+    expect(digestSql).toContain("extensions.digest('', 'sha256')");
+    expect(digestSql).not.toMatch(/(?<!extensions\.)\bdigest\(/);
+  });
+
   it('keeps database passwords out of argv and rejects non-dev connections', () => {
     const source = read('run-exact-target-repair.sh');
 
