@@ -15,6 +15,11 @@
 \endif
 
 begin;
+create temporary table q5_hydration_expected on commit drop as
+select
+  :'target_import_id'::uuid as import_id,
+  :'expected_target_count'::integer as target_count;
+
 create temporary table q5_hydration_backup
   (like public.transaction including defaults) on commit drop;
 alter table q5_hydration_backup
@@ -22,14 +27,18 @@ alter table q5_hydration_backup
 \copy q5_hydration_backup (id, user_id, fund_id, transaction_date, transaction_type, units, nav_at_transaction, amount, folio_number, cas_import_id, cas_event_ordinal, created_at, prior_holding_is_active) from program 'cat "$Q5_BACKUP_PLAINTEXT_PATH"' with (format csv, header true)
 
 do $$
+declare
+  expected q5_hydration_expected%rowtype;
 begin
-  if (select count(*) from q5_hydration_backup) <> :'expected_target_count'::integer
-    or :'expected_target_count'::integer <= 0
+  select * into strict expected from q5_hydration_expected;
+
+  if (select count(*) from q5_hydration_backup) <> expected.target_count
+    or expected.target_count <= 0
     or (select count(distinct cas_import_id) from q5_hydration_backup) <> 1
     or exists (
       select 1
       from q5_hydration_backup
-      where cas_import_id is distinct from :'target_import_id'::uuid
+      where cas_import_id is distinct from expected.import_id
     )
   then
     raise exception using errcode = 'P0001', message = 'q5_hydration_scope_mismatch';

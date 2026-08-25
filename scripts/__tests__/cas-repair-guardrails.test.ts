@@ -136,11 +136,19 @@ describe('Q5 exact-target repair guardrails', () => {
   it('derives authoritative hydration scope only from the encrypted exact-target backup', () => {
     const runner = read('run-exact-target-repair.sh');
     const scope = read('exact-target-hydration-scope.sql');
+    const guard = scope.match(/do \$\$([\s\S]*?)\$\$;/)?.[1];
 
+    expect(scope).toContain('create temporary table q5_hydration_expected');
+    expect(scope).toContain("select * into strict expected from q5_hydration_expected");
     expect(scope).toContain('q5_hydration_scope_mismatch');
     expect(scope).toContain('q5_hydration_owner_mismatch');
     expect(scope).toContain("'mode', 'exact-target-repair'");
     expect(scope).toContain("'scheme_codes'");
+    expect(guard).toBeDefined();
+    expect(guard).not.toContain(":'target_import_id'");
+    expect(guard).not.toContain(":'expected_target_count'");
+    expect(guard).toContain('expected.import_id');
+    expect(guard).toContain('expected.target_count');
     expect(scope).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     expect(runner).toContain('refusing non-dev function target');
     expect(runner).toContain('trap cleanup_plaintext EXIT INT TERM');
