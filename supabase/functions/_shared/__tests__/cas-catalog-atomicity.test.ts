@@ -68,7 +68,9 @@ describe('Q4 CAS catalog and atomic-write boundary', () => {
     expect(metadataWriter).toContain('payload.cas_identity_hydrated_at = syncedAt');
     expect(metadataWriter).toContain('payload.cas_identity_hydration_attempted_at = syncedAt');
     expect(metadataWriter).toContain("mode === 'exact-target-repair'");
-    expect(metadataWriter).toContain(
+    expect(metadataWriter).toContain('hasServiceRoleCapability(');
+    expect(metadataWriter).toContain("caller.rpc('cas_import_schema_version_v2')");
+    expect(metadataWriter).not.toContain(
       "req.headers.get('Authorization') !== `Bearer ${serviceRoleKey}`",
     );
     expect(metadataWriter).toContain('success: !exactTargetRepair || failed === 0');

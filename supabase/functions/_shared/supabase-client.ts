@@ -7,3 +7,14 @@ export function createServiceClient() {
     { auth: { persistSession: false } },
   );
 }
+
+export function createBearerClient(apiKey: string, authorization: string) {
+  return createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    apiKey,
+    {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: authorization } },
+    },
+  );
+}
