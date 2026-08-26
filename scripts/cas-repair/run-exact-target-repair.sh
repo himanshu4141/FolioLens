@@ -5,6 +5,9 @@ umask 077
 readonly DEV_PROJECT_REF='imkgazlrxtlhkfptkzjc'
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly HYDRATION_JSON_HELPER="$SCRIPT_DIR/hydration-batch-json.cjs"
+readonly HYDRATION_CONNECT_TIMEOUT_SECONDS=10
+readonly HYDRATION_REQUEST_TIMEOUT_SECONDS=90
 
 require_var() {
   local name="$1"
@@ -110,6 +113,8 @@ decrypt_backup_to_temp() {
   plaintext_path="$(mktemp /tmp/foliolens-q5-restore.XXXXXX)"
   cleanup_plaintext() {
     rm -f -- "$plaintext_path"
+    [[ -z "${hydration_scope_path:-}" ]] || rm -f -- "$hydration_scope_path"
+    [[ -z "${hydration_plan_path:-}" ]] || rm -f -- "$hydration_plan_path"
     [[ -z "${hydration_payload_path:-}" ]] || rm -f -- "$hydration_payload_path"
     [[ -z "${hydration_response_path:-}" ]] || rm -f -- "$hydration_response_path"
     [[ -z "${hydration_curl_config_path:-}" ]] || rm -f -- "$hydration_curl_config_path"
@@ -233,38 +238,76 @@ case "$MODE" in
     require_backup_material
     verify_backup_digest
     decrypt_backup_to_temp
-    hydration_payload_path="$(mktemp /tmp/foliolens-q5-hydration-payload.XXXXXX)"
-    hydration_response_path="$(mktemp /tmp/foliolens-q5-hydration-response.XXXXXX)"
-    hydration_curl_config_path="$(mktemp /tmp/foliolens-q5-hydration-curl.XXXXXX)"
-    chmod 600 "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
+    if [[ ! -x "$HYDRATION_JSON_HELPER" ]]; then
+      printf 'authoritative hydration helper is unavailable\n' >&2
+      exit 4
+    fi
+    hydration_scope_path="$(mktemp /tmp/foliolens-q5-hydration-scope.XXXXXX)"
+    hydration_plan_path="$(mktemp /tmp/foliolens-q5-hydration-plan.XXXXXX)"
+    chmod 600 "$hydration_scope_path" "$hydration_plan_path"
     "${PSQL_BASE[@]}" --file="$SCRIPT_DIR/exact-target-hydration-scope.sql" \
-      >"$hydration_payload_path"
-    if [[ ! -s "$hydration_payload_path" ]]; then
+      >"$hydration_scope_path"
+    if [[ ! -s "$hydration_scope_path" ]]; then
       printf 'authoritative hydration scope is empty\n' >&2
       exit 4
     fi
-    printf '%s\n' \
-      'silent' \
-      'show-error' \
-      'request = "POST"' \
-      "url = \"$Q5_DEV_FUNCTIONS_URL\"" \
-      "header = \"Authorization: Bearer $Q5_DEV_SERVICE_ROLE_KEY\"" \
-      'header = "Content-Type: application/json"' \
-      "data-binary = \"@$hydration_payload_path\"" \
-      "output = \"$hydration_response_path\"" \
-      'write-out = "%{http_code}"' \
-      >"$hydration_curl_config_path"
-    hydration_http_status="$(curl --config "$hydration_curl_config_path")"
-    if [[ "$hydration_http_status" != '200' ]]; then
-      printf 'authoritative hydration failed\n' >&2
+    hydration_scope_count="$(
+      "$HYDRATION_JSON_HELPER" prepare "$hydration_scope_path" "$hydration_plan_path"
+    )" || exit 4
+    if [[ ! "$hydration_scope_count" =~ ^[1-9][0-9]*$ ]]; then
+      printf 'authoritative hydration scope was invalid\n' >&2
       exit 4
     fi
-    cat "$hydration_response_path"
-    printf '\n'
-    if ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$hydration_response_path"; then
-      printf 'authoritative hydration left unresolved targets\n' >&2
+
+    hydration_updated=0
+    while IFS= read -r hydration_request; do
+      if [[ -z "$hydration_request" ]]; then
+        printf 'authoritative hydration plan was invalid\n' >&2
+        exit 4
+      fi
+      hydration_payload_path="$(mktemp /tmp/foliolens-q5-hydration-payload.XXXXXX)"
+      hydration_response_path="$(mktemp /tmp/foliolens-q5-hydration-response.XXXXXX)"
+      hydration_curl_config_path="$(mktemp /tmp/foliolens-q5-hydration-curl.XXXXXX)"
+      chmod 600 "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
+      printf '%s\n' "$hydration_request" >"$hydration_payload_path"
+      hydration_request=''
+      printf '%s\n' \
+        'silent' \
+        'request = "POST"' \
+        "url = \"$Q5_DEV_FUNCTIONS_URL\"" \
+        "connect-timeout = $HYDRATION_CONNECT_TIMEOUT_SECONDS" \
+        "max-time = $HYDRATION_REQUEST_TIMEOUT_SECONDS" \
+        "header = \"Authorization: Bearer $Q5_DEV_SERVICE_ROLE_KEY\"" \
+        'header = "Content-Type: application/json"' \
+        "data-binary = \"@$hydration_payload_path\"" \
+        "output = \"$hydration_response_path\"" \
+        'write-out = "%{http_code}"' \
+        >"$hydration_curl_config_path"
+
+      if ! hydration_http_status="$(curl --config "$hydration_curl_config_path" 2>/dev/null)"; then
+        printf 'authoritative hydration request failed\n' >&2
+        exit 4
+      fi
+      if [[ "$hydration_http_status" != '200' ]]; then
+        printf 'authoritative hydration request failed\n' >&2
+        exit 4
+      fi
+      if ! "$HYDRATION_JSON_HELPER" validate-response "$hydration_response_path"; then
+        exit 4
+      fi
+
+      hydration_updated=$((hydration_updated + 1))
+      rm -f -- "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
+      hydration_payload_path=''
+      hydration_response_path=''
+      hydration_curl_config_path=''
+    done <"$hydration_plan_path"
+
+    if [[ "$hydration_updated" -ne "$hydration_scope_count" ]]; then
+      printf 'authoritative hydration aggregate was invalid\n' >&2
       exit 4
     fi
+    printf '{"updated":%d,"failed":0,"skipped":0}\n' "$hydration_updated"
     ;;
 
   rollback)
