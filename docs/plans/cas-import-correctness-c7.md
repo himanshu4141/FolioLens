@@ -114,6 +114,7 @@ Expected: all commands exit zero. Focused stream tests prove ordered complete ag
 - 2026-08-26: Add explicit connect and total curl deadlines because Claude verified the current client has neither.
 - 2026-08-26: Treat no-later-request as a blast-radius boundary, not atomicity. Preserve and document the exact-repair freshness bypass as the retry-safety invariant.
 - 2026-08-26: Do not query shared-dev logs during implementation. The precise prior 5xx cause remains an evidence caveat; C7 safely bounds hosted work and will still fail closed on a per-scheme crash.
+- 2026-09-01: Round-one Claude review converged. Codex reported one evidence-only P2: the helper had a trailing blank line, so the recorded base-to-head diff check did not pass. Remove that blank line, rerun validation, and open one exact-head re-review without changing transport behavior.
 
 ## Progress
 

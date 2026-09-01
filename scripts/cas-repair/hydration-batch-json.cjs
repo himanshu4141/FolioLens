@@ -86,4 +86,3 @@ if (mode === 'prepare' && args.length === 2) {
 } else {
   fail('hydration batch helper usage was invalid');
 }
-
