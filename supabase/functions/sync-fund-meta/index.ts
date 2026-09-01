@@ -297,6 +297,9 @@ Deno.serve(async (req) => {
     : 0;
   const schemeCodes = allSchemeCodes.filter((code) =>
     masterCodeSet.has(code)
+    // Repair transport may stop after a successfully written prefix. Keep
+    // exact repair outside freshness filtering so a retry reprocesses the
+    // complete backup-derived scope instead of skipping that prefix.
     && (exactTargetRepair || pendingIdentityCodeSet.has(code) || !freshCodes.has(code))
   );
   const skippedCount = exactTargetRepair ? 0 : allSchemeCodes.length - schemeCodes.length;

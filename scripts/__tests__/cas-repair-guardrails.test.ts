@@ -1,11 +1,13 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const ROOT = path.join(process.cwd(), 'scripts', 'cas-repair');
 const RUNNER = path.join(ROOT, 'run-exact-target-repair.sh');
+const HYDRATION_JSON_HELPER = path.join(ROOT, 'hydration-batch-json.cjs');
 const PROJECT_REF = 'imkgazlrxtlhkfptkzjc';
 
 function read(name: string): string {
@@ -324,10 +326,57 @@ touch "$Q5_FAKE_PSQL_MARKER"
     }
   });
 
-  it('keeps the hydration service key out of argv and removes local secret files', () => {
+  it('strictly prepares one ordered authoritative hydration scope', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-hydration-json-'));
+    try {
+      const scope = path.join(temp, 'scope.json');
+      const plan = path.join(temp, 'plan.jsonl');
+      fs.writeFileSync(
+        scope,
+        '{"mode":"exact-target-repair","scheme_codes":[123,456,789]}\n',
+        { mode: 0o600 },
+      );
+      const valid = spawnSync(HYDRATION_JSON_HELPER, ['prepare', scope, plan], {
+        encoding: 'utf8',
+      });
+      expect(valid.status).toBe(0);
+      expect(valid.stdout).toBe('3\n');
+      expect(fs.statSync(plan).mode & 0o777).toBe(0o600);
+      expect(
+        fs.readFileSync(plan, 'utf8').trim().split('\n').map((line) => JSON.parse(line)),
+      ).toEqual([
+        { mode: 'exact-target-repair', scheme_codes: [123] },
+        { mode: 'exact-target-repair', scheme_codes: [456] },
+        { mode: 'exact-target-repair', scheme_codes: [789] },
+      ]);
+
+      for (const invalidScope of [
+        '{"mode":"exact-target-repair","scheme_codes":[]}',
+        '{"mode":"exact-target-repair","scheme_codes":[123,123]}',
+        '{"mode":"exact-target-repair","scheme_codes":[456,123]}',
+        '{"mode":"exact-target-repair","scheme_codes":[123.5]}',
+        '{"mode":"exact-target-repair","scheme_codes":[123],"extra":true}',
+        '{"mode":"other","scheme_codes":[123]}',
+      ]) {
+        fs.writeFileSync(scope, invalidScope, { mode: 0o600 });
+        const invalid = spawnSync(HYDRATION_JSON_HELPER, ['prepare', scope, plan], {
+          encoding: 'utf8',
+        });
+        expect(invalid.status).toBe(4);
+        expect(invalid.stdout).toBe('');
+        expect(invalid.stderr).toBe('authoritative hydration scope was invalid\n');
+      }
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('runs strict single-scheme hydration batches and stops before later work on failure', async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-runner-hydrate-'));
     const tempPrefixes = [
       'foliolens-q5-restore.',
+      'foliolens-q5-hydration-scope.',
+      'foliolens-q5-hydration-plan.',
       'foliolens-q5-hydration-payload.',
       'foliolens-q5-hydration-response.',
       'foliolens-q5-hydration-curl.',
@@ -340,19 +389,42 @@ touch "$Q5_FAKE_PSQL_MARKER"
       const fakePsql = path.join(temp, 'psql');
       const fakeCurl = path.join(temp, 'curl');
       const curlArgs = path.join(temp, 'curl-args');
+      const curlState = path.join(temp, 'curl-state');
+      const responses = path.join(temp, 'responses');
+      const statuses = path.join(temp, 'statuses');
+      const requests = path.join(temp, 'requests');
       const backup = path.join(temp, 'rows.enc');
       const key = path.join(temp, 'rows.key');
       const serviceKey = 'synthetic-service-key-never-print';
       writeExecutable(fakePsql, `#!/usr/bin/env bash
-printf '{"mode":"exact-target-repair","scheme_codes":[123]}\n'
+printf '{"mode":"exact-target-repair","scheme_codes":[123,456,789]}\n'
 `);
       writeExecutable(fakeCurl, `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$@" > "$Q5_FAKE_CURL_ARGS"
+count=0
+if [[ -f "$Q5_FAKE_CURL_STATE" ]]; then
+  count="$(<"$Q5_FAKE_CURL_STATE")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$Q5_FAKE_CURL_STATE"
+printf '%s\n' "$@" >> "$Q5_FAKE_CURL_ARGS"
 config="$2"
+grep -qx 'connect-timeout = 10' "$config"
+grep -qx 'max-time = 90' "$config"
+payload="$(awk -F'"' '/^data-binary = / {print $2}' "$config")"
+payload="\${payload#@}"
 output="$(awk -F'"' '/^output = / {print $2}' "$config")"
-printf '%s' "$Q5_FAKE_HYDRATION_RESPONSE" > "$output"
-printf '200'
+cp "$payload" "$Q5_FAKE_REQUESTS/$count.json"
+if [[ -n "\${Q5_FAKE_SLEEP_MARKER:-}" ]]; then
+  touch "$Q5_FAKE_SLEEP_MARKER"
+  sleep 30
+fi
+status="$(sed -n "\${count}p" "$Q5_FAKE_STATUSES")"
+if [[ "$status" == 'TIMEOUT' ]]; then
+  exit 28
+fi
+sed -n "\${count}p" "$Q5_FAKE_RESPONSES" > "$output"
+printf '%s' "$status"
 `);
       fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
       const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at,prior_holding_is_active\n';
@@ -364,58 +436,145 @@ printf '200'
       expect(encrypted.status).toBe(0);
       const backupSha = crypto.createHash('sha256').update(fs.readFileSync(backup)).digest('hex');
 
-      const result = spawnSync(RUNNER, ['hydrate'], {
-        env: {
-          ...baseEnv(fakePsql),
-          PATH: `${temp}:${process.env.PATH ?? ''}`,
-          Q5_FAKE_CURL_ARGS: curlArgs,
-          Q5_FAKE_HYDRATION_RESPONSE:
-            '{"success":true,"updated":1,"failed":0,"skipped":0}',
-          Q5_BACKUP_PATH: backup,
-          Q5_BACKUP_KEY_FILE: key,
-          Q5_BACKUP_SHA256: backupSha,
-          Q5_EXPECTED_TARGET_COUNT: '1',
-          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
-          Q5_DEV_FUNCTIONS_URL:
-            'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
-          Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
-        },
-        encoding: 'utf8',
-      });
+      const hydrationEnv = {
+        ...baseEnv(fakePsql),
+        PATH: `${temp}:${process.env.PATH ?? ''}`,
+        Q5_FAKE_CURL_ARGS: curlArgs,
+        Q5_FAKE_CURL_STATE: curlState,
+        Q5_FAKE_RESPONSES: responses,
+        Q5_FAKE_STATUSES: statuses,
+        Q5_FAKE_REQUESTS: requests,
+        Q5_BACKUP_PATH: backup,
+        Q5_BACKUP_KEY_FILE: key,
+        Q5_BACKUP_SHA256: backupSha,
+        Q5_EXPECTED_TARGET_COUNT: '1',
+        Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+        Q5_DEV_FUNCTIONS_URL:
+          'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
+        Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+      };
+      const runHydration = (responseLines: string[], statusLines: string[]) => {
+        fs.rmSync(curlState, { force: true });
+        fs.rmSync(curlArgs, { force: true });
+        fs.rmSync(requests, { recursive: true, force: true });
+        fs.mkdirSync(requests);
+        fs.writeFileSync(responses, `${responseLines.join('\n')}\n`, { mode: 0o600 });
+        fs.writeFileSync(statuses, `${statusLines.join('\n')}\n`, { mode: 0o600 });
+        return spawnSync(RUNNER, ['hydrate'], {
+          env: hydrationEnv,
+          encoding: 'utf8',
+        });
+      };
+
+      const successResponse = '{"success":true,"updated":1,"failed":0,"skipped":0}';
+      const result = runHydration(
+        [successResponse, successResponse, successResponse],
+        ['200', '200', '200'],
+      );
 
       expect(result.status).toBe(0);
-      expect(result.stdout).toBe('{"success":true,"updated":1,"failed":0,"skipped":0}\n');
-      expect(result.stdout).not.toContain(serviceKey);
-      expect(result.stderr).not.toContain(serviceKey);
-      expect(fs.readFileSync(curlArgs, 'utf8')).not.toContain(serviceKey);
+      expect(result.stdout).toBe('{"updated":3,"failed":0,"skipped":0}\n');
+      for (const privateValue of [serviceKey, '123', '456', '789']) {
+        expect(result.stdout).not.toContain(privateValue);
+        expect(result.stderr).not.toContain(privateValue);
+        expect(fs.readFileSync(curlArgs, 'utf8')).not.toContain(privateValue);
+      }
+      expect(
+        fs.readdirSync(requests).sort().map((name) =>
+          JSON.parse(fs.readFileSync(path.join(requests, name), 'utf8')).scheme_codes[0]
+        ),
+      ).toEqual([123, 456, 789]);
 
-      const unresolved = spawnSync(RUNNER, ['hydrate'], {
-        env: {
-          ...baseEnv(fakePsql),
-          PATH: `${temp}:${process.env.PATH ?? ''}`,
-          Q5_FAKE_CURL_ARGS: curlArgs,
-          Q5_FAKE_HYDRATION_RESPONSE:
-            '{"success":false,"updated":0,"failed":1,"skipped":0}',
-          Q5_BACKUP_PATH: backup,
-          Q5_BACKUP_KEY_FILE: key,
-          Q5_BACKUP_SHA256: backupSha,
-          Q5_EXPECTED_TARGET_COUNT: '1',
-          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
-          Q5_DEV_FUNCTIONS_URL:
-            'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
-          Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
-        },
-        encoding: 'utf8',
-      });
-      expect(unresolved.status).toBe(4);
-      expect(unresolved.stdout).toBe(
-        '{"success":false,"updated":0,"failed":1,"skipped":0}\n',
+      const unresolved = runHydration(
+        [
+          successResponse,
+          '{"success":false,"updated":0,"failed":1,"skipped":0}',
+          successResponse,
+        ],
+        ['200', '200', '200'],
       );
-      expect(unresolved.stderr).toContain('left unresolved targets');
+      expect(unresolved.status).toBe(4);
+      expect(unresolved.stdout).toBe('');
+      expect(unresolved.stderr).toContain('response was unresolved');
+      expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      const non200 = runHydration(
+        [successResponse, '{"error":"synthetic"}', successResponse],
+        ['200', '503', '200'],
+      );
+      expect(non200.status).toBe(4);
+      expect(non200.stdout).toBe('');
+      expect(non200.stderr).toContain('request failed');
+      expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      const contradictory = runHydration(
+        [
+          successResponse,
+          '{"success":true,"updated":0,"failed":0,"skipped":0}',
+          successResponse,
+        ],
+        ['200', '200', '200'],
+      );
+      expect(contradictory.status).toBe(4);
+      expect(contradictory.stdout).toBe('');
+      expect(contradictory.stderr).toContain('response was unresolved');
+      expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      const malformed = runHydration(
+        [
+          successResponse,
+          '{"success":true,"updated":1,"failed":0,"skipped":0,"extra":true}',
+          successResponse,
+        ],
+        ['200', '200', '200'],
+      );
+      expect(malformed.status).toBe(4);
+      expect(malformed.stdout).toBe('');
+      expect(malformed.stderr).toContain('response was unresolved');
+      expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      const timeout = runHydration(
+        [successResponse, successResponse, successResponse],
+        ['200', 'TIMEOUT', '200'],
+      );
+      expect(timeout.status).toBe(4);
+      expect(timeout.stdout).toBe('');
+      expect(timeout.stderr).toContain('request failed');
+      expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      fs.rmSync(curlState, { force: true });
+      fs.rmSync(curlArgs, { force: true });
+      fs.rmSync(requests, { recursive: true, force: true });
+      fs.mkdirSync(requests);
+      fs.writeFileSync(responses, `${successResponse}\n`, { mode: 0o600 });
+      fs.writeFileSync(statuses, '200\n', { mode: 0o600 });
+      const signalMarker = path.join(temp, 'signal-marker');
+      const child = spawn(RUNNER, ['hydrate'], {
+        env: { ...hydrationEnv, Q5_FAKE_SLEEP_MARKER: signalMarker },
+        detached: true,
+        stdio: 'ignore',
+      });
+      try {
+        for (let attempt = 0; attempt < 100 && !fs.existsSync(signalMarker); attempt += 1) {
+          await sleep(20);
+        }
+        expect(fs.existsSync(signalMarker)).toBe(true);
+        process.kill(-child.pid!, 'SIGTERM');
+        await new Promise<void>((resolve) => child.once('close', () => resolve()));
+      } finally {
+        if (child.exitCode === null) {
+          try {
+            process.kill(-child.pid!, 'SIGKILL');
+          } catch {
+            // The detached process group has already exited.
+          }
+        }
+      }
+
       const after = privateTemps();
       expect([...after].filter((name) => !before.has(name))).toEqual([]);
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });

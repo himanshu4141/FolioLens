@@ -77,6 +77,17 @@ describe('Q4 CAS catalog and atomic-write boundary', () => {
     expect(metadataWriter).not.toContain('console.log(schemeCode');
   });
 
+  it('keeps exact-target repair retry-safe by bypassing ordinary freshness', () => {
+    expect(metadataWriter).toContain(
+      'exactTargetRepair || pendingIdentityCodeSet.has(code) || !freshCodes.has(code)',
+    );
+    expect(metadataWriter).toContain(
+      'exactTargetRepair ? 0 : allSchemeCodes.length - schemeCodes.length',
+    );
+    expect(metadataWriter).toContain('retry reprocesses the');
+    expect(metadataWriter).toContain('complete backup-derived scope');
+  });
+
   it('keeps disjoint email attachments atomic but rejects cross-attachment scheme overlap', () => {
     expect(inboundEntry).toContain('hasCrossAttachmentSchemeOverlap(parsedPayloads)');
     expect(inboundEntry).toContain('parsedPayloads.flatMap((payload) => payload.mutual_funds)');
