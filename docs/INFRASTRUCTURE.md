@@ -497,6 +497,33 @@ SELECT cron.schedule(
 | Env vars (build-time) | `_DEV` values for `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `EXPO_PUBLIC_APP_BASE_URL` | `_PROD` values for the same |
 
 
+### Deployment retention (Functions Storage)
+
+The DEV project auto-deploys on every PR push and every `main` merge, so retained
+deployments accumulate quickly — each one keeps its own copy of the `/api` Python
+function bundles, which count toward the team's Hobby-tier Functions Storage quota
+(10 GB) independent of live traffic. DEV's Deployment Retention Policy is set
+tighter than Vercel's default to bound this: 7 days for Preview, 14 days for
+Production, 1 day for Canceled, 3 days for Errored, keeping a floor of 10
+production deployments regardless of age (Vercel's own retention exceptions keep
+a further floor — see [Deployment Retention](https://vercel.com/docs/deployment-retention)).
+
+Set/inspect via `.github/workflows/vercel-retention-policy.yml` (manual
+`workflow_dispatch`, reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID`
+secrets) rather than the dashboard — re-run it with different inputs to adjust
+retention for either project. PROD's policy is unchanged (left at Vercel's
+default) since it deploys only on tag push and isn't the accumulation driver.
+
+Separately, the four Python functions under `/api` share one root
+`requirements.txt`; Vercel does no per-function dependency tree-shaking, so
+`cas-import-notify`, `feedback-notify`, and `resend-inbound-router` each bundle
+the full `casparser`/`pdfplumber`/`pypdfium2`/`Pillow` stack that only
+`parse-cas-pdf` actually uses. That 4x duplication compounds with retained
+deployments to drive Functions Storage usage; splitting or rewriting those
+three functions to drop the unused dependency weight is tracked as a follow-up,
+not yet done.
+
+
 ## Resend
 
 
@@ -912,7 +939,9 @@ These are configured once and rarely change. If you spin up a fresh fork, you'll
 
 
 - Supabase: free tier per project, with paid backup retention if needed
-- Vercel: hobby tier; bumps to Pro if we ever exceed 100 GB / mo bandwidth
+- Vercel: hobby tier; bumps to Pro if we ever exceed 100 GB / mo bandwidth. Also
+  watch Functions Storage (10 GB included) — see "Deployment retention" under
+  Vercel projects above; it fills from accumulated deployments, not live traffic
 - Resend: free tier (3K emails / mo) — well above expected volume during beta
 - Expo: free tier with a paid Production plan; EAS Update is included
 - Cloudflare: free tier
