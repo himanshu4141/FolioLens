@@ -13,6 +13,14 @@ const transport = require('../cas-repair/run-exact-target-repair-with-cli.cjs') 
   runCliDiagnostic: (options: Record<string, unknown>) => string;
   runBoundedProcessGroup: (options: Record<string, unknown>) => Promise<number>;
   runCliTransport: (options: Record<string, unknown>) => Promise<number>;
+  buildHydrationExecutionEnv: (
+    env: NodeJS.ProcessEnv,
+    handoffDir: string,
+    metadata: { count: number; sha256: string },
+  ) => NodeJS.ProcessEnv;
+  calculateHydrationExecutionTimeout: (count: number) => number;
+  cleanupHydrationHandoff: (handoffDir: string, fsModule?: Record<string, unknown>) => void;
+  hydrationFailureMessage: (code: number) => string;
 };
 
 const ROOT = path.join(process.cwd(), 'scripts', 'cas-repair');
@@ -349,7 +357,7 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
     expect(spawnSync).not.toHaveBeenCalled();
   });
 
-  it.each(['dry-run', 'backup', 'apply', 'hydrate', 'rollback'])(
+  it.each(['dry-run', 'backup', 'apply', 'rollback'])(
     'uses the exact CLI-temporary adapter mode for %s',
     async (mode) => {
       const asyncCalls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
@@ -384,6 +392,176 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
       expect(asyncCalls[0].env).not.toHaveProperty('PGOPTIONS');
     },
   );
+
+  it('separates hydration into a bounded database phase and isolated network phase', async () => {
+    const asyncCalls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
+    const scheduledDelays: number[] = [];
+    const cleanupHandoff = jest.fn();
+    const handoffDir = '/tmp/foliolens-q5-hydration-handoff.synthetic';
+    const digest = 'a'.repeat(64);
+    const serviceKey = 'synthetic-service-key-never-print';
+    const spawnSync = jest.fn((command: string) => {
+      if (command === 'supabase') return { status: 0, stdout: '2.114.0\n' };
+      if (command === '/usr/bin/security') return { status: 0, stdout: ACCESS_TOKEN };
+      return { status: 0 };
+    });
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(response(poolerResponse()))
+      .mockResolvedValueOnce(response(roleResponse()));
+
+    await expect(
+      transport.runCliTransport({
+        mode: 'hydrate',
+        env: {
+          PATH: '/synthetic/bin',
+          LANG: 'en_US.UTF-8',
+          Q5_TARGET_IMPORT_ID: '00000000-0000-4000-8000-000000000001',
+          Q5_BACKUP_PATH: '/private/backup',
+          Q5_BACKUP_KEY_FILE: '/private/key',
+          Q5_BACKUP_SHA256: 'b'.repeat(64),
+          Q5_EXPECTED_TARGET_COUNT: '1',
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+          Q5_DEV_FUNCTIONS_URL:
+            `https://${PROJECT_REF}.supabase.co/functions/v1/sync-fund-meta`,
+          Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+        },
+        platform: 'darwin',
+        spawnSync,
+        spawn: successfulAsyncSpawn(asyncCalls),
+        fetchFn,
+        sleep: async () => undefined,
+        now: () => 1_000_000,
+        lowLevelRunner: '/synthetic/runner',
+        dockerPsql: '/synthetic/psql',
+        createHydrationHandoff: () => handoffDir,
+        readHandoffMetadata: () => ({ version: 1, count: 3, sha256: digest }),
+        cleanupHydrationHandoff: cleanupHandoff,
+        setTimer: (callback: () => void, delay: number) => {
+          scheduledDelays.push(delay);
+          return setTimeout(callback, delay);
+        },
+        clearTimer: (timer: NodeJS.Timeout) => clearTimeout(timer),
+      }),
+    ).resolves.toBe(0);
+
+    expect(asyncCalls).toHaveLength(2);
+    const phaseOne = asyncCalls[0];
+    const phaseTwo = asyncCalls[1];
+    expect(phaseOne.args).toEqual(['hydrate-prepare']);
+    expect(phaseOne.env?.Q5_DEV_DB_PASSWORD).toBe(TEMP_PASSWORD);
+    expect(phaseOne.env?.Q5_HYDRATION_HANDOFF_DIR).toBe(handoffDir);
+    expect(phaseOne.env).not.toHaveProperty('Q5_DEV_SERVICE_ROLE_KEY');
+    expect(phaseOne.env).not.toHaveProperty('Q5_DEV_FUNCTIONS_URL');
+
+    expect(phaseTwo.args).toEqual(['hydrate-execute']);
+    expect(phaseTwo.env).toEqual({
+      PATH: '/synthetic/bin',
+      LANG: 'en_US.UTF-8',
+      Q5_REPAIR_AUTH_MODE: 'cli-hydration-execute',
+      Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+      Q5_DEV_FUNCTIONS_URL:
+        `https://${PROJECT_REF}.supabase.co/functions/v1/sync-fund-meta`,
+      Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+      Q5_HYDRATION_HANDOFF_DIR: handoffDir,
+      Q5_HYDRATION_PLAN_COUNT: '3',
+      Q5_HYDRATION_PLAN_SHA256: digest,
+    });
+    for (const forbidden of [
+      'Q5_DEV_DB_PASSWORD', 'PGPASSWORD', 'Q5_DEV_DB_HOST', 'Q5_DEV_DB_USER',
+      'Q5_DEV_DB_PORT', 'Q5_DEV_DB_NAME', 'Q5_PSQL_BIN',
+      'Q5_CLI_ROLE_EXPIRES_AT_EPOCH', 'Q5_BACKUP_PLAINTEXT_PATH',
+      'Q5_BACKUP_PATH', 'Q5_BACKUP_KEY_FILE', 'Q5_TARGET_IMPORT_ID',
+    ]) {
+      expect(phaseTwo.env).not.toHaveProperty(forbidden);
+    }
+    expect(scheduledDelays).toContain(240_000);
+    expect(scheduledDelays).toContain(315_000);
+    expect(cleanupHandoff).toHaveBeenCalledWith(handoffDir);
+  });
+
+  it('never starts phase two after a phase-one failure and still invokes parent cleanup', async () => {
+    const asyncCalls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
+    const cleanupHandoff = jest.fn();
+    const spawn = jest.fn((command: string, args: string[], options: Record<string, unknown>) => {
+      asyncCalls.push({
+        command,
+        args: [...args],
+        env: options.env ? { ...(options.env as NodeJS.ProcessEnv) } : undefined,
+      });
+      const child = new EventEmitter() as EventEmitter & { pid: number };
+      child.pid = 42_424;
+      queueMicrotask(() => child.emit('close', 4, null));
+      return child;
+    });
+    const spawnSync = jest.fn((command: string) => {
+      if (command === 'supabase') return { status: 0, stdout: '2.114.0\n' };
+      if (command === '/usr/bin/security') return { status: 0, stdout: ACCESS_TOKEN };
+      return { status: 0 };
+    });
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(response(poolerResponse()))
+      .mockResolvedValueOnce(response(roleResponse()));
+
+    await expect(
+      transport.runCliTransport({
+        mode: 'hydrate',
+        env: {
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+          Q5_DEV_FUNCTIONS_URL:
+            `https://${PROJECT_REF}.supabase.co/functions/v1/sync-fund-meta`,
+          Q5_DEV_SERVICE_ROLE_KEY: 'synthetic-service-key-never-print',
+        },
+        platform: 'darwin',
+        spawnSync,
+        spawn,
+        fetchFn,
+        sleep: async () => undefined,
+        now: () => 1_000_000,
+        lowLevelRunner: '/synthetic/runner',
+        dockerPsql: '/synthetic/psql',
+        createHydrationHandoff: () => '/tmp/foliolens-q5-hydration-handoff.synthetic',
+        readHandoffMetadata: () => {
+          throw new Error('must not read a failed phase');
+        },
+        cleanupHydrationHandoff: cleanupHandoff,
+      }),
+    ).rejects.toThrow('authoritative hydration phase one failed');
+
+    expect(asyncCalls).toHaveLength(1);
+    expect(asyncCalls[0].args).toEqual(['hydrate-prepare']);
+    expect(cleanupHandoff).toHaveBeenCalledWith(
+      '/tmp/foliolens-q5-hydration-handoff.synthetic',
+    );
+  });
+
+  it('fails closed when parent-owned handoff cleanup cannot be confirmed', () => {
+    expect(() => transport.cleanupHydrationHandoff(
+      '/tmp/foliolens-q5-hydration-handoff.synthetic',
+      {
+        rmSync: jest.fn(),
+        existsSync: jest.fn(() => true),
+      },
+    )).toThrow('authoritative hydration handoff cleanup failed');
+  });
+
+  it('derives a checked phase-two deadline and maps only allowlisted failure classes', () => {
+    expect(transport.calculateHydrationExecutionTimeout(1)).toBe(125_000);
+    expect(transport.calculateHydrationExecutionTimeout(3)).toBe(315_000);
+    for (const invalid of [0, -1, 1.5, 1_001, Number.MAX_SAFE_INTEGER]) {
+      expect(() => transport.calculateHydrationExecutionTimeout(invalid)).toThrow(
+        'plan count was invalid',
+      );
+    }
+    expect(transport.hydrationFailureMessage(41)).toBe('authoritative hydration handoff failed');
+    expect(transport.hydrationFailureMessage(42)).toBe(
+      'authoritative hydration request transport failed',
+    );
+    expect(transport.hydrationFailureMessage(999)).toBe(
+      'authoritative hydration execution failed',
+    );
+  });
 
   it('fails before the repair runner when the manifest digest dependency is unavailable', async () => {
     const commands: string[] = [];
@@ -516,6 +694,30 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
           timeoutMs: 100,
         }),
       ).rejects.toThrow('repair stopped before temporary login expiry');
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to advance when a detached descendant outlives the phase runner', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-process-group-boundary-'));
+    const marker = path.join(temp, 'descendant-completed');
+    try {
+      await expect(
+        transport.runBoundedProcessGroup({
+          spawn: nodeSpawn,
+          kill: process.kill.bind(process),
+          setTimer: setTimeout,
+          clearTimer: clearTimeout,
+          signalSource: process,
+          command: '/bin/sh',
+          args: ['-c', '(sleep 0.6; : > "$C8_MARKER") & exit 0'],
+          env: { ...process.env, C8_MARKER: marker },
+          timeoutMs: 10_000,
+        }),
+      ).rejects.toThrow('process group outlived its runner');
       await new Promise((resolve) => setTimeout(resolve, 700));
       expect(fs.existsSync(marker)).toBe(false);
     } finally {
