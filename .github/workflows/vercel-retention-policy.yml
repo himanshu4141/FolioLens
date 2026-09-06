@@ -9,12 +9,19 @@ name: Vercel Retention Policy
 # client/project_deployment_retention.go) is a dedicated sub-resource:
 #
 #   PATCH /v9/projects/{projectId}/deployment-expiration?teamId={teamId}
-#   body: {"expiration": "7d", "expirationProduction": "14d",
-#          "expirationCanceled": "1d", "expirationErrored": "3d"}
+#   body: {"expiration": "1w", "expirationProduction": "1w",
+#          "expirationCanceled": "1d", "expirationErrored": "1w"}
 #
-# Note the field names (`expiration`, not `expirationDays`) and string
-# duration values (`"7d"`, not a bare number) — different from what the
-# read-only GET response reports back under `deploymentExpiration`.
+# Note the field names (`expiration`, not `expirationDays`), and that values
+# are an ENUM of fixed strings — 1d, 1w, 1m, 2m, 3m, 6m, 1y — not arbitrary
+# day counts ("7d"/"14d"/"3d" all 400 with "Invalid `expiration` property.
+# Maximum allowed is 3 years", which is a misleading message for "not a
+# recognized value"). This differs from what the read-only GET response
+# reports back under `deploymentExpiration` (numeric `expirationDays` etc).
+#
+# Verified live against foliolens-dev on 2026-09-06 (run 34054530816): applied
+# 1w/1w/1d/1w and the follow-up GET confirmed expirationDays=7,
+# expirationDaysProduction=7, expirationDaysCanceled=1, expirationDaysErrored=7.
 #
 # Background: the DEV project auto-deploys on every PR push and every main
 # merge, and retained deployments (each carrying its own duplicated Python
@@ -32,21 +39,21 @@ on:
         required: false
         default: "prj_EQ1YcOJeh9nzDnjk4mdPRi4y7zOR" # foliolens-dev
       expiration:
-        description: "Preview deployment retention (e.g. 7d, 30d, 1y)"
+        description: "Preview deployment retention (one of: 1d, 1w, 1m, 2m, 3m, 6m, 1y)"
         required: false
-        default: "7d"
+        default: "1w"
       expiration_production:
-        description: "Production deployment retention"
+        description: "Production deployment retention (same enum)"
         required: false
-        default: "14d"
+        default: "1w"
       expiration_canceled:
-        description: "Canceled deployment retention"
+        description: "Canceled deployment retention (same enum)"
         required: false
         default: "1d"
       expiration_errored:
-        description: "Errored deployment retention"
+        description: "Errored deployment retention (same enum)"
         required: false
-        default: "3d"
+        default: "1w"
 
 jobs:
   set-retention:

@@ -505,18 +505,23 @@ function bundles, which count toward the team's Hobby-tier Functions Storage quo
 (10 GB) independent of live traffic. Vercel's Hobby default (30 days for Preview,
 Production, Canceled, and Errored, floor of the last 10/20 deployments per the
 [exceptions](https://vercel.com/docs/deployment-retention#exceptions-to-the-retention-policy))
-is too loose for a project deploying this often; DEV's target policy is 7 days
-Preview / 14 days Production / 1 day Canceled / 3 days Errored, 10 production
-deployments kept.
+was too loose for a project deploying this often. As of 2026-09-06, DEV
+(`foliolens-dev`) runs a tighter policy: 1 week Preview / 1 week Production / 1 day
+Canceled / 1 week Errored (floor of 10 production deployments is Vercel's own
+exception, not separately configurable). PROD (`foliolens`) is left at Vercel's
+default since it deploys only on tag push and isn't the accumulation driver.
 
-**This can only be set in the dashboard, not via the API.** `PATCH
-/v9/projects/{idOrName}` rejects a `deploymentExpiration` body with `should
-NOT have additional property` — confirmed live 2026-09-06 — because it's a
-read-only field on the Project resource, not a writable one. To apply the
-target policy: DEV project → **Settings → Security → Deployment Retention
-Policy** → set Preview 7d / Production 14d / Canceled 1d / Errored 3d → Save.
-PROD is left at Vercel's default since it deploys only on tag push and isn't
-the accumulation driver.
+The generic `PATCH /v9/projects/{idOrName}` rejects a `deploymentExpiration` body
+with `should NOT have additional property` — it's read-only there. The real,
+writable endpoint (found in the official Terraform provider's client source,
+not documented on the REST API reference page) is a dedicated sub-resource:
+`PATCH /v9/projects/{id}/deployment-expiration`, whose fields (`expiration`,
+`expirationProduction`, `expirationCanceled`, `expirationErrored`) take one of
+a fixed enum — `1d`, `1w`, `1m`, `2m`, `3m`, `6m`, `1y` — not an arbitrary day
+count. `.github/workflows/vercel-retention-policy.yml` (manual
+`workflow_dispatch`, reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID`
+secrets) applies and can re-check this policy; re-run it with different inputs
+to adjust retention, or to point at the PROD project instead.
 
 `.github/workflows/vercel-retention-policy.yml` (manual `workflow_dispatch`,
 reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID` secrets) is a read-only
