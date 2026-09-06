@@ -536,6 +536,7 @@ printf '%s' "$status"
         responseLines: string[],
         statusLines: string[],
         mutate?: (handoffDir: string) => void,
+        extraEnv: Record<string, string> = {},
       ) => {
         fs.rmSync(curlState, { force: true });
         fs.rmSync(curlArgs, { force: true });
@@ -547,7 +548,7 @@ printf '%s' "$status"
         try {
           mutate?.(execution.handoffDir);
           return spawnSync(RUNNER, ['hydrate-execute'], {
-            env: execution.env,
+            env: { ...execution.env, ...extraEnv },
             encoding: 'utf8',
           });
         } finally {
@@ -556,6 +557,20 @@ printf '%s' "$status"
       };
 
       const successResponse = '{"success":true,"updated":1,"failed":0,"skipped":0}';
+      const polluted = runHydration(
+        [successResponse, successResponse, successResponse],
+        ['200', '200', '200'],
+        undefined,
+        {
+          PGPASSWORD: 'synthetic-password-never-print',
+          Q5_DEV_DB_HOST: 'synthetic-host-never-contact',
+        },
+      );
+      expect(polluted.status).toBe(41);
+      expect(polluted.stdout).toBe('');
+      expect(polluted.stderr).toBe('authoritative hydration environment was invalid\n');
+      expect(fs.existsSync(curlState)).toBe(false);
+
       fs.writeFileSync(mutationEnabled, '1\n', { mode: 0o600 });
       const result = runHydration(
         [successResponse, successResponse, successResponse],
@@ -675,7 +690,10 @@ printf '%s' "$status"
           await sleep(20);
         }
         expect(fs.existsSync(signalMarker)).toBe(true);
-        process.kill(-child.pid!, 'SIGTERM');
+        expect(
+          fs.readdirSync(signalExecution.handoffDir).some((name) => name.startsWith('request.')),
+        ).toBe(true);
+        process.kill(-child.pid!, 'SIGKILL');
         await new Promise<void>((resolve) => child.once('close', () => resolve()));
       } finally {
         if (child.exitCode === null) {
@@ -686,6 +704,7 @@ printf '%s' "$status"
           }
         }
         fs.rmSync(signalExecution.handoffDir, { recursive: true, force: true });
+        expect(fs.existsSync(signalExecution.handoffDir)).toBe(false);
         fs.rmSync(sleepEnabled, { force: true });
       }
 

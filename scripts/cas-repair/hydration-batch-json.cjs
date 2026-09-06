@@ -15,7 +15,7 @@ const MAX_SCHEMES = 1_000;
 const PLAN_NAME = 'plan.jsonl';
 const METADATA_NAME = 'metadata.json';
 const PUBLISHED_NAME = 'published';
-const REQUEST_PREFIX = '/tmp/foliolens-q5-hydration-request.';
+const REQUEST_PREFIX = 'request.';
 const CONNECT_TIMEOUT_SECONDS = 10;
 const REQUEST_TIMEOUT_SECONDS = 90;
 
@@ -384,7 +384,9 @@ function executeHandoff(env = process.env, spawnSync = childProcess.spawnSync) {
     for (const code of codes) {
       if (interrupted) fail('authoritative hydration interrupted', EXIT.REQUEST);
       try {
-        requestDir = fs.mkdtempSync(REQUEST_PREFIX);
+        requestDir = fs.mkdtempSync(
+          path.join(env.Q5_HYDRATION_HANDOFF_DIR, REQUEST_PREFIX),
+        );
         fs.chmodSync(requestDir, 0o700);
       } catch {
         fail('authoritative hydration request setup failed', EXIT.REQUEST);

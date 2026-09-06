@@ -18,6 +18,8 @@ const EXPIRY_SAFETY_SECONDS = 45;
 const MAX_CHILD_RUNTIME_MS = 240_000;
 const MANAGEMENT_REQUEST_TIMEOUT_MS = 30_000;
 const CHILD_TERMINATION_GRACE_MS = 2_000;
+const CHILD_KILL_CONFIRM_INTERVAL_MS = 50;
+const CHILD_KILL_CONFIRM_ATTEMPTS = 40;
 const HYDRATION_PER_REQUEST_SLACK_MS = 5_000;
 const HYDRATION_PHASE_SLACK_MS = 30_000;
 const HYDRATION_REQUEST_TIMEOUT_MS = 90_000;
@@ -198,6 +200,7 @@ function runBoundedProcessGroup({
     let settled = false;
     let stopSent = false;
     let stopMessage = deadlineMessage;
+    let killConfirmationAttempts = 0;
 
     const onOperatorInterrupt = () => {
       requestStop(interruptMessage);
@@ -222,6 +225,22 @@ function runBoundedProcessGroup({
 
     const completeStop = () => finish(() => reject(controlledError(stopMessage)));
 
+    const confirmForcedStop = () => {
+      try {
+        kill(-child.pid, 0);
+      } catch (error) {
+        if (error?.code === 'ESRCH') return completeStop();
+        failStop();
+        return;
+      }
+      if (killConfirmationAttempts >= CHILD_KILL_CONFIRM_ATTEMPTS) {
+        failStop();
+        return;
+      }
+      killConfirmationAttempts += 1;
+      forceTimer = setTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
+    };
+
     const forceStop = () => {
       try {
         kill(-child.pid, 0);
@@ -233,9 +252,11 @@ function runBoundedProcessGroup({
       try {
         kill(-child.pid, 'SIGKILL');
       } catch (error) {
-        if (error?.code !== 'ESRCH') return failStop();
+        if (error?.code === 'ESRCH') return completeStop();
+        return failStop();
       }
-      completeStop();
+      killConfirmationAttempts = 0;
+      forceTimer = setTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
     };
 
     function requestStop(message) {

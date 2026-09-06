@@ -701,6 +701,51 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
     }
   });
 
+  it('does not settle forced shutdown until the process group disappears', async () => {
+    const timers: (() => void)[] = [];
+    const child = new EventEmitter() as EventEmitter & { pid: number };
+    child.pid = 52_525;
+    let groupAlive = true;
+    const kill = jest.fn((_pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal === 0 && !groupAlive) {
+        throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      }
+    });
+    const promise = transport.runBoundedProcessGroup({
+      spawn: jest.fn(() => child),
+      kill,
+      setTimer: (callback: () => void) => {
+        timers.push(callback);
+        return callback;
+      },
+      clearTimer: jest.fn(),
+      signalSource: new EventEmitter(),
+      command: '/synthetic/runner',
+      args: [],
+      env: {},
+      timeoutMs: 100,
+    });
+    let settled = false;
+    void promise.catch(() => {
+      settled = true;
+    });
+
+    timers.shift()!(); // Overall deadline sends SIGTERM and schedules escalation.
+    timers.shift()!(); // Escalation sends SIGKILL and schedules confirmation.
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(kill).toHaveBeenCalledWith(-child.pid, 'SIGKILL');
+
+    timers.shift()!(); // The group still exists, so confirmation continues.
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    groupAlive = false;
+    timers.shift()!();
+    await expect(promise).rejects.toThrow('repair stopped before temporary login expiry');
+    expect(settled).toBe(true);
+  });
+
   it('refuses to advance when a detached descendant outlives the phase runner', async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-process-group-boundary-'));
     const marker = path.join(temp, 'descendant-completed');
