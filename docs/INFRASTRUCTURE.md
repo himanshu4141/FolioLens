@@ -502,17 +502,26 @@ SELECT cron.schedule(
 The DEV project auto-deploys on every PR push and every `main` merge, so retained
 deployments accumulate quickly — each one keeps its own copy of the `/api` Python
 function bundles, which count toward the team's Hobby-tier Functions Storage quota
-(10 GB) independent of live traffic. DEV's Deployment Retention Policy is set
-tighter than Vercel's default to bound this: 7 days for Preview, 14 days for
-Production, 1 day for Canceled, 3 days for Errored, keeping a floor of 10
-production deployments regardless of age (Vercel's own retention exceptions keep
-a further floor — see [Deployment Retention](https://vercel.com/docs/deployment-retention)).
+(10 GB) independent of live traffic. Vercel's Hobby default (30 days for Preview,
+Production, Canceled, and Errored, floor of the last 10/20 deployments per the
+[exceptions](https://vercel.com/docs/deployment-retention#exceptions-to-the-retention-policy))
+is too loose for a project deploying this often; DEV's target policy is 7 days
+Preview / 14 days Production / 1 day Canceled / 3 days Errored, 10 production
+deployments kept.
 
-Set/inspect via `.github/workflows/vercel-retention-policy.yml` (manual
-`workflow_dispatch`, reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID`
-secrets) rather than the dashboard — re-run it with different inputs to adjust
-retention for either project. PROD's policy is unchanged (left at Vercel's
-default) since it deploys only on tag push and isn't the accumulation driver.
+**This can only be set in the dashboard, not via the API.** `PATCH
+/v9/projects/{idOrName}` rejects a `deploymentExpiration` body with `should
+NOT have additional property` — confirmed live 2026-09-06 — because it's a
+read-only field on the Project resource, not a writable one. To apply the
+target policy: DEV project → **Settings → Security → Deployment Retention
+Policy** → set Preview 7d / Production 14d / Canceled 1d / Errored 3d → Save.
+PROD is left at Vercel's default since it deploys only on tag push and isn't
+the accumulation driver.
+
+`.github/workflows/vercel-retention-policy.yml` (manual `workflow_dispatch`,
+reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID` secrets) is a read-only
+check of the current policy — useful for confirming the dashboard change took,
+not for applying it.
 
 Separately, the four Python functions under `/api` share one root
 `requirements.txt`; Vercel does no per-function dependency tree-shaking, so
