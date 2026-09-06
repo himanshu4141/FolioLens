@@ -523,10 +523,14 @@ count. `.github/workflows/vercel-retention-policy.yml` (manual
 secrets) applies and can re-check this policy; re-run it with different inputs
 to adjust retention, or to point at the PROD project instead.
 
-`.github/workflows/vercel-retention-policy.yml` (manual `workflow_dispatch`,
-reuses the existing `VERCEL_TOKEN` / `VERCEL_ORG_ID` secrets) is a read-only
-check of the current policy — useful for confirming the dashboard change took,
-not for applying it.
+There is no API for the actual Functions Storage GB usage number — Vercel's
+FOCUS billing-charges API (`/v1/billing/charges`) 404s with `costs_not_found`
+on a Hobby team (no invoices/billing cycles to report against), confirmed live
+2026-09-06. `.github/workflows/vercel-weekly-usage-check.yml` tracks a proxy
+signal instead: deployment counts and the `softDeletedByRetention` flag from
+`GET /v6/deployments`, which grows as the policy actually prunes old
+deployments. The real GB number stays a manual dashboard check (Usage →
+Deployment Storage → Functions Storage → Projects).
 
 Separately, the four Python functions under `/api` share one root
 `requirements.txt`; Vercel does no per-function dependency tree-shaking, so

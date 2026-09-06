@@ -1,0 +1,87 @@
+name: Vercel Weekly Usage Check
+
+# Weekly signal for whether the Functions Storage retention policy (see
+# docs/INFRASTRUCTURE.md "Deployment retention") is actually working.
+#
+# There is no API for the real GB number: Vercel's FOCUS billing-charges API
+# (/v1/billing/charges) 404s with "costs_not_found" on a Hobby team — Hobby
+# has no invoices/billing cycles to report usage against, confirmed live
+# 2026-09-06. That number stays dashboard-only (Usage -> Deployment Storage
+# -> Functions Storage -> Projects).
+#
+# What IS available via API and used here instead:
+#   - GET /v9/projects/{id} -> deploymentExpiration: confirms the policy
+#     hasn't drifted back to Vercel's 30-day default.
+#   - GET /v6/deployments?projectId=...: each deployment carries an
+#     `expiration` timestamp (its retention deadline) and a
+#     `softDeletedByRetention` boolean — a real, growing count of
+#     softDeletedByRetention=true deployments over the following weeks is
+#     direct evidence the policy is pruning old deployments (and therefore
+#     their Functions Storage) rather than just being set and ignored.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Vercel project id or name to check"
+        required: false
+        default: "prj_EQ1YcOJeh9nzDnjk4mdPRi4y7zOR" # foliolens-dev
+
+jobs:
+  weekly-check:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      PROJECT: ${{ inputs.project }}
+    steps:
+      - name: Retention policy drift check
+        run: |
+          curl -sS "https://api.vercel.com/v9/projects/${PROJECT}?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+            | python3 -c "import json,sys; print('POLICY:', json.dumps(json.load(sys.stdin).get('deploymentExpiration')))"
+
+      - name: Deployment counts and retention-sweep evidence
+        run: |
+          curl -sS "https://api.vercel.com/v6/deployments?projectId=${PROJECT}&teamId=${VERCEL_ORG_ID}&limit=100" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+            -o /tmp/deployments.json
+          python3 -c "
+          import json
+          from datetime import datetime, timezone
+
+          with open('/tmp/deployments.json') as f:
+              data = json.load(f)
+          deployments = data.get('deployments', [])
+
+          now_ms = datetime.now(timezone.utc).timestamp() * 1000
+          total = len(deployments)
+          by_state = {}
+          by_target = {}
+          soft_deleted = 0
+          older_than_7d = 0
+          oldest_ready_days = None
+
+          for d in deployments:
+              state = d.get('state', 'UNKNOWN')
+              target = d.get('target') or 'preview'
+              by_state[state] = by_state.get(state, 0) + 1
+              by_target[target] = by_target.get(target, 0) + 1
+              if d.get('softDeletedByRetention'):
+                  soft_deleted += 1
+              created = d.get('created') or d.get('createdAt') or 0
+              age_days = (now_ms - created) / 86400000 if created else 0
+              if age_days > 7:
+                  older_than_7d += 1
+              if state == 'READY':
+                  if oldest_ready_days is None or age_days > oldest_ready_days:
+                      oldest_ready_days = age_days
+
+          print(f'TOTAL_RETURNED: {total}')
+          print(f'BY_STATE: {by_state}')
+          print(f'BY_TARGET: {by_target}')
+          print(f'SOFT_DELETED_BY_RETENTION: {soft_deleted}')
+          print(f'OLDER_THAN_7D: {older_than_7d}')
+          print(f'OLDEST_READY_AGE_DAYS: {round(oldest_ready_days, 1) if oldest_ready_days is not None else \"n/a\"}')
+          print(f'PAGINATION_NEXT: {data.get(\"pagination\", {}).get(\"next\")}')
+          "
