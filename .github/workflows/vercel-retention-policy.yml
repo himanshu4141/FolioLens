@@ -1,16 +1,25 @@
-name: Vercel Retention Policy Check
+name: Vercel Retention Policy
 
-# Read-only inspector for a Vercel project's Deployment Retention Policy.
+# Sets a Vercel project's Deployment Retention Policy via the REST API.
 #
-# Confirmed against the live API (2026-09-06): PATCH /v9/projects/{idOrName}
-# rejects `deploymentExpiration` with "should NOT have additional property" —
-# it's a read-only field on the Project resource. Vercel does not expose a
-# way to WRITE the retention policy over the REST API; it must be set in the
-# dashboard (Settings -> Security -> Deployment Retention Policy). See
-# docs/INFRASTRUCTURE.md "Deployment retention" for the target values and why
-# this matters (DEV auto-deploys on every PR/main-merge and each retained
-# deployment carries its own Python function bundles, which is what drove
-# Functions Storage to its Hobby-tier quota).
+# The generic PATCH /v9/projects/{idOrName} rejects a `deploymentExpiration`
+# body ("should NOT have additional property") — that field is read-only on
+# the Project resource. The real, working endpoint (reverse-engineered from
+# the official Terraform provider's client, terraform-provider-vercel's
+# client/project_deployment_retention.go) is a dedicated sub-resource:
+#
+#   PATCH /v9/projects/{projectId}/deployment-expiration?teamId={teamId}
+#   body: {"expiration": "7d", "expirationProduction": "14d",
+#          "expirationCanceled": "1d", "expirationErrored": "3d"}
+#
+# Note the field names (`expiration`, not `expirationDays`) and string
+# duration values (`"7d"`, not a bare number) — different from what the
+# read-only GET response reports back under `deploymentExpiration`.
+#
+# Background: the DEV project auto-deploys on every PR push and every main
+# merge, and retained deployments (each carrying its own duplicated Python
+# function bundles) accumulate against the team's Functions Storage quota.
+# See docs/INFRASTRUCTURE.md "Deployment retention".
 #
 # Reuses the existing VERCEL_TOKEN / VERCEL_ORG_ID secrets (already used by
 # production-release.yml) rather than introducing new credentials.
@@ -19,19 +28,69 @@ on:
   workflow_dispatch:
     inputs:
       project:
-        description: "Vercel project id or name to inspect"
+        description: "Vercel project id or name to update"
         required: false
         default: "prj_EQ1YcOJeh9nzDnjk4mdPRi4y7zOR" # foliolens-dev
+      expiration:
+        description: "Preview deployment retention (e.g. 7d, 30d, 1y)"
+        required: false
+        default: "7d"
+      expiration_production:
+        description: "Production deployment retention"
+        required: false
+        default: "14d"
+      expiration_canceled:
+        description: "Canceled deployment retention"
+        required: false
+        default: "1d"
+      expiration_errored:
+        description: "Errored deployment retention"
+        required: false
+        default: "3d"
 
 jobs:
-  check-retention:
+  set-retention:
     runs-on: ubuntu-latest
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       PROJECT: ${{ inputs.project }}
+      EXPIRATION: ${{ inputs.expiration }}
+      EXPIRATION_PRODUCTION: ${{ inputs.expiration_production }}
+      EXPIRATION_CANCELED: ${{ inputs.expiration_canceled }}
+      EXPIRATION_ERRORED: ${{ inputs.expiration_errored }}
     steps:
       - name: Show current retention policy
+        run: |
+          curl -sS "https://api.vercel.com/v9/projects/${PROJECT}?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+            | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('deploymentExpiration'), indent=2))"
+
+      - name: Apply retention policy
+        run: |
+          set -e
+          BODY=$(python3 -c "
+          import json, os
+          print(json.dumps({
+              'expiration': os.environ['EXPIRATION'],
+              'expirationProduction': os.environ['EXPIRATION_PRODUCTION'],
+              'expirationCanceled': os.environ['EXPIRATION_CANCELED'],
+              'expirationErrored': os.environ['EXPIRATION_ERRORED'],
+          }))
+          ")
+          HTTP_CODE=$(curl -sS -o /tmp/response.json -w "%{http_code}" -X PATCH \
+            "https://api.vercel.com/v9/projects/${PROJECT}/deployment-expiration?teamId=${VERCEL_ORG_ID}" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          cat /tmp/response.json
+          echo
+          if [ "$HTTP_CODE" -ge 300 ]; then
+            echo "Vercel API returned HTTP $HTTP_CODE" >&2
+            exit 1
+          fi
+
+      - name: Show resulting retention policy
         run: |
           curl -sS "https://api.vercel.com/v9/projects/${PROJECT}?teamId=${VERCEL_ORG_ID}" \
             -H "Authorization: Bearer ${VERCEL_TOKEN}" \
