@@ -6,8 +6,6 @@ readonly DEV_PROJECT_REF='imkgazlrxtlhkfptkzjc'
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 readonly HYDRATION_JSON_HELPER="$SCRIPT_DIR/hydration-batch-json.cjs"
-readonly HYDRATION_CONNECT_TIMEOUT_SECONDS=10
-readonly HYDRATION_REQUEST_TIMEOUT_SECONDS=90
 
 require_var() {
   local name="$1"
@@ -126,6 +124,26 @@ decrypt_backup_to_temp() {
   export Q5_BACKUP_PLAINTEXT_PATH="$plaintext_path"
 }
 
+readonly MODE="${1:-}"
+
+if [[ "$MODE" == 'hydrate-execute' ]]; then
+  require_var Q5_HYDRATION_HANDOFF_DIR
+  require_var Q5_HYDRATION_PLAN_COUNT
+  require_var Q5_HYDRATION_PLAN_SHA256
+  require_var Q5_APPROVE_EXACT_TARGET_DELETE
+  require_var Q5_DEV_FUNCTIONS_URL
+  require_var Q5_DEV_SERVICE_ROLE_KEY
+  if [[ "$Q5_DEV_FUNCTIONS_URL" != "https://$DEV_PROJECT_REF.supabase.co/functions/v1/sync-fund-meta" ]]; then
+    printf 'refusing non-dev function target\n' >&2
+    exit 3
+  fi
+  if [[ ! -x "$HYDRATION_JSON_HELPER" ]]; then
+    printf 'authoritative hydration helper is unavailable\n' >&2
+    exit 4
+  fi
+  exec "$HYDRATION_JSON_HELPER" execute-handoff
+fi
+
 require_var Q5_DEV_DB_HOST
 require_var Q5_DEV_DB_USER
 require_var Q5_DEV_DB_PASSWORD
@@ -151,7 +169,6 @@ then
   exit 3
 fi
 
-readonly MODE="${1:-}"
 readonly PSQL_BIN="$(resolve_psql)"
 readonly DB_PORT="${Q5_DEV_DB_PORT:-5432}"
 readonly DB_NAME="${Q5_DEV_DB_NAME:-postgres}"
@@ -221,19 +238,14 @@ case "$MODE" in
     "${PSQL_BASE[@]}" --file="$SCRIPT_DIR/exact-target-apply.sql"
     ;;
 
-  hydrate)
+  hydrate-prepare)
     require_var Q5_EXPECTED_TARGET_COUNT
     require_var Q5_BACKUP_SHA256
     require_var Q5_APPROVE_EXACT_TARGET_DELETE
-    require_var Q5_DEV_FUNCTIONS_URL
-    require_var Q5_DEV_SERVICE_ROLE_KEY
+    require_var Q5_HYDRATION_HANDOFF_DIR
     if [[ "$Q5_APPROVE_EXACT_TARGET_DELETE" != 'APPROVE_Q5_EXACT_TARGET_DELETE' ]]; then
       printf 'immediate approval is required before authoritative hydration\n' >&2
       exit 2
-    fi
-    if [[ "$Q5_DEV_FUNCTIONS_URL" != "https://$DEV_PROJECT_REF.supabase.co/functions/v1/sync-fund-meta" ]]; then
-      printf 'refusing non-dev function target\n' >&2
-      exit 3
     fi
     require_backup_material
     verify_backup_digest
@@ -243,71 +255,35 @@ case "$MODE" in
       exit 4
     fi
     hydration_scope_path="$(mktemp /tmp/foliolens-q5-hydration-scope.XXXXXX)"
-    hydration_plan_path="$(mktemp /tmp/foliolens-q5-hydration-plan.XXXXXX)"
-    chmod 600 "$hydration_scope_path" "$hydration_plan_path"
+    chmod 600 "$hydration_scope_path"
     "${PSQL_BASE[@]}" --file="$SCRIPT_DIR/exact-target-hydration-scope.sql" \
       >"$hydration_scope_path"
     if [[ ! -s "$hydration_scope_path" ]]; then
       printf 'authoritative hydration scope is empty\n' >&2
       exit 4
     fi
-    hydration_scope_count="$(
-      "$HYDRATION_JSON_HELPER" prepare "$hydration_scope_path" "$hydration_plan_path"
-    )" || exit 4
-    if [[ ! "$hydration_scope_count" =~ ^[1-9][0-9]*$ ]]; then
-      printf 'authoritative hydration scope was invalid\n' >&2
+    if ! "$HYDRATION_JSON_HELPER" stage-handoff \
+      "$hydration_scope_path" "$Q5_HYDRATION_HANDOFF_DIR"
+    then
       exit 4
     fi
-
-    hydration_updated=0
-    while IFS= read -r hydration_request; do
-      if [[ -z "$hydration_request" ]]; then
-        printf 'authoritative hydration plan was invalid\n' >&2
-        exit 4
-      fi
-      hydration_payload_path="$(mktemp /tmp/foliolens-q5-hydration-payload.XXXXXX)"
-      hydration_response_path="$(mktemp /tmp/foliolens-q5-hydration-response.XXXXXX)"
-      hydration_curl_config_path="$(mktemp /tmp/foliolens-q5-hydration-curl.XXXXXX)"
-      chmod 600 "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
-      printf '%s\n' "$hydration_request" >"$hydration_payload_path"
-      hydration_request=''
-      printf '%s\n' \
-        'silent' \
-        'request = "POST"' \
-        "url = \"$Q5_DEV_FUNCTIONS_URL\"" \
-        "connect-timeout = $HYDRATION_CONNECT_TIMEOUT_SECONDS" \
-        "max-time = $HYDRATION_REQUEST_TIMEOUT_SECONDS" \
-        "header = \"Authorization: Bearer $Q5_DEV_SERVICE_ROLE_KEY\"" \
-        'header = "Content-Type: application/json"' \
-        "data-binary = \"@$hydration_payload_path\"" \
-        "output = \"$hydration_response_path\"" \
-        'write-out = "%{http_code}"' \
-        >"$hydration_curl_config_path"
-
-      if ! hydration_http_status="$(curl --config "$hydration_curl_config_path" 2>/dev/null)"; then
-        printf 'authoritative hydration request failed\n' >&2
-        exit 4
-      fi
-      if [[ "$hydration_http_status" != '200' ]]; then
-        printf 'authoritative hydration request failed\n' >&2
-        exit 4
-      fi
-      if ! "$HYDRATION_JSON_HELPER" validate-response "$hydration_response_path"; then
-        exit 4
-      fi
-
-      hydration_updated=$((hydration_updated + 1))
-      rm -f -- "$hydration_payload_path" "$hydration_response_path" "$hydration_curl_config_path"
-      hydration_payload_path=''
-      hydration_response_path=''
-      hydration_curl_config_path=''
-    done <"$hydration_plan_path"
-
-    if [[ "$hydration_updated" -ne "$hydration_scope_count" ]]; then
-      printf 'authoritative hydration aggregate was invalid\n' >&2
+    if ! rm -f -- "$plaintext_path" "$hydration_scope_path" \
+      || [[ -e "$plaintext_path" || -e "$hydration_scope_path" ]]
+    then
+      printf 'authoritative hydration phase-one cleanup failed\n' >&2
       exit 4
     fi
-    printf '{"updated":%d,"failed":0,"skipped":0}\n' "$hydration_updated"
+    plaintext_path=''
+    hydration_scope_path=''
+    unset Q5_BACKUP_PLAINTEXT_PATH
+    if ! "$HYDRATION_JSON_HELPER" publish-handoff "$Q5_HYDRATION_HANDOFF_DIR"; then
+      exit 4
+    fi
+    ;;
+
+  hydrate)
+    printf 'authoritative hydration requires the CLI two-phase transport\n' >&2
+    exit 2
     ;;
 
   rollback)
@@ -319,7 +295,7 @@ case "$MODE" in
     ;;
 
   *)
-    printf 'usage: %s {dry-run|backup|apply|hydrate|rollback}\n' "$0" >&2
+    printf 'usage: %s {dry-run|backup|apply|hydrate-prepare|hydrate-execute|rollback}\n' "$0" >&2
     exit 2
     ;;
 esac

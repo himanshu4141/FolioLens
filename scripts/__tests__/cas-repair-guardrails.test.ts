@@ -371,60 +371,24 @@ touch "$Q5_FAKE_PSQL_MARKER"
     }
   });
 
-  it('runs strict single-scheme hydration batches and stops before later work on failure', async () => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-runner-hydrate-'));
-    const tempPrefixes = [
-      'foliolens-q5-restore.',
-      'foliolens-q5-hydration-scope.',
-      'foliolens-q5-hydration-plan.',
-      'foliolens-q5-hydration-payload.',
-      'foliolens-q5-hydration-response.',
-      'foliolens-q5-hydration-curl.',
-    ];
+  it('removes plaintext inputs before atomically publishing the hydration handoff', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-hydration-phase-one-'));
+    const handoffDir = fs.mkdtempSync('/tmp/foliolens-q5-hydration-handoff.');
+    fs.chmodSync(handoffDir, 0o700);
     const privateTemps = () => new Set(
-      fs.readdirSync('/tmp').filter((name) => tempPrefixes.some((prefix) => name.startsWith(prefix))),
+      fs.readdirSync('/tmp').filter((name) =>
+        name.startsWith('foliolens-q5-restore.')
+        || name.startsWith('foliolens-q5-hydration-scope.')),
     );
     const before = privateTemps();
     try {
       const fakePsql = path.join(temp, 'psql');
-      const fakeCurl = path.join(temp, 'curl');
-      const curlArgs = path.join(temp, 'curl-args');
-      const curlState = path.join(temp, 'curl-state');
-      const responses = path.join(temp, 'responses');
-      const statuses = path.join(temp, 'statuses');
-      const requests = path.join(temp, 'requests');
+      const plaintextMarker = path.join(temp, 'plaintext-path');
       const backup = path.join(temp, 'rows.enc');
       const key = path.join(temp, 'rows.key');
-      const serviceKey = 'synthetic-service-key-never-print';
       writeExecutable(fakePsql, `#!/usr/bin/env bash
+printf '%s' "$Q5_BACKUP_PLAINTEXT_PATH" > ${JSON.stringify(plaintextMarker)}
 printf '{"mode":"exact-target-repair","scheme_codes":[123,456,789]}\n'
-`);
-      writeExecutable(fakeCurl, `#!/usr/bin/env bash
-set -euo pipefail
-count=0
-if [[ -f "$Q5_FAKE_CURL_STATE" ]]; then
-  count="$(<"$Q5_FAKE_CURL_STATE")"
-fi
-count=$((count + 1))
-printf '%s' "$count" > "$Q5_FAKE_CURL_STATE"
-printf '%s\n' "$@" >> "$Q5_FAKE_CURL_ARGS"
-config="$2"
-grep -qx 'connect-timeout = 10' "$config"
-grep -qx 'max-time = 90' "$config"
-payload="$(awk -F'"' '/^data-binary = / {print $2}' "$config")"
-payload="\${payload#@}"
-output="$(awk -F'"' '/^output = / {print $2}' "$config")"
-cp "$payload" "$Q5_FAKE_REQUESTS/$count.json"
-if [[ -n "\${Q5_FAKE_SLEEP_MARKER:-}" ]]; then
-  touch "$Q5_FAKE_SLEEP_MARKER"
-  sleep 30
-fi
-status="$(sed -n "\${count}p" "$Q5_FAKE_STATUSES")"
-if [[ "$status" == 'TIMEOUT' ]]; then
-  exit 28
-fi
-sed -n "\${count}p" "$Q5_FAKE_RESPONSES" > "$output"
-printf '%s' "$status"
 `);
       fs.writeFileSync(key, 'synthetic-local-key\n', { mode: 0o600 });
       const header = 'id,user_id,fund_id,transaction_date,transaction_type,units,nav_at_transaction,amount,folio_number,cas_import_id,cas_event_ordinal,created_at,prior_holding_is_active\n';
@@ -435,38 +399,179 @@ printf '%s' "$status"
       );
       expect(encrypted.status).toBe(0);
       const backupSha = crypto.createHash('sha256').update(fs.readFileSync(backup)).digest('hex');
+      const result = spawnSync(RUNNER, ['hydrate-prepare'], {
+        env: {
+          ...baseEnv(fakePsql),
+          Q5_EXPECTED_TARGET_COUNT: '1',
+          Q5_BACKUP_PATH: backup,
+          Q5_BACKUP_KEY_FILE: key,
+          Q5_BACKUP_SHA256: backupSha,
+          Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+          Q5_HYDRATION_HANDOFF_DIR: handoffDir,
+        },
+        encoding: 'utf8',
+      });
 
-      const hydrationEnv = {
-        ...baseEnv(fakePsql),
-        PATH: `${temp}:${process.env.PATH ?? ''}`,
-        Q5_FAKE_CURL_ARGS: curlArgs,
-        Q5_FAKE_CURL_STATE: curlState,
-        Q5_FAKE_RESPONSES: responses,
-        Q5_FAKE_STATUSES: statuses,
-        Q5_FAKE_REQUESTS: requests,
-        Q5_BACKUP_PATH: backup,
-        Q5_BACKUP_KEY_FILE: key,
-        Q5_BACKUP_SHA256: backupSha,
-        Q5_EXPECTED_TARGET_COUNT: '1',
-        Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
-        Q5_DEV_FUNCTIONS_URL:
-          'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
-        Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+      expect(fs.existsSync(fs.readFileSync(plaintextMarker, 'utf8'))).toBe(false);
+      expect(fs.existsSync(path.join(handoffDir, '.pending'))).toBe(false);
+      expect(fs.statSync(path.join(handoffDir, 'published')).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(handoffDir, 'published', 'plan.jsonl')).mode & 0o777).toBe(0o600);
+      const after = privateTemps();
+      expect([...after].filter((name) => !before.has(name))).toEqual([]);
+    } finally {
+      fs.rmSync(handoffDir, { recursive: true, force: true });
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('runs strict single-scheme hydration batches and stops before later work on failure', async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'q5-runner-hydrate-'));
+    const tempPrefixes = [
+      'foliolens-q5-restore.',
+      'foliolens-q5-hydration-scope.',
+      'foliolens-q5-hydration-handoff.',
+      'foliolens-q5-hydration-request.',
+    ];
+    const privateTemps = () => new Set(
+      fs.readdirSync('/tmp').filter((name) => tempPrefixes.some((prefix) => name.startsWith(prefix))),
+    );
+    const before = privateTemps();
+    try {
+      const fakeCurl = path.join(temp, 'curl');
+      const curlArgs = path.join(temp, 'curl-args');
+      const curlState = path.join(temp, 'curl-state');
+      const responses = path.join(temp, 'responses');
+      const statuses = path.join(temp, 'statuses');
+      const requests = path.join(temp, 'requests');
+      const signalMarker = path.join(temp, 'signal-marker');
+      const sleepEnabled = path.join(temp, 'sleep-enabled');
+      const handoffMarker = path.join(temp, 'handoff-marker');
+      const mutationEnabled = path.join(temp, 'mutation-enabled');
+      const scope = path.join(temp, 'scope.json');
+      const serviceKey = 'synthetic-service-key-never-print';
+      fs.writeFileSync(
+        scope,
+        '{"mode":"exact-target-repair","scheme_codes":[123,456,789]}\n',
+        { mode: 0o600 },
+      );
+      writeExecutable(fakeCurl, `#!/usr/bin/env bash
+set -euo pipefail
+readonly CURL_ARGS=${JSON.stringify(curlArgs)}
+readonly CURL_STATE=${JSON.stringify(curlState)}
+readonly RESPONSES=${JSON.stringify(responses)}
+readonly STATUSES=${JSON.stringify(statuses)}
+readonly REQUESTS=${JSON.stringify(requests)}
+readonly SIGNAL_MARKER=${JSON.stringify(signalMarker)}
+readonly SLEEP_ENABLED=${JSON.stringify(sleepEnabled)}
+readonly HANDOFF_MARKER=${JSON.stringify(handoffMarker)}
+readonly MUTATION_ENABLED=${JSON.stringify(mutationEnabled)}
+count=0
+if [[ -f "$CURL_STATE" ]]; then
+  count="$(<"$CURL_STATE")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$CURL_STATE"
+if [[ "$count" -eq 1 ]]; then
+  handoff="$(<"$HANDOFF_MARKER")"
+  [[ ! -e "$handoff/published/plan.jsonl" ]]
+  if [[ -f "$MUTATION_ENABLED" ]]; then
+    mkdir -p "$handoff/published"
+    printf '{"mode":"exact-target-repair","scheme_codes":[999]}\n' \
+      > "$handoff/published/plan.jsonl"
+  fi
+fi
+printf '%s\n' "$@" >> "$CURL_ARGS"
+[[ "$1" == '--config' && "$2" == '-' ]]
+config="$(cat)"
+grep -qx 'connect-timeout = 10' <<<"$config"
+grep -qx 'max-time = 90' <<<"$config"
+payload="$(awk -F'"' '/^data-binary = / {print $2}' <<<"$config")"
+payload="\${payload#@}"
+output="$(awk -F'"' '/^output = / {print $2}' <<<"$config")"
+cp "$payload" "$REQUESTS/$count.json"
+if [[ -f "$SLEEP_ENABLED" ]]; then
+  touch "$SIGNAL_MARKER"
+  sleep 30
+fi
+status="$(sed -n "\${count}p" "$STATUSES")"
+if [[ "$status" == 'TIMEOUT' ]]; then
+  exit 28
+fi
+sed -n "\${count}p" "$RESPONSES" > "$output"
+printf '%s' "$status"
+`);
+      const prepareExecution = () => {
+        const handoffDir = fs.mkdtempSync('/tmp/foliolens-q5-hydration-handoff.');
+        fs.chmodSync(handoffDir, 0o700);
+        const prepared = spawnSync(
+          HYDRATION_JSON_HELPER,
+          ['prepare-handoff', scope, handoffDir],
+          { encoding: 'utf8' },
+        );
+        expect(prepared.status).toBe(0);
+        fs.writeFileSync(handoffMarker, handoffDir, { mode: 0o600 });
+        const metadata = JSON.parse(
+          fs.readFileSync(path.join(handoffDir, 'published', 'metadata.json'), 'utf8'),
+        ) as { count: number; sha256: string };
+        return {
+          handoffDir,
+          env: {
+            NODE_ENV: 'test',
+            PATH: `${temp}:${process.env.PATH ?? ''}`,
+            Q5_REPAIR_AUTH_MODE: 'cli-hydration-execute',
+            Q5_APPROVE_EXACT_TARGET_DELETE: 'APPROVE_Q5_EXACT_TARGET_DELETE',
+            Q5_DEV_FUNCTIONS_URL:
+              'https://imkgazlrxtlhkfptkzjc.supabase.co/functions/v1/sync-fund-meta',
+            Q5_DEV_SERVICE_ROLE_KEY: serviceKey,
+            Q5_HYDRATION_HANDOFF_DIR: handoffDir,
+            Q5_HYDRATION_PLAN_COUNT: String(metadata.count),
+            Q5_HYDRATION_PLAN_SHA256: metadata.sha256,
+          },
+        };
       };
-      const runHydration = (responseLines: string[], statusLines: string[]) => {
+      const runHydration = (
+        responseLines: string[],
+        statusLines: string[],
+        mutate?: (handoffDir: string) => void,
+        extraEnv: Record<string, string> = {},
+      ) => {
         fs.rmSync(curlState, { force: true });
         fs.rmSync(curlArgs, { force: true });
         fs.rmSync(requests, { recursive: true, force: true });
         fs.mkdirSync(requests);
         fs.writeFileSync(responses, `${responseLines.join('\n')}\n`, { mode: 0o600 });
         fs.writeFileSync(statuses, `${statusLines.join('\n')}\n`, { mode: 0o600 });
-        return spawnSync(RUNNER, ['hydrate'], {
-          env: hydrationEnv,
-          encoding: 'utf8',
-        });
+        const execution = prepareExecution();
+        try {
+          mutate?.(execution.handoffDir);
+          return spawnSync(RUNNER, ['hydrate-execute'], {
+            env: { ...execution.env, ...extraEnv },
+            encoding: 'utf8',
+          });
+        } finally {
+          fs.rmSync(execution.handoffDir, { recursive: true, force: true });
+        }
       };
 
       const successResponse = '{"success":true,"updated":1,"failed":0,"skipped":0}';
+      const polluted = runHydration(
+        [successResponse, successResponse, successResponse],
+        ['200', '200', '200'],
+        undefined,
+        {
+          PGPASSWORD: 'synthetic-password-never-print',
+          Q5_DEV_DB_HOST: 'synthetic-host-never-contact',
+        },
+      );
+      expect(polluted.status).toBe(41);
+      expect(polluted.stdout).toBe('');
+      expect(polluted.stderr).toBe('authoritative hydration environment was invalid\n');
+      expect(fs.existsSync(curlState)).toBe(false);
+
+      fs.writeFileSync(mutationEnabled, '1\n', { mode: 0o600 });
       const result = runHydration(
         [successResponse, successResponse, successResponse],
         ['200', '200', '200'],
@@ -484,6 +589,7 @@ printf '%s' "$status"
           JSON.parse(fs.readFileSync(path.join(requests, name), 'utf8')).scheme_codes[0]
         ),
       ).toEqual([123, 456, 789]);
+      fs.rmSync(mutationEnabled, { force: true });
 
       const unresolved = runHydration(
         [
@@ -493,7 +599,7 @@ printf '%s' "$status"
         ],
         ['200', '200', '200'],
       );
-      expect(unresolved.status).toBe(4);
+      expect(unresolved.status).toBe(44);
       expect(unresolved.stdout).toBe('');
       expect(unresolved.stderr).toContain('response was unresolved');
       expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
@@ -502,7 +608,7 @@ printf '%s' "$status"
         [successResponse, '{"error":"synthetic"}', successResponse],
         ['200', '503', '200'],
       );
-      expect(non200.status).toBe(4);
+      expect(non200.status).toBe(43);
       expect(non200.stdout).toBe('');
       expect(non200.stderr).toContain('request failed');
       expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
@@ -515,7 +621,7 @@ printf '%s' "$status"
         ],
         ['200', '200', '200'],
       );
-      expect(contradictory.status).toBe(4);
+      expect(contradictory.status).toBe(44);
       expect(contradictory.stdout).toBe('');
       expect(contradictory.stderr).toContain('response was unresolved');
       expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
@@ -528,7 +634,7 @@ printf '%s' "$status"
         ],
         ['200', '200', '200'],
       );
-      expect(malformed.status).toBe(4);
+      expect(malformed.status).toBe(44);
       expect(malformed.stdout).toBe('');
       expect(malformed.stderr).toContain('response was unresolved');
       expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
@@ -537,10 +643,34 @@ printf '%s' "$status"
         [successResponse, successResponse, successResponse],
         ['200', 'TIMEOUT', '200'],
       );
-      expect(timeout.status).toBe(4);
+      expect(timeout.status).toBe(42);
       expect(timeout.stdout).toBe('');
       expect(timeout.stderr).toContain('request failed');
       expect(fs.readFileSync(curlState, 'utf8')).toBe('2');
+
+      for (const mutate of [
+        (handoffDir: string) => fs.appendFileSync(
+          path.join(handoffDir, 'published', 'plan.jsonl'),
+          '{"mode":"exact-target-repair","scheme_codes":[999]}\n',
+        ),
+        (handoffDir: string) => fs.writeFileSync(
+          path.join(handoffDir, 'published', 'plan.jsonl'),
+          '{"mode":"exact-target-repair","scheme_codes":[123]}\n',
+        ),
+        (handoffDir: string) => fs.truncateSync(
+          path.join(handoffDir, 'published', 'plan.jsonl'),
+          1,
+        ),
+      ]) {
+        const drift = runHydration(
+          [successResponse, successResponse, successResponse],
+          ['200', '200', '200'],
+          mutate,
+        );
+        expect(drift.status).toBe(41);
+        expect(drift.stdout).toBe('');
+        expect(fs.existsSync(curlState)).toBe(false);
+      }
 
       fs.rmSync(curlState, { force: true });
       fs.rmSync(curlArgs, { force: true });
@@ -548,9 +678,10 @@ printf '%s' "$status"
       fs.mkdirSync(requests);
       fs.writeFileSync(responses, `${successResponse}\n`, { mode: 0o600 });
       fs.writeFileSync(statuses, '200\n', { mode: 0o600 });
-      const signalMarker = path.join(temp, 'signal-marker');
-      const child = spawn(RUNNER, ['hydrate'], {
-        env: { ...hydrationEnv, Q5_FAKE_SLEEP_MARKER: signalMarker },
+      fs.writeFileSync(sleepEnabled, '1\n', { mode: 0o600 });
+      const signalExecution = prepareExecution();
+      const child = spawn(RUNNER, ['hydrate-execute'], {
+        env: signalExecution.env,
         detached: true,
         stdio: 'ignore',
       });
@@ -559,7 +690,10 @@ printf '%s' "$status"
           await sleep(20);
         }
         expect(fs.existsSync(signalMarker)).toBe(true);
-        process.kill(-child.pid!, 'SIGTERM');
+        expect(
+          fs.readdirSync(signalExecution.handoffDir).some((name) => name.startsWith('request.')),
+        ).toBe(true);
+        process.kill(-child.pid!, 'SIGKILL');
         await new Promise<void>((resolve) => child.once('close', () => resolve()));
       } finally {
         if (child.exitCode === null) {
@@ -569,6 +703,9 @@ printf '%s' "$status"
             // The detached process group has already exited.
           }
         }
+        fs.rmSync(signalExecution.handoffDir, { recursive: true, force: true });
+        expect(fs.existsSync(signalExecution.handoffDir)).toBe(false);
+        fs.rmSync(sleepEnabled, { force: true });
       }
 
       const after = privateTemps();
