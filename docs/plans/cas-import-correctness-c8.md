@@ -126,6 +126,7 @@ Expected: every command exits zero. Focused tests prove phase ordering; no phase
 - 2026-09-04: Treat the Codex snapshot requirement as superseding a one-time digest-only check because Claude reproduced an appended out-of-scope request reaching the stub writer under merged C7.
 - 2026-09-04: Add privacy-safe phase failure classification before the next field attempt because hosted log retention made the previous failure unclassifiable.
 - 2026-09-06: Round-one review accepted two Codex P1 findings and one shared Claude/Codex P2. Keep every request artifact under the parent-owned handoff root, confirm process-group disappearance after forced termination, and add a discriminating direct-invocation environment regression.
+- 2026-09-07: Round-two review accepted one Codex P1 after Claude converged: a repeated stop must cancel the superseded grace timer, and every stale stop callback must become inert after settlement.
 
 ## Progress
 
@@ -136,5 +137,6 @@ Expected: every command exits zero. Focused tests prove phase ordering; no phase
 - [x] Add focused phase, drift, timeout, signal, privacy, and cleanup regressions.
 - [x] Complete initial validation: four suites / 72 tests; full 115 suites / 2,314 tests; typecheck; zero-warning lint; shell and Node syntax; diff checks; and unchanged Q5 SQL.
 - [x] Batch the three round-one findings into one correction and validate the corrected head: four suites / 73 tests; full 115 suites / 2,315 tests; typecheck; zero-warning lint; syntax and diff/privacy checks; and unchanged Q5 SQL.
+- [x] Batch the single round-two finding into one correction and validate it: four suites / 74 tests; full 115 suites / 2,316 tests; typecheck; zero-warning lint; syntax and diff/privacy checks; and unchanged Q5 SQL.
 - [ ] Open and converge the frozen exact-head C8 correctness-hotfix PR.
 - [ ] Merge, retry only authoritative dev hydration, and complete the field-proof exit checklist.

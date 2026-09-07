@@ -746,6 +746,60 @@ describe('C2/C3 CLI-authenticated repair transport', () => {
     expect(settled).toBe(true);
   });
 
+  it('cancels a superseded grace timer and ignores stop callbacks after settlement', async () => {
+    type FakeTimer = { callback: () => void; active: boolean; delay: number };
+    const timers: FakeTimer[] = [];
+    const child = new EventEmitter() as EventEmitter & { pid: number };
+    child.pid = 52_526;
+    const signalSource = new EventEmitter();
+    let groupAlive = true;
+    const kill = jest.fn((_pid: number, signal: NodeJS.Signals | 0) => {
+      if (signal === 0 && !groupAlive) {
+        throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      }
+    });
+    const promise = transport.runBoundedProcessGroup({
+      spawn: jest.fn(() => child),
+      kill,
+      setTimer: (callback: () => void, delay: number) => {
+        const timer = { callback, active: true, delay };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimer: (timer: FakeTimer) => {
+        timer.active = false;
+      },
+      signalSource,
+      command: '/synthetic/runner',
+      args: [],
+      env: {},
+      timeoutMs: 100,
+    });
+    const fire = (timer: FakeTimer) => {
+      timer.active = false;
+      timer.callback();
+    };
+
+    fire(timers[0]); // Overall deadline sends SIGTERM and schedules the grace timer.
+    const graceTimer = timers[1];
+    expect(graceTimer.active).toBe(true);
+
+    signalSource.emit('SIGINT'); // Repeated stop escalates immediately.
+    expect(graceTimer.active).toBe(false);
+    expect(kill).toHaveBeenCalledWith(-child.pid, 'SIGKILL');
+
+    const confirmationTimer = timers[2];
+    groupAlive = false;
+    fire(confirmationTimer);
+    await expect(promise).rejects.toThrow('exact-target repair stopped after operator interrupt');
+
+    const callsAtSettlement = kill.mock.calls.length;
+    graceTimer.callback();
+    confirmationTimer.callback();
+    await Promise.resolve();
+    expect(kill).toHaveBeenCalledTimes(callsAtSettlement);
+  });
+
   it('refuses to advance when a detached descendant outlives the phase runner', async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-process-group-boundary-'));
     const marker = path.join(temp, 'descendant-completed');

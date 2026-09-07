@@ -201,6 +201,7 @@ function runBoundedProcessGroup({
     let stopSent = false;
     let stopMessage = deadlineMessage;
     let killConfirmationAttempts = 0;
+    let forceTimerGeneration = 0;
 
     const onOperatorInterrupt = () => {
       requestStop(interruptMessage);
@@ -211,11 +212,28 @@ function runBoundedProcessGroup({
       signalSource.removeListener('SIGTERM', onOperatorInterrupt);
     };
 
+    const clearForceTimer = () => {
+      forceTimerGeneration += 1;
+      if (forceTimer === undefined) return;
+      clearTimer(forceTimer);
+      forceTimer = undefined;
+    };
+
+    const scheduleForceTimer = (callback, delay) => {
+      const generation = forceTimerGeneration + 1;
+      forceTimerGeneration = generation;
+      forceTimer = setTimer(() => {
+        if (settled || generation !== forceTimerGeneration) return;
+        forceTimer = undefined;
+        callback();
+      }, delay);
+    };
+
     const finish = (callback) => {
       if (settled) return;
       settled = true;
       if (deadlineTimer) clearTimer(deadlineTimer);
-      if (forceTimer) clearTimer(forceTimer);
+      clearForceTimer();
       removeSignalHandlers();
       callback();
     };
@@ -226,6 +244,7 @@ function runBoundedProcessGroup({
     const completeStop = () => finish(() => reject(controlledError(stopMessage)));
 
     const confirmForcedStop = () => {
+      if (settled) return;
       try {
         kill(-child.pid, 0);
       } catch (error) {
@@ -238,10 +257,12 @@ function runBoundedProcessGroup({
         return;
       }
       killConfirmationAttempts += 1;
-      forceTimer = setTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
+      scheduleForceTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
     };
 
     const forceStop = () => {
+      if (settled) return;
+      clearForceTimer();
       try {
         kill(-child.pid, 0);
       } catch (error) {
@@ -256,7 +277,7 @@ function runBoundedProcessGroup({
         return failStop();
       }
       killConfirmationAttempts = 0;
-      forceTimer = setTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
+      scheduleForceTimer(confirmForcedStop, CHILD_KILL_CONFIRM_INTERVAL_MS);
     };
 
     function requestStop(message) {
@@ -281,7 +302,7 @@ function runBoundedProcessGroup({
         }
         return;
       }
-      forceTimer = setTimer(forceStop, CHILD_TERMINATION_GRACE_MS);
+      scheduleForceTimer(forceStop, CHILD_TERMINATION_GRACE_MS);
     }
 
     signalSource.on('SIGINT', onOperatorInterrupt);
