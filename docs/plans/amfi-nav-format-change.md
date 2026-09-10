@@ -70,6 +70,30 @@ Full column tables live in the OpenFolio spec linked above.
 | `scheme_active` (fund view, `fundSearch.ts`, `navUtils.ts`, `usePortfolio.ts`) | `true` = seen in AMFI NAVAll within 30 days (from OpenFolio) | If OpenFolio's NAV is not repaired by ~17 Sep, every scheme flips `false` → matured badges everywhere, search ordering inverted |
 
 
+
+### Inference inventory — every place FolioLens derives plan / option / family from a name
+
+Storage already exists: `scheme_master.plan_type`, `option_type`, `family_name`, `of_family_id`
+(migrations `20260509000000`, `20260617000000`), fed by `universe-backfill` and `sync-fund-meta` from
+OpenFolio, with mfdata as fallback. What is missing is (a) provenance, (b) one enum, and (c) callers
+that still reach for the name when the column is there.
+
+| Site | Today | Change (M2) |
+|---|---|---|
+| `scheme_master` table | `plan_type`, `option_type` from OF else mfdata | + `plan_option_source text` (`amfi` / `name` / `mfdata`), written by `universe-backfill` + `sync-fund-meta` from OF's new `plan_option_source`; mfdata fallback writes `mfdata` |
+| `v_fund_family_search` (`20260624000000`) | `has_idcw` = `option_type IN ('idcw_payout','idcw_reinvest','idcw','dividend_payout','dividend_reinvest')` | **Bug today**: OF emits `reinvest` / `payout` / `bonus`, so those rows never count as IDCW. Recreate the view with `option_type IN ('idcw','reinvest','payout','bonus','idcw_payout','idcw_reinvest','dividend_payout','dividend_reinvest')` |
+| `src/utils/directVsRegularCalc.ts::detectPlanType` (name regex) | used by `buildPlanBreakdown` when `fund.planType` is null | callers always pass `plan_type` from `fund` / `scheme_master`; regex kept only as last resort and returns `'unknown'` for family-only names (never guesses) |
+| `src/utils/computedFundMetrics.ts::isPayoutPlan` | `option_type` first, then name regex | keep order; add `bonus` / `reinvest` / `payout` to the option branch explicitly; name branch only when `plan_option_source` is null |
+| `src/utils/fundName.ts::parseFundName` (badge from name) | regex on the long name | prefer `planOptionLabel(plan_type, option_type)`; `parseFundName` only when both columns are null |
+| `src/utils/schemeName.ts::shortSchemeName` | regex strip, fallback when `family_name` is null | unchanged, but every screen must try `family_name` first (audit `ClearLensFundsScreen`, `usePortfolio`, Past SIP, Compare) |
+| `supabase/functions/seed-scheme-master::detectPlanType` / `inferAmcName` (mfapi names) | bootstrap only | mark rows it writes with `plan_option_source='name'`; tolerate `Direct Plan` without ` - `; never overwrite a row whose source is `amfi` |
+| `supabase/functions/sync-fund-meta` mfdata fallback | fills `plan_type` when OF null | unchanged precedence; write `plan_option_source='mfdata'` |
+| `supabase/functions/_shared/scheme-identity.ts::parseMfapiSchemeIdentity` | canonical name/ISIN from mfapi | no plan inference here (verified); leave |
+| `src/utils/navUtils.ts::isMaturedScheme` | `scheme_active` first, `Mat Dt` name regex fallback | unchanged (not plan/option) |
+| `api/_cdsl_nsdl_parser.py::fetch_amfi_isin_map` | positional name | header-driven; carry `Plan`/`Option` into the provisional identity so CAS-created rows get `plan_type`/`option_type` with `plan_option_source='amfi'` instead of waiting for hydration |
+| Persisted React Query (`useSchemeMaster`, `fundSearch` selects) | fixed column lists | adding `plan_option_source` to a select changes the persisted payload shape → `__BUSTER__` bump + restore test, per `docs/architecture/cache-surfaces.md` |
+
+
 ## Assumptions
 
 
@@ -77,9 +101,9 @@ Full column tables live in the OpenFolio spec linked above.
   this plan's M1 does not depend on it, M3 does.
 - mfapi.in remains available as the backup NAV source through and after 30 Sep. If it breaks,
   see Decision Log D3.
-- No React Query / Zustand / AsyncStorage / SQLite cache shape changes: all work is server-side
-  (Edge Functions, Python API) plus tests. `nav_history` rows only get fresher. State this in the PR
-  per the cache rules; no `docs/architecture/cache-surfaces.md` update needed.
+- M1 has no cache shape change (`nav_history` rows only get fresher). M2 adds `plan_option_source` to
+  the persisted `scheme_master` selects → `__BUSTER__` bump, restore test, and a
+  `docs/architecture/cache-surfaces.md` update in that PR.
 
 
 ## Definitions
@@ -163,20 +187,33 @@ Commands:
 Acceptance: logs show `upstream stale` routing on the next cron; email received; `max(nav_date)`
 for held funds = last trading day.
 
-### M2 — AMFI parser and name-derived identity hardening
+### M2 — Authoritative plan/option everywhere (replaces name inference)
+
+Work through the **Inference inventory** table above, top to bottom. Concretely:
+0. Migration: `ALTER TABLE scheme_master ADD COLUMN plan_option_source text`; recreate
+   `v_fund_family_search` with the corrected `has_idcw` enum (fixes today's bug for OF `reinvest`/
+   `payout` rows); re-grant per `20260513000002`. Apply with `supabase db push` and confirm.
+   Add `plan_option_source` to `src/types/database.types.ts`.
 
 1. `api/_cdsl_nsdl_parser.py`: read the header row and map columns by name; compose `scheme_name`
    as `"<Scheme Name> - <Plan> - <Option>"` when the new columns exist (keeps the provisional-identity
    display shape); move `AMFI_NAV_URL` to `https://portal.amfiindia.com/spages/NAVAll.txt`.
    Add a new-layout sample to `api/tests/test_fetch_amfi_isin_map.py` and keep the old one.
-2. `seed-scheme-master::detectPlanType` and `sync-fund-meta::parseMfapiSchemeIdentity`: also accept
-   `Direct Plan` / `Regular Plan` tokens without the ` - ` separator and treat a family-only name as
-   `plan_type=null` (never guess). Unit tests for both shapes.
+2. `universe-backfill` + `sync-fund-meta`: write `plan_option_source` from OF (`amfi`/`name`), or
+   `mfdata` on the fallback path; never let a `name`/`mfdata` value overwrite an `amfi` one.
+   `seed-scheme-master`: accept `Direct Plan` / `Regular Plan` without the ` - ` separator, return
+   null for family-only names, stamp `plan_option_source='name'`. Unit tests for all shapes.
+2b. Client: `buildPlanBreakdown` callers pass `plan_type`; `isPayoutPlan` option branch covers
+   `reinvest`/`payout`/`bonus`; fund badges use `planOptionLabel` before `parseFundName`; every
+   `shortSchemeName` caller tries `family_name` first. `__BUSTER__` bump + persisted-restore test for
+   the changed `scheme_master` select shape. Jest for each helper with (column present, column null).
 3. `docs/INFRASTRUCTURE.md`: update the `sync-nav`, `fetch-fund-nav`, `freshness-check` rows and the
    freshness runbook (new check, alert route).
 
 Acceptance: Python + Jest tests green on both layouts; a CAS import with a CDSL/NSDL statement still
-resolves ISINs to scheme codes.
+resolves ISINs to scheme codes; `select count(*) from scheme_master where plan_type is not null and
+plan_option_source is null` = 0 after one `universe-backfill` cycle; `v_fund_family_search.has_idcw`
+true for a family whose only IDCW plan has `option_type='payout'`.
 
 ### M3 — Consume OpenFolio Phase 6 output (after upstream M0/M1 ship)
 
@@ -233,8 +270,10 @@ resolves ISINs to scheme codes.
 - [ ] M1.3 `freshness-check` age check + working alert delivery
 - [ ] M1.4 analytics fields + sanitizer test
 - [ ] M1.5 tests green, functions deployed, first stale-routing run observed
-- [ ] M2.1 header-driven `fetch_amfi_isin_map` + fixtures + portal URL
-- [ ] M2.2 plan-type detection hardening
-- [ ] M2.3 INFRASTRUCTURE.md updates
+- [ ] M2.0 migration: `plan_option_source` + corrected `has_idcw` enum in `v_fund_family_search`
+- [ ] M2.1 header-driven `fetch_amfi_isin_map` + fixtures + portal URL + Plan/Option into provisional identity
+- [ ] M2.2 backfill/meta/seed functions write provenance; precedence tests
+- [ ] M2.2b client helpers prefer columns over names; `__BUSTER__` bump + restore test
+- [ ] M2.3 INFRASTRUCTURE.md + cache-surfaces.md updates
 - [ ] M3 consume OpenFolio Phase 6 (backfill, pairing, `scheme_active`, family_name diff)
 - [ ] M4 post-30-Sep check
