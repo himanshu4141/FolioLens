@@ -271,9 +271,9 @@ true for a family whose only IDCW plan has `option_type='payout'`.
 - [x] M1.4 analytics fields + sanitizer test
 - [ ] M1.5 tests green, functions deployed, first stale-routing run observed (code + tests green; deploy is a follow-up operational step, not run from this session)
 - [x] M2.0 migration: `plan_option_source` + corrected `has_idcw` enum in `v_fund_family_search` (written, not applied — see Amendments)
-- [x] M2.1 header-driven `fetch_amfi_isin_map` + fixtures + portal URL (Plan/Option into provisional identity deferred — see Amendments)
+- [x] M2.1 header-driven `fetch_amfi_isin_map` + fixtures + portal URL + Plan/Option into provisional identity
 - [x] M2.2 backfill/meta/seed functions write provenance; precedence tests
-- [x] M2.2b client helpers prefer columns over names; `__BUSTER__` bump + restore test (scope narrowed — see Amendments)
+- [x] M2.2b client helpers prefer columns over names; `__BUSTER__` bump + restore test
 - [x] M2.3 INFRASTRUCTURE.md + cache-surfaces.md updates
 - [ ] M3 consume OpenFolio Phase 6 (backfill, pairing, `scheme_active`, family_name diff) — blocked on upstream OpenFolio Phase 6 shipping; not executable from this session
 - [ ] M4 post-30-Sep check — blocked on the calendar date; not executable from this session
@@ -281,50 +281,73 @@ true for a family whose only IDCW plan has `option_type='payout'`.
 ## Amendments (2026-09-13 implementation pass)
 
 Implemented by a second agent picking up this plan after the investigation/plan
-authoring pass. M1 and M2 are code-complete and merged into this branch; M3/M4
-are unchanged (they require live upstream state this session cannot produce or
-wait for). Three deliberate scope decisions, each because the alternative
-carried materially higher risk or blast radius than the plan's own stated
-boundaries justified:
+authoring pass, in two rounds. M1 and M2 (including both items initially scoped
+out of the first round — see below) are code-complete and merged into this
+branch. M3/M4 are unchanged: both require live upstream state this session
+cannot produce or wait for (OpenFolio's Phase 6 shipping; the calendar reaching
+1 Oct).
 
-- **M2.0 migration not applied.** `supabase/migrations/20260913000000_scheme_master_plan_option_source.sql`
-  is written and reviewed but `supabase db push` was not run against any live
-  project from this session. Applying a schema migration to a shared Supabase
-  project is a hard-to-reverse, cross-environment action or explicit
-  authorization; whoever merges this should run it against dev, confirm the
-  column + view exist, then prod, per the plan's own Acceptance criteria.
-- **M2.1 "Plan/Option into provisional identity" deferred.** The Milestones
-  text only asked for header-driven parsing + `scheme_name` composition +
-  portal URL (done, tested against both AMFI layouts). The Progress
-  checklist's fuller phrasing and the inventory table's aspirational
-  "Change (M2)" column additionally wanted `fetch_amfi_isin_map` to carry
-  `plan_type`/`option_type` into CAS-created provisional `scheme_master` rows.
-  That data flows through `extract_mf_folios` → the `{"mutual_funds": [...]}`
-  contract → `_shared/import-cas.ts` → the `apply_cas_import_plans_v3`
-  Postgres RPC that performs the atomic financial-reconciliation write —
-  changing it means touching a transactional stored procedure that handles
-  real money data, which is a materially different risk class from a parser
-  change. It's also explicitly named in this plan's own Out of Scope list
-  ("UI changes. Any plan/option label fix is upstream data.") under one
-  defensible reading. Left as a follow-up; `universe-backfill`/`sync-fund-meta`
-  still backfill `plan_type`/`option_type` for any such scheme once held.
-- **M2.2b narrowed to correctness fixes, not display-layer rewiring.** Wired:
-  `buildPlanBreakdown`'s only caller (Direct vs Regular) to prefer
-  `scheme_master.plan_type` over name-regex for *every* held fund, not just
-  ones the regex had already called "regular" (the actual bug this plan is
-  about — a fund AMFI stops naming with "Direct"/"Regular" could never be
-  reclassified); `isPayoutPlan` and `planOptionLabel` to cover OpenFolio's
-  bare `reinvest`/`payout` values (same bug class as the `has_idcw` fix);
-  `SchemeSearchResult` gained `family_name` so Past SIP Check's fund badge —
-  the one `shortSchemeName` caller that wasn't already family_name-first —
-  now is. Not done: swapping `parseFundName`'s regex badge for
-  `planOptionLabel` on FundCard / ClearLensFundsScreen / usePortfolioInsights.
-  That requires exposing `plan_type`/`option_type`/`family_name` on the `fund`
-  Postgres view (not currently there), which cascades into the native SQLite
-  held-fund schema and its own migration/repair path, plus a
-  `PERSIST_ALLOWLIST` cache-shape review — a proportionally large,
-  cross-cutting change for a cosmetic badge, not a functional break (the
-  regex fallback keeps working for any name shape it already handles).
-  `plan_option_source` was still added to the persisted `['scheme-master',
-  code]` select (`__BUSTER__` → v13, restore tests added) so the column is
-  available the moment a future PR wants it.
+**Round 1** landed M1 in full and the narrower reading of M2 (header-driven
+parser, provenance writers, `plan_option_source` migration, the
+`buildPlanBreakdown`/`isPayoutPlan`/`planOptionLabel` correctness fixes). Two
+items were deliberately deferred pending explicit confirmation, given their
+larger blast radius relative to the rest of the plan:
+
+- Carrying AMFI's Plan/Option into a CAS-created provisional `scheme_master`
+  row — deferred because it touches `apply_cas_import_plans_v2`, the
+  transactional RPC that performs the atomic financial-reconciliation write.
+- Swapping `FundCard`/`ClearLensFundsScreen`'s `parseFundName` regex badge for
+  `planOptionLabel` — deferred because `plan_type`/`option_type`/`family_name`
+  weren't exposed on the `fund` Postgres view, and extending it looked at the
+  time like it would cascade into a native SQLite schema change.
+
+**Round 2** (this pass) implemented both, after confirming the actual blast
+radius was smaller than first estimated:
+
+- **CAS provisional identity plan/option.** `api/_cdsl_nsdl_parser.py` now
+  derives `plan_type`/`option_type` from AMFI's own Plan/Option columns
+  (`_normalize_amfi_plan_type`/`_normalize_amfi_option_type`, new 8-column
+  layout only) and carries them through `extract_mf_folios` →
+  `additional_info.amfi_plan_type`/`amfi_option_type` →
+  `_shared/cas-import-contract.ts`'s `CASSchemeAdditionalInfo` →
+  `_shared/import-cas.ts`'s `provisional_plan_type`/`provisional_option_type`
+  → `apply_cas_import_plans_v2`'s `scheme_master` insert
+  (`20260913000001_cas_provisional_plan_option.sql`). Same signature as the
+  currently active function; only the insert's column list changed, so no
+  `cas_import_schema_version_v3()` bump was needed — the two new fields are
+  optional, and their absence reproduces exactly today's behaviour (both
+  columns null). The catalog authority boundary (`on conflict (scheme_code)
+  do nothing`) is unconditional and unchanged: this can only ever populate a
+  brand-new row, never touch an existing one — verified with a dedicated test
+  asserting a conflicting AMFI claim on the CAS payload leaves an existing
+  catalog row's `plan_type`/`option_type`/`plan_option_source` untouched.
+  **Not verified against a live Postgres** — no local/Docker Postgres was
+  available in this session (see the general migration-application note
+  below); the SQL was hand-verified against the currently active function
+  body it was copied from, and the TS-side payload construction is tested.
+- **FundCard/ClearLensFundsScreen badge.** Turned out the SQLite concern was
+  wrong: `src/lib/db/db.ts` has no `fund`/`scheme_master` table at all (only
+  `tx`/`nav`/`idx`/`sync_state`/`meta`), so there was no native schema to
+  migrate. Added `family_name`/`plan_type`/`option_type` to the `fund` view
+  (`20260913000002_fund_view_plan_option_family.sql`), threaded them through
+  `useUserFunds`/`usePortfolio`'s `FundCardData`, and swapped every
+  `parseFundName`/bare-`.base` call site that had a `FundCardData` in hand
+  (FundCard, ClearLensFundsScreen mobile + desktop, ClearLensPortfolioScreen,
+  ClearLensWealthJourneyScreen, `usePortfolioInsights`) to prefer
+  `familyName`/`planOptionLabel(planType, optionType)`, falling back to the
+  regex only when those columns are null. `['user-funds', userId]` is in the
+  persist allowlist, so `__BUSTER__` → v14 (from v13); restore tests added
+  for the new `fetchUserFunds` columns.
+
+**Still true after round 2:**
+
+- **M2.0 and the two new migrations are written, not applied.**
+  `20260913000000_scheme_master_plan_option_source.sql`,
+  `20260913000001_cas_provisional_plan_option.sql`, and
+  `20260913000002_fund_view_plan_option_family.sql` are all reviewed but
+  `supabase db push` was not run against any live project from this session —
+  applying a schema migration to a shared Supabase project is a
+  hard-to-reverse, cross-environment action needing explicit authorization or
+  human execution. Whoever merges this should run all three against dev in
+  order, confirm the columns/view/function exist, then prod, per the plan's
+  own Acceptance criteria.

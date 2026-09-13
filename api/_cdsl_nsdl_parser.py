@@ -38,8 +38,10 @@ logger = logging.getLogger(__name__)
 
 # ── AMFI ISIN → scheme_code cache ─────────────────────────────────────────────
 
-# tuple: (scheme_code, broad_category, scheme_name)
-_isin_cache: dict[str, tuple[int, str, str]] | None = None
+# tuple: (scheme_code, broad_category, scheme_name, plan_type, option_type).
+# plan_type/option_type are only populated on the new 8-column layout (Plan/
+# Option columns present) — see fetch_amfi_isin_map.
+_isin_cache: dict[str, tuple[int, str, str, str | None, str | None]] | None = None
 
 # AMFI's original www.amfiindia.com/spages/NAVAll.txt now redirects here (the
 # 2026-09 8-column format change). The old 6-column layout stays available at
@@ -77,6 +79,48 @@ _AMFI_REQUIRED_HEADER_KEYS = ("scheme_code", "isin_growth", "isin_reinvest", "sc
 
 def _normalize_amfi_header_cell(cell: str) -> str:
     return re.sub(r"\s+", " ", cell.strip().lower())
+
+
+def _normalize_amfi_plan_type(raw: str) -> str | None:
+    """Map AMFI's raw Plan column ("Direct Plan" / "Regular Plan" / blank) to
+    the scheme_master.plan_type enum. Returns None for blank/unrecognised."""
+    low = raw.strip().lower()
+    if low.startswith("direct"):
+        return "direct"
+    if low.startswith("regular"):
+        return "regular"
+    return None
+
+
+def _normalize_amfi_option_type(raw: str) -> str | None:
+    """Map AMFI's raw Option column (free text, e.g. "Growth", "IDCW Option",
+    "IDCW-Re-investment", "Payout of Income Distribution cum Capital
+    Withdrawal") to the scheme_master.option_type enum used elsewhere in the
+    pipeline (OpenFolio's own vocabulary: growth/idcw/reinvest/payout/bonus).
+    Returns None for blank/unrecognised text — never guesses."""
+    low = raw.strip().lower()
+    if not low:
+        return None
+    if "growth" in low:
+        return "growth"
+    if "bonus" in low:
+        return "bonus"
+    # AMFI's raw text sometimes hyphenates ("Re-investment", "Pay-out") —
+    # strip hyphens before substring matching so both spellings match.
+    compact = low.replace("-", "")
+    has_reinvest = "reinvest" in compact
+    has_payout = "payout" in compact
+    if "idcw" in low or "dividend" in low or "income distribution" in low:
+        if has_reinvest:
+            return "reinvest"
+        if has_payout:
+            return "payout"
+        return "idcw"
+    if has_reinvest:
+        return "reinvest"
+    if has_payout:
+        return "payout"
+    return None
 
 
 def _match_amfi_header(parts: list[str]) -> dict[str, int] | None:
@@ -117,8 +161,11 @@ def _broad_category(header: str) -> str | None:
     return None
 
 
-def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
-    """Return { isin: (scheme_code, broad_category, scheme_name) } for all MF ISINs.
+def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str, str | None, str | None]]:
+    """Return { isin: (scheme_code, broad_category, scheme_name, plan_type,
+    option_type) } for all MF ISINs. plan_type/option_type are derived from
+    AMFI's own Plan/Option columns and are only non-None on the new 8-column
+    layout — see docs/plans/amfi-nav-format-change.md M2.1.
 
     Result is cached module-level so warm Vercel invocations skip the network
     round-trip.
@@ -136,7 +183,7 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
         _isin_cache = {}
         return _isin_cache
 
-    result: dict[str, tuple[int, str, str]] = {}
+    result: dict[str, tuple[int, str, str, str | None, str | None]] = {}
     current_category = "Other"
     column_map: dict[str, int] | None = None
 
@@ -183,17 +230,23 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
         # Scheme Name. Recompose "<Scheme Name> - <Plan> - <Option>" so the
         # provisional identity CAS import creates still has a full display
         # name, even though scheme_name alone is now the family name only.
+        # Also derive plan_type/option_type so that provisional identity can
+        # carry a real classification instead of waiting for hydration.
+        plan_type: str | None = None
+        option_type: str | None = None
         if "plan" in column_map and "option" in column_map:
             plan = _cell(parts, "plan")
             option = _cell(parts, "option")
             scheme_name = " - ".join(part for part in (base_name, plan, option) if part)
+            plan_type = _normalize_amfi_plan_type(plan) if plan else None
+            option_type = _normalize_amfi_option_type(option) if option else None
         else:
             scheme_name = base_name
 
         for key in ("isin_growth", "isin_reinvest"):
             isin = _cell(parts, key)
             if re.match(r"^INF[A-Z0-9]{9}$", isin):
-                result[isin] = (code, current_category, scheme_name)
+                result[isin] = (code, current_category, scheme_name, plan_type, option_type)
 
     logger.info("[cdsl-parser] AMFI map loaded: %d ISINs", len(result))
     _isin_cache = result
@@ -597,7 +650,7 @@ def _folio_from_cells(cells: list[str]) -> str | None:
 
 def extract_mf_folios(
     pdf: pdfplumber.PDF,
-    isin_map: dict[str, tuple[int, str, str]],
+    isin_map: dict[str, tuple[int, str, str, str | None, str | None]],
     observed_dialects: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract mutual fund folio data from a CDSL/NSDL CAS PDF.
@@ -691,10 +744,14 @@ def extract_mf_folios(
                         amfi_code: int | None = None
                         category = "Other"
                         amfi_name: str | None = None
+                        amfi_plan_type: str | None = None
+                        amfi_option_type: str | None = None
                         if current_isin in isin_map:
                             entry = isin_map[current_isin]
                             amfi_code, category = entry[0], entry[1]
                             amfi_name = entry[2] if len(entry) > 2 and entry[2] else None
+                            amfi_plan_type = entry[3] if len(entry) > 3 else None
+                            amfi_option_type = entry[4] if len(entry) > 4 else None
 
                         schemes_by_isin[current_isin] = {
                             # Prefer AMFI name (authoritative); fall back to
@@ -711,6 +768,12 @@ def extract_mf_folios(
                                 "advisor": None,
                                 "open_units": None,
                                 "close_units": None,
+                                # AMFI's own Plan/Option (new 8-column layout
+                                # only) — see docs/plans/amfi-nav-format-change.md
+                                # M2.1. None for the old layout / a scheme AMFI
+                                # doesn't index.
+                                "amfi_plan_type": amfi_plan_type,
+                                "amfi_option_type": amfi_option_type,
                             },
                             "transactions": [],
                         }

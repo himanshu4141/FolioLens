@@ -32,6 +32,7 @@ import { useAppStore } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { parseFundName } from '@/src/utils/fundName';
+import { planOptionLabel } from '@/src/utils/schemeName';
 import { navStaleness, isMaturedScheme } from '@/src/utils/navUtils';
 import {
   ClearLensFonts,
@@ -285,7 +286,11 @@ export const FundListItem = memo(function FundListItem({
   tokens,
 }: FundListItemProps) {
   useVirtualizedRowMount('funds-mobile');
-  const { base, planBadge } = parseFundName(fund.schemeName);
+  // Prefer scheme_master's authoritative columns over regex-parsing the
+  // scheme name — see docs/plans/amfi-nav-format-change.md M2.2b.
+  const parsedName = parseFundName(fund.schemeName);
+  const base = fund.familyName ?? parsedName.base;
+  const planBadge = planOptionLabel(fund.planType, fund.optionType) ?? parsedName.planBadge;
   const gain = fund.currentValue != null ? fund.currentValue - fund.investedAmount : null;
   const gainPct =
     gain != null && fund.investedAmount > 0 ? (gain / fund.investedAmount) * 100 : null;
@@ -681,7 +686,9 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
   );
   const largestPosition =
     insights?.fundAllocation[0]?.shortName ??
-    (valueSortedFunds[0] ? parseFundName(valueSortedFunds[0].schemeName).base : '—');
+    (valueSortedFunds[0]
+      ? valueSortedFunds[0].familyName ?? parseFundName(valueSortedFunds[0].schemeName).base
+      : '—');
   const largestPositionPct =
     insights?.fundAllocation[0]?.pct ??
     (valueSortedFunds[0] ? (allocationPctByFundId.get(valueSortedFunds[0].id) ?? null) : null);
@@ -717,8 +724,11 @@ function ClearLensFundsScreenMobile({ insideTab = false }: { insideTab?: boolean
           );
         case 'dailyChange':
           return sortableNumber(b.dailyChangePct) - sortableNumber(a.dailyChangePct);
-        case 'alphabetical':
-          return parseFundName(a.schemeName).base.localeCompare(parseFundName(b.schemeName).base);
+        case 'alphabetical': {
+          const aName = a.familyName ?? parseFundName(a.schemeName).base;
+          const bName = b.familyName ?? parseFundName(b.schemeName).base;
+          return aName.localeCompare(bName);
+        }
         case 'currentValue':
         default:
           return sortableNumber(b.currentValue) - sortableNumber(a.currentValue);

@@ -51,9 +51,12 @@ def test_fetch_amfi_isin_map_returns_correct_mapping():
         result = fetch_amfi_isin_map()
 
     assert "INF846K01DP8" in result
-    code, cat, name = result["INF846K01DP8"]
+    code, cat, name, plan_type, option_type = result["INF846K01DP8"]
     assert (code, cat) == (119551, "Equity")
     assert "Axis Bluechip" in name
+    # Old 6-column layout has no Plan/Option columns to derive these from.
+    assert plan_type is None
+    assert option_type is None
 
     assert "INF846K01VD5" in result
     assert result["INF846K01VD5"][:2] == (119551, "Equity")
@@ -105,16 +108,20 @@ def test_fetch_amfi_isin_map_new_layout_composes_scheme_name_with_plan_and_optio
         result = fetch_amfi_isin_map()
 
     assert "INF209KA12Z1" in result
-    code, cat, name = result["INF209KA12Z1"]
+    code, cat, name, plan_type, option_type = result["INF209KA12Z1"]
     assert code == 119551
     assert cat == "Debt"
     assert name == "Aditya Birla Sun Life Banking & PSU Debt Fund - Direct Plan - IDCW-Re-investment"
+    assert plan_type == "direct"
+    assert option_type == "reinvest"
 
     assert "INF846K01EW2" in result
-    code2, cat2, name2 = result["INF846K01EW2"]
+    code2, cat2, name2, plan_type2, option_type2 = result["INF846K01EW2"]
     assert code2 == 120716
     assert cat2 == "Equity"
     assert name2 == "Axis Bluechip Fund - Direct Plan - Growth"
+    assert plan_type2 == "direct"
+    assert option_type2 == "growth"
     parser_module._isin_cache = None  # restore
 
 
@@ -128,9 +135,12 @@ def test_fetch_amfi_isin_map_new_layout_handles_blank_plan_column():
         result = fetch_amfi_isin_map()
 
     assert "INF846K01FA3" in result
-    code, cat, name = result["INF846K01FA3"]
+    code, cat, name, plan_type, option_type = result["INF846K01FA3"]
     assert code == 120717
     assert name == "Axis Bluechip Fund - Growth"
+    # Blank Plan cell -> no plan_type to derive; Option is still present.
+    assert plan_type is None
+    assert option_type == "growth"
     parser_module._isin_cache = None  # restore
 
 
@@ -143,6 +153,8 @@ def test_fetch_amfi_isin_map_old_layout_still_leaves_scheme_name_unchanged():
     with patch("urllib.request.urlopen", return_value=mock_resp):
         result = fetch_amfi_isin_map()
 
-    _, _, name = result["INF846K01DP8"]
+    _, _, name, plan_type, option_type = result["INF846K01DP8"]
     assert name == "Axis Bluechip Fund - Direct Growth"
+    assert plan_type is None
+    assert option_type is None
     parser_module._isin_cache = None  # restore

@@ -99,7 +99,11 @@ import { trackUxCacheHealth } from '@/src/lib/uxTelemetry';
 // v13: `['scheme-master', code]` payloads gain `plan_option_source` (provenance
 // of plan_type/option_type: 'amfi' | 'name' | 'mfdata' | null) — see
 // docs/plans/amfi-nav-format-change.md M2.
-export const __BUSTER__ = 'v13';
+// v14: `['user-funds', userId]` payloads (and the derived public `['portfolio',
+// …]` fund cards) gain `family_name`/`plan_type`/`option_type` from the `fund`
+// view, so held-fund badges can read the authoritative column instead of only
+// ever regex-parsing the scheme name — same plan, M2.2b.
+export const __BUSTER__ = 'v14';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 

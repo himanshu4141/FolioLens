@@ -83,6 +83,10 @@ export interface FundCardData {
   navHistory30d: { date: string; value: number }[];
   navUnavailable?: true;
   schemeActive: boolean | null;
+  /** Authoritative from scheme_master — prefer over name-regex badges/labels. */
+  familyName: string | null;
+  planType: string | null;
+  optionType: string | null;
 }
 
 export interface PortfolioSummary {
@@ -411,6 +415,9 @@ export async function fetchPortfolioCoreData(
         navHistory30d: [],
         navUnavailable: true,
         schemeActive,
+        familyName: fund.family_name ?? null,
+        planType: fund.plan_type ?? null,
+        optionType: fund.option_type ?? null,
       });
       continue;
     }
@@ -463,6 +470,9 @@ export async function fetchPortfolioCoreData(
       redeemedUnits,
       navHistory30d: navHistoryByScheme.get(fund.scheme_code) ?? [],
       schemeActive,
+      familyName: fund.family_name ?? null,
+      planType: fund.plan_type ?? null,
+      optionType: fund.option_type ?? null,
     });
 
     portfolioTotalValue += currentValue;

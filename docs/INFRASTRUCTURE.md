@@ -172,6 +172,18 @@ an empty committed post-plan ledger is a deactivation floor. Q5 repair must use 
 same resolver when applying delete-only activation changes; rollback restores the
 captured prior activation instead of deriving a second policy.
 
+M2.1 (`docs/plans/amfi-nav-format-change.md`,
+`20260913000001_cas_provisional_plan_option.sql`) extends the v2 writer's
+`scheme_master` insert with `plan_type`/`option_type`/`plan_option_source`,
+sourced from optional `provisional_plan_type`/`provisional_option_type` fields
+on each import plan (populated only for CDSL/NSDL CAS on AMFI's new 8-column
+NAVAll layout). No capability version bump was needed: the fields are
+optional and additive, so Edge Function code from before this migration and
+after it both produce identical output on either side of the deploy boundary
+— the catalog authority boundary (`on conflict (scheme_code) do nothing`)
+still means this can only ever populate a brand-new row, never an existing
+one.
+
 
 ### One-time per-project bootstrap: `public.app_config`
 

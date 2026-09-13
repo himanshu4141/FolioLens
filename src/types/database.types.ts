@@ -540,6 +540,7 @@ export type Database = {
           created_at: string | null
           declared_benchmark_name: string | null
           expense_ratio: number | null
+          family_name: string | null
           fund_meta_synced_at: string | null
           id: string | null
           is_active: boolean | null
@@ -547,6 +548,8 @@ export type Database = {
           mfdata_family_id: number | null
           mfdata_meta_synced_at: string | null
           min_sip_amount: number | null
+          option_type: string | null
+          plan_type: string | null
           risk_label: string | null
           scheme_active: boolean | null
           scheme_category: string | null

@@ -19,6 +19,7 @@ import { useAppStore, type FundsSortOption } from '@/src/store/appStore';
 import { formatCurrency } from '@/src/utils/formatting';
 import { formatXirr } from '@/src/utils/xirr';
 import { parseFundName } from '@/src/utils/fundName';
+import { planOptionLabel } from '@/src/utils/schemeName';
 import { MaxContentWidth } from '@/src/components/responsive';
 import {
   ClearLensFonts,
@@ -132,8 +133,11 @@ export function ClearLensFundsScreenDesktop() {
           );
         case 'dailyChange':
           return sortableNumber(b.dailyChangePct) - sortableNumber(a.dailyChangePct);
-        case 'alphabetical':
-          return parseFundName(a.schemeName).base.localeCompare(parseFundName(b.schemeName).base);
+        case 'alphabetical': {
+          const aName = a.familyName ?? parseFundName(a.schemeName).base;
+          const bName = b.familyName ?? parseFundName(b.schemeName).base;
+          return aName.localeCompare(bName);
+        }
         case 'currentValue':
         default:
           return sortableNumber(b.currentValue) - sortableNumber(a.currentValue);
@@ -289,7 +293,7 @@ export function ClearLensFundsScreenDesktop() {
                 {largestFund ? (
                   <>
                     <Text style={styles.summaryValue} numberOfLines={1}>
-                      {parseFundName(largestFund.schemeName).base}
+                      {largestFund.familyName ?? parseFundName(largestFund.schemeName).base}
                     </Text>
                     <Text style={styles.summarySub} numberOfLines={1}>
                       {largestPct != null ? `${largestPct.toFixed(1)}% of portfolio` : '—'}
@@ -414,7 +418,7 @@ function MoverChip({
         {label}
       </Text>
       <Text style={styles.moverChipName} numberOfLines={1}>
-        {parseFundName(fund.schemeName).base}
+        {fund.familyName ?? parseFundName(fund.schemeName).base}
       </Text>
       <Text style={[styles.moverChipDelta, { color }]}>{formatClearLensPercentDelta(pct)}</Text>
     </View>
@@ -492,7 +496,11 @@ const FundDesktopCard = memo(function FundDesktopCard({
   tokens: ClearLensTokens;
 }) {
   useVirtualizedRowMount('funds-desktop');
-  const { base, planBadge } = parseFundName(fund.schemeName);
+  // Prefer scheme_master's authoritative columns over regex-parsing the
+  // scheme name — see docs/plans/amfi-nav-format-change.md M2.2b.
+  const parsedName = parseFundName(fund.schemeName);
+  const base = fund.familyName ?? parsedName.base;
+  const planBadge = planOptionLabel(fund.planType, fund.optionType) ?? parsedName.planBadge;
   const dailyColor = (fund.dailyChangePct ?? 0) >= 0 ? tokens.colors.emerald : CLEAR_LENS_RED;
   const alphaPpRaw = (fund.returnXirr - benchmarkXirr) * 100;
   // Round before sign-deciding so a value that rounds to 0.0 renders neutrally
