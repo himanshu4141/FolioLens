@@ -131,5 +131,6 @@ Review the base-to-head diff for any literal password, document name, holder dat
 - [x] Implement the pre-upload unlock transition and focused regression tests.
 - [x] Update privacy cleanup, copy, accessibility, and architecture documentation.
 - [x] Complete focused and full validation.
-- [ ] Open and converge the frozen exact-head C10 PR.
+- [x] Open C10 implementation PR #313.
+- [ ] Complete frozen exact-head Codex and Claude convergence.
 - [ ] Merge, verify dev deployment, and complete privacy-safe direct-upload field proof.
