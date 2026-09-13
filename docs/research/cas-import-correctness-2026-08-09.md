@@ -840,9 +840,10 @@ Required evidence at the exact PR head SHA and deployed dev/main build:
   - `[Claude review <ID>] CONVERGED at <full 40-character SHA>`
 - Status and the ledger live in the control PR description; the research branch changes only
   for genuine scope amendments and final outcomes.
-- Merge authority: **human owner presses merge** for every implementation PR after the green
-  dual-review gate and all required checks. This conservative choice is appropriate for the
-  first correctness milestones and can be amended only by an explicit owner decision.
+- Merge authority began as **human owner presses merge**. On 2026-08-09 the owner explicitly
+  delegated the remaining milestone merges to the execution owner after the green dual-review
+  gate, all required checks, and a clean actionable-thread audit. Deployment, shared-dev
+  mutation, accepted-unmet-condition, and production-release authority remained separate.
 - Closeout owner: execution owner, with the human owner approving any accepted unmet exit
   condition and the eventual production rollout separately.
 - Wake model: exactly three persistent sessions (executor, Codex reviewer, Claude reviewer)
@@ -936,6 +937,12 @@ transient field validation sources only.
   currently small and the owner reports no known production CDSL/NSDL CAS users, so the
   owner explicitly prefers the planned Q1-Q5 fix over an interim production hotfix. Any
   observed production depository import reopens containment as a correctness interrupt.
+- **2026-08-09 — Execution owner receives milestone merge authority.** The owner delegated
+  remaining milestone merges after exact-head review and required checks. This did not delegate
+  production rollout or remove the fresh shared-dev mutation approval gate.
+- **2026-09-13 — NAV incident transferred out of this program.** The AMFI/OpenFolio NAV-format
+  and downstream freshness work is tracked independently in FolioLens PR #312 and
+  OpenFolio-Data PR #83. It is not a CAS exit gate and this program performs no NAV correction.
 
 ---
 
@@ -948,22 +955,87 @@ transient field validation sources only.
 - [x] Queried the dev import and cross-source overlap using sanitized aggregates.
 - [x] Identified shared catalog, folio, detection, category, password-copy, test, and
   partial-write risks.
-- [x] Addressed an independent pre-publication Codex review pass; formal frozen-head
-  research convergence remains pending.
-- [x] Addressed Claude research review round 1 and recorded the owner's explicit temporary
-  production-risk acceptance; frozen-head re-review remains pending.
-- [ ] Independent Codex research review converged.
-- [ ] Independent Claude research review converged.
-- [ ] Q1 — Fail-closed import contract.
-- [ ] Q2 — Header-aware CDSL/NSDL extraction.
-- [ ] Q3 — Provider-neutral reconciliation.
-- [ ] Q4 — Catalog isolation and write recovery.
-- [ ] Q5 — Dev repair, freshness, and field proof.
-- [ ] Program exit criterion evaluated.
+- [x] Addressed the independent pre-publication Codex review pass and completed frozen-head
+  research convergence.
+- [x] Addressed Claude research review round 1, recorded the owner's explicit temporary
+  production-risk acceptance, and completed the frozen-head re-review.
+- [x] Independent Codex research review converged.
+- [x] Independent Claude research review converged.
+- [x] Q1 — Fail-closed import contract.
+- [x] Q2 — Header-aware CDSL/NSDL extraction.
+- [x] Q3 — Provider-neutral reconciliation.
+- [x] Q4 — Catalog isolation and write recovery.
+- [x] Q5 — Dev repair, freshness, and field proof.
+- [x] C1–C8 correctness interrupts and repair-transport follow-ups.
+- [x] Program exit criterion evaluated: criteria 1–5 are met, criterion 6 remains explicitly
+  unmet pending owner disposition, and criterion 7 remains a separate production decision.
 
 ---
 
 ## Final outcomes
 
-Not yet evaluated. This section is completed by the closeout owner after every milestone
-merges and the field observation window is satisfied or explicitly accepted as unmet.
+### Milestone and merge state
+
+Q1–Q5 and the eight correctness follow-ups C1–C8 are merged into `main`. The prevention
+sequence replaced positional depository extraction with table-owned header maps, added a
+two-layer fail-closed accounting contract, implemented provider-neutral reconciliation and
+immutable transaction identity, isolated shared catalog writes, and centralized authoritative
+holding activation. The repair sequence then built and hardened an exact-target, encrypted,
+fail-closed shared-dev repair transport through its successful field run.
+
+| Milestone | PR | Merge SHA | Outcome |
+|---|---:|---|---|
+| Q1 | #292 | `f7a54d647f29bdf38e74341156c5dc91d39ef3a6` | Fail-closed import contract merged. |
+| Q2 | #293 | `80dced1a785640bff094a44fb60d287a7f7c1f79` | Header-owned CDSL/NSDL extraction merged. |
+| Q3 | #294 | `7908fe507e81a7e2f2b26f36db91a1a8cab2f31c` | Provider-neutral reconciliation and immutable identity merged. |
+| Q4 | #295 | `43159a3d9e9abb8dde62bbad574fe4048e84e32a` | Catalog isolation and atomic import merged under the recorded review override. |
+| C1 | #297 | `aa378035d6aab79e04ee2cfef9b710cdb04b04b2` | Authoritative holding activation merged and deployed to dev. |
+| Q5 | #296 | `9134df62f248ed97d867f0b0a79eb579b4615912` | Guarded dev repair and field-proof tooling merged and deployed to dev. |
+| C2 | #298 | `9e6452d10711ad3161e6b8356b30ea3f35bfb29f` | CLI-authenticated exact-target transport merged. |
+| C3 | #299 | `4fb009645e3d55783cd86c5d9de81fc62fc71a04` | Temporary-role assumption correctness merged. |
+| C4 | #300 | `610f2fc0201f60b302dd248cbd4479aad89718a4` | Exact-target digest namespace correctness merged. |
+| C5 | #301 | `9d2c8fa40e1ecd85f9ffb55efe2b4ca8755e1428` | Hydration guard input binding merged. |
+| C6 | #302 | `1f8f420a75bad37b9db1e39d25879948a482b0dc` | Service-role authorization correction merged and deployed to dev. |
+| C7 | #303 | `210b57e1898fcc2692f19bd75550e3c7e6a59b79` | Bounded sequential hydration transport merged. |
+| C8 | #311 | `6ce27c0b37aa107413b800b9ba9d661cebed9966` | CLI hydration lifetime separation merged; authoritative repair completed. |
+
+The final merged milestone was C8, FolioLens PR #311. Its authoritative dev hydration completed
+with 11 updated, 0 failed, and 0 skipped. The approved bad-import rows remain absent, unrelated
+data remained unchanged, private-temporary cleanup completed, and the encrypted rollback remains
+retained. Deletion was not repeated, rollback was not run, and production was not contacted.
+
+### Exit-criterion evaluation
+
+| Criterion | Outcome | Evidence boundary |
+|---|---|---|
+| 1. Parser proof | Met | Both supplied depository layouts passed aggregate-only exact-main parser/preflight validation; the sources and derived private content were not retained. |
+| 2. Idempotency proof | Met | Provider-neutral reconciliation, repeated-import, exact immutable-ID, reversal, and synthetic integration coverage passed through the merged implementation and field-validation sequence. |
+| 3. Repair proof | Met | The owner-approved exact-target deletion completed; the target is absent, unrelated data is unchanged, and authoritative hydration completed without failed or skipped schemes. |
+| 4. Portfolio proof | Met | The repaired transaction/holding state and web/native cache paths were validated against the merged Q5/C1–C8 behavior without production rollout. |
+| 5. Safety proof | Met | Malformed and ambiguous layouts fail closed; shared catalog authority, atomic writes, activation recency, and privacy-safe outcome boundaries are covered by merged tests and field checks. |
+| 6. Seven-day observation | **Unmet** | The recorded dev/main window has a denominator of zero for both direct upload and inbound email. No failure was observed, but no exercised path exists from which to calculate the required rate. |
+| 7. Production gate | Separate decision | No production rollout occurred. Explicit owner approval is still required and is not necessary to close the dev correctness program. |
+
+Criterion 6 must be resolved in one of the two ways allowed by the original contract: exercise
+both dev paths and record a new seven-day window, or obtain the human owner's explicit acceptance
+of the named zero-denominator condition and rationale. Until then the control PR remains draft.
+
+### Review and governance deviations
+
+- Q4 merged under a documented one-time owner override after the assigned Claude reviewer was
+  unavailable for the final narrow round. Codex converged at the final head and the owner manually
+  reviewed the correction.
+- C8 received real exact-head reviews, but later audit established that the round-two and
+  round-three Claude markers came from replacement stateless sessions under the shared reviewer
+  identity rather than the assigned persistent session. No known code defect resulted, but the
+  program must not claim uninterrupted assigned-reviewer provenance for that milestone.
+
+These deviations are part of the historical record; they do not silently convert into ordinary
+dual-review convergence.
+
+### Closeout disposition
+
+The CAS implementation and shared-dev repair are complete. The only remaining CAS gate is the
+explicit disposition of criterion 6. The NAV-format/freshness incident is outside this program and
+is tracked by FolioLens PR #312 and OpenFolio-Data PR #83. Production remains untouched and requires
+a separate explicit release decision.
