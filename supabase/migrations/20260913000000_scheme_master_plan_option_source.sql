@@ -7,6 +7,10 @@
 --    'name'   — inferred from a scheme/mfapi name by regex (seed-scheme-master
 --               bootstrap, or the last-resort fallback in client helpers)
 --    'mfdata' — filled by the mfdata fallback path in sync-fund-meta
+--    'mixed'  — OpenFolio (#83): plan_type from one source, option_type from
+--               another (e.g. plan from AMFI's column, option from name
+--               inference). Not 'amfi' — never blocks or is protected by the
+--               precedence rule below, by construction.
 --    NULL     — not yet classified (pre-M2 rows; backfilled over time by
 --               universe-backfill / sync-fund-meta)
 --
@@ -22,8 +26,9 @@ ALTER TABLE scheme_master
 
 COMMENT ON COLUMN scheme_master.plan_option_source IS
   'Provenance of plan_type/option_type: amfi (OpenFolio, AMFI Plan/Option columns) | '
-  'name (regex inference from a scheme/mfapi name) | mfdata (mfdata fallback). '
-  'NULL = not yet classified. An amfi value is never overwritten by name/mfdata.';
+  'name (regex inference from a scheme/mfapi name) | mfdata (mfdata fallback) | '
+  'mixed (OpenFolio: plan_type and option_type from different sources). '
+  'NULL = not yet classified. An amfi value is never overwritten by name/mfdata/mixed.';
 
 CREATE OR REPLACE VIEW v_fund_family_search AS
 SELECT

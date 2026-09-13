@@ -296,8 +296,10 @@ export interface FundMetadata {
    * Provenance of plan_type/option_type on OpenFolio's side: 'amfi' when
    * sourced from AMFI's own Plan/Option NAV columns (post AMFI NAV feed
    * format change, OpenFolio-Data Phase 6), 'name' when OF derived it by
-   * inference from the scheme name. Absent on OF responses that predate
-   * Phase 6 — callers must not guess a value when this is missing.
+   * inference from the scheme name, 'mixed' when plan_type and option_type
+   * came from different sources (e.g. plan from AMFI's column, option from
+   * name inference — OF #83). Absent on OF responses that predate Phase 6 —
+   * callers must not guess a value when this is missing.
    */
   plan_option_source?: string | null;
   // B1 fields (flat):

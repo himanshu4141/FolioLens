@@ -32,7 +32,7 @@ export interface SchemeMasterDbRow {
   family_name: string | null;
   plan_type: string | null;
   option_type: string | null;
-  /** Provenance of plan_type/option_type: 'amfi' | 'name' | 'mfdata' | null. */
+  /** Provenance of plan_type/option_type: 'amfi' | 'name' | 'mfdata' | 'mixed' | null. */
   plan_option_source: string | null;
   launch_date: string | null;
   exit_load: string | null;
