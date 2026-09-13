@@ -52,6 +52,10 @@ comment on function public.resolve_user_fund_activation_v1(
 ) is
   'Resolves user_fund.is_active from prior state, balance recency, closing units, and committed post-plan transactions.';
 
+-- Superseded as the canonical source for this function by
+-- 20260913000001_cas_provisional_plan_option.sql, which re-creates it with
+-- the same signature to add AMFI-sourced plan/option columns to the
+-- provisional scheme_master INSERT. Make future edits there, not here.
 create or replace function public.apply_cas_import_plans_v2(
   p_user_id uuid,
   p_import_id uuid,

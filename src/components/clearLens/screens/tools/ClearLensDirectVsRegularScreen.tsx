@@ -201,6 +201,10 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
   // stopped naming with "Direct"/"Regular" (the format change this plan is
   // about) could never be reclassified from scheme_master.plan_type at all —
   // see docs/plans/amfi-nav-format-change.md M2.2b.
+  // One query per coded fund (fine at typical portfolio sizes and each is
+  // cached), but this is now N queries for every coded fund rather than only
+  // regex-detected 'regular' ones — an on-screen query fan-out worth tracking
+  // alongside the N-series plans if portfolio sizes grow materially.
   const codedFunds = raw.filter((f) => f.schemeCode != null);
   const schemeMasters = await Promise.all(
     codedFunds.map((f) =>

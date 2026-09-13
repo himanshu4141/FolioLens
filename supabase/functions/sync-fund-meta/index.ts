@@ -271,7 +271,7 @@ Deno.serve(async (req) => {
   // ── Freshness filter ─────────────────────────────────────────────────────
   const { data: masterRows } = await supabase
     .from('scheme_master')
-    .select('scheme_code, scheme_name, scheme_category, sebi_category, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios, period_returns')
+    .select('scheme_code, scheme_name, scheme_category, sebi_category, fund_meta_synced_at, mfdata_family_id, openfolio_meta_synced_at, risk_ratios, period_returns, plan_option_source')
     .in('scheme_code', allSchemeCodes);
 
   // scheme_name / existing category are needed to resolve sebi_category for
@@ -283,6 +283,18 @@ Deno.serve(async (req) => {
         scheme_name: (r.scheme_name as string | null) ?? null,
         scheme_category: (r.scheme_category as string | null) ?? null,
       },
+    ]),
+  );
+
+  // Existing plan_option_source per code — needed so neither OF (when it
+  // itself regresses to 'name' for a scheme this run) nor the mfdata
+  // fallback can downgrade a row already classified from AMFI's own
+  // columns. Keying is by-run only otherwise: checking payload.plan_type
+  // (this run's accumulated value) doesn't see what's already persisted.
+  const existingPlanOptionSourceByCode = new Map<number, string | null>(
+    (masterRows ?? []).map((r) => [
+      r.scheme_code as number,
+      (r.plan_option_source as string | null) ?? null,
     ]),
   );
 
@@ -452,6 +464,11 @@ Deno.serve(async (req) => {
         payload.cas_identity_hydration_attempted_at = syncedAt;
       }
 
+      // Existing plan_option_source for this scheme — read once, used by both
+      // the OF branch and the mfdata-exclusive fallback below so neither can
+      // downgrade a row already classified from AMFI's own columns.
+      const existingPlanOptionSource = existingPlanOptionSourceByCode.get(schemeCode) ?? null;
+
       if (isin) payload.isin = isin;
       if (authoritativeIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
         payload.scheme_name = mfapiIdentity.schemeName;
@@ -468,11 +485,21 @@ Deno.serve(async (req) => {
         // Family identity fields — no B1 status, just present or absent:
         if (ofMeta.family_id != null) payload.of_family_id = ofMeta.family_id;
         if (ofMeta.family_name != null) payload.family_name = ofMeta.family_name;
-        if (ofMeta.plan_type != null) payload.plan_type = ofMeta.plan_type;
-        if (ofMeta.option_type != null) payload.option_type = ofMeta.option_type;
-        // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
-        // guess a value when OF's response predates this field (Phase 6).
-        if (ofMeta.plan_option_source != null) payload.plan_option_source = ofMeta.plan_option_source;
+
+        // Never let a lower-precedence source downgrade a row already
+        // classified from AMFI's own columns — OF can itself regress to
+        // name-inference for a scheme on a given run (or omit the field),
+        // and that must not overwrite a prior 'amfi' value.
+        const incomingOfPlanOptionSource = ofMeta.plan_option_source ?? null;
+        const canWriteOfPlanOption =
+          existingPlanOptionSource !== 'amfi' || incomingOfPlanOptionSource === 'amfi';
+        if (canWriteOfPlanOption) {
+          if (ofMeta.plan_type != null) payload.plan_type = ofMeta.plan_type;
+          if (ofMeta.option_type != null) payload.option_type = ofMeta.option_type;
+          // Pass through OF's own provenance ('amfi' | 'name') verbatim —
+          // don't guess a value when OF's response predates this field (Phase 6).
+          if (incomingOfPlanOptionSource != null) payload.plan_option_source = incomingOfPlanOptionSource;
+        }
 
         if (ofMeta.active != null) payload.scheme_active = ofMeta.active;
 
@@ -615,12 +642,15 @@ Deno.serve(async (req) => {
       // downgrade authoritative OF values to mfdata's coarser labels.
       if (mfdata) {
         payload.mfdata_family_id = mfdata.family_id ?? null;
+        // Same precedence rule as the OF branch above: mfdata must never
+        // downgrade a row already classified from AMFI's own columns.
+        const canFillFromMfdata = existingPlanOptionSource !== 'amfi';
         let mfdataSourcedPlanOrOption = false;
-        if (payload.plan_type == null && mfdata.plan_type != null) {
+        if (canFillFromMfdata && payload.plan_type == null && mfdata.plan_type != null) {
           payload.plan_type = mfdata.plan_type;
           mfdataSourcedPlanOrOption = true;
         }
-        if (payload.option_type == null && mfdata.option_type != null) {
+        if (canFillFromMfdata && payload.option_type == null && mfdata.option_type != null) {
           payload.option_type = mfdata.option_type;
           mfdataSourcedPlanOrOption = true;
         }

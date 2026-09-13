@@ -400,4 +400,18 @@ describe('fetch-fund-nav stale fall-through decision', () => {
     // Monday -> Wednesday is 2 trading days, equal to the default threshold.
     expect(decideCacheHit('2026-07-20', new Date('2026-07-22T00:00:00Z'))).toBe(true);
   });
+
+  // The same predicate also gates the "OpenFolio returned *some* points, but
+  // its series still stops at a stale date" case — a scheme that is
+  // data_loaded (not empty) must not be declared 'fetched' just because
+  // points.length > 0 when the resulting last_nav_date is itself stale.
+  it('does not declare fetched when OpenFolio returns points but the result is still stale', () => {
+    // OF answers with catch-up points ending 2026-08-18 — 17 trading days
+    // before 2026-09-10 — instead of admitting it is frozen.
+    expect(decideCacheHit('2026-08-18', new Date('2026-09-10T00:00:00Z'))).toBe(false);
+  });
+
+  it('declares fetched when the points OpenFolio returned land within the threshold', () => {
+    expect(decideCacheHit('2026-07-17', new Date('2026-07-20T00:00:00Z'))).toBe(true);
+  });
 });

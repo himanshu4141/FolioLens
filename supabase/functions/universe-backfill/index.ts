@@ -403,12 +403,23 @@ async function runMetadataBackfillChunk(
       .map((item) => item?.scheme_code)
       .filter((c): c is number => typeof c === 'number');
     const knownCodes = new Set<number>();
+    // Existing plan_option_source per code — needed so a lower-precedence
+    // value (OF itself falling back to 'name' this run, or a run that omits
+    // the field) can never downgrade a row already classified from AMFI's
+    // own columns.
+    const existingPlanOptionSourceByCode = new Map<number, string | null>();
     if (pageCodes.length > 0) {
       const { data: knownRows } = await supabase
         .from('scheme_master')
-        .select('scheme_code')
+        .select('scheme_code, plan_option_source')
         .in('scheme_code', pageCodes);
-      for (const row of knownRows ?? []) knownCodes.add(row.scheme_code);
+      for (const row of knownRows ?? []) {
+        knownCodes.add(row.scheme_code);
+        existingPlanOptionSourceByCode.set(
+          row.scheme_code as number,
+          (row.plan_option_source as string | null) ?? null,
+        );
+      }
     }
 
     const pageWork: Array<{ schemeCode: number; patch: Record<string, unknown> }> = [];
@@ -447,11 +458,21 @@ async function runMetadataBackfillChunk(
       // Family identity fields (no B1 status — always present or absent):
       if (item.family_id != null) patch.of_family_id = item.family_id;
       if (item.family_name != null) patch.family_name = item.family_name;
-      if (item.plan_type != null) patch.plan_type = item.plan_type;
-      if (item.option_type != null) patch.option_type = item.option_type;
-      // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
-      // guess a value when OF's response predates this field (Phase 6).
-      if (item.plan_option_source != null) patch.plan_option_source = item.plan_option_source;
+
+      // Never let a lower-precedence source downgrade a row already
+      // classified from AMFI's own columns — OF itself can regress to
+      // name-inference for a scheme on a given run (or omit the field
+      // entirely), and that must not overwrite a prior 'amfi' value.
+      const existingPlanOptionSource = existingPlanOptionSourceByCode.get(item.scheme_code) ?? null;
+      const incomingPlanOptionSource = item.plan_option_source ?? null;
+      const canWritePlanOption = existingPlanOptionSource !== 'amfi' || incomingPlanOptionSource === 'amfi';
+      if (canWritePlanOption) {
+        if (item.plan_type != null) patch.plan_type = item.plan_type;
+        if (item.option_type != null) patch.option_type = item.option_type;
+        // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
+        // guess a value when OF's response predates this field (Phase 6).
+        if (incomingPlanOptionSource != null) patch.plan_option_source = incomingPlanOptionSource;
+      }
 
       const ter = resolveB1(b1?.ter?.status, item.ter);
       if (ter !== undefined) patch.expense_ratio = ter;

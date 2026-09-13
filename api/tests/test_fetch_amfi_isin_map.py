@@ -1,5 +1,6 @@
 """Tests for fetch_amfi_isin_map() using mocked HTTP responses."""
 
+import logging
 from unittest.mock import MagicMock, patch
 import api._cdsl_nsdl_parser as parser_module
 from api._cdsl_nsdl_parser import fetch_amfi_isin_map
@@ -157,4 +158,46 @@ def test_fetch_amfi_isin_map_old_layout_still_leaves_scheme_name_unchanged():
     assert name == "Axis Bluechip Fund - Direct Growth"
     assert plan_type is None
     assert option_type is None
+    parser_module._isin_cache = None  # restore
+
+
+# Same as SAMPLE_NAVALL but with a spacing tweak in the ISIN header
+# ("ISIN Div Payout / ISIN Growth" — an added space before the slash) that
+# would defeat the old exact-alias-text matcher.
+SAMPLE_NAVALL_HEADER_SPACING_TWEAK = """\
+Open Ended Schemes(Equity Scheme - Multi Cap Fund)
+;
+Scheme Code;ISIN Div Payout / ISIN Growth;ISIN Div Reinvestment;Scheme Name;Net Asset Value;Date
+119551;INF846K01DP8;INF846K01VD5;Axis Bluechip Fund - Direct Growth;85.1200;01-May-2024
+"""
+
+
+def test_fetch_amfi_isin_map_tolerates_header_spacing_tweak():
+    """_match_amfi_header matches by substring, so a punctuation/spacing
+    change AMFI makes to the ISIN header text (unrelated to a column-count
+    layout change) doesn't silently drop every ISIN — see PR #312 review."""
+    parser_module._isin_cache = None
+
+    mock_resp = _make_mock_urlopen(SAMPLE_NAVALL_HEADER_SPACING_TWEAK)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        result = fetch_amfi_isin_map()
+
+    assert "INF846K01DP8" in result
+    assert result["INF846K01DP8"][:2] == (119551, "Equity")
+    parser_module._isin_cache = None  # restore
+
+
+def test_fetch_amfi_isin_map_warns_when_isin_count_is_unexpectedly_low(caplog):
+    """A near-empty (or otherwise implausibly small) result means header
+    matching most likely failed silently — this should surface as a warning,
+    not just an info log, so it isn't missed in production logs."""
+    parser_module._isin_cache = None
+
+    mock_resp = _make_mock_urlopen(SAMPLE_NAVALL)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        with caplog.at_level(logging.WARNING, logger="api._cdsl_nsdl_parser"):
+            result = fetch_amfi_isin_map()
+
+    assert len(result) < parser_module._AMFI_ISIN_COUNT_WARN_THRESHOLD
+    assert any("unexpectedly small" in record.message for record in caplog.records)
     parser_module._isin_cache = None  # restore

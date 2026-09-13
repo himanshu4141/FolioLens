@@ -55,26 +55,17 @@ AMFI_NAV_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
 # to 8 columns (same, plus standalone Plan and Option columns; Scheme Name is
 # now the family name only). Both layouts repeat a header row per AMC/category
 # section, so the same header match runs throughout the file rather than once.
-# Named distinctly from the transaction-table `_HEADER_ALIASES` further down
-# in this module — that one maps CDSL/NSDL statement columns, an unrelated
-# format, and module-level names must not collide.
-_AMFI_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
-    "scheme_code": ("scheme code",),
-    "isin_growth": (
-        "isin div payout/ isin growth",
-        "isin div payout/isin growth",
-        "isin growth",
-    ),
-    "isin_reinvest": ("isin div reinvestment",),
-    "scheme_name": ("scheme name",),
-    "plan": ("plan",),
-    "option": ("option",),
-}
 
 # A section header row must at least carry these to be treated as a header
 # (not a data row) — the two ISIN columns and scheme identity are load-bearing
 # for every layout; Plan/Option are optional (only present in the new layout).
 _AMFI_REQUIRED_HEADER_KEYS = ("scheme_code", "isin_growth", "isin_reinvest", "scheme_name")
+
+# Below the count fetch_amfi_isin_map would return on a healthy day (tens of
+# thousands of ISINs); a total under this suggests _match_amfi_header stopped
+# recognising AMFI's header row (e.g. a spacing/punctuation tweak) and every
+# CDSL/NSDL import is silently resolving zero ISINs.
+_AMFI_ISIN_COUNT_WARN_THRESHOLD = 5_000
 
 
 def _normalize_amfi_header_cell(cell: str) -> str:
@@ -124,14 +115,29 @@ def _normalize_amfi_option_type(raw: str) -> str | None:
 
 
 def _match_amfi_header(parts: list[str]) -> dict[str, int] | None:
-    """Return a {column_key: index} map if `parts` is an AMFI header row, else None."""
+    """Return a {column_key: index} map if `parts` is an AMFI header row, else None.
+
+    Matches by substring rather than exact header text, so a punctuation or
+    spacing tweak in AMFI's header (e.g. "ISIN Div Payout / ISIN Growth"
+    instead of today's "ISIN Div Payout/ ISIN Growth") doesn't silently stop
+    all ISIN resolution — see fetch_amfi_isin_map's low-ISIN-count warning for
+    the failure mode this guards against.
+    """
     normalized = [_normalize_amfi_header_cell(p) for p in parts]
     mapping: dict[str, int] = {}
-    for key, aliases in _AMFI_HEADER_ALIASES.items():
-        for idx, cell in enumerate(normalized):
-            if cell in aliases:
-                mapping[key] = idx
-                break
+    for idx, cell in enumerate(normalized):
+        if "isin" in cell and "reinvest" in cell:
+            mapping.setdefault("isin_reinvest", idx)
+        elif "isin" in cell and ("growth" in cell or "payout" in cell):
+            mapping.setdefault("isin_growth", idx)
+        elif "scheme" in cell and "code" in cell:
+            mapping.setdefault("scheme_code", idx)
+        elif "scheme" in cell and "name" in cell:
+            mapping.setdefault("scheme_name", idx)
+        elif "plan" in cell:
+            mapping.setdefault("plan", idx)
+        elif "option" in cell:
+            mapping.setdefault("option", idx)
     if all(key in mapping for key in _AMFI_REQUIRED_HEADER_KEYS):
         return mapping
     return None
@@ -249,6 +255,14 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str, str | None, str | No
                 result[isin] = (code, current_category, scheme_name, plan_type, option_type)
 
     logger.info("[cdsl-parser] AMFI map loaded: %d ISINs", len(result))
+    if len(result) < _AMFI_ISIN_COUNT_WARN_THRESHOLD:
+        logger.warning(
+            "[cdsl-parser] AMFI ISIN map unexpectedly small: %d ISINs (expected "
+            "tens of thousands) — _match_amfi_header may have stopped "
+            "recognising AMFI's header row, so CDSL/NSDL imports may be "
+            "resolving zero ISINs",
+            len(result),
+        )
     _isin_cache = result
     return result
 

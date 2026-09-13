@@ -178,23 +178,35 @@ Deno.serve(async (req) => {
           }
 
           const lastNavDate = dbRows.reduce((max, r) => (r.nav_date > max ? r.nav_date : max), dbRows[0].nav_date);
-          await stampBackfilledAt(supabase, schemeCode);
+          const resultAgeTradingDays = tradingDaysAge(lastNavDate, new Date());
 
-          const elapsedMs = Date.now() - startedAt;
+          if (resultAgeTradingDays <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS) {
+            await stampBackfilledAt(supabase, schemeCode);
+            const elapsedMs = Date.now() - startedAt;
+            console.log(
+              '[fetch-fund-nav] scheme=%d completion source=openfolio rows_upserted=%d last=%s elapsed_ms=%d',
+              schemeCode, upserted, lastNavDate, elapsedMs,
+            );
+            return json({
+              scheme_code: schemeCode,
+              rows_upserted: upserted,
+              last_nav_date: lastNavDate,
+              status: 'fetched',
+              elapsed_ms: elapsedMs,
+            });
+          }
+
+          // OpenFolio returned some points but its series still stops at a
+          // stale date (the 2026-09 incident: OF frozen at 18 Aug while still
+          // answering catch-up requests with historical points). The rows
+          // already upserted stay — upserts are idempotent — but mfapi is
+          // tried for anything newer rather than declaring 'fetched' on stale
+          // data.
           console.log(
-            '[fetch-fund-nav] scheme=%d completion source=openfolio rows_upserted=%d last=%s elapsed_ms=%d',
-            schemeCode, upserted, lastNavDate, elapsedMs,
+            '[fetch-fund-nav] scheme=%d source=openfolio stale_after_upsert last=%s age_trading_days=%d — falling back to mfapi',
+            schemeCode, lastNavDate, resultAgeTradingDays,
           );
-          return json({
-            scheme_code: schemeCode,
-            rows_upserted: upserted,
-            last_nav_date: lastNavDate,
-            status: 'fetched',
-            elapsed_ms: elapsedMs,
-          });
-        }
-
-        if (since !== null) {
+        } else if (since !== null) {
           // Incremental: OpenFolio reports no new points since the latest local
           // date. Don't take that at face value — OpenFolio can be *healthy but
           // stale* (its own db_nav_latest frozen for days), in which case "no new
