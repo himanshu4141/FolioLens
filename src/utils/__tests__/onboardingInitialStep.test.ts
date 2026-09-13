@@ -1,6 +1,7 @@
 import {
   isOnboardingMode,
   pickOnboardingInitialStep,
+  pickOnboardingStepAfterPdfSelection,
 } from '@/src/utils/onboardingInitialStep';
 
 describe('isOnboardingMode()', () => {
@@ -29,8 +30,8 @@ describe('pickOnboardingInitialStep()', () => {
     it('keeps welcome even when PAN is saved (drop-zone is the primary action)', () => {
       // Welcome is the dropzone hero in the new design — a returning user
       // with PAN saved still lands on Welcome so they can pick a PDF. The
-      // wizard fast-paths the upload past Identity itself when PAN is set,
-      // it doesn't skip Welcome.
+      // next pauses at Identity before uploading, so the optional custom
+      // password remains available even when PAN is already saved.
       expect(
         pickOnboardingInitialStep({
           draftStep: 'welcome',
@@ -175,5 +176,11 @@ describe('pickOnboardingInitialStep()', () => {
         }),
       ).toBe('welcome');
     });
+  });
+});
+
+describe('pickOnboardingStepAfterPdfSelection()', () => {
+  it('always pauses at Identity before a manual upload starts', () => {
+    expect(pickOnboardingStepAfterPdfSelection()).toBe('identity');
   });
 });

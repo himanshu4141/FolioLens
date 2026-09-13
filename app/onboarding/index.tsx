@@ -59,6 +59,7 @@ import {
 import {
   isOnboardingMode,
   pickOnboardingInitialStep,
+  pickOnboardingStepAfterPdfSelection,
   type OnboardingMode,
 } from '@/src/utils/onboardingInitialStep';
 import { fetchPortfolioData, usePortfolio, type FundCardData } from '@/src/hooks/usePortfolio';
@@ -241,8 +242,8 @@ function OnboardingWizard() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Pull saved PAN / DOB from `user_profile` so a returning user with PAN
-  // already on file can drop a PDF on Welcome and skip Identity entirely.
+  // Pull saved PAN / DOB from `user_profile` so the unlock step can show
+  // returning users their locked defaults before a manual upload begins.
   const { data: profile } = useUserProfile(session?.user.id);
 
   useEffect(() => {
@@ -412,6 +413,8 @@ function OnboardingWizard() {
         removed: result.transactionsRemoved,
       });
       setPickedAsset(null);
+      setUseCustomPassword(false);
+      setCustomPassword('');
     } catch (err) {
       const elapsed = Date.now() - startedAt;
       const msg = err instanceof Error ? err.message : 'Upload failed.';
@@ -457,17 +460,12 @@ function OnboardingWizard() {
     }
   }
 
-  async function handlePdfPicked(asset: DocumentPicker.DocumentPickerAsset) {
+  function handlePdfPicked(asset: DocumentPicker.DocumentPickerAsset) {
     trackPathChosen('upload');
     setPickedAsset(asset);
-    // Fast-path: a returning user with PAN already on file doesn't need to
-    // re-enter it. Server uses saved PAN (+ DOB if present) as the default
-    // PDF password, so skip Identity and start the upload immediately.
-    if (profile?.pan) {
-      await runUpload(asset);
-      return;
-    }
-    dispatch({ type: 'goto', step: 'identity' });
+    // Always pause before network upload. Saved identity stays locked, while
+    // the user can optionally enter a statement-specific password.
+    dispatch({ type: 'goto', step: pickOnboardingStepAfterPdfSelection() });
   }
 
   async function handleUnlock() {
@@ -914,8 +912,8 @@ function IdentityStep({
         </Text>
         {!reviewMode ? (
           <Text style={styles.stepBody}>
-            We&apos;ll try your <Text style={styles.bold}>PAN</Text> as the
-            password first — that works <Text style={styles.bold}>99% of the time</Text>.
+            We&apos;ll try your saved details by default. If this statement uses a
+            custom password, enter it below before uploading.
           </Text>
         ) : (
           <Text style={styles.stepBody}>
@@ -1030,7 +1028,7 @@ function IdentityStep({
             <View style={styles.passwordRevealCopy}>
               <Text style={styles.passwordRevealTitle}>My PDF uses a different password</Text>
               <Text style={styles.passwordRevealBody}>
-                If you set a custom one while requesting it (CAMS / KFintech allow this).
+                Use the password chosen or assigned when you requested this statement.
               </Text>
             </View>
           </Pressable>
@@ -1043,6 +1041,7 @@ function IdentityStep({
               autoCapitalize="none"
               autoCorrect={false}
               secureTextEntry
+              accessibilityLabel="Custom PDF password"
               style={[styles.input, styles.passwordInput]}
             />
           ) : null}

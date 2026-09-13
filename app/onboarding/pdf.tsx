@@ -100,6 +100,7 @@ export default function PDFScreen() {
       }
       setResult(uploadResult);
       setState('success');
+      setCustomPassword('');
     } catch (err) {
       if (err instanceof CasUploadError) setResult(err.result);
       const raw = err instanceof Error ? err.message : 'Unknown error';
@@ -127,7 +128,7 @@ export default function PDFScreen() {
         <View style={styles.panel}>
           <Text style={styles.sectionLabel}>Supported PDFs</Text>
           <Text style={styles.infoTitle}>Detailed CAS statements we can import</Text>
-          <Text style={styles.infoItem}>• CAMS CAS (password = your PAN)</Text>
+          <Text style={styles.infoItem}>• CAMS CAS (saved PAN or statement password)</Text>
           <Text style={styles.infoItem}>• KFintech / Karvy CAS (password = your PAN)</Text>
           <Text style={styles.infoItem}>• MFcentral CAS (password = your PAN)</Text>
           <Text style={styles.infoItem}>• CDSL CAS (we try your PAN first)</Text>
@@ -161,8 +162,8 @@ export default function PDFScreen() {
 
         <View style={styles.panNote}>
           <Text style={styles.panNoteText}>
-            For CAMS/KFintech/MFCentral: PDF password = your PAN.{'\n'}
-            For CDSL/NSDL: we try your PAN first. Some statement versions use PAN + date of birth.
+            We try your saved PAN by default. For CDSL/NSDL, we may also try PAN + date of
+            birth. If your issuer uses a custom password, enter it below.
           </Text>
         </View>
 
@@ -183,6 +184,7 @@ export default function PDFScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             editable={state !== 'uploading'}
+            accessibilityLabel="Custom PDF password"
           />
         </View>
 
