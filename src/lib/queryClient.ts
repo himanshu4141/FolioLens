@@ -96,7 +96,10 @@ import { trackUxCacheHealth } from '@/src/lib/uxTelemetry';
 // v12: public Portfolio payloads include a transaction freshness marker used by
 // web to detect server-side CAS imports before the old one-hour Portfolio
 // staleTime can keep a pre-import value alive across reloads.
-export const __BUSTER__ = 'v12';
+// v13: `['scheme-master', code]` payloads gain `plan_option_source` (provenance
+// of plan_type/option_type: 'amfi' | 'name' | 'mfdata' | null) — see
+// docs/plans/amfi-nav-format-change.md M2.
+export const __BUSTER__ = 'v13';
 
 export const PERSIST_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 

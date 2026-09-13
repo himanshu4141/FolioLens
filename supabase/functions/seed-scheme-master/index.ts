@@ -16,6 +16,7 @@
  */
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { detectPlanType, inferAmcName } from '../_shared/seed-scheme-master-identity.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -26,20 +27,6 @@ const BATCH_SIZE = 1000;
 interface MfapiScheme {
   schemeCode: number;
   schemeName: string;
-}
-
-function detectPlanType(name: string): 'direct' | 'regular' | null {
-  const n = name.toLowerCase();
-  if (/\bdirect\s+plan\b/.test(n) || /\bdirect\s*-\s*growth/.test(n)) return 'direct';
-  if (/\bregular\s+plan\b/.test(n) || /\bregular\s*-\s*growth/.test(n)) return 'regular';
-  return null;
-}
-
-function inferAmcName(name: string): string | null {
-  const m = name.match(/^(.+?)\s+(Mutual\s+Fund|Fund|Asset Management)/i);
-  if (m) return m[1].trim();
-  const words = name.split(/\s+/).slice(0, 3).join(' ');
-  return words || null;
 }
 
 Deno.serve(async (_req) => {
@@ -63,17 +50,26 @@ Deno.serve(async (_req) => {
   // backfills via mfdata.in for any held fund.
   const rows = allSchemes
     .filter((s) => Number.isFinite(s.schemeCode) && typeof s.schemeName === 'string' && s.schemeName.trim().length > 0)
-    .map((s) => ({
-      scheme_code: Number(s.schemeCode),
-      scheme_name: String(s.schemeName).trim(),
-      scheme_category: null,
-      plan_type: detectPlanType(s.schemeName),
-      amc_name: inferAmcName(s.schemeName),
-    }));
+    .map((s) => {
+      const planType = detectPlanType(s.schemeName);
+      return {
+        scheme_code: Number(s.schemeCode),
+        scheme_name: String(s.schemeName).trim(),
+        scheme_category: null,
+        plan_type: planType,
+        // Only stamp provenance when a value was actually classified — a
+        // null plan_type has no source worth recording.
+        plan_option_source: planType != null ? 'name' : null,
+        amc_name: inferAmcName(s.schemeName),
+      };
+    });
 
   console.log(`[seed-scheme-master] upserting ${rows.length} rows in batches of ${BATCH_SIZE}`);
 
   // 3. Bulk upsert with ignoreDuplicates so we never overwrite richer data.
+  // This is also what keeps the M2 precedence rule true by construction: a
+  // scheme_code that already exists (e.g. classified from AMFI's own
+  // Plan/Option columns, plan_option_source='amfi') is never touched here.
   let processedBatches = 0;
   let failedBatches = 0;
 

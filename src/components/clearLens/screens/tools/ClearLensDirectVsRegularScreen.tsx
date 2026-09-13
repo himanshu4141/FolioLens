@@ -193,31 +193,17 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
   const raw = await fetchRawFunds(userId);
   if (raw.length === 0) return [];
 
-  // Detect plan type for every fund.
-  const withPlanType = raw.map((f) => ({
-    ...f,
-    planType: detectPlanType(f.schemeName),
-  }));
-
-  // Identify regular-plan funds that need sibling ER lookup.
-  const regularFunds = withPlanType.filter(
-    (f) => f.planType === 'regular' && f.schemeCode != null,
-  );
-
-  if (regularFunds.length === 0) {
-    return withPlanType.map((f) => ({
-      ...f,
-      familyName: null,
-      sebiCategory: null,
-      schemeCategory: null,
-      directEr: null,
-      directErSource: null,
-    }));
-  }
-
-  // Fetch scheme master for regular funds to get family_name + category.
+  // Fetch scheme_master for every fund that has a scheme_code — plan_type is
+  // authoritative (from OpenFolio's AMFI-sourced columns); the name-regex in
+  // detectPlanType is a last resort for rows scheme_master hasn't classified
+  // yet (e.g. cold-start before universe-backfill runs). Previously this only
+  // ran for funds the name-regex had already called 'regular', so a fund AMFI
+  // stopped naming with "Direct"/"Regular" (the format change this plan is
+  // about) could never be reclassified from scheme_master.plan_type at all —
+  // see docs/plans/amfi-nav-format-change.md M2.2b.
+  const codedFunds = raw.filter((f) => f.schemeCode != null);
   const schemeMasters = await Promise.all(
-    regularFunds.map((f) =>
+    codedFunds.map((f) =>
       qc.fetchQuery({
         queryKey: ['scheme-master', f.schemeCode],
         queryFn: () => fetchSchemeMaster(f.schemeCode!),
@@ -228,17 +214,48 @@ async function fetchDvrData(userId: string, qc: QueryClient): Promise<DvrFund[]>
 
   const metaByCode = new Map<
     number,
-    { familyName: string | null; sebiCategory: string | null; schemeCategory: string | null; optionType: string | null }
+    {
+      familyName: string | null;
+      sebiCategory: string | null;
+      schemeCategory: string | null;
+      optionType: string | null;
+      planType: PlanType | null;
+    }
   >();
-  for (let i = 0; i < regularFunds.length; i++) {
+  for (let i = 0; i < codedFunds.length; i++) {
     const sm = schemeMasters[i];
-    const code = regularFunds[i].schemeCode!;
+    const code = codedFunds[i].schemeCode!;
+    const rawPlanType = sm?.plan_type;
     metaByCode.set(code, {
       familyName: sm?.family_name ?? null,
       sebiCategory: sm?.sebi_category ?? null,
       schemeCategory: sm?.scheme_category ?? null,
       optionType: sm?.option_type ?? null,
+      planType: rawPlanType === 'direct' || rawPlanType === 'regular' ? rawPlanType : null,
     });
+  }
+
+  const withPlanType = raw.map((f) => ({
+    ...f,
+    planType:
+      (f.schemeCode != null ? metaByCode.get(f.schemeCode)?.planType : null) ??
+      detectPlanType(f.schemeName),
+  }));
+
+  // Identify regular-plan funds that need sibling ER lookup.
+  const regularFunds = withPlanType.filter(
+    (f) => f.planType === 'regular' && f.schemeCode != null,
+  );
+
+  if (regularFunds.length === 0) {
+    return withPlanType.map((f) => ({
+      ...f,
+      familyName: f.schemeCode != null ? metaByCode.get(f.schemeCode)?.familyName ?? null : null,
+      sebiCategory: null,
+      schemeCategory: null,
+      directEr: null,
+      directErSource: null,
+    }));
   }
 
   // Batch-fetch direct-plan siblings by family_name, including option_type for

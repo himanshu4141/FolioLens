@@ -292,6 +292,14 @@ export interface FundMetadata {
   family_name?: string | null;
   plan_type?: string | null;
   option_type?: string | null;
+  /**
+   * Provenance of plan_type/option_type on OpenFolio's side: 'amfi' when
+   * sourced from AMFI's own Plan/Option NAV columns (post AMFI NAV feed
+   * format change, OpenFolio-Data Phase 6), 'name' when OF derived it by
+   * inference from the scheme name. Absent on OF responses that predate
+   * Phase 6 — callers must not guess a value when this is missing.
+   */
+  plan_option_source?: string | null;
   // B1 fields (flat):
   ter?: number | null;
   ter_date?: string | null;

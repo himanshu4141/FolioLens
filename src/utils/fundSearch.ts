@@ -36,6 +36,8 @@ export interface SchemeSearchResult {
   isin: string | null;
   schemeActive: boolean | null;
   openfolioMetaSyncedAt: string | null;
+  /** OF-sourced family name — prefer this over shortSchemeName(schemeName) for display. */
+  familyName: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +209,7 @@ export function resolveFamilyToScheme(
 // ---------------------------------------------------------------------------
 
 const SEARCH_COLUMNS =
-  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin, scheme_active, openfolio_meta_synced_at';
+  'scheme_code, scheme_name, scheme_category, sebi_category, amc_name, plan_type, isin, scheme_active, openfolio_meta_synced_at, family_name';
 
 const FAMILY_SEARCH_COLUMNS =
   'of_family_id, family_name, amc_name, sebi_category, scheme_category, has_direct, has_regular, has_growth, has_idcw, representative_scheme_code, family_active';
@@ -229,6 +231,7 @@ function mapSearchRow(row: Record<string, unknown>): SchemeSearchResult {
     isin: (row.isin as string | null) ?? null,
     schemeActive: (row.scheme_active as boolean | null) ?? null,
     openfolioMetaSyncedAt: (row.openfolio_meta_synced_at as string | null) ?? null,
+    familyName: (row.family_name as string | null) ?? null,
   };
 }
 

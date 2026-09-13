@@ -259,6 +259,7 @@ export type Database = {
           openfolio_meta_synced_at: string | null
           option_type: string | null
           period_returns: Json | null
+          plan_option_source: string | null
           plan_type: string | null
           portfolio_turnover: number | null
           risk_label: string | null
@@ -296,6 +297,7 @@ export type Database = {
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
+          plan_option_source?: string | null
           plan_type?: string | null
           portfolio_turnover?: number | null
           risk_label?: string | null
@@ -333,6 +335,7 @@ export type Database = {
           openfolio_meta_synced_at?: string | null
           option_type?: string | null
           period_returns?: Json | null
+          plan_option_source?: string | null
           plan_type?: string | null
           portfolio_turnover?: number | null
           risk_label?: string | null

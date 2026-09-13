@@ -32,6 +32,8 @@ export interface SchemeMasterDbRow {
   family_name: string | null;
   plan_type: string | null;
   option_type: string | null;
+  /** Provenance of plan_type/option_type: 'amfi' | 'name' | 'mfdata' | null. */
+  plan_option_source: string | null;
   launch_date: string | null;
   exit_load: string | null;
   min_sip_amount: number | null;
@@ -46,7 +48,7 @@ export interface SchemeMasterDbRow {
 }
 
 const SCHEME_MASTER_COLUMNS =
-  'scheme_code, scheme_name, scheme_category, sebi_category, benchmark_index, declared_benchmark_name, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, risk_label, period_returns, risk_ratios, fund_manager, portfolio_turnover, ter_date';
+  'scheme_code, scheme_name, scheme_category, sebi_category, benchmark_index, declared_benchmark_name, expense_ratio, aum_cr, isin, amc_name, family_name, plan_type, option_type, plan_option_source, launch_date, exit_load, min_sip_amount, min_lumpsum, min_additional, risk_label, period_returns, risk_ratios, fund_manager, portfolio_turnover, ter_date';
 
 export async function fetchSchemeMaster(
   schemeCode: number,

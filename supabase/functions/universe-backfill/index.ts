@@ -449,6 +449,9 @@ async function runMetadataBackfillChunk(
       if (item.family_name != null) patch.family_name = item.family_name;
       if (item.plan_type != null) patch.plan_type = item.plan_type;
       if (item.option_type != null) patch.option_type = item.option_type;
+      // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
+      // guess a value when OF's response predates this field (Phase 6).
+      if (item.plan_option_source != null) patch.plan_option_source = item.plan_option_source;
 
       const ter = resolveB1(b1?.ter?.status, item.ter);
       if (ter !== undefined) patch.expense_ratio = ter;

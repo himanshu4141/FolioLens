@@ -41,7 +41,56 @@ logger = logging.getLogger(__name__)
 # tuple: (scheme_code, broad_category, scheme_name)
 _isin_cache: dict[str, tuple[int, str, str]] | None = None
 
-AMFI_NAV_URL = "https://www.amfiindia.com/spages/NAVAll.txt"
+# AMFI's original www.amfiindia.com/spages/NAVAll.txt now redirects here (the
+# 2026-09 8-column format change). The old 6-column layout stays available at
+# Original_NAVAll.txt only until 30 Sep 2026 — see
+# docs/plans/amfi-nav-format-change.md.
+AMFI_NAV_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
+
+# Header-driven column mapping — replaces the old fixed-position parts[0..5]
+# read. AMFI's NAV download changed from 6 columns (Scheme Code, two ISIN
+# columns, Scheme Name, NAV, Date — with Plan/Option folded into Scheme Name)
+# to 8 columns (same, plus standalone Plan and Option columns; Scheme Name is
+# now the family name only). Both layouts repeat a header row per AMC/category
+# section, so the same header match runs throughout the file rather than once.
+# Named distinctly from the transaction-table `_HEADER_ALIASES` further down
+# in this module — that one maps CDSL/NSDL statement columns, an unrelated
+# format, and module-level names must not collide.
+_AMFI_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "scheme_code": ("scheme code",),
+    "isin_growth": (
+        "isin div payout/ isin growth",
+        "isin div payout/isin growth",
+        "isin growth",
+    ),
+    "isin_reinvest": ("isin div reinvestment",),
+    "scheme_name": ("scheme name",),
+    "plan": ("plan",),
+    "option": ("option",),
+}
+
+# A section header row must at least carry these to be treated as a header
+# (not a data row) — the two ISIN columns and scheme identity are load-bearing
+# for every layout; Plan/Option are optional (only present in the new layout).
+_AMFI_REQUIRED_HEADER_KEYS = ("scheme_code", "isin_growth", "isin_reinvest", "scheme_name")
+
+
+def _normalize_amfi_header_cell(cell: str) -> str:
+    return re.sub(r"\s+", " ", cell.strip().lower())
+
+
+def _match_amfi_header(parts: list[str]) -> dict[str, int] | None:
+    """Return a {column_key: index} map if `parts` is an AMFI header row, else None."""
+    normalized = [_normalize_amfi_header_cell(p) for p in parts]
+    mapping: dict[str, int] = {}
+    for key, aliases in _AMFI_HEADER_ALIASES.items():
+        for idx, cell in enumerate(normalized):
+            if cell in aliases:
+                mapping[key] = idx
+                break
+    if all(key in mapping for key in _AMFI_REQUIRED_HEADER_KEYS):
+        return mapping
+    return None
 
 _CATEGORY_MAP = [
     ("fund of fund", "Other"),
@@ -89,6 +138,13 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
 
     result: dict[str, tuple[int, str, str]] = {}
     current_category = "Other"
+    column_map: dict[str, int] | None = None
+
+    def _cell(parts: list[str], key: str) -> str:
+        idx = column_map.get(key) if column_map else None
+        if idx is None or idx >= len(parts):
+            return ""
+        return parts[idx].strip()
 
     for line in text.splitlines():
         line = line.strip()
@@ -106,20 +162,36 @@ def fetch_amfi_isin_map() -> dict[str, tuple[int, str, str]]:
             continue
 
         parts = line.split(";")
-        if len(parts) < 6:
+
+        header_candidate = _match_amfi_header(parts)
+        if header_candidate is not None:
+            column_map = header_candidate
             continue
 
-        # NAVAll.txt columns:
-        # scheme_code ; ISIN_growth ; ISIN_div_reinvest ; scheme_name ; nav ; date
+        if column_map is None:
+            # No header row seen yet for this section — AMFI always emits one
+            # before data rows; without it we don't know the column layout.
+            continue
+
         try:
-            code = int(parts[0].strip())
+            code = int(_cell(parts, "scheme_code"))
         except ValueError:
             continue
 
-        scheme_name = parts[3].strip() if len(parts) > 3 else ""
+        base_name = _cell(parts, "scheme_name")
+        # New layout only: Plan/Option are standalone columns, not folded into
+        # Scheme Name. Recompose "<Scheme Name> - <Plan> - <Option>" so the
+        # provisional identity CAS import creates still has a full display
+        # name, even though scheme_name alone is now the family name only.
+        if "plan" in column_map and "option" in column_map:
+            plan = _cell(parts, "plan")
+            option = _cell(parts, "option")
+            scheme_name = " - ".join(part for part in (base_name, plan, option) if part)
+        else:
+            scheme_name = base_name
 
-        for col in (1, 2):
-            isin = parts[col].strip()
+        for key in ("isin_growth", "isin_reinvest"):
+            isin = _cell(parts, key)
             if re.match(r"^INF[A-Z0-9]{9}$", isin):
                 result[isin] = (code, current_category, scheme_name)
 

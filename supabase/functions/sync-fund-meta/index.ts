@@ -470,6 +470,9 @@ Deno.serve(async (req) => {
         if (ofMeta.family_name != null) payload.family_name = ofMeta.family_name;
         if (ofMeta.plan_type != null) payload.plan_type = ofMeta.plan_type;
         if (ofMeta.option_type != null) payload.option_type = ofMeta.option_type;
+        // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
+        // guess a value when OF's response predates this field (Phase 6).
+        if (ofMeta.plan_option_source != null) payload.plan_option_source = ofMeta.plan_option_source;
 
         if (ofMeta.active != null) payload.scheme_active = ofMeta.active;
 
@@ -612,8 +615,20 @@ Deno.serve(async (req) => {
       // downgrade authoritative OF values to mfdata's coarser labels.
       if (mfdata) {
         payload.mfdata_family_id = mfdata.family_id ?? null;
-        if (payload.plan_type == null && mfdata.plan_type != null) payload.plan_type = mfdata.plan_type;
-        if (payload.option_type == null && mfdata.option_type != null) payload.option_type = mfdata.option_type;
+        let mfdataSourcedPlanOrOption = false;
+        if (payload.plan_type == null && mfdata.plan_type != null) {
+          payload.plan_type = mfdata.plan_type;
+          mfdataSourcedPlanOrOption = true;
+        }
+        if (payload.option_type == null && mfdata.option_type != null) {
+          payload.option_type = mfdata.option_type;
+          mfdataSourcedPlanOrOption = true;
+        }
+        // Only stamp provenance when the value actually came from mfdata this
+        // run — OF's pass-through above (if any) already set this field.
+        if (mfdataSourcedPlanOrOption && payload.plan_option_source == null) {
+          payload.plan_option_source = 'mfdata';
+        }
         if (payload.family_name == null && mfdata.family_name != null) payload.family_name = mfdata.family_name;
         if (mfdata.amc_name != null) payload.amc_name = mfdata.amc_name;
         // amc_slug deliberately not written — no reader in src/ or app/ (grep confirms)
