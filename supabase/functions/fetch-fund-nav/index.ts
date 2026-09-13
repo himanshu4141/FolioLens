@@ -24,6 +24,7 @@ import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
+import { DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS, tradingDaysAge } from '../_shared/nav-since-map.ts';
 
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 15_000;
@@ -194,29 +195,42 @@ Deno.serve(async (req) => {
         }
 
         if (since !== null) {
-          // Incremental: no new points since the latest local date → already up to date.
-          // (The 3-day check above would have caught a truly fresh cache; reaching here
-          // means the local series is >3 days old but OpenFolio confirms no newer data.)
-          await stampBackfilledAt(supabase, schemeCode);
-          const elapsedMs = Date.now() - startedAt;
-          console.log(
-            '[fetch-fund-nav] scheme=%d completion source=openfolio up_to_date since=%s elapsed_ms=%d',
-            schemeCode, since, elapsedMs,
-          );
-          return json({
-            scheme_code: schemeCode,
-            rows_upserted: 0,
-            last_nav_date: latestDate,
-            status: 'cache_hit',
-          });
-        }
+          // Incremental: OpenFolio reports no new points since the latest local
+          // date. Don't take that at face value — OpenFolio can be *healthy but
+          // stale* (its own db_nav_latest frozen for days), in which case "no new
+          // points" just means the incremental delta from a frozen watermark is
+          // empty, not that the scheme is actually current. Only declare cache_hit
+          // when the local series itself is within the trading-day threshold;
+          // otherwise fall through to mfapi rather than trusting the silence.
+          const localAgeTradingDays = tradingDaysAge(since, new Date());
+          if (localAgeTradingDays <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS) {
+            await stampBackfilledAt(supabase, schemeCode);
+            const elapsedMs = Date.now() - startedAt;
+            console.log(
+              '[fetch-fund-nav] scheme=%d completion source=openfolio up_to_date since=%s elapsed_ms=%d',
+              schemeCode, since, elapsedMs,
+            );
+            return json({
+              scheme_code: schemeCode,
+              rows_upserted: 0,
+              last_nav_date: latestDate,
+              status: 'cache_hit',
+            });
+          }
 
-        // since=null (first-ever sync) + empty points → OpenFolio has no history
-        // for this scheme. Fall through to mfapi for the full series.
-        console.log(
-          '[fetch-fund-nav] scheme=%d source=openfolio no_history since=null — falling back to mfapi',
-          schemeCode,
-        );
+          console.log(
+            '[fetch-fund-nav] scheme=%d source=openfolio stale_no_new_points since=%s age_trading_days=%d — falling back to mfapi',
+            schemeCode, since, localAgeTradingDays,
+          );
+          // fall through to mfapi below
+        } else {
+          // since=null (first-ever sync) + empty points → OpenFolio has no history
+          // for this scheme. Fall through to mfapi for the full series.
+          console.log(
+            '[fetch-fund-nav] scheme=%d source=openfolio no_history since=null — falling back to mfapi',
+            schemeCode,
+          );
+        }
       }
     } catch (err) {
       console.warn(

@@ -217,6 +217,60 @@ export function checkOpenFolioHealth(
   };
 }
 
+/** OpenFolio db_nav_latest older than this many calendar days is flagged, weekdays only. */
+const OPENFOLIO_NAV_AGE_THRESHOLD_DAYS = 3;
+
+/**
+ * Check: OpenFolio NAV age — db_nav_latest itself must be recent, independent
+ * of whether /health otherwise reports "ok". This is the check that would have
+ * caught the 2026-09 incident: OpenFolio's positional parser froze (zero rows
+ * from AMFI's new 8-column layout) while /health kept reporting status='ok'
+ * with a healthy db_schemes count — db_nav_latest just stopped moving. Only
+ * evaluated on weekdays: AMFI doesn't publish new NAVs over the weekend, so a
+ * Friday NAV read on a Saturday/Sunday is not a failure.
+ */
+export function checkOpenFolioNavAge(
+  dbNavLatest: string | null | undefined,
+  now: Date,
+): CheckResult {
+  const name = 'OpenFolio NAV age';
+
+  const dayOfWeek = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  if (!isWeekday) {
+    return {
+      name,
+      ok: true,
+      detail: `Skipped on a weekend (db_nav_latest=${dbNavLatest ?? 'missing'}); AMFI does not publish NAVs on weekends.`,
+    };
+  }
+
+  if (!dbNavLatest) {
+    return {
+      name,
+      ok: false,
+      detail: 'OpenFolio /health did not report db_nav_latest.',
+    };
+  }
+
+  const navDate = new Date(dbNavLatest);
+  const thresholdDate = new Date(now.getTime() - OPENFOLIO_NAV_AGE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
+
+  if (navDate >= thresholdDate) {
+    return {
+      name,
+      ok: true,
+      detail: `OpenFolio db_nav_latest is ${dbNavLatest} (within ${OPENFOLIO_NAV_AGE_THRESHOLD_DAYS} days).`,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: `OpenFolio db_nav_latest is ${dbNavLatest}, exceeds ${OPENFOLIO_NAV_AGE_THRESHOLD_DAYS}-day threshold (threshold: ${thresholdDate.toISOString()}). OpenFolio can report /health status='ok' while its own NAV ingest is frozen — this check catches that independently.`,
+  };
+}
+
 /**
  * Check 5: Composition staleness — max(portfolio_date) of source='official'
  * must be within 75 days.

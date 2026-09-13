@@ -7,6 +7,7 @@ import {
   checkMetadataCoverage,
   checkNavFreshness,
   checkOpenFolioHealth,
+  checkOpenFolioNavAge,
   type CursorRow,
   type OpenFolioHealthResponse,
 } from '../freshness-check';
@@ -239,6 +240,53 @@ describe('checkOpenFolioHealth', () => {
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('db_nav_latest');
+  });
+});
+
+describe('checkOpenFolioNavAge', () => {
+  // 2026-06-11 is a Thursday (weekday).
+  const weekday = new Date('2026-06-11T08:00:00.000Z');
+  const threshold = new Date(weekday.getTime() - 3 * 24 * 60 * 60 * 1000);
+
+  it('returns ok=true when db_nav_latest is within 3 days', () => {
+    const result = checkOpenFolioNavAge('2026-06-10', weekday);
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('OpenFolio NAV age');
+  });
+
+  it('returns ok=true when db_nav_latest is exactly at the 3-day threshold', () => {
+    const result = checkOpenFolioNavAge(threshold.toISOString(), weekday);
+    expect(result.ok).toBe(true);
+  });
+
+  it('returns ok=false when db_nav_latest is older than 3 days — the frozen-upstream scenario', () => {
+    // Mirrors the 2026-09 incident: /health status=ok but db_nav_latest frozen for weeks.
+    // today is well after the frozen date, so the gap comfortably exceeds 3 days.
+    const today = new Date('2026-09-10T08:00:00.000Z'); // Thursday
+    const result = checkOpenFolioNavAge('2026-08-18', today);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('2026-08-18');
+    expect(result.detail).toContain('frozen');
+  });
+
+  it('returns ok=false when db_nav_latest is missing on a weekday', () => {
+    const result = checkOpenFolioNavAge(null, weekday);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('did not report');
+  });
+
+  it('skips (ok=true) on a Saturday even when db_nav_latest is stale', () => {
+    const saturday = new Date('2026-06-13T08:00:00.000Z');
+    const result = checkOpenFolioNavAge('2026-06-01', saturday);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('weekend');
+  });
+
+  it('skips (ok=true) on a Sunday even when db_nav_latest is missing', () => {
+    const sunday = new Date('2026-06-14T08:00:00.000Z');
+    const result = checkOpenFolioNavAge(null, sunday);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('weekend');
   });
 });
 

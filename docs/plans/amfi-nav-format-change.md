@@ -265,11 +265,11 @@ true for a family whose only IDCW plan has `option_type='payout'`.
 ## Progress
 
 
-- [ ] M1.1 age-aware gate + mfapi routing in `sync-nav`
-- [ ] M1.2 `fetch-fund-nav` stale fall-through
-- [ ] M1.3 `freshness-check` age check + working alert delivery
-- [ ] M1.4 analytics fields + sanitizer test
-- [ ] M1.5 tests green, functions deployed, first stale-routing run observed
+- [x] M1.1 age-aware gate + mfapi routing in `sync-nav`
+- [x] M1.2 `fetch-fund-nav` stale fall-through
+- [x] M1.3 `freshness-check` age check + working alert delivery
+- [x] M1.4 analytics fields + sanitizer test
+- [ ] M1.5 tests green, functions deployed, first stale-routing run observed (code + tests green; deploy is a follow-up operational step, not run from this session)
 - [ ] M2.0 migration: `plan_option_source` + corrected `has_idcw` enum in `v_fund_family_search`
 - [ ] M2.1 header-driven `fetch_amfi_isin_map` + fixtures + portal URL + Plan/Option into provisional identity
 - [ ] M2.2 backfill/meta/seed functions write provenance; precedence tests
