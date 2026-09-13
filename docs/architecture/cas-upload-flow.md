@@ -1,6 +1,6 @@
 # CAS PDF Upload Flow
 
-The "manual" CAS path — user picks a PDF in the wizard or settings and the import lands in the same `cas_import` audit row + `transaction` table the inbound (Resend) flow writes to. The two paths converge at `importCASData()`.
+The "manual" CAS path — user picks a PDF in the wizard or settings and the import lands in the same `cas_import` audit row + `transaction` table the inbound (Resend) flow writes to. The two paths converge at `importCASData()`. Every wizard selection pauses at the unlock step before network upload, including when PAN is already saved, so the user can supply an optional statement-specific password. The password stays only in component memory for the attempt and is cleared after success or back navigation.
 
 ## Where things live
 
@@ -50,6 +50,8 @@ sequenceDiagram
 
   U->>App: tap "Choose PDF"
   App->>App: expo-document-picker.getDocumentAsync({type: 'application/pdf'})
+  App->>U: show unlock step with saved identity<br/>and optional custom-password input
+  U->>App: confirm upload
   App->>App: read user_profile.pan + user_profile.dob<br/>(or custom password override)
   App->>App: supabase.auth.getSession() to get JWT
   App->>SB: POST /functions/v1/parse-cas-pdf<br/>Authorization Bearer JWT<br/>x-file-name, optional x-password-override<br/>body: PDF bytes
