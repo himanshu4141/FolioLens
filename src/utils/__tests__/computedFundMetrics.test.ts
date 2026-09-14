@@ -698,6 +698,22 @@ describe('isPayoutPlan', () => {
     expect(isPayoutPlan('SBI Bond Fund - Dividend', 'dividend')).toBe(true);
   });
 
+  // OpenFolio's own option_type enum (post AMFI NAV feed format change) uses
+  // bare 'reinvest' / 'payout' / 'bonus' rather than the 'idcw_*' compound
+  // values above — same values that had to be added to v_fund_family_search's
+  // has_idcw predicate (M2). Must be covered by the option_type branch.
+  it('returns true for OpenFolio\'s bare option_type="reinvest"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', 'reinvest')).toBe(true);
+  });
+
+  it('returns true for OpenFolio\'s bare option_type="payout"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', 'payout')).toBe(true);
+  });
+
+  it('returns true for OpenFolio\'s bare option_type="bonus"', () => {
+    expect(isPayoutPlan('HDFC Top 100 Fund - Bonus', 'bonus')).toBe(true);
+  });
+
   // ── Name-based IDCW — option_type null ────────────────────────────────────
   it('returns true for IDCW in scheme name (various real AMFI formats)', () => {
     expect(isPayoutPlan('HDFC Top 100 Fund - IDCW', null)).toBe(true);

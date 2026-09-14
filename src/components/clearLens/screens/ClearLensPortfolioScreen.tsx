@@ -769,7 +769,7 @@ function MoverCard({
 }) {
   const tokens = useClearLensTokens();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const { base } = parseFundName(fund.schemeName);
+  const base = fund.familyName ?? parseFundName(fund.schemeName).base;
   const pct = fund.dailyChangePct ?? 0;
   const amount = fund.dailyChangeAmount ?? 0;
   const color = toneColor(toneForValue(amount || pct));

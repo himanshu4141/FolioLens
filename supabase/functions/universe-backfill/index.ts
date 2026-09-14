@@ -411,7 +411,11 @@ async function runMetadataBackfillChunk(
       for (const row of knownRows ?? []) knownCodes.add(row.scheme_code);
     }
 
-    const pageWork: Array<{ schemeCode: number; patch: Record<string, unknown> }> = [];
+    const pageWork: Array<{
+      schemeCode: number;
+      patch: Record<string, unknown>;
+      planOptionPatch: Record<string, unknown>;
+    }> = [];
     for (const item of items) {
       if (!item?.scheme_code || !knownCodes.has(item.scheme_code)) {
         skipped += 1;
@@ -447,8 +451,23 @@ async function runMetadataBackfillChunk(
       // Family identity fields (no B1 status — always present or absent):
       if (item.family_id != null) patch.of_family_id = item.family_id;
       if (item.family_name != null) patch.family_name = item.family_name;
-      if (item.plan_type != null) patch.plan_type = item.plan_type;
-      if (item.option_type != null) patch.option_type = item.option_type;
+
+      // plan_type/option_type/plan_option_source go in a separate patch,
+      // applied via its own DB-guarded update below (see the batch-apply
+      // loop) rather than folded into `patch` here. This job resumes hourly
+      // and can overlap with sync-fund-meta-daily against the same rows, so
+      // an amfi-precedence check based on the knownRows SELECT taken at the
+      // top of this page could be stale by the time this row's UPDATE
+      // actually executes — the guard has to be a predicate Postgres
+      // evaluates against the row's live state at write time, not a value
+      // read earlier in this invocation.
+      const incomingPlanOptionSource = item.plan_option_source ?? null;
+      const planOptionPatch: Record<string, unknown> = {};
+      if (item.plan_type != null) planOptionPatch.plan_type = item.plan_type;
+      if (item.option_type != null) planOptionPatch.option_type = item.option_type;
+      // Pass through OF's own provenance ('amfi' | 'name') verbatim — don't
+      // guess a value when OF's response predates this field (Phase 6).
+      if (incomingPlanOptionSource != null) planOptionPatch.plan_option_source = incomingPlanOptionSource;
 
       const ter = resolveB1(b1?.ter?.status, item.ter);
       if (ter !== undefined) patch.expense_ratio = ter;
@@ -471,20 +490,45 @@ async function runMetadataBackfillChunk(
       const incep = resolveB1(b1?.inception_date?.status, item.inception_date);
       if (incep !== undefined) patch.launch_date = incep;
 
-      pageWork.push({ schemeCode: item.scheme_code, patch });
+      pageWork.push({ schemeCode: item.scheme_code, patch, planOptionPatch });
     }
 
     const BATCH = 50;
     for (let i = 0; i < pageWork.length; i += BATCH) {
       const batch = pageWork.slice(i, i + BATCH);
       const results = await Promise.all(
-        batch.map(async ({ schemeCode, patch }) => {
+        batch.map(async ({ schemeCode, patch, planOptionPatch }) => {
           try {
             const { error } = await supabase
               .from('scheme_master')
               .update(patch)
               .eq('scheme_code', schemeCode);
-            return { schemeCode, error };
+            if (error) return { schemeCode, error };
+
+            // Plan/option update, applied as its own statement: the
+            // amfi-precedence guard is a WHERE predicate Postgres evaluates
+            // against the row's state at UPDATE time, not against the
+            // knownRows SELECT taken at the top of this page — see the
+            // comment where planOptionPatch is built above. 'amfi' is top
+            // precedence and always allowed through unconditionally; any
+            // other incoming source only applies when the row isn't already
+            // 'amfi' *right now*.
+            if (Object.keys(planOptionPatch).length > 0) {
+              const { error: planOptionError } =
+                planOptionPatch.plan_option_source !== 'amfi'
+                  ? await supabase
+                      .from('scheme_master')
+                      .update(planOptionPatch)
+                      .eq('scheme_code', schemeCode)
+                      .or('plan_option_source.neq.amfi,plan_option_source.is.null')
+                  : await supabase
+                      .from('scheme_master')
+                      .update(planOptionPatch)
+                      .eq('scheme_code', schemeCode);
+              if (planOptionError) return { schemeCode, error: planOptionError };
+            }
+
+            return { schemeCode, error: null };
           } catch (err) {
             return { schemeCode, error: { message: String(err) } };
           }

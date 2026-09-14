@@ -6,6 +6,7 @@
 
 | Plan | Branch | What it covers |
 |---|---|---|
+| `amfi-nav-format-change.md` | `claude/amfi-nav-format-change-rjxuuq` | AMFI NAV feed format change (8-column layout, old layout gone after 30 Sep 2026) — age-aware `sync-nav` freshness gate so a stale-but-healthy OpenFolio routes held schemes to mfapi, `fetch-fund-nav` stale fall-through, `freshness-check` upstream-age check + fix the 404 alert route, header-driven `fetch_amfi_isin_map`, plan-type detection hardening; pairs with OpenFolio-Data Phase 6. |
 | `cas-import-correctness-c1.md` | `program/C1-cas-activation-recency` | CAS correctness interrupt C1 — make balance recency authoritative before positive, zero, or missing closing units can change an existing holding, and centralize `user_fund.is_active` policy for transaction-changing workflows. |
 | `cas-import-correctness-q1.md` | `program/Q1-cas-preflight` | CAS correctness Q1 — provider-neutral canonical transaction fields, Python + TypeScript fail-closed preflight, privacy-safe audit/telemetry outcomes, and exact inserted counts before later parser/reconciliation milestones. |
 | `phase-9-pre-launch-readiness/N1-navigation-performance-instrumentation.md` | `codex/n1-navigation-performance-instrumentation` | Navigation N1 — concurrency-safe performance spans plus privacy-safe native timings for Portfolio → Settings, Settings → About, Funds → Fund Detail, and bottom-tab switches; includes the Android/iOS release baseline runbook. |

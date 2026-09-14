@@ -78,6 +78,11 @@ interface PreparedScheme {
   latestStatementDate: string | null;
   incomingRows: IncomingEconomicRow[];
   reversals: ReversalRequest[];
+  // AMFI-sourced plan/option (CDSL/NSDL new-layout only, see
+  // CASSchemeAdditionalInfo). Written only when apply_cas_import_plans_v2
+  // creates a brand-new scheme_master row — never overwrites an existing one.
+  amfiPlanType: 'direct' | 'regular' | null;
+  amfiOptionType: string | null;
 }
 
 interface PlannedScheme extends PreparedScheme {
@@ -113,6 +118,8 @@ function prepareSchemes(canonical: CanonicalCASParseResult): PreparedScheme[] {
         latestStatementDate: null,
         incomingRows: [],
         reversals: [],
+        amfiPlanType: scheme.additional_info.amfi_plan_type ?? null,
+        amfiOptionType: scheme.additional_info.amfi_option_type ?? null,
       };
       // user_fund is scheme-scoped while a CAS can carry the same plan under
       // more than one folio. Only a complete numeric closing balance may drive
@@ -384,6 +391,8 @@ export async function importCASData(
   const importPlans = plannedSchemes.map((scheme) => ({
     scheme_code: scheme.schemeCode,
     provisional_scheme_name: scheme.schemeName,
+    provisional_plan_type: scheme.amfiPlanType,
+    provisional_option_type: scheme.amfiOptionType,
     expected_fund_id: scheme.existingFundId,
     expected_transaction_ids: scheme.expectedTransactionIds,
     closing_units: scheme.closingUnits,

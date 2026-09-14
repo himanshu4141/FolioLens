@@ -7,6 +7,7 @@ import {
   checkMetadataCoverage,
   checkNavFreshness,
   checkOpenFolioHealth,
+  checkOpenFolioNavAge,
   type CursorRow,
   type OpenFolioHealthResponse,
 } from '../freshness-check';
@@ -239,6 +240,72 @@ describe('checkOpenFolioHealth', () => {
     const result = checkOpenFolioHealth(response, now);
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('db_nav_latest');
+  });
+});
+
+describe('checkOpenFolioNavAge', () => {
+  // 2026-06-11 is a Thursday (weekday). 2026-06-12/13/14/15 are Fri/Sat/Sun/Mon.
+  const weekday = new Date('2026-06-11T08:00:00.000Z');
+
+  it('returns ok=true when db_nav_latest is 1 trading day old', () => {
+    // Wednesday -> Thursday.
+    const result = checkOpenFolioNavAge('2026-06-10', weekday);
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('OpenFolio NAV age');
+  });
+
+  it('returns ok=true when db_nav_latest is exactly at the 2-trading-day threshold', () => {
+    // Tuesday -> Thursday: 2 trading days (Wed, Thu).
+    const result = checkOpenFolioNavAge('2026-06-09', weekday);
+    expect(result.ok).toBe(true);
+  });
+
+  it('returns ok=false when db_nav_latest is older than the threshold — the frozen-upstream scenario', () => {
+    // Mirrors the 2026-09 incident: /health status=ok but db_nav_latest frozen for weeks.
+    const today = new Date('2026-09-10T08:00:00.000Z'); // Thursday
+    const result = checkOpenFolioNavAge('2026-08-18', today);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('2026-08-18');
+    expect(result.detail).toContain('frozen');
+  });
+
+  it('returns ok=false when db_nav_latest is missing', () => {
+    const result = checkOpenFolioNavAge(null, weekday);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('did not report');
+  });
+
+  it('returns ok=false when db_nav_latest is missing, even on a weekend', () => {
+    // A missing field is a /health shape problem, not a "no new NAV over the
+    // weekend" non-issue — it must not be masked by the day of the week.
+    const sunday = new Date('2026-06-14T08:00:00.000Z');
+    const result = checkOpenFolioNavAge(null, sunday);
+    expect(result.ok).toBe(false);
+  });
+
+  it('returns ok=false on a weekend when db_nav_latest is genuinely stale', () => {
+    const saturday = new Date('2026-06-13T08:00:00.000Z');
+    const result = checkOpenFolioNavAge('2026-05-01', saturday);
+    expect(result.ok).toBe(false);
+  });
+
+  // Regression coverage for the Monday false-positive: a calendar-day
+  // threshold checked at a fixed instant misreads Friday's genuinely fresh
+  // NAV as stale by Monday morning (3 days 8 hours by wall clock, against a
+  // 3-calendar-day threshold), even though it is the correct, current value.
+  it('returns ok=true on a Monday morning check against Friday\'s still-fresh NAV', () => {
+    const monday = new Date('2026-06-15T08:00:00.000Z');
+    const result = checkOpenFolioNavAge('2026-06-12', monday); // Friday
+    expect(result.ok).toBe(true);
+  });
+
+  it('returns ok=true on a Tuesday check against Friday\'s NAV when Monday was a holiday', () => {
+    // Trading-day counting has no holiday calendar, so a Monday holiday
+    // still counts as one trading-day slot — Fri -> Tue is 2 trading days,
+    // exactly at the threshold, not a false failure.
+    const tuesday = new Date('2026-06-16T08:00:00.000Z');
+    const result = checkOpenFolioNavAge('2026-06-12', tuesday); // Friday
+    expect(result.ok).toBe(true);
   });
 });
 

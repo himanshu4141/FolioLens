@@ -786,6 +786,104 @@ def send_feedback_notification(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# ── Freshness alert (daily/monthly silent-failure audit) ─────────────────────
+#
+# `freshness-check` signs its alert payload with FOLIOLENS_INBOUND_ROUTER_SECRET
+# and forwards it here (same pathway as user-feedback notifications). Until
+# this endpoint existed, ROUTER_FRESHNESS_ALERT_URL pointed at a route that
+# didn't exist in this repo, so every alert was a silent 404 — see
+# docs/plans/amfi-nav-format-change.md M1.3.
+
+def _freshness_recipients() -> list[str]:
+    """Founder inbox(es) for freshness alerts. Reuses MAIL_FORWARD_TO, same as
+    feedback notifications — one destination for founder-facing ops mail."""
+    return _forward_recipients()
+
+
+def _freshness_from_address() -> str:
+    return os.environ.get(
+        "MAIL_FORWARD_FROM", "FolioLens Mail <noreply@foliolens.in>"
+    )
+
+
+def build_freshness_alert_email_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compose the Resend `/emails` request body for a freshness-check alert.
+    Pure — no network, no env reads beyond from/to. Extracted so the message
+    format (and the "every failed check's name + detail is included" contract)
+    can be unit-tested independently."""
+    checks = payload.get("checks")
+    if not isinstance(checks, list):
+        raise UpstreamError(400, "Missing or invalid checks field")
+
+    environment = payload.get("environment") or "unknown"
+    passed_count = payload.get("passedCount")
+    failed_count = payload.get("failedCount")
+    timestamp = payload.get("timestamp") or ""
+
+    failed_checks = [c for c in checks if isinstance(c, dict)]
+
+    check_lines = [
+        f"- {c.get('name', 'Unknown check')}: {c.get('detail', '')}"
+        for c in failed_checks
+    ]
+    checks_text = "\n".join(check_lines) if check_lines else "(no check detail provided)"
+
+    text = "\n".join(
+        [
+            f"Environment: {environment}",
+            f"Timestamp:   {timestamp}",
+            f"Passed:      {passed_count}",
+            f"Failed:      {failed_count}",
+            "",
+            "Failed checks:",
+            checks_text,
+        ]
+    )
+
+    check_rows = "".join(
+        "<tr><td style=\"padding-right:12px; vertical-align:top;\"><b>"
+        f"{_escape_html(str(c.get('name', 'Unknown check')))}</b></td>"
+        f"<td>{_escape_html(str(c.get('detail', '')))}</td></tr>"
+        for c in failed_checks
+    )
+    html = "".join(
+        [
+            '<p style="font-family: -apple-system, system-ui, sans-serif; font-size: 14px;">',
+            f"FolioLens freshness check failed on <b>{_escape_html(str(environment))}</b> "
+            f"({_escape_html(str(timestamp))}): {_escape_html(str(passed_count))} passed, "
+            f"{_escape_html(str(failed_count))} failed.</p>",
+            '<table style="font-family: -apple-system, system-ui, sans-serif; font-size: 14px; line-height: 1.5;">',
+            check_rows,
+            "</table>",
+        ]
+    )
+
+    return {
+        "from": _freshness_from_address(),
+        "to": _freshness_recipients(),
+        "subject": f"[FolioLens · {environment}] Freshness check failed ({failed_count} check(s))",
+        "text": text,
+        "html": html,
+        "tags": [
+            {"name": "category", "value": "freshness_alert"},
+            {"name": "environment", "value": str(environment)},
+        ],
+    }
+
+
+def send_freshness_alert(payload: dict[str, Any]) -> dict[str, Any]:
+    """Send the freshness-check alert email via Resend. Called from the
+    freshness-alert endpoint after Supabase POSTs a signed body."""
+    body = build_freshness_alert_email_body(payload)
+    timestamp = payload.get("timestamp") or ""
+    return _request_json(
+        "POST",
+        "/emails",
+        body,
+        idempotency_key=f"freshness-alert/{payload.get('environment', 'unknown')}/{timestamp}",
+    )
+
+
 def _enrich_with_received_email(event: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch the full received email from Resend and merge its headers into the
     event so a second `choose_route()` pass can see the SMTP-envelope recipient.

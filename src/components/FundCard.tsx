@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { formatXirr } from '@/src/utils/xirr';
 import { formatCurrency } from '@/src/utils/formatting';
 import { parseFundName } from '@/src/utils/fundName';
+import { planOptionLabel } from '@/src/utils/schemeName';
 import { navStaleness } from '@/src/utils/navUtils';
 import { Sparkline } from '@/src/components/Sparkline';
 import {
@@ -40,7 +41,12 @@ export function FundCard({
   const accentColor = categoryColor(colors, fund.schemeCategory);
   const hasRedemptions = fund.redeemedUnits > 0;
   const isPressable = !fund.navUnavailable;
-  const { base: fundBaseName, planBadge } = parseFundName(fund.schemeName);
+  // Prefer scheme_master's authoritative columns (OpenFolio, AMFI-sourced)
+  // over regex-parsing the scheme name — see docs/plans/amfi-nav-format-change.md
+  // M2.2b. parseFundName stays as the fallback for schemes not yet classified.
+  const parsedName = parseFundName(fund.schemeName);
+  const fundBaseName = fund.familyName ?? parsedName.base;
+  const planBadge = planOptionLabel(fund.planType, fund.optionType) ?? parsedName.planBadge;
   // Prefer the per-fund NAV date so an AMC with a slow EOD release shows
   // "as of Mon 27" while a fast AMC in the same portfolio reads "today".
   // Falls back to the portfolio-wide `latestNavDate` for callers that

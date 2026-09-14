@@ -336,6 +336,9 @@ function makeFund(overrides: Partial<FundCardData> = {}): FundCardData {
       { date: '2026-07-09', value: 125 },
     ],
     schemeActive: true,
+    familyName: null,
+    planType: null,
+    optionType: null,
     ...overrides,
   };
 }

@@ -13,9 +13,11 @@ from api._resend_inbound_router import (
     SignatureError,
     UpstreamError,
     build_feedback_email_body,
+    build_freshness_alert_email_body,
     choose_route,
     extract_recipients,
     send_feedback_notification,
+    send_freshness_alert,
     sign_router_payload,
     verify_router_signature,
     verify_svix_signature,
@@ -477,6 +479,107 @@ class FeedbackNotificationTest(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["path"], "/emails")
         self.assertEqual(captured["idempotency_key"], "user-feedback/fb_123")
+
+
+class FreshnessAlertTest(unittest.TestCase):
+    """M1.3: before this endpoint existed, ROUTER_FRESHNESS_ALERT_URL pointed
+    at a route this repo never implemented, so every freshness alert was a
+    silent 404 and the founder never learned OpenFolio's NAV feed had frozen.
+    These tests pin the contract that matters most for that incident: every
+    failed check's name and detail must survive into the alert email."""
+
+    BASE_PAYLOAD = {
+        "v": 1,
+        "environment": "prod",
+        "timestamp": "2026-09-10T08:00:00.000Z",
+        "passedCount": 3,
+        "failedCount": 2,
+        "checks": [
+            {
+                "name": "OpenFolio NAV age",
+                "ok": False,
+                "detail": "OpenFolio db_nav_latest is 2026-08-18, exceeds 3-day threshold.",
+            },
+            {
+                "name": "Composition staleness",
+                "ok": False,
+                "detail": "Latest official composition date is 2026-05-01, exceeds 75-day threshold.",
+            },
+        ],
+    }
+
+    ENV = {
+        "MAIL_FORWARD_TO": "founder@example.com",
+        "MAIL_FORWARD_FROM": "FolioLens <noreply@foliolens.in>",
+    }
+
+    def test_includes_every_failed_checks_name_and_detail(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_freshness_alert_email_body(self.BASE_PAYLOAD)
+
+        for check in self.BASE_PAYLOAD["checks"]:
+            self.assertIn(check["name"], body["text"])
+            self.assertIn(check["detail"], body["text"])
+            self.assertIn(check["name"], body["html"])
+            self.assertIn(check["detail"], body["html"])
+
+    def test_subject_names_environment_and_failed_count(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_freshness_alert_email_body(self.BASE_PAYLOAD)
+        self.assertEqual(body["subject"], "[FolioLens · prod] Freshness check failed (2 check(s))")
+
+    def test_recipients_default_to_mail_forward_to(self):
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_freshness_alert_email_body(self.BASE_PAYLOAD)
+        self.assertEqual(body["to"], ["founder@example.com"])
+        self.assertEqual(body["from"], "FolioLens <noreply@foliolens.in>")
+
+    def test_html_escapes_unsafe_characters_in_check_detail(self):
+        payload = {
+            **self.BASE_PAYLOAD,
+            "checks": [
+                {"name": "Cron failures (last 24h)", "ok": False, "detail": "a & b < c"},
+            ],
+        }
+        with mock.patch.dict(os.environ, self.ENV):
+            body = build_freshness_alert_email_body(payload)
+        self.assertIn("a &amp; b &lt; c", body["html"])
+
+    def test_missing_checks_field_raises_400(self):
+        payload = {**self.BASE_PAYLOAD}
+        payload.pop("checks")
+        with mock.patch.dict(os.environ, self.ENV):
+            with self.assertRaises(UpstreamError) as ctx:
+                build_freshness_alert_email_body(payload)
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_missing_mail_forward_to_raises_missing_config(self):
+        with mock.patch.dict(os.environ, {"MAIL_FORWARD_FROM": "x@example.com"}, clear=True):
+            with self.assertRaises(MissingConfigError):
+                build_freshness_alert_email_body(self.BASE_PAYLOAD)
+
+    def test_send_freshness_alert_uses_idempotency_key(self):
+        captured: dict[str, object] = {}
+
+        def fake_request_json(method, path, body=None, idempotency_key=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = body
+            captured["idempotency_key"] = idempotency_key
+            return {"id": "resend_email_id"}
+
+        with mock.patch.dict(os.environ, self.ENV):
+            with mock.patch(
+                "api._resend_inbound_router._request_json", side_effect=fake_request_json
+            ):
+                result = send_freshness_alert(self.BASE_PAYLOAD)
+
+        self.assertEqual(result, {"id": "resend_email_id"})
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/emails")
+        self.assertEqual(
+            captured["idempotency_key"], "freshness-alert/prod/2026-09-10T08:00:00.000Z"
+        )
 
 
 if __name__ == "__main__":

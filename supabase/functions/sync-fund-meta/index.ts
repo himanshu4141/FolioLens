@@ -452,6 +452,18 @@ Deno.serve(async (req) => {
         payload.cas_identity_hydration_attempted_at = syncedAt;
       }
 
+      // plan_type/option_type/plan_option_source are written in a separate,
+      // DB-guarded update below (see the "Plan/option update" comment at the
+      // upsert site) rather than folded into `payload` here — this function
+      // runs daily and universe-backfill runs hourly against the same rows,
+      // so a precedence check based on a SELECT taken at the top of this
+      // invocation would be stale by the time either writer's UPDATE
+      // actually executes, letting an overlapping run's 'amfi' value get
+      // overwritten by this one's 'name'/'mfdata'/'mixed' value. Filling
+      // planOptionPayload here only decides *what* to write; the *whether*
+      // is enforced by Postgres against the row's live state at write time.
+      const planOptionPayload: Record<string, unknown> = {};
+
       if (isin) payload.isin = isin;
       if (authoritativeIdentityCodeSet.has(schemeCode) && mfapiIdentity?.schemeName) {
         payload.scheme_name = mfapiIdentity.schemeName;
@@ -468,8 +480,16 @@ Deno.serve(async (req) => {
         // Family identity fields — no B1 status, just present or absent:
         if (ofMeta.family_id != null) payload.of_family_id = ofMeta.family_id;
         if (ofMeta.family_name != null) payload.family_name = ofMeta.family_name;
-        if (ofMeta.plan_type != null) payload.plan_type = ofMeta.plan_type;
-        if (ofMeta.option_type != null) payload.option_type = ofMeta.option_type;
+
+        // OF's own plan/option values (and provenance) — precedence against
+        // a prior 'amfi' value is enforced at the database write boundary,
+        // not here (see planOptionPayload declaration above).
+        const incomingOfPlanOptionSource = ofMeta.plan_option_source ?? null;
+        if (ofMeta.plan_type != null) planOptionPayload.plan_type = ofMeta.plan_type;
+        if (ofMeta.option_type != null) planOptionPayload.option_type = ofMeta.option_type;
+        // Pass through OF's own provenance ('amfi' | 'name') verbatim —
+        // don't guess a value when OF's response predates this field (Phase 6).
+        if (incomingOfPlanOptionSource != null) planOptionPayload.plan_option_source = incomingOfPlanOptionSource;
 
         if (ofMeta.active != null) payload.scheme_active = ofMeta.active;
 
@@ -612,8 +632,24 @@ Deno.serve(async (req) => {
       // downgrade authoritative OF values to mfdata's coarser labels.
       if (mfdata) {
         payload.mfdata_family_id = mfdata.family_id ?? null;
-        if (payload.plan_type == null && mfdata.plan_type != null) payload.plan_type = mfdata.plan_type;
-        if (payload.option_type == null && mfdata.option_type != null) payload.option_type = mfdata.option_type;
+        // Same-run precedence: only fall back to mfdata when OF didn't
+        // already supply a value this run. Precedence against a prior
+        // 'amfi' value already persisted in the DB is enforced separately
+        // at the write boundary (see planOptionPayload declaration above).
+        let mfdataSourcedPlanOrOption = false;
+        if (planOptionPayload.plan_type == null && mfdata.plan_type != null) {
+          planOptionPayload.plan_type = mfdata.plan_type;
+          mfdataSourcedPlanOrOption = true;
+        }
+        if (planOptionPayload.option_type == null && mfdata.option_type != null) {
+          planOptionPayload.option_type = mfdata.option_type;
+          mfdataSourcedPlanOrOption = true;
+        }
+        // Only stamp provenance when the value actually came from mfdata this
+        // run — OF's pass-through above (if any) already set this field.
+        if (mfdataSourcedPlanOrOption && planOptionPayload.plan_option_source == null) {
+          planOptionPayload.plan_option_source = 'mfdata';
+        }
         if (payload.family_name == null && mfdata.family_name != null) payload.family_name = mfdata.family_name;
         if (mfdata.amc_name != null) payload.amc_name = mfdata.amc_name;
         // amc_slug deliberately not written — no reader in src/ or app/ (grep confirms)
@@ -656,7 +692,32 @@ Deno.serve(async (req) => {
         .update(payload)
         .eq('scheme_code', schemeCode);
 
-      if (updateError) {
+      // Plan/option update: split from `payload` above and applied as its
+      // own statement so the amfi-precedence guard is a WHERE predicate
+      // Postgres evaluates against the row's state at UPDATE time — not
+      // against the masterRows SELECT taken at the top of this invocation,
+      // which can be stale by now (this function runs daily, universe-backfill
+      // hourly, and both writers can be mid-run against the same row at once).
+      // 'amfi' is top precedence and always allowed through unconditionally;
+      // any other incoming source only applies when the row isn't already
+      // 'amfi' *right now*.
+      let planOptionUpdateError: { message: string } | null = null;
+      if (!updateError && Object.keys(planOptionPayload).length > 0) {
+        const { error } =
+          planOptionPayload.plan_option_source !== 'amfi'
+            ? await supabase
+                .from('scheme_master')
+                .update(planOptionPayload)
+                .eq('scheme_code', schemeCode)
+                .or('plan_option_source.neq.amfi,plan_option_source.is.null')
+            : await supabase
+                .from('scheme_master')
+                .update(planOptionPayload)
+                .eq('scheme_code', schemeCode);
+        planOptionUpdateError = error;
+      }
+
+      if (updateError || planOptionUpdateError) {
         console.error('[sync-fund-meta] catalog_update_failed');
         failed++;
       } else {

@@ -61,6 +61,17 @@ export interface CASSchemeAdditionalInfo {
   advisor?: string;
   open_units?: number | null;
   close_units?: number | null;
+  /**
+   * Plan/option classification read directly from AMFI's own NAVAll.txt
+   * Plan/Option columns (new 8-column layout only — see
+   * docs/plans/amfi-nav-format-change.md). Populated by the CDSL/NSDL parser
+   * (api/_cdsl_nsdl_parser.py); absent for casparser-sourced CAS (CAMS/
+   * KFintech/MFCentral), which has no equivalent source data. Used only to
+   * seed a brand-new provisional scheme_master row — never to update an
+   * existing one (the catalog authority boundary below is unconditional).
+   */
+  amfi_plan_type?: 'direct' | 'regular' | null;
+  amfi_option_type?: string | null;
 }
 
 export interface CASCharges {

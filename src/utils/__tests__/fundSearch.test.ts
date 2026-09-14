@@ -143,7 +143,7 @@ describe('searchSchemes — token AND across columns', () => {
     expect(lastSchemeMasterBuilder.eq).toHaveBeenCalledWith('scheme_category', 'Equity');
   });
 
-  it('maps rows including the new sebiCategory field and openfolioMetaSyncedAt', async () => {
+  it('maps rows including the new sebiCategory field, openfolioMetaSyncedAt, and familyName', async () => {
     returnedRows = [
       {
         scheme_code: 119071,
@@ -155,6 +155,7 @@ describe('searchSchemes — token AND across columns', () => {
         isin: 'INF000000001',
         scheme_active: true,
         openfolio_meta_synced_at: '2026-06-01T12:00:00Z',
+        family_name: 'DSP Mid Cap Fund',
       },
     ];
     const out: SchemeSearchResult[] = await searchSchemes({ query: 'dsp mid cap' });
@@ -167,6 +168,7 @@ describe('searchSchemes — token AND across columns', () => {
       planType: 'direct',
       isin: 'INF000000001',
       schemeActive: true,
+      familyName: 'DSP Mid Cap Fund',
       openfolioMetaSyncedAt: '2026-06-01T12:00:00Z',
     });
   });

@@ -18,12 +18,22 @@
  *   3. mfapi.in full history — fallback on OF 404 / error / empty-first-sync.
  */
 
+/// <reference path="../deno.d.ts" />
+// The reference above is inert under the real Deno runtime (which supplies
+// its own, much larger ambient `Deno` global — this repo has no `deno check`
+// step for that to conflict with) and under `npm run typecheck` (tsconfig.json
+// excludes supabase/functions entirely). It exists only so ts-jest can
+// resolve the bare `Deno` identifier when a handler-level test __tests__/
+// routing.test.ts) imports this file directly instead of only its _shared/
+// helpers.
+
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
+import { checkOpenFolioResultFreshness } from '../_shared/nav-since-map.ts';
 
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 15_000;
@@ -177,46 +187,71 @@ Deno.serve(async (req) => {
           }
 
           const lastNavDate = dbRows.reduce((max, r) => (r.nav_date > max ? r.nav_date : max), dbRows[0].nav_date);
-          await stampBackfilledAt(supabase, schemeCode);
+          const resultFreshness = checkOpenFolioResultFreshness(lastNavDate, new Date());
 
-          const elapsedMs = Date.now() - startedAt;
+          if (resultFreshness.fresh) {
+            await stampBackfilledAt(supabase, schemeCode);
+            const elapsedMs = Date.now() - startedAt;
+            console.log(
+              '[fetch-fund-nav] scheme=%d completion source=openfolio rows_upserted=%d last=%s elapsed_ms=%d',
+              schemeCode, upserted, lastNavDate, elapsedMs,
+            );
+            return json({
+              scheme_code: schemeCode,
+              rows_upserted: upserted,
+              last_nav_date: lastNavDate,
+              status: 'fetched',
+              elapsed_ms: elapsedMs,
+            });
+          }
+
+          // OpenFolio returned some points but its series still stops at a
+          // stale date (the 2026-09 incident: OF frozen at 18 Aug while still
+          // answering catch-up requests with historical points). The rows
+          // already upserted stay — upserts are idempotent — but mfapi is
+          // tried for anything newer rather than declaring 'fetched' on stale
+          // data.
           console.log(
-            '[fetch-fund-nav] scheme=%d completion source=openfolio rows_upserted=%d last=%s elapsed_ms=%d',
-            schemeCode, upserted, lastNavDate, elapsedMs,
+            '[fetch-fund-nav] scheme=%d source=openfolio stale_after_upsert last=%s age_trading_days=%d — falling back to mfapi',
+            schemeCode, lastNavDate, resultFreshness.ageTradingDays,
           );
-          return json({
-            scheme_code: schemeCode,
-            rows_upserted: upserted,
-            last_nav_date: lastNavDate,
-            status: 'fetched',
-            elapsed_ms: elapsedMs,
-          });
-        }
+        } else if (since !== null) {
+          // Incremental: OpenFolio reports no new points since the latest local
+          // date. Don't take that at face value — OpenFolio can be *healthy but
+          // stale* (its own db_nav_latest frozen for days), in which case "no new
+          // points" just means the incremental delta from a frozen watermark is
+          // empty, not that the scheme is actually current. Only declare cache_hit
+          // when the local series itself is within the trading-day threshold;
+          // otherwise fall through to mfapi rather than trusting the silence.
+          const localFreshness = checkOpenFolioResultFreshness(since, new Date());
+          if (localFreshness.fresh) {
+            await stampBackfilledAt(supabase, schemeCode);
+            const elapsedMs = Date.now() - startedAt;
+            console.log(
+              '[fetch-fund-nav] scheme=%d completion source=openfolio up_to_date since=%s elapsed_ms=%d',
+              schemeCode, since, elapsedMs,
+            );
+            return json({
+              scheme_code: schemeCode,
+              rows_upserted: 0,
+              last_nav_date: latestDate,
+              status: 'cache_hit',
+            });
+          }
 
-        if (since !== null) {
-          // Incremental: no new points since the latest local date → already up to date.
-          // (The 3-day check above would have caught a truly fresh cache; reaching here
-          // means the local series is >3 days old but OpenFolio confirms no newer data.)
-          await stampBackfilledAt(supabase, schemeCode);
-          const elapsedMs = Date.now() - startedAt;
           console.log(
-            '[fetch-fund-nav] scheme=%d completion source=openfolio up_to_date since=%s elapsed_ms=%d',
-            schemeCode, since, elapsedMs,
+            '[fetch-fund-nav] scheme=%d source=openfolio stale_no_new_points since=%s age_trading_days=%d — falling back to mfapi',
+            schemeCode, since, localFreshness.ageTradingDays,
           );
-          return json({
-            scheme_code: schemeCode,
-            rows_upserted: 0,
-            last_nav_date: latestDate,
-            status: 'cache_hit',
-          });
+          // fall through to mfapi below
+        } else {
+          // since=null (first-ever sync) + empty points → OpenFolio has no history
+          // for this scheme. Fall through to mfapi for the full series.
+          console.log(
+            '[fetch-fund-nav] scheme=%d source=openfolio no_history since=null — falling back to mfapi',
+            schemeCode,
+          );
         }
-
-        // since=null (first-ever sync) + empty points → OpenFolio has no history
-        // for this scheme. Fall through to mfapi for the full series.
-        console.log(
-          '[fetch-fund-nav] scheme=%d source=openfolio no_history since=null — falling back to mfapi',
-          schemeCode,
-        );
       }
     } catch (err) {
       console.warn(

@@ -31,6 +31,7 @@ import {
   checkMetadataCoverage,
   checkNavFreshness,
   checkOpenFolioHealth,
+  checkOpenFolioNavAge,
   type CheckResult,
   type CursorRow,
   type MonthlyReconciliationReport,
@@ -43,6 +44,14 @@ const ROUTER_FRESHNESS_ALERT_URL =
   Deno.env.get('ROUTER_FRESHNESS_ALERT_URL') ?? 'https://app.foliolens.in/api/freshness-alert';
 const NOTIFY_ENVIRONMENT = Deno.env.get('NOTIFY_ENVIRONMENT') ?? 'dev';
 const OPENFOLIO_FETCH_TIMEOUT_MS = 15_000; // 15 seconds
+
+// Logged once at cold start so a misconfigured/unreachable alert route shows
+// up in Supabase logs without waiting for a failure to occur first.
+console.log(
+  '[freshness-check] alert route resolved: url=%s secret_configured=%s',
+  ROUTER_FRESHNESS_ALERT_URL,
+  FOLIOLENS_INBOUND_ROUTER_SECRET.length > 0,
+);
 
 async function fetchWithTimeout(
   url: string,
@@ -382,6 +391,7 @@ Deno.serve(async (req) => {
       : checkCronFailures(failureCount),
     checkBackfillCursors(cursors, now),
     checkOpenFolioHealth(ofHealthRaw, now),
+    checkOpenFolioNavAge(ofHealthRaw?.db_nav_latest, now),
     checkCompositionStaleness(maxPortfolioDate, now),
   ];
 

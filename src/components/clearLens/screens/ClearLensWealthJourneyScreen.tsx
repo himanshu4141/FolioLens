@@ -644,7 +644,7 @@ export function ClearLensWealthJourneyScreen() {
       new Map(
         (portfolioData?.fundCards ?? []).map((fund) => [
           fund.id,
-          parseFundName(fund.schemeName).base,
+          fund.familyName ?? parseFundName(fund.schemeName).base,
         ]),
       ),
     [portfolioData?.fundCards],
