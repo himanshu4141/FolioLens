@@ -18,6 +18,15 @@
  *   3. mfapi.in full history — fallback on OF 404 / error / empty-first-sync.
  */
 
+/// <reference path="../deno.d.ts" />
+// The reference above is inert under the real Deno runtime (which supplies
+// its own, much larger ambient `Deno` global — this repo has no `deno check`
+// step for that to conflict with) and under `npm run typecheck` (tsconfig.json
+// excludes supabase/functions entirely). It exists only so ts-jest can
+// resolve the bare `Deno` identifier when a handler-level test __tests__/
+// routing.test.ts) imports this file directly instead of only its _shared/
+// helpers.
+
 import { createServiceClient } from '../_shared/supabase-client.ts';
 import { CORS, json } from '../_shared/cors.ts';
 import {

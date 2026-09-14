@@ -378,11 +378,17 @@ describe('upsert-count semantics: ignoreDuplicates + select returns new rows onl
 // unconditionally. That trusts a frozen upstream watermark. The fix routes
 // both fetch-fund-nav call sites (the empty-points "no new points since"
 // check, and the non-empty "points landed but the result is still stale"
-// check) through checkOpenFolioResultFreshness — the actual function
-// fetch-fund-nav/index.ts imports and calls, not a reimplementation of its
-// comparison, so a regression to an unconditional cache_hit/fetched, a wrong
-// date being checked, or the threshold itself drifting would fail these
-// tests too, not just an inline copy that happens to agree with the code.
+// check) through checkOpenFolioResultFreshness, tested below against the
+// real function.
+//
+// That alone does NOT cover the call sites themselves — a handler
+// regression that stops calling this function, ignores `.fresh`, checks the
+// wrong date, or never reaches mfapi would leave these tests green (PR #312
+// review). That invariant — a stale OpenFolio result actually causes a
+// fall-through to mfapi, a fresh one doesn't — is covered separately by the
+// handler-level tests in
+// supabase/functions/fetch-fund-nav/__tests__/routing.test.ts, which invoke
+// the real Deno.serve handler from index.ts against mocked fetch/Supabase.
 // ---------------------------------------------------------------------------
 
 describe('fetch-fund-nav stale fall-through decision', () => {
