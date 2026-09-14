@@ -1,5 +1,6 @@
 import {
   buildSchemeLatestMap,
+  checkOpenFolioResultFreshness,
   DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS,
   evaluateOpenFolioNavFreshnessGate,
   SINCE_MAP_PAGE_SIZE,
@@ -374,44 +375,64 @@ describe('upsert-count semantics: ignoreDuplicates + select returns new rows onl
 //
 // fetch-fund-nav's incremental branch ("OpenFolio returned zero new points
 // since our last known date") used to declare the scheme up to date
-// unconditionally. That trusts a frozen upstream watermark. The fix reuses
-// tradingDaysAge/DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS (the same predicate
-// sync-nav's gate uses) to decide cache_hit vs mfapi fall-through — these
-// tests document and pin that decision without needing a live Edge runtime.
+// unconditionally. That trusts a frozen upstream watermark. The fix routes
+// both fetch-fund-nav call sites (the empty-points "no new points since"
+// check, and the non-empty "points landed but the result is still stale"
+// check) through checkOpenFolioResultFreshness — the actual function
+// fetch-fund-nav/index.ts imports and calls, not a reimplementation of its
+// comparison, so a regression to an unconditional cache_hit/fetched, a wrong
+// date being checked, or the threshold itself drifting would fail these
+// tests too, not just an inline copy that happens to agree with the code.
 // ---------------------------------------------------------------------------
 
 describe('fetch-fund-nav stale fall-through decision', () => {
-  function decideCacheHit(since: string, today: Date): boolean {
-    return tradingDaysAge(since, today) <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS;
-  }
-
   it('declares cache_hit when the local series is within the trading-day threshold', () => {
     // Friday -> Monday: 1 trading day old, within the 2-day default.
-    expect(decideCacheHit('2026-07-17', new Date('2026-07-20T00:00:00Z'))).toBe(true);
+    const result = checkOpenFolioResultFreshness('2026-07-17', new Date('2026-07-20T00:00:00Z'));
+    expect(result.fresh).toBe(true);
+    expect(result.ageTradingDays).toBe(1);
   });
 
   it('falls through to mfapi when OpenFolio reports no new points but the local series is stale', () => {
-    // 2026-08-18 -> 2026-09-10: 16 trading days old, well past the threshold —
+    // 2026-08-18 -> 2026-09-10: 17 trading days old, well past the threshold —
     // this is the exact scenario that froze held NAVs at 18 Aug in the incident.
-    expect(decideCacheHit('2026-08-18', new Date('2026-09-10T00:00:00Z'))).toBe(false);
+    const result = checkOpenFolioResultFreshness('2026-08-18', new Date('2026-09-10T00:00:00Z'));
+    expect(result.fresh).toBe(false);
+    expect(result.ageTradingDays).toBe(17);
   });
 
   it('sits exactly on the threshold boundary as a cache_hit (<=, not <)', () => {
     // Monday -> Wednesday is 2 trading days, equal to the default threshold.
-    expect(decideCacheHit('2026-07-20', new Date('2026-07-22T00:00:00Z'))).toBe(true);
+    const result = checkOpenFolioResultFreshness('2026-07-20', new Date('2026-07-22T00:00:00Z'));
+    expect(result.fresh).toBe(true);
+    expect(result.ageTradingDays).toBe(2);
   });
 
-  // The same predicate also gates the "OpenFolio returned *some* points, but
+  it('respects a caller-supplied threshold override', () => {
+    // 3 trading days old fails the default 2-day threshold but passes a 3-day one.
+    expect(checkOpenFolioResultFreshness('2026-07-17', new Date('2026-07-22T00:00:00Z')).fresh).toBe(
+      false,
+    );
+    expect(
+      checkOpenFolioResultFreshness('2026-07-17', new Date('2026-07-22T00:00:00Z'), 3).fresh,
+    ).toBe(true);
+  });
+
+  // The same function also gates the "OpenFolio returned *some* points, but
   // its series still stops at a stale date" case — a scheme that is
   // data_loaded (not empty) must not be declared 'fetched' just because
   // points.length > 0 when the resulting last_nav_date is itself stale.
   it('does not declare fetched when OpenFolio returns points but the result is still stale', () => {
     // OF answers with catch-up points ending 2026-08-18 — 17 trading days
     // before 2026-09-10 — instead of admitting it is frozen.
-    expect(decideCacheHit('2026-08-18', new Date('2026-09-10T00:00:00Z'))).toBe(false);
+    expect(checkOpenFolioResultFreshness('2026-08-18', new Date('2026-09-10T00:00:00Z')).fresh).toBe(
+      false,
+    );
   });
 
   it('declares fetched when the points OpenFolio returned land within the threshold', () => {
-    expect(decideCacheHit('2026-07-17', new Date('2026-07-20T00:00:00Z'))).toBe(true);
+    expect(checkOpenFolioResultFreshness('2026-07-17', new Date('2026-07-20T00:00:00Z')).fresh).toBe(
+      true,
+    );
   });
 });

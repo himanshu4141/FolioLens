@@ -209,6 +209,33 @@ export function evaluateOpenFolioNavFreshnessGate(
   };
 }
 
+export interface OpenFolioResultFreshness {
+  /** true when the date is fresh enough to trust without falling through to mfapi. */
+  fresh: boolean;
+  /** Trading-day age of `dateIso` as of `today`. */
+  ageTradingDays: number;
+}
+
+/**
+ * Freshness check `fetch-fund-nav` applies to whichever date it's about to
+ * trust from OpenFolio — the post-upsert latest NAV date when OF returned
+ * points, or `since` when OF reports no new points against it. One
+ * definition shared by both call sites, so a fix to the threshold or
+ * comparison can't land at one and leave the other's own inline copy
+ * behind — that's exactly what happened to fetch-fund-nav's empty-points-only
+ * guard before it was extended to cover the non-empty case too (see PR #312
+ * review history). Same trading-day semantics as the sync-nav gate above and
+ * checkOpenFolioNavAge in freshness-check.ts.
+ */
+export function checkOpenFolioResultFreshness(
+  dateIso: string,
+  today: Date,
+  maxUpstreamAgeTradingDays: number = DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS,
+): OpenFolioResultFreshness {
+  const ageTradingDays = tradingDaysAge(dateIso, today);
+  return { fresh: ageTradingDays <= maxUpstreamAgeTradingDays, ageTradingDays };
+}
+
 /** Low-cardinality bucket for analytics — never emit the raw day count as a free property. */
 export function upstreamAgeBucket(ageTradingDays: number | null): '0-1' | '2-3' | '4-7' | '8+' | null {
   if (ageTradingDays === null) return null;

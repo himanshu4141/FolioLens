@@ -24,7 +24,7 @@ import {
   createOpenFolioClient,
   resolveOpenFolioCredentials,
 } from '../_shared/openfolio.ts';
-import { DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS, tradingDaysAge } from '../_shared/nav-since-map.ts';
+import { checkOpenFolioResultFreshness } from '../_shared/nav-since-map.ts';
 
 const MFAPI_BASE = 'https://api.mfapi.in/mf';
 const FETCH_TIMEOUT_MS = 15_000;
@@ -178,9 +178,9 @@ Deno.serve(async (req) => {
           }
 
           const lastNavDate = dbRows.reduce((max, r) => (r.nav_date > max ? r.nav_date : max), dbRows[0].nav_date);
-          const resultAgeTradingDays = tradingDaysAge(lastNavDate, new Date());
+          const resultFreshness = checkOpenFolioResultFreshness(lastNavDate, new Date());
 
-          if (resultAgeTradingDays <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS) {
+          if (resultFreshness.fresh) {
             await stampBackfilledAt(supabase, schemeCode);
             const elapsedMs = Date.now() - startedAt;
             console.log(
@@ -204,7 +204,7 @@ Deno.serve(async (req) => {
           // data.
           console.log(
             '[fetch-fund-nav] scheme=%d source=openfolio stale_after_upsert last=%s age_trading_days=%d — falling back to mfapi',
-            schemeCode, lastNavDate, resultAgeTradingDays,
+            schemeCode, lastNavDate, resultFreshness.ageTradingDays,
           );
         } else if (since !== null) {
           // Incremental: OpenFolio reports no new points since the latest local
@@ -214,8 +214,8 @@ Deno.serve(async (req) => {
           // empty, not that the scheme is actually current. Only declare cache_hit
           // when the local series itself is within the trading-day threshold;
           // otherwise fall through to mfapi rather than trusting the silence.
-          const localAgeTradingDays = tradingDaysAge(since, new Date());
-          if (localAgeTradingDays <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS) {
+          const localFreshness = checkOpenFolioResultFreshness(since, new Date());
+          if (localFreshness.fresh) {
             await stampBackfilledAt(supabase, schemeCode);
             const elapsedMs = Date.now() - startedAt;
             console.log(
@@ -232,7 +232,7 @@ Deno.serve(async (req) => {
 
           console.log(
             '[fetch-fund-nav] scheme=%d source=openfolio stale_no_new_points since=%s age_trading_days=%d — falling back to mfapi',
-            schemeCode, since, localAgeTradingDays,
+            schemeCode, since, localFreshness.ageTradingDays,
           );
           // fall through to mfapi below
         } else {
