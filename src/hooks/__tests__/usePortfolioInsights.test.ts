@@ -396,4 +396,38 @@ describe('computeInsights', () => {
       expect(result.debtFunds).toHaveLength(0);
     });
   });
+
+  // M2.2b: fundAllocation/debtFunds shortName prefers scheme_master.family_name
+  // (authoritative) over the parseFundName name-regex fallback.
+  describe('shortName provenance (family_name vs name-regex)', () => {
+    it('fundAllocation uses family_name when present, not the name-regex', () => {
+      const fund = makeFundCard({ familyName: 'HDFC Large Cap Fund' });
+      const comp = makeComposition();
+      const result = computeInsights([fund], [comp]);
+      // parseFundName is mocked to first-word-split ("HDFC"); family_name
+      // must win over that fallback.
+      expect(result.fundAllocation[0].shortName).toBe('HDFC Large Cap Fund');
+    });
+
+    it('fundAllocation falls back to parseFundName when family_name is null', () => {
+      const fund = makeFundCard({ familyName: null, schemeName: 'HDFC Large Cap Fund Direct Growth' });
+      const comp = makeComposition();
+      const result = computeInsights([fund], [comp]);
+      expect(result.fundAllocation[0].shortName).toBe('HDFC');
+    });
+
+    it('debtFunds uses family_name when present, not the name-regex', () => {
+      const fund = makeFundCard({ familyName: 'DSP Aggressive Hybrid Fund', schemeName: 'DSP Aggressive Hybrid Fund - Direct Plan - Growth' });
+      const comp = makeComposition({ debtPct: 17, cashPct: 16, equityPct: 67 });
+      const result = computeInsights([fund], [comp]);
+      expect(result.debtFunds[0].shortName).toBe('DSP Aggressive Hybrid Fund');
+    });
+
+    it('debtFunds falls back to parseFundName when family_name is null', () => {
+      const fund = makeFundCard({ familyName: null, schemeName: 'DSP Hybrid Fund' });
+      const comp = makeComposition({ debtPct: 17, cashPct: 16, equityPct: 67 });
+      const result = computeInsights([fund], [comp]);
+      expect(result.debtFunds[0].shortName).toBe('DSP');
+    });
+  });
 });

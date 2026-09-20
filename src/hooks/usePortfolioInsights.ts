@@ -116,7 +116,7 @@ export function computeInsights(
     .sort((a, b) => (b.currentValue ?? 0) - (a.currentValue ?? 0))
     .map((f, idx) => ({
       fundId: f.id,
-      shortName: parseFundName(f.schemeName).base,
+      shortName: f.familyName ?? parseFundName(f.schemeName).base,
       pct: totalValue > 0 ? ((f.currentValue ?? 0) / totalValue) * 100 : 0,
       value: f.currentValue ?? 0,
       color: FUND_PALETTE[idx % FUND_PALETTE.length],
@@ -150,7 +150,7 @@ export function computeInsights(
     if (comp.debtPct >= 1 || comp.cashPct >= 5) {
       debtFunds.push({
         fundId: fund.id,
-        shortName: parseFundName(fund.schemeName).base,
+        shortName: fund.familyName ?? parseFundName(fund.schemeName).base,
         debtPct: comp.debtPct,
         cashPct: comp.cashPct,
         portfolioPct: weight * 100,

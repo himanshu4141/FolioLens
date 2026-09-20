@@ -8,6 +8,7 @@
  * A check returns {ok: boolean, detail: string} — detail is a human-readable
  * explanation if the check failed, or a confirmation if it passed.
  */
+import { DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS, tradingDaysAge } from './nav-since-map.ts';
 
 /** Maximum age for held NAV in calendar days (tolerates weekends + 1 holiday). */
 const NAV_FRESHNESS_DAYS = 3;
@@ -214,6 +215,54 @@ export function checkOpenFolioHealth(
     name,
     ok: false,
     detail: `OpenFolio health issues:\n${issues.map((i) => `  - ${i}`).join('\n')}`,
+  };
+}
+
+/**
+ * Check: OpenFolio NAV age — db_nav_latest itself must be recent, independent
+ * of whether /health otherwise reports "ok". This is the check that would have
+ * caught the 2026-09 incident: OpenFolio's positional parser froze (zero rows
+ * from AMFI's new 8-column layout) while /health kept reporting status='ok'
+ * with a healthy db_schemes count — db_nav_latest just stopped moving.
+ *
+ * Uses the same trading-day-age predicate as sync-nav's freshness gate
+ * (tradingDaysAge / DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS from
+ * nav-since-map.ts) rather than a calendar-day threshold with a weekday
+ * skip. A calendar-day threshold checked at a fixed instant misreads a
+ * healthy upstream as stale across a weekend: at 08:00 UTC Monday, Friday's
+ * NAV is genuinely current but is already 3 days 8 hours old by wall-clock
+ * time, which a naive "< 3 days" check fails. Trading-day age counts only
+ * weekdays, so Friday's data reads as 1 trading day old on a Monday check —
+ * correctly fresh — with no separate weekend special-case needed.
+ */
+export function checkOpenFolioNavAge(
+  dbNavLatest: string | null | undefined,
+  now: Date,
+): CheckResult {
+  const name = 'OpenFolio NAV age';
+
+  if (!dbNavLatest) {
+    return {
+      name,
+      ok: false,
+      detail: 'OpenFolio /health did not report db_nav_latest.',
+    };
+  }
+
+  const ageTradingDays = tradingDaysAge(dbNavLatest, now);
+
+  if (ageTradingDays <= DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS) {
+    return {
+      name,
+      ok: true,
+      detail: `OpenFolio db_nav_latest is ${dbNavLatest} (${ageTradingDays} trading day(s) old, within the ${DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS}-day threshold).`,
+    };
+  }
+
+  return {
+    name,
+    ok: false,
+    detail: `OpenFolio db_nav_latest is ${dbNavLatest}, ${ageTradingDays} trading day(s) old, exceeds the ${DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS}-day threshold. OpenFolio can report /health status='ok' while its own NAV ingest is frozen — this check catches that independently.`,
   };
 }
 

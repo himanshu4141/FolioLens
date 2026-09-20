@@ -1,61 +1,26 @@
--- C1 makes balance recency authoritative before interpreting positive, zero,
--- or missing closing units. The resolver is the single database policy owner
--- for CAS transaction writers, including the later exact-target Q5 repair.
+-- M2.1 (docs/plans/amfi-nav-format-change.md): carry AMFI's own Plan/Option
+-- columns into a CAS-created provisional scheme_master identity, instead of
+-- leaving plan_type/option_type null until the next universe-backfill/
+-- sync-fund-meta cycle hydrates it.
+--
+-- api/_cdsl_nsdl_parser.py now derives plan_type/option_type from AMFI's new
+-- 8-column NAVAll layout (Plan/Option as standalone columns) and forwards them
+-- as `provisional_plan_type`/`provisional_option_type` on each import plan
+-- (see _shared/import-cas.ts). Both are optional and null for casparser-
+-- sourced CAS (CAMS/KFintech/MFCentral) and for the pre-Phase-6 6-column AMFI
+-- layout, which have no equivalent source data.
+--
+-- Same signature as the currently active apply_cas_import_plans_v2
+-- (20260814000000_cas_holding_activation_recency.sql) — only the
+-- scheme_master INSERT changes. `on conflict (scheme_code) do nothing` is
+-- unconditional and unchanged: the catalog authority boundary means this can
+-- only ever create a brand-new row, never overwrite plan_type/option_type
+-- (or their 'amfi'/'name'/'mfdata' provenance) on an existing shared row.
+-- cas_import_schema_version_v3() stays at 3 — old Edge Function code that
+-- doesn't send the two new (optional) fields gets exactly today's behavior
+-- (both columns null on insert), so there is no deployment-order hazard to
+-- gate on.
 
-create or replace function public.resolve_user_fund_activation_v1(
-  p_holding_existed boolean,
-  p_existing_is_active boolean,
-  p_closing_units jsonb,
-  p_closing_balance_is_current boolean,
-  p_has_transactions boolean
-)
-returns boolean
-language plpgsql
-immutable
-security invoker
-set search_path = ''
-as $$
-begin
-  if p_holding_existed is null
-    or p_closing_balance_is_current is null
-    or p_has_transactions is null
-    or p_closing_units is null
-    or jsonb_typeof(p_closing_units) not in ('number', 'null')
-    or (p_holding_existed and p_existing_is_active is null)
-  then
-    raise exception using errcode = 'P0001', message = 'cas_invalid_activation_evidence';
-  end if;
-
-  -- Recency is evaluated before balance type. An older statement cannot
-  -- activate a holding that already has newer committed state, and the
-  -- committed post-plan ledger is the floor for preserving an active row.
-  if p_holding_existed and not p_closing_balance_is_current then
-    return p_existing_is_active and p_has_transactions;
-  end if;
-
-  if jsonb_typeof(p_closing_units) = 'number' then
-    return (p_closing_units #>> '{}')::numeric > 0;
-  end if;
-
-  -- Current statements without a complete balance, and newly created
-  -- holdings, use the committed post-plan transaction snapshot.
-  return p_has_transactions;
-end;
-$$;
-
-comment on function public.resolve_user_fund_activation_v1(
-  boolean,
-  boolean,
-  jsonb,
-  boolean,
-  boolean
-) is
-  'Resolves user_fund.is_active from prior state, balance recency, closing units, and committed post-plan transactions.';
-
--- Superseded as the canonical source for this function by
--- 20260913000001_cas_provisional_plan_option.sql, which re-creates it with
--- the same signature to add AMFI-sourced plan/option columns to the
--- provisional scheme_master INSERT. Make future edits there, not here.
 create or replace function public.apply_cas_import_plans_v2(
   p_user_id uuid,
   p_import_id uuid,
@@ -70,6 +35,9 @@ declare
   plan_row jsonb;
   scheme_code_value integer;
   scheme_name_value text;
+  scheme_plan_type_value text;
+  scheme_option_type_value text;
+  scheme_plan_option_source_value text;
   expected_fund_uuid uuid;
   fund_uuid uuid;
   expected_ids uuid[];
@@ -168,15 +136,34 @@ begin
       raise exception using errcode = 'P0001', message = 'cas_snapshot_conflict';
     end if;
 
+    -- AMFI-sourced plan/option (new 8-column NAVAll layout only). Both are
+    -- optional; when absent, plan_option_source stays null exactly like the
+    -- pre-M2 behaviour. Never validated beyond emptiness — non-financial,
+    -- last-resort display data that self-heals via the next backfill cycle
+    -- even if malformed.
+    scheme_plan_type_value := nullif(plan_row ->> 'provisional_plan_type', '');
+    scheme_option_type_value := nullif(plan_row ->> 'provisional_option_type', '');
+    scheme_plan_option_source_value := case
+      when scheme_plan_type_value is not null or scheme_option_type_value is not null
+        then 'amfi'
+      else null
+    end;
+
     with inserted_scheme as (
       insert into public.scheme_master (
         scheme_code,
         scheme_name,
+        plan_type,
+        option_type,
+        plan_option_source,
         cas_identity_created_at
       )
       values (
         scheme_code_value,
         scheme_name_value,
+        scheme_plan_type_value,
+        scheme_option_type_value,
+        scheme_plan_option_source_value,
         now()
       )
       on conflict (scheme_code) do nothing
@@ -332,28 +319,6 @@ begin
   );
 end;
 $$;
-
-revoke all on function public.resolve_user_fund_activation_v1(
-  boolean,
-  boolean,
-  jsonb,
-  boolean,
-  boolean
-) from public;
-revoke all on function public.resolve_user_fund_activation_v1(
-  boolean,
-  boolean,
-  jsonb,
-  boolean,
-  boolean
-) from anon, authenticated;
-grant execute on function public.resolve_user_fund_activation_v1(
-  boolean,
-  boolean,
-  jsonb,
-  boolean,
-  boolean
-) to service_role;
 
 revoke all on function public.apply_cas_import_plans_v2(uuid, uuid, jsonb) from public;
 revoke all on function public.apply_cas_import_plans_v2(uuid, uuid, jsonb) from anon, authenticated;

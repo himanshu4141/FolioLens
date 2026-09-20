@@ -40,6 +40,11 @@ const OPTION_TYPE_LABELS: Record<string, string> = {
   dividend_payout: 'IDCW',
   dividend_reinvest: 'IDCW Reinvest',
   bonus: 'Bonus',
+  // OpenFolio's own option_type enum (post AMFI NAV feed format change) uses
+  // bare 'reinvest' / 'payout' rather than the 'idcw_*' / 'dividend_*'
+  // compound values above — see docs/plans/amfi-nav-format-change.md M2.
+  reinvest: 'IDCW Reinvest',
+  payout: 'IDCW',
 };
 
 /**

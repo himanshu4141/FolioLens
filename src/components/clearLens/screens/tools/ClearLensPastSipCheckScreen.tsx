@@ -160,6 +160,7 @@ interface PickedScheme {
   schemeCode: number;
   schemeName: string;
   schemeCategory: string | null;
+  familyName: string | null;
 }
 
 /**
@@ -293,6 +294,7 @@ export function ClearLensPastSipCheckScreen() {
         schemeCode: f.schemeCode,
         schemeName: f.schemeName,
         schemeCategory: f.schemeCategory,
+        familyName: f.familyName,
       });
     }
   }, [userHeldQuery.data, selectedScheme]);
@@ -465,7 +467,9 @@ export function ClearLensPastSipCheckScreen() {
               <View style={styles.fundRowLeft}>
                 <Text style={styles.inputLabel}>Fund</Text>
                 <Text style={styles.fundName} numberOfLines={1}>
-                  {selectedScheme ? shortSchemeName(selectedScheme.schemeName) : 'Pick a fund'}
+                  {selectedScheme
+                    ? selectedScheme.familyName ?? shortSchemeName(selectedScheme.schemeName)
+                    : 'Pick a fund'}
                 </Text>
               </View>
               <Ionicons name="chevron-down" size={18} color={tokens.colors.textTertiary} />
@@ -526,7 +530,7 @@ export function ClearLensPastSipCheckScreen() {
             </View>
           ) : fundResult && fundResult.hasEnoughData ? (
             <ResultSection
-              fundName={selectedScheme.schemeName}
+              fundName={selectedScheme.familyName ?? selectedScheme.schemeName}
               benchmarkLabel={benchmarkLabel}
               fundResult={fundResult}
               benchmarkResult={benchmarkResult}
@@ -576,6 +580,7 @@ export function ClearLensPastSipCheckScreen() {
             schemeCode: scheme.schemeCode,
             schemeName: scheme.schemeName,
             schemeCategory: scheme.schemeCategory,
+            familyName: scheme.familyName,
           });
           setPickerOpen(false);
         }}

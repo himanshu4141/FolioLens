@@ -60,6 +60,14 @@ describe('planOptionLabel', () => {
     expect(planOptionLabel('direct', 'dividend_reinvest')).toBe('Direct · IDCW Reinvest');
   });
 
+  it('handles OpenFolio\'s bare option_type enum (post AMFI format change)', () => {
+    // OF emits bare 'reinvest' / 'payout' / 'bonus' rather than the
+    // 'idcw_*' / 'dividend_*' compound values — see M2 has_idcw bug fix.
+    expect(planOptionLabel('direct', 'reinvest')).toBe('Direct · IDCW Reinvest');
+    expect(planOptionLabel('direct', 'payout')).toBe('Direct · IDCW');
+    expect(planOptionLabel('direct', 'bonus')).toBe('Direct · Bonus');
+  });
+
   it('returns plan-only when option_type is absent', () => {
     expect(planOptionLabel('direct', null)).toBe('Direct');
     expect(planOptionLabel('regular', undefined)).toBe('Regular');

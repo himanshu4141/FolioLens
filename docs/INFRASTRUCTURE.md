@@ -130,9 +130,9 @@ Both run Postgres 17, the same schema (kept in sync via migrations under `supaba
 | `parse-cas-pdf` | Native upload from app | Forwards a binary PDF to the Vercel-hosted Python parser, enforces the shared CAS preflight before any domain operation, then runs the catalog-isolated atomic plan in `_shared/import-cas.ts`; newly created provisional identities trigger `sync-fund-meta` | Active |
 | `cas-webhook-resend` | Vercel inbound router | Receives FolioLens-signed CAS payloads routed by `/api/resend-inbound-router`, looks up user via `cas_inbox_token`, fetches email content / attachments through Resend, parses and preflights every PDF, rejects cross-attachment scheme overlap, then combines only disjoint statements into one atomic import plan | Active |
 | `delete-account` | Settings → account deletion | Deletes app/user data and then removes the Supabase auth user via admin APIs | Active |
-| `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Calls OpenFolio `/health` first and skips schemes already current through `db_nav_latest`; missing/stale held schemes use OpenFolio `/v1/nav/delta` in ≤500-scheme batches with per-scheme watermarks. Failed delta batches fall back to per-scheme OpenFolio; missing/truncated schemes from a successful delta batch fall back to mfapi. | Active |
+| `sync-nav` | pg_cron (bimodal: hourly 6 PM → 6 AM IST + every 2h during the day, 7 days) | Calls OpenFolio `/health` first. The freshness gate is age-aware: if `db_nav_latest` itself is stale (> 2 trading days old as of now — a healthy-looking `/health` with a frozen NAV feed, as happened in the 2026-09 AMFI format-change incident), the gate never skips and routes every held scheme whose *local* NAV is also stale straight to mfapi, bypassing the OpenFolio delta/incremental path entirely for that run. Otherwise: skips schemes already current through `db_nav_latest`; missing/stale held schemes use OpenFolio `/v1/nav/delta` in ≤500-scheme batches with per-scheme watermarks. Failed delta batches fall back to per-scheme OpenFolio; missing/truncated schemes from a successful delta batch fall back to mfapi. `sync_completed`/`sync_skipped` analytics carry `upstream_stale` and a bucketed `upstream_age_bucket`. | Active |
 | `sync-index` | pg_cron (hourly weekdays) | Pulls benchmark closes into `index_history` using NSE TRI first, EODHD backup, and Yahoo Finance for legacy price-return symbols | Active |
-| `fetch-fund-nav` | On-demand (client POST, no auth required) | Backfills NAV history for any scheme not held by the user — used by Compare Funds and Past SIP Check. Source ladder mirrors `sync-nav`: (1) 3-day freshness short-circuit; (2) OpenFolio `/v1/nav/{code}?since=<latest_local_date>` — incremental on warm re-hydrations, full history on first sync; (3) mfapi.in full history on OF 404/error/empty-first-sync. Stamps `scheme_master.nav_backfilled_at` on every successful hydration. | Active |
+| `fetch-fund-nav` | On-demand (client POST, no auth required) | Backfills NAV history for any scheme not held by the user — used by Compare Funds and Past SIP Check. Source ladder mirrors `sync-nav`: (1) 3-day freshness short-circuit; (2) OpenFolio `/v1/nav/{code}?since=<latest_local_date>` — incremental on warm re-hydrations, full history on first sync; (3) mfapi.in full history on OF 404/error/empty-first-sync, **or** when OpenFolio reports zero new points but the local series is itself older than the 2-trading-day threshold (a frozen-upstream "no new points" answer is not trusted as "current"). Stamps `scheme_master.nav_backfilled_at` on every successful hydration. | Active |
 | `fetch-fund-snapshot` | On-demand (client POST, no auth required) | Hydrates metadata + composition for a selected fund not already fresh in local tables. OpenFolio official composition is first, mfdata category fallback is backup. | Active |
 | `nav-retention` | pg_cron weekly (Sundays 03:00 UTC / 08:30 IST) | Deletes `nav_history` rows for schemes that are not held by any active `user_fund` **and** whose `scheme_master.nav_backfilled_at` is NULL or older than 90 days. Batched deletes (≤ 100 k rows per run). See "Runbook: NAV retention" below. | Active |
 | `openfolio-sync` | pg_cron (`openfolio-composition-monthly`, 15th @ 01:30 UTC) + manual `{"mode":"backfill"}` | **Primary** holdings source: pages OpenFolio-Data's bulk `/v1/composition`, matches schemes to `scheme_master` (AMFI code → ISIN), upserts `source='official'` rows. Reads `OPENFOLIO_API_BASE` + `OPENFOLIO_API_KEY` secrets. | Active |
@@ -171,6 +171,18 @@ closing-balance shape before positive, zero, or missing units are interpreted, b
 an empty committed post-plan ledger is a deactivation floor. Q5 repair must use the
 same resolver when applying delete-only activation changes; rollback restores the
 captured prior activation instead of deriving a second policy.
+
+M2.1 (`docs/plans/amfi-nav-format-change.md`,
+`20260913000001_cas_provisional_plan_option.sql`) extends the v2 writer's
+`scheme_master` insert with `plan_type`/`option_type`/`plan_option_source`,
+sourced from optional `provisional_plan_type`/`provisional_option_type` fields
+on each import plan (populated only for CDSL/NSDL CAS on AMFI's new 8-column
+NAVAll layout). No capability version bump was needed: the fields are
+optional and additive, so Edge Function code from before this migration and
+after it both produce identical output on either side of the deploy boundary
+— the catalog authority boundary (`on conflict (scheme_code) do nothing`)
+still means this can only ever populate a brand-new row, never an existing
+one.
 
 
 ### One-time per-project bootstrap: `public.app_config`
@@ -355,15 +367,16 @@ All pruned NAV data is fully regenerable from the OpenFolio API (`/v1/nav/{schem
 ## Runbook: Freshness check (daily silent-failure audit)
 
 
-**What it is.** A daily cron job (`freshness-check-daily`) that runs at 08:00 UTC and audits the pipeline for silent failures that went unnoticed in past incidents. Prior to this, sync-nav-hourly failed 18× per day for 5 days unnoticed; universe-backfill runs were cancelled with 69 row-failures recorded in a cursor nobody read; a monthly composition job no-opped. The freshness check would have caught all three.
+**What it is.** A daily cron job (`freshness-check-daily`) that runs at 08:00 UTC and audits the pipeline for silent failures that went unnoticed in past incidents. Prior to this, sync-nav-hourly failed 18× per day for 5 days unnoticed; universe-backfill runs were cancelled with 69 row-failures recorded in a cursor nobody read; a monthly composition job no-opped; and OpenFolio's own AMFI parser froze silently for three weeks in 2026-09 while `/health` kept reporting `status='ok'`. The freshness check would have caught all four.
 
-**Five checks (each injectable for unit testing):**
+**Six checks (each injectable for unit testing):**
 
 1. **Held NAV age** — `MAX(nav_date)` across all schemes in `user_fund` must be ≥ today − 3 calendar days (tolerates weekends + 1 holiday). Failure: no recent NAV for held schemes.
 2. **Cron failures (last 24h)** — Count of non-succeeded runs in `cron.job_run_details` must be 0. Checked via `public.recent_cron_failures(hours int)`, a security-definer SQL function that reads the cron schema without direct access grants.
 3. **Backfill cursor staleness** — For each `universe_backfill_*_cursor` in `app_config`: warn if the cursor state JSON has `failed > 0` (chunk with errors), or if the cursor value hasn't changed in 48+ hours while still present (stalled walk).
 4. **OpenFolio health** — GET `${OPENFOLIO_API_BASE}/health` must return `status='ok'`, `db_schemes > 1,500`, `db_nav_latest` present, and `latest_disclosure_date ≤ today + 1 day` (a future-dated HSBC snapshot leaked once). Failure: API outage or data corruption.
-5. **Composition staleness** — `MAX(portfolio_date)` of `source='official'` in `fund_portfolio_composition` must be within 75 days. Failure: no recent composition updates.
+5. **OpenFolio NAV age** — `db_nav_latest` from the same `/health` response must be within 2 trading days of now, using the same `tradingDaysAge`/`DEFAULT_MAX_UPSTREAM_AGE_TRADING_DAYS` predicate as `sync-nav`'s freshness gate (one definition, shared). A calendar-day threshold checked at a fixed instant misreads a healthy upstream as stale across a weekend — at 08:00 UTC Monday, Friday's NAV is genuinely current but already 3 days 8 hours old by wall clock — so trading-day age (which reads Friday as 1 trading day old on a Monday check) is used instead of a calendar threshold with a weekend special-case. Independent of check 4: OpenFolio can report `status='ok'` with a healthy `db_schemes` count while its own NAV ingest is frozen, which is exactly what happened in the 2026-09 incident. Failure: OpenFolio is healthy-but-stale.
+6. **Composition staleness** — `MAX(portfolio_date)` of `source='official'` in `fund_portfolio_composition` must be within 75 days. Failure: no recent composition updates.
 
 **On failure:** Sends one consolidated alert email via Resend (same signing + router pathway as `notify-feedback`). Logs a structured `[freshness-check]` summary line to Supabase logs with check names, ok/failed counts, and timestamp.
 
@@ -394,12 +407,14 @@ If alerts are wired (FOLIOLENS_INBOUND_ROUTER_SECRET set), this will trigger an 
 
 **Alerting setup:**
 
-The edge function follows the same pattern as `notify-feedback`: signs the alert payload with `FOLIOLENS_INBOUND_ROUTER_SECRET` and forwards to the Vercel router endpoint at `ROUTER_FRESHNESS_ALERT_URL` (defaults to `https://app.foliolens.in/api/freshness-alert`). The router verifies the signature and calls Resend to send the email to the founder. Env vars must be set in the Supabase Dashboard:
+The edge function follows the same pattern as `notify-feedback`: signs the alert payload with `FOLIOLENS_INBOUND_ROUTER_SECRET` and forwards to the Vercel router endpoint at `ROUTER_FRESHNESS_ALERT_URL` (defaults to `https://app.foliolens.in/api/freshness-alert`). `api/freshness-alert.py` (mirroring `api/feedback-notify.py` / `api/cas-import-notify.py`) verifies the signature and calls Resend to send the email to the founder, naming every failed check by name and detail. Before this handler existed the URL pointed at a route that returned a plain 404, so every freshness alert was silently lost — see `docs/plans/amfi-nav-format-change.md` M1.3. Env vars must be set in the Supabase Dashboard (edge function side) and Vercel (router side, reusing the existing `MAIL_FORWARD_TO` / `MAIL_FORWARD_FROM` / `RESEND_API_KEY` — no new Vercel env vars required):
 
 - `FOLIOLENS_INBOUND_ROUTER_SECRET` — HMAC key shared with the Vercel router (same key as for `notify-feedback`).
 - `ROUTER_FRESHNESS_ALERT_URL` — Router endpoint URL (no default; if unset, alerts are logged but not sent).
 - `OPENFOLIO_API_BASE` — OpenFolio API base (defaults to `https://api.openfolio.com`).
 - `NOTIFY_ENVIRONMENT` — `'dev'` or `'prod'` (included in alert payload so router knows which email address to send to).
+
+The edge function also logs a `[freshness-check] alert route resolved: url=… secret_configured=…` line once at cold start, so a misconfigured or unreachable alert route is visible in Supabase logs before the first real failure needs it.
 
 ## Runbook: Monthly reconciliation (upstream coverage audit)
 
@@ -532,14 +547,15 @@ signal instead: deployment counts and the `softDeletedByRetention` flag from
 deployments. The real GB number stays a manual dashboard check (Usage →
 Deployment Storage → Functions Storage → Projects).
 
-Separately, the four Python functions under `/api` share one root
+Separately, the five Python functions under `/api` share one root
 `requirements.txt`; Vercel does no per-function dependency tree-shaking, so
-`cas-import-notify`, `feedback-notify`, and `resend-inbound-router` each bundle
-the full `casparser`/`pdfplumber`/`pypdfium2`/`Pillow` stack that only
-`parse-cas-pdf` actually uses. That 4x duplication compounds with retained
-deployments to drive Functions Storage usage; splitting or rewriting those
-three functions to drop the unused dependency weight is tracked as a follow-up,
-not yet done.
+`cas-import-notify`, `feedback-notify`, `freshness-alert`, and
+`resend-inbound-router` each bundle the full
+`casparser`/`pdfplumber`/`pypdfium2`/`Pillow` stack that only `parse-cas-pdf`
+actually uses. That 5x duplication compounds with retained deployments to
+drive Functions Storage usage; splitting or rewriting those four thin
+handlers to drop the unused dependency weight is tracked as a follow-up, not
+yet done.
 
 
 ## Resend
@@ -780,6 +796,7 @@ On the Edge Function runtime (Supabase Dashboard → Functions → Secrets), the
 | `EODHD_API_KEY` | only set if EOD-style index data needed | same |
 | `FOLIOLENS_INBOUND_ROUTER_SECRET` | HMAC shared with the Vercel router for inbound CAS handoff + outbound notification callback | same |
 | `ROUTER_NOTIFY_URL` | (optional) Vercel cas-import-notify endpoint, defaults to `https://app.foliolens.in/api/cas-import-notify` | same |
+| `ROUTER_FRESHNESS_ALERT_URL` | (optional) Vercel freshness-alert endpoint, defaults to `https://app.foliolens.in/api/freshness-alert`; if unset, `freshness-check` logs the alert payload but skips sending | same |
 | `NOTIFY_ENVIRONMENT` | `dev` — picks the dev Resend template + dev From address at the router | `prod` — picks the prod Resend template + prod From address |
 | `VERCEL_PROTECTION_BYPASS_TOKEN` | only when Vercel protection is enabled | same |
 | `POSTHOG_PROJECT_KEY` | same `phc_...` as the client SDKs use; enables server-side `cas_parse_*` / `cas_inbound_*` / `sync_*` events | same |

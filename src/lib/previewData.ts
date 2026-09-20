@@ -424,6 +424,11 @@ function buildFundCard(scheme: PreviewSchemeMeta): FundCardData {
     redeemedUnits: agg.redeemedUnits,
     navHistory30d: makeNavHistory30d(scheme.currentNav, scheme.schemeCode),
     schemeActive: true,
+    // Preview/demo mode has no real scheme_master row; badges fall back to
+    // the name-regex, same as before this field existed.
+    familyName: null,
+    planType: null,
+    optionType: null,
   };
 }
 

@@ -24,6 +24,7 @@ import {
   buildSchemeLatestMap,
   evaluateOpenFolioNavFreshnessGate,
   SINCE_MAP_PAGE_SIZE,
+  upstreamAgeBucket,
 } from '../_shared/nav-since-map.ts';
 import { planOpenFolioNavDeltaRouting } from '../_shared/nav-delta-routing.ts';
 
@@ -146,6 +147,7 @@ Deno.serve(async (req) => {
         schemeCodes,
         schemeLatest,
         upstreamNavLatest,
+        new Date(),
       );
       console.log(
         '[sync-nav] freshness gate: skip=%s upstream=%s local_min=%s missing=%d stale=%d current=%d sync=%d reason=%s',
@@ -158,6 +160,14 @@ Deno.serve(async (req) => {
         freshnessGate.syncSchemeCount,
         freshnessGate.reason,
       );
+
+      if (freshnessGate.upstreamStale) {
+        console.warn(
+          '[sync-nav] upstream stale age_days=%d — routing %d schemes to mfapi',
+          freshnessGate.upstreamAgeTradingDays,
+          freshnessGate.syncSchemeCount,
+        );
+      }
 
       if (freshnessGate.shouldSkip) {
         const elapsedMs = Date.now() - startedAt;
@@ -176,6 +186,8 @@ Deno.serve(async (req) => {
             local_min_nav_date: freshnessGate.localMinLatestDate,
             freshness_gate_current_schemes: freshnessGate.currentSchemeCount,
             freshness_gate_sync_schemes: freshnessGate.syncSchemeCount,
+            upstream_stale: freshnessGate.upstreamStale,
+            upstream_age_bucket: upstreamAgeBucket(freshnessGate.upstreamAgeTradingDays),
             elapsed_ms: elapsedMs,
           },
           'system:sync-nav',
@@ -231,10 +243,14 @@ Deno.serve(async (req) => {
   let openfolioDeltaRows = 0;
   let openfolioDeltaMissingSchemes = 0;
   let openfolioDeltaTruncatedSchemes = 0;
-  const sourceLadderSchemeCodes: number[] = openfolio ? [] : [...schemeCodesToSync];
+  // When upstream is stale, OpenFolio's delta/incremental endpoints are not
+  // trustworthy for this run — route straight to the mfapi fallback ladder
+  // without spending a delta call on an upstream we already know is frozen.
+  const useOpenFolioDelta = Boolean(openfolio) && !freshnessGate?.upstreamStale;
+  const sourceLadderSchemeCodes: number[] = useOpenFolioDelta ? [] : [...schemeCodesToSync];
   const perSchemeOpenFolioAllowed = new Set<number>();
 
-  if (openfolio && schemeCodesToSync.length > 0) {
+  if (useOpenFolioDelta && openfolio && schemeCodesToSync.length > 0) {
     for (let i = 0; i < schemeCodesToSync.length; i += OPENFOLIO_NAV_DELTA_SCHEME_BATCH_SIZE) {
       const deltaBatch = schemeCodesToSync.slice(i, i + OPENFOLIO_NAV_DELTA_SCHEME_BATCH_SIZE);
       try {
@@ -476,6 +492,8 @@ Deno.serve(async (req) => {
       freshness_gate_stale_schemes: freshnessGate?.staleSchemeCount ?? null,
       freshness_gate_current_schemes: freshnessGate?.currentSchemeCount ?? null,
       freshness_gate_sync_schemes: freshnessGate?.syncSchemeCount ?? null,
+      upstream_stale: freshnessGate?.upstreamStale ?? false,
+      upstream_age_bucket: upstreamAgeBucket(freshnessGate?.upstreamAgeTradingDays ?? null),
       elapsed_ms: elapsedMs,
     },
     'system:sync-nav',

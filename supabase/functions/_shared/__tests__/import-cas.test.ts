@@ -213,6 +213,8 @@ function buildMockSupabase({
     const plans = (args?.p_plans ?? []) as Array<{
       scheme_code: number;
       provisional_scheme_name: string;
+      provisional_plan_type: string | null;
+      provisional_option_type: string | null;
       expected_fund_id: string | null;
       expected_transaction_ids: string[];
       closing_units: number | null;
@@ -257,6 +259,8 @@ function buildMockSupabase({
     let provisionalSchemeCount = 0;
     for (const plan of plans) {
       if (!storedSchemes.some((row) => row.scheme_code === plan.scheme_code)) {
+        const planType = plan.provisional_plan_type ?? null;
+        const optionType = plan.provisional_option_type ?? null;
         storedSchemes.push({
           scheme_code: plan.scheme_code,
           scheme_name: plan.provisional_scheme_name,
@@ -265,6 +269,13 @@ function buildMockSupabase({
           benchmark_index_symbol: null,
           cas_identity_created_at: '2026-08-11T00:00:00.000Z',
           cas_identity_hydrated_at: null,
+          // Mirrors apply_cas_import_plans_v2's scheme_master INSERT
+          // (20260913000001_cas_provisional_plan_option.sql): only a
+          // brand-new row gets plan_type/option_type/plan_option_source
+          // from the CAS payload; an existing row is never touched.
+          plan_type: planType,
+          option_type: optionType,
+          plan_option_source: planType !== null || optionType !== null ? 'amfi' : null,
         });
         provisionalSchemeCount++;
       }
@@ -646,10 +657,98 @@ describe('importCASData()', () => {
       benchmark_index_symbol: null,
       cas_identity_created_at: '2026-08-11T00:00:00.000Z',
       cas_identity_hydrated_at: null,
+      // minimalCAS() carries no additional_info.amfi_plan_type/option_type
+      // (casparser-shaped fixture) — provisional identity has no AMFI-sourced
+      // classification, same as before M2.1.
+      plan_type: null,
+      option_type: null,
+      plan_option_source: null,
     }]);
     expect(storedFunds).toHaveLength(1);
     expect(storedFunds[0]).toMatchObject({ is_active: true });
     expect(storedTransactions).toHaveLength(1);
+  });
+
+  // ── M2.1: AMFI-sourced plan/option on provisional identities ──────────────
+
+  it('carries AMFI-sourced plan/option onto a brand-new provisional scheme_master row', async () => {
+    const { supabase, storedSchemes } = buildMockSupabase({
+      existingFundRows: [],
+      existingSchemeRows: [],
+    });
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+    parsed.mutual_funds![0].schemes![0].additional_info = {
+      amfi: '119551',
+      amfi_plan_type: 'direct',
+      amfi_option_type: 'growth',
+    };
+
+    await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(storedSchemes).toHaveLength(1);
+    expect(storedSchemes[0]).toMatchObject({
+      scheme_code: 119551,
+      plan_type: 'direct',
+      option_type: 'growth',
+      plan_option_source: 'amfi',
+    });
+  });
+
+  it('leaves plan/option null when the CAS parser did not supply them (casparser-sourced CAS)', async () => {
+    const { supabase, storedSchemes } = buildMockSupabase({
+      existingFundRows: [],
+      existingSchemeRows: [],
+    });
+    // minimalCAS()'s additional_info carries only `amfi` — the casparser
+    // (CAMS/KFintech/MFCentral) shape, with no AMFI Plan/Option source data.
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+
+    await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(storedSchemes).toHaveLength(1);
+    expect(storedSchemes[0]).toMatchObject({
+      plan_type: null,
+      option_type: null,
+      plan_option_source: null,
+    });
+  });
+
+  it('never overwrites an existing catalog row\'s plan/option from a CAS payload', async () => {
+    const existingCatalog = {
+      scheme_code: 119551,
+      scheme_name: 'Authoritative Catalog Name',
+      scheme_category: 'Equity: Small Cap',
+      benchmark_index: 'Nifty Smallcap 250 TRI',
+      benchmark_index_symbol: '^NIFTYSC250',
+      cas_identity_created_at: null,
+      cas_identity_hydrated_at: null,
+      plan_type: 'regular',
+      option_type: 'idcw',
+      plan_option_source: 'name',
+    };
+    const { supabase, storedSchemes } = buildMockSupabase({
+      existingSchemeRows: [existingCatalog],
+    });
+    const beforeDigest = JSON.stringify(storedSchemes);
+
+    const parsed = minimalCAS([
+      { date: '2024-01-10', type: 'PURCHASE', units: 100, amount: 10000, nav: 100 },
+    ]);
+    // A conflicting AMFI claim on the CAS payload must not touch the row —
+    // the catalog authority boundary (on conflict do nothing) is unconditional.
+    parsed.mutual_funds![0].schemes![0].additional_info = {
+      amfi: '119551',
+      amfi_plan_type: 'direct',
+      amfi_option_type: 'growth',
+    };
+
+    await importCASData(supabase, 'user-1', 'import-1', parsed);
+
+    expect(JSON.stringify(storedSchemes)).toBe(beforeDigest);
   });
 
   it('keeps one user CAS from changing the provisional catalog identity created by another user', async () => {
