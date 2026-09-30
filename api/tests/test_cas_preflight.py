@@ -105,6 +105,105 @@ def test_standard_parser_adapter_retains_canonical_financial_fields(dialect):
     assert transaction["stamp_duty"] == 0.05
 
 
+def _standard_raw_transaction(**overrides):
+    transaction = {
+        "date": "2026-07-01",
+        "type": "REDEMPTION",
+        "description": "Synthetic redemption",
+        "amount": -100.0,
+        "units": -10.0,
+        "nav": 10.0,
+    }
+    transaction.update(overrides)
+    return {
+        "folios": [
+            {
+                "folio": "SYNTHETIC-01",
+                "schemes": [
+                    {
+                        "scheme": "Synthetic Mutual Fund - Growth",
+                        "isin": "INF000A00001",
+                        "type": "EQUITY",
+                        "amfi": "100001",
+                        "transactions": [transaction],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_standard_adapter_derives_independent_gross_for_explicit_tds_outflow():
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(
+            type="SWITCH_OUT",
+            description="Synthetic switch out less TDS",
+            amount=-88.0,
+        ),
+        "kfintech",
+    )
+    normalized_transaction = normalized["mutual_funds"][0]["schemes"][0][
+        "transactions"
+    ][0]
+
+    assert normalized_transaction["source_amount"] == -88.0
+    assert normalized_transaction["gross_amount"] == 100.0
+    assert normalized_transaction["cash_basis"] == "net_of_withholding"
+
+    result = validate_and_canonicalize_cas(normalized)
+    transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
+    assert transaction["source_amount"] == -88.0
+    assert transaction["gross_amount"] == 100.0
+    assert transaction["direction"] == "out"
+
+
+def test_standard_adapter_keeps_ordinary_signed_outflow_on_source_basis():
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(),
+        "kfintech",
+    )
+    normalized_transaction = normalized["mutual_funds"][0]["schemes"][0][
+        "transactions"
+    ][0]
+
+    assert normalized_transaction["source_amount"] == -100.0
+    assert normalized_transaction["gross_amount"] == 100.0
+    assert normalized_transaction["cash_basis"] == "source"
+    validate_and_canonicalize_cas(normalized)
+
+
+def test_standard_adapter_does_not_apply_withholding_basis_to_inflow():
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(
+            type="PURCHASE",
+            description="Synthetic purchase with TDS wording",
+            amount=100.0,
+            units=10.0,
+        ),
+        "kfintech",
+    )
+    transaction = normalized["mutual_funds"][0]["schemes"][0]["transactions"][0]
+
+    assert transaction["cash_basis"] == "source"
+    validate_and_canonicalize_cas(normalized)
+
+
+def test_standard_adapter_withholding_anomaly_still_fails_closed():
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(
+            type="SWITCH_OUT",
+            description="Synthetic switch out with withholding tax",
+            amount=-40.0,
+        ),
+        "kfintech",
+    )
+
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(normalized)
+
+    assert caught.value.reason == "accounting_mismatch"
+
+
 def test_price_is_used_for_equation_when_it_differs_from_nav():
     result = validate_and_canonicalize_cas(
         _payload(

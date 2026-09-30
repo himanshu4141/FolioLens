@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from typing import Any
 
 import casparser
@@ -16,6 +17,13 @@ from api._cdsl_nsdl_parser import (
 from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
 
 logger = logging.getLogger(__name__)
+
+
+_NET_WITHHOLDING_RE = re.compile(
+    r"\b(?:tds|tax\s+deducted\s+at\s+source|withholding(?:\s+tax)?)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_NET_WITHHOLDING_OUTFLOW_TYPES = {"REDEMPTION", "SWITCH_OUT"}
 
 
 def _to_float(value: Any) -> float | None:
@@ -39,6 +47,50 @@ def _title_scheme_type(value: str | None) -> str | None:
     return value.title()
 
 
+def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
+    source_amount = _to_float(tx.get("source_amount", tx.get("amount")))
+    source_units = _to_float(tx.get("source_units", tx.get("units")))
+    nav = _to_float(tx.get("nav"))
+    price = _to_float(tx.get("price", tx.get("nav")))
+    tx_type = str(tx.get("type") or "").upper().strip()
+    description = str(tx.get("description") or "")
+    cash_basis = (
+        "net_of_withholding"
+        if tx_type in _NET_WITHHOLDING_OUTFLOW_TYPES
+        and _NET_WITHHOLDING_RE.search(description)
+        else "source"
+    )
+
+    explicit_gross_amount = _to_float(tx.get("gross_amount"))
+    if explicit_gross_amount is not None:
+        gross_amount = abs(explicit_gross_amount)
+    elif (
+        cash_basis == "net_of_withholding"
+        and price is not None
+        and source_units is not None
+    ):
+        gross_amount = abs(price * source_units)
+    else:
+        gross_amount = abs(source_amount) if source_amount is not None else None
+
+    return {
+        "date": tx.get("date"),
+        "type": tx.get("type"),
+        "description": tx.get("description"),
+        "amount": _to_float(tx.get("amount")),
+        "source_amount": source_amount,
+        "gross_amount": gross_amount,
+        "units": _to_float(tx.get("units")),
+        "source_units": source_units,
+        "nav": nav,
+        "price": price,
+        "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
+        "charges": tx.get("charges") if isinstance(tx.get("charges"), dict) else {},
+        "cash_basis": cash_basis,
+        "balance": _to_float(tx.get("balance")),
+    }
+
+
 def normalize_casparser_result(
     raw: dict[str, Any],
     source_dialect: str = "unknown_standard",
@@ -49,21 +101,7 @@ def normalize_casparser_result(
         schemes: list[dict[str, Any]] = []
         for scheme in folio.get("schemes", []):
             transactions = [
-                {
-                    "date": tx.get("date"),
-                    "type": tx.get("type"),
-                    "description": tx.get("description"),
-                    "amount": _to_float(tx.get("amount")),
-                    "source_amount": _to_float(tx.get("source_amount", tx.get("amount"))),
-                    "gross_amount": _to_float(tx.get("gross_amount", tx.get("amount"))),
-                    "units": _to_float(tx.get("units")),
-                    "source_units": _to_float(tx.get("source_units", tx.get("units"))),
-                    "nav": _to_float(tx.get("nav")),
-                    "price": _to_float(tx.get("price", tx.get("nav"))),
-                    "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
-                    "charges": tx.get("charges") if isinstance(tx.get("charges"), dict) else {},
-                    "balance": _to_float(tx.get("balance")),
-                }
+                _normalize_standard_transaction(tx)
                 for tx in scheme.get("transactions", [])
             ]
 
