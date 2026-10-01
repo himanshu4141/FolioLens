@@ -21,7 +21,7 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 - C11 changes only standard-CAS normalization before the existing Python preflight.
 - The existing Python and TypeScript preflight rules are the safety authority and remain unchanged.
 - The signed provider values remain available as `source_amount` and `source_units` for direction validation and transaction identity.
-- A net-withholding basis is valid only for a redemption or switch-out with explicit TDS, tax-deducted-at-source, or withholding wording.
+- A net-withholding basis is valid only for a redemption or switch-out with explicit, non-negated TDS, tax-deducted-at-source, or withholding wording and a positive residual beyond normal accounting tolerance.
 - Price multiplied by Units is the only independent gross evidence used for these rows.
 - No production deployment is authorized by this implementation milestone.
 
@@ -37,7 +37,8 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 - Normalize an explicitly supplied gross amount to a positive magnitude at the standard-provider adapter boundary.
 - When gross is absent, derive ordinary gross cash from the positive magnitude of source cash.
-- For an explicitly narrated TDS/withholding redemption or switch-out, derive gross cash from the positive magnitude of Price multiplied by signed Units and set `cash_basis` to `net_of_withholding`.
+- For an explicitly narrated, non-negated TDS/withholding redemption or switch-out with a positive residual, derive gross cash from the positive magnitude of Price multiplied by signed Units and set `cash_basis` to `net_of_withholding`.
+- Share the narration, transaction-type, negation, and residual gate across standard and depository parser families.
 - Preserve signed source cash and source units.
 - Add synthetic regression tests for the accepted KFintech shape, ordinary signed outflows, inflow counterexamples, and excessive-withholding rejection.
 - Document the standard-provider boundary in the CAS upload architecture.
@@ -47,13 +48,15 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 - Weakening or changing Python or TypeScript preflight tolerances, reason codes, reconciliation, or mutation behavior.
 - Accepting generic tax wording as withholding evidence.
-- Parser changes for CDSL or NSDL.
+- Changes to CDSL/NSDL extraction, header mapping, financial fields, or preflight. C11 may route both parser families through the same narration classifier so the safety rule cannot drift.
 - Client password behavior, inbound email behavior, database repair, deletion, rollback, hydration, NAV work, or production deployment.
 - Committing or posting any private statement material or exact personal values.
 
 ## Approach
 
-Add a small transaction-normalization helper in `api/_cas_parser.py`. It reads source amount, source units, NAV, Price, type, and description once. It preserves the source signs, converts explicit gross to a magnitude, and otherwise selects one of two fixed gross derivations:
+Add a shared classifier in `api/_cas_withholding.py` and call it from both parser families. The classifier requires a supported outflow type, explicit positive withholding narration, no nil/zero/not-applicable negation, and an independently supported gross value that exceeds source cash by more than normal accounting tolerance.
+
+The standard transaction-normalization helper in `api/_cas_parser.py` reads source amount, source units, NAV, Price, type, and description once. It preserves the source signs, converts explicit gross to a magnitude, and otherwise selects one of two fixed gross derivations:
 
 1. For an explicitly narrated withholding outflow, use the magnitude of Price multiplied by Units and mark `cash_basis` as `net_of_withholding`.
 2. For every other transaction, use the magnitude of source cash and keep `cash_basis` as `source`.
@@ -95,11 +98,11 @@ Acceptance criteria: every command exits zero, the local proof reports zero reje
 
 ### Milestone 4: Frozen-head review and dev field proof
 
-Open a C11 correctness-hotfix PR and require independent Codex and Claude convergence on the same full SHA, the green Dual-review convergence gate, all required checks, and no actionable reviewer thread before merge. After merge, deploy only the authorized dev surface and let the owner retry the manual upload. Record only privacy-safe aggregate outcome evidence.
+Open a C11 correctness-hotfix PR and require Claude convergence on the exact full SHA, all required implementation checks, and no actionable Claude-owned reviewer thread before merge. On 2026-10-01 the owner explicitly removed Codex review from this and subsequent CAS program rounds. The existing mechanical Dual-review convergence check will therefore remain red and requires a recorded owner-authorized administrative override; no Codex convergence marker may be fabricated. After merge, deploy only the authorized dev surface and let the owner retry the manual upload. Record only privacy-safe aggregate outcome evidence.
 
 Expected outcome: the reviewed fix reaches dev and the direct-upload path completes or returns an allowlisted safe failure without leaking statement data.
 
-Acceptance criteria: exact-SHA dual convergence precedes merge, production is untouched, and the dev observation contains no document, password, filename, identifier, row, or exact personal value.
+Acceptance criteria: exact-SHA Claude convergence precedes merge, the owner-only review-policy override is recorded, production is untouched, and the dev observation contains no document, password, filename, identifier, row, or exact personal value.
 
 ## Validation
 
@@ -132,6 +135,9 @@ Review the diff for any literal password, document name, holder data, PAN, folio
 - 2026-09-30: Reuse the exact explicit-withholding vocabulary and anomaly model already reviewed for depository statements.
 - 2026-09-30: Keep production deployment outside this milestone.
 - 2026-09-30: Focused validation passed 76 Python tests and 88 shared-contract tests. Full validation passed 401 Python tests plus 3 subtests, 123 Jest suites / 2,405 tests, typecheck, zero-warning lint, syntax, and diff checks. The read-only private proof passed the complete KFintech preflight with zero rejected rows using bucketed output only.
+- 2026-10-01: Accept Claude round-one P1 and P2. Centralize the net-withholding gate, reject negated narration, require a positive residual beyond tolerance, and add standard plus depository counterexamples in one correction.
+- 2026-10-01: The owner explicitly ended Codex review for this and subsequent CAS program rounds. Claude is the sole independent reviewer; the legacy Dual-review convergence check is an acknowledged administrative override rather than a gate to satisfy artificially.
+- 2026-10-01: Correction validation passed 263 focused Python tests, 417 complete API Python tests plus 3 subtests, 88 shared-contract tests, 123 Jest suites / 2,405 tests, typecheck, zero-warning lint, syntax, and diff checks. The read-only private proof still passed complete KFintech preflight with zero rejected rows using bucketed output only.
 
 ## Progress
 
@@ -142,6 +148,10 @@ Review the diff for any literal password, document name, holder data, PAN, folio
 - [x] Update the CAS upload architecture documentation.
 - [x] Complete focused and full validation.
 - [x] Complete the privacy-safe local statement proof.
-- [ ] Open the C11 PR for frozen-head review.
-- [ ] Complete exact-SHA Codex and Claude convergence before merge.
+- [x] Open the C11 PR for frozen-head review.
+- [x] Receive and triage Claude round-one review.
+- [x] Implement one batched correction for all accepted round-one findings.
+- [x] Complete correction validation.
+- [x] Push the single correction and open exact-SHA Claude re-review.
+- [ ] Complete exact-SHA Claude convergence before merge.
 - [ ] Merge, deploy to dev only, and complete the privacy-safe direct-upload field proof.

@@ -188,6 +188,31 @@ def test_standard_adapter_does_not_apply_withholding_basis_to_inflow():
     validate_and_canonicalize_cas(normalized)
 
 
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Synthetic redemption - TDS Nil",
+        "Synthetic redemption, TDS not applicable",
+        "Synthetic redemption with no withholding tax",
+    ],
+)
+def test_standard_adapter_rejects_gap_when_withholding_is_negated(description):
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(
+            description=description,
+            amount=-55.0,
+        ),
+        "kfintech",
+    )
+    transaction = normalized["mutual_funds"][0]["schemes"][0]["transactions"][0]
+
+    assert transaction["cash_basis"] == "source"
+    assert transaction["gross_amount"] == 55.0
+    with pytest.raises(CASPreflightError) as caught:
+        validate_and_canonicalize_cas(normalized)
+    assert caught.value.reason == "accounting_mismatch"
+
+
 def test_standard_adapter_withholding_anomaly_still_fails_closed():
     normalized = normalize_casparser_result(
         _standard_raw_transaction(

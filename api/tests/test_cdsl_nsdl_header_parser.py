@@ -195,6 +195,23 @@ def test_explicit_net_of_tax_switch_out_uses_independent_gross_cash():
 
 
 @pytest.mark.parametrize(
+    "description",
+    [
+        "Redemption - TDS Nil",
+        "Redemption, TDS not applicable",
+        "Redemption with no withholding tax",
+    ],
+)
+def test_negated_withholding_outflow_gap_still_fails_preflight(description):
+    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    row = ["01-07-2026", description, "55", "0", "10", "10", "10"]
+
+    with pytest.raises(CASPreflightError) as caught:
+        _parse(_pdf(_page("NSDL", [_table(header, row)])))
+    assert caught.value.reason == "accounting_mismatch"
+
+
+@pytest.mark.parametrize(
     ("description", "amount"),
     [
         ("Switch Out - synthetic", "90"),

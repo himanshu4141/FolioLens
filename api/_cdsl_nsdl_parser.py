@@ -33,6 +33,7 @@ from typing import Any
 import pdfplumber
 
 from api._cas_preflight import validate_and_canonicalize_cas
+from api._cas_withholding import cash_basis_for_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -376,12 +377,6 @@ TX_KEYWORDS: list[tuple[str, str]] = [
 ]
 
 _TX_COMPILED = [(re.compile(pat, re.IGNORECASE | re.UNICODE), typ) for pat, typ in TX_KEYWORDS]
-_NET_WITHHOLDING_RE = re.compile(
-    r"\b(?:tds|tax\s+deducted\s+at\s+source|withholding(?:\s+tax)?)\b",
-    re.IGNORECASE | re.UNICODE,
-)
-
-
 def normalise_cdsl_tx_type(description: str) -> str | None:
     """Map an English or Hindi transaction description to an uppercase type string.
 
@@ -914,16 +909,16 @@ def extract_mf_folios(
                     if value is not None
                 }
                 charge_total = sum(charges.values())
-                cash_basis = (
-                    "net_of_withholding"
-                    if tx_type in {"REDEMPTION", "SWITCH_OUT"}
-                    and _NET_WITHHOLDING_RE.search(desc or "")
-                    else "source"
-                )
                 independent_base = (
                     abs(price_val * units_val)
                     if price_val is not None and units_val is not None
                     else None
+                )
+                cash_basis = cash_basis_for_transaction(
+                    tx_type,
+                    desc or "",
+                    amount_val,
+                    independent_base,
                 )
                 gross_amount = (
                     independent_base

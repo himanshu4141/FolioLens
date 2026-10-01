@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import logging
-import re
 from typing import Any
 
 import casparser
@@ -15,15 +14,9 @@ from api._cdsl_nsdl_parser import (
     parse_cdsl_nsdl,
 )
 from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
+from api._cas_withholding import cash_basis_for_transaction
 
 logger = logging.getLogger(__name__)
-
-
-_NET_WITHHOLDING_RE = re.compile(
-    r"\b(?:tds|tax\s+deducted\s+at\s+source|withholding(?:\s+tax)?)\b",
-    re.IGNORECASE | re.UNICODE,
-)
-_NET_WITHHOLDING_OUTFLOW_TYPES = {"REDEMPTION", "SWITCH_OUT"}
 
 
 def _to_float(value: Any) -> float | None:
@@ -54,11 +47,16 @@ def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
     price = _to_float(tx.get("price", tx.get("nav")))
     tx_type = str(tx.get("type") or "").upper().strip()
     description = str(tx.get("description") or "")
-    cash_basis = (
-        "net_of_withholding"
-        if tx_type in _NET_WITHHOLDING_OUTFLOW_TYPES
-        and _NET_WITHHOLDING_RE.search(description)
-        else "source"
+    independent_gross = (
+        abs(price * source_units)
+        if price is not None and source_units is not None
+        else None
+    )
+    cash_basis = cash_basis_for_transaction(
+        tx_type,
+        description,
+        source_amount,
+        independent_gross,
     )
 
     explicit_gross_amount = _to_float(tx.get("gross_amount"))
@@ -66,10 +64,9 @@ def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
         gross_amount = abs(explicit_gross_amount)
     elif (
         cash_basis == "net_of_withholding"
-        and price is not None
-        and source_units is not None
+        and independent_gross is not None
     ):
-        gross_amount = abs(price * source_units)
+        gross_amount = independent_gross
     else:
         gross_amount = abs(source_amount) if source_amount is not None else None
 
