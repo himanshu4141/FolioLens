@@ -27,6 +27,28 @@ _NEGATED_NET_WITHHOLDING_RE = re.compile(
     rf")",
     re.IGNORECASE | re.UNICODE,
 )
+_REPORTED_WITHHOLDING_AMOUNT_RE = re.compile(
+    rf"\b{_WITHHOLDING_TERM}\b"
+    rf"(?:\s+(?:amount|deducted))?\s*"
+    rf"(?:[:=,@/\-–—]\s*|(?:rs\.?|inr|₹)\s+)"
+    rf"(?:(?:rs\.?|inr|₹)\s*)?"
+    rf"(?P<amount>\d+(?:,\d{{2,3}})*(?:\.\d+)?)"
+    rf"(?![\d.,])"
+    rf"(?!\s*%)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def reported_withholding_from_description(description: str) -> float | None:
+    """Return an explicitly printed withholding amount, never an inferred residual."""
+    match = _REPORTED_WITHHOLDING_AMOUNT_RE.search(description)
+    if match is None:
+        return None
+    try:
+        amount = float(match.group("amount").replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) else None
 
 
 def cash_basis_for_transaction(
@@ -34,13 +56,15 @@ def cash_basis_for_transaction(
     description: str,
     source_amount: float | None,
     independent_gross: float | None,
+    reported_withholding: float | None,
 ) -> CASCashBasis:
-    """Return net basis only with positive, non-negated evidence of withholding.
+    """Return net basis only when reported withholding reconciles exactly.
 
-    Provider narration is necessary but not sufficient. The independently
-    supported gross value must also exceed the magnitude of source cash by more
-    than the accounting tolerance. The canonical preflight remains responsible
-    for the upper withholding bound and the complete financial equation.
+    Provider narration is only a permission signal. Price times units must
+    independently support gross cash, and a separately reported tax amount must
+    match the gross-versus-source residual within the accounting tolerance. The
+    canonical preflight repeats that corroboration and the upper withholding
+    bound before any import can proceed.
     """
     normalized_type = transaction_type.upper().strip()
     if normalized_type not in _NET_WITHHOLDING_OUTFLOW_TYPES:
@@ -49,13 +73,30 @@ def cash_basis_for_transaction(
         return "source"
     if _NEGATED_NET_WITHHOLDING_RE.search(description):
         return "source"
-    if source_amount is None or independent_gross is None:
+    if (
+        source_amount is None
+        or independent_gross is None
+        or reported_withholding is None
+    ):
         return "source"
 
     gross = abs(independent_gross)
     source = abs(source_amount)
-    if not math.isfinite(gross) or not math.isfinite(source) or gross <= 0:
+    reported = reported_withholding
+    if (
+        not math.isfinite(gross)
+        or not math.isfinite(source)
+        or not math.isfinite(reported)
+        or gross <= 0
+    ):
         return "source"
 
     tolerance = max(1.0, gross * 0.002)
-    return "net_of_withholding" if gross - source > tolerance else "source"
+    withheld = gross - source
+    if withheld <= tolerance or reported <= tolerance:
+        return "source"
+    return (
+        "net_of_withholding"
+        if abs(withheld - reported) <= tolerance
+        else "source"
+    )

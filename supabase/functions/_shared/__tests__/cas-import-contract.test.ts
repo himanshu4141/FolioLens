@@ -342,7 +342,7 @@ describe('CAS import preflight contract', () => {
       nav: 10,
       price: 10,
       stamp_duty: 0,
-      charges: {},
+      charges: { taxes: 10 },
       cash_basis: 'net_of_withholding',
     })]))).toMatchObject({ ok: true });
   });
@@ -362,7 +362,7 @@ describe('CAS import preflight contract', () => {
         nav: 10,
         price: 10,
         stamp_duty: 0,
-        charges: {},
+        charges: { taxes: gross - source },
         cash_basis: 'net_of_withholding',
       })]))).toMatchObject({ ok: true });
     },
@@ -378,10 +378,12 @@ describe('CAS import preflight contract', () => {
   );
 
   it.each([
-    ['unmarked residual', { cash_basis: 'source' as const }],
+    ['unmarked residual', { cash_basis: 'source' as const, charges: {} }],
     ['gross not independently supported', { cash_basis: 'net_of_withholding' as const, gross_amount: 90 }],
     ['excessive withholding', { cash_basis: 'net_of_withholding' as const, amount: 40, source_amount: 40 }],
     ['inflow basis misuse', { cash_basis: 'net_of_withholding' as const, type: 'PURCHASE' }],
+    ['missing reported withholding', { cash_basis: 'net_of_withholding' as const, charges: {} }],
+    ['negative reported withholding', { cash_basis: 'net_of_withholding' as const, charges: { taxes: -10 } }],
   ])('rejects %s', (_label, overrides) => {
     expect(preflightCASPayload(payload('nsdl', [validTransaction({
       type: 'SWITCH_OUT',
@@ -393,7 +395,7 @@ describe('CAS import preflight contract', () => {
       nav: 10,
       price: 10,
       stamp_duty: 0,
-      charges: {},
+      charges: { taxes: 10 },
       ...overrides,
     })]))).toMatchObject({ ok: false });
   });

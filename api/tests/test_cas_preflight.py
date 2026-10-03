@@ -137,7 +137,7 @@ def test_standard_adapter_derives_independent_gross_for_explicit_tds_outflow():
     normalized = normalize_casparser_result(
         _standard_raw_transaction(
             type="SWITCH_OUT",
-            description="Synthetic switch out less TDS",
+            description="Synthetic switch out less TDS - INR 12.00",
             amount=-88.0,
         ),
         "kfintech",
@@ -149,12 +149,30 @@ def test_standard_adapter_derives_independent_gross_for_explicit_tds_outflow():
     assert normalized_transaction["source_amount"] == -88.0
     assert normalized_transaction["gross_amount"] == 100.0
     assert normalized_transaction["cash_basis"] == "net_of_withholding"
+    assert normalized_transaction["charges"]["taxes"] == 12.0
 
     result = validate_and_canonicalize_cas(normalized)
     transaction = result["mutual_funds"][0]["schemes"][0]["transactions"][0]
     assert transaction["source_amount"] == -88.0
     assert transaction["gross_amount"] == 100.0
     assert transaction["direction"] == "out"
+
+
+def test_standard_adapter_uses_structured_tax_as_corroboration():
+    normalized = normalize_casparser_result(
+        _standard_raw_transaction(
+            type="SWITCH_OUT",
+            description="Synthetic switch out less TDS",
+            amount=-88.0,
+            charges={"taxes": 12.0},
+        ),
+        "kfintech",
+    )
+    transaction = normalized["mutual_funds"][0]["schemes"][0]["transactions"][0]
+
+    assert transaction["cash_basis"] == "net_of_withholding"
+    assert transaction["gross_amount"] == 100.0
+    validate_and_canonicalize_cas(normalized)
 
 
 def test_standard_adapter_keeps_ordinary_signed_outflow_on_source_basis():
@@ -217,7 +235,7 @@ def test_standard_adapter_withholding_anomaly_still_fails_closed():
     normalized = normalize_casparser_result(
         _standard_raw_transaction(
             type="SWITCH_OUT",
-            description="Synthetic switch out with withholding tax",
+            description="Synthetic switch out with withholding tax - INR 60.00",
             amount=-40.0,
         ),
         "kfintech",
@@ -562,7 +580,7 @@ def test_net_withholding_requires_explicit_basis_and_independent_gross():
                     nav=10,
                     price=10,
                     stamp_duty=0,
-                    charges={},
+                    charges={"taxes": 10},
                     cash_basis="net_of_withholding",
                 )
             ]
@@ -572,10 +590,12 @@ def test_net_withholding_requires_explicit_basis_and_independent_gross():
     assert transaction["gross_amount"] == 100
 
     for overrides in (
-        {"cash_basis": "source"},
+        {"cash_basis": "source", "charges": {}},
         {"cash_basis": "net_of_withholding", "gross_amount": 90},
         {"cash_basis": "net_of_withholding", "source_amount": 40, "amount": 40},
         {"cash_basis": "net_of_withholding", "type": "PURCHASE"},
+        {"cash_basis": "net_of_withholding", "charges": {}},
+        {"cash_basis": "net_of_withholding", "charges": {"taxes": -10}},
     ):
         values = {
             "type": "SWITCH_OUT",
@@ -587,7 +607,7 @@ def test_net_withholding_requires_explicit_basis_and_independent_gross():
             "nav": 10,
             "price": 10,
             "stamp_duty": 0,
-            "charges": {},
+            "charges": {"taxes": 10},
         }
         values.update(overrides)
         candidate = _valid_transaction(**values)
@@ -613,7 +633,7 @@ def test_net_withholding_accepts_realistic_statutory_rate_bands(withholding_rate
                     nav=10,
                     price=10,
                     stamp_duty=0,
-                    charges={},
+                    charges={"taxes": gross - source},
                     cash_basis="net_of_withholding",
                 )
             ]

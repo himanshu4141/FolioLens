@@ -14,7 +14,10 @@ from api._cdsl_nsdl_parser import (
     parse_cdsl_nsdl,
 )
 from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
-from api._cas_withholding import cash_basis_for_transaction
+from api._cas_withholding import (
+    cash_basis_for_transaction,
+    reported_withholding_from_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,13 @@ def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
     price = _to_float(tx.get("price", tx.get("nav")))
     tx_type = str(tx.get("type") or "").upper().strip()
     description = str(tx.get("description") or "")
+    raw_charges = tx.get("charges")
+    charges = dict(raw_charges) if isinstance(raw_charges, dict) else {}
+    reported_withholding = _to_float(charges.get("taxes"))
+    if reported_withholding is None:
+        reported_withholding = reported_withholding_from_description(description)
+        if reported_withholding is not None:
+            charges["taxes"] = reported_withholding
     independent_gross = (
         abs(price * source_units)
         if price is not None and source_units is not None
@@ -57,6 +67,7 @@ def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
         description,
         source_amount,
         independent_gross,
+        reported_withholding,
     )
 
     explicit_gross_amount = _to_float(tx.get("gross_amount"))
@@ -82,7 +93,7 @@ def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
         "nav": nav,
         "price": price,
         "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
-        "charges": tx.get("charges") if isinstance(tx.get("charges"), dict) else {},
+        "charges": charges,
         "cash_basis": cash_basis,
         "balance": _to_float(tx.get("balance")),
     }

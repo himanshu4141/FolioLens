@@ -33,7 +33,10 @@ from typing import Any
 import pdfplumber
 
 from api._cas_preflight import validate_and_canonicalize_cas
-from api._cas_withholding import cash_basis_for_transaction
+from api._cas_withholding import (
+    cash_basis_for_transaction,
+    reported_withholding_from_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -899,11 +902,16 @@ def extract_mf_folios(
                 if not units_val:
                     continue
 
+                reported_withholding = taxes_val
+                if reported_withholding is None:
+                    reported_withholding = reported_withholding_from_description(
+                        desc or ""
+                    )
                 charges = {
                     key: abs(value)
                     for key, value in {
                         "stamp_duty": stamp_duty_val,
-                        "taxes": taxes_val,
+                        "taxes": reported_withholding,
                         "exit_load": exit_load_val,
                     }.items()
                     if value is not None
@@ -919,6 +927,7 @@ def extract_mf_folios(
                     desc or "",
                     amount_val,
                     independent_base,
+                    reported_withholding,
                 )
                 gross_amount = (
                     independent_base

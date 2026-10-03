@@ -176,12 +176,22 @@ def test_holdings_summary_isins_do_not_become_empty_transaction_schemes():
 
 
 def test_explicit_net_of_tax_switch_out_uses_independent_gross_cash():
-    header = ["Date", "Description", "Amount", "Stamp Duty", "NAV", "Price", "Units"]
+    header = [
+        "Date",
+        "Description",
+        "Amount",
+        "Stamp Duty",
+        "Taxes",
+        "NAV",
+        "Price",
+        "Units",
+    ]
     row = [
         "01-07-2026",
         "Switch Out Less TDS, STT - synthetic",
         "90",
         "0",
+        "10",
         "10",
         "10",
         "10",
@@ -192,6 +202,7 @@ def test_explicit_net_of_tax_switch_out_uses_independent_gross_cash():
     assert transaction["cash_basis"] == "net_of_withholding"
     assert transaction["source_amount"] == 90
     assert transaction["gross_amount"] == 100
+    assert transaction["charges"]["taxes"] == 10
 
 
 @pytest.mark.parametrize(

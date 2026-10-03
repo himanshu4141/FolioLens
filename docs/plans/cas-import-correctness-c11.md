@@ -18,10 +18,9 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 ## Assumptions
 
-- C11 changes only standard-CAS normalization before the existing Python preflight.
-- The existing Python and TypeScript preflight rules are the safety authority and remain unchanged.
+- C11 changes parser normalization and strengthens the matching Python and TypeScript preflight equations without changing their tolerances or privacy-safe reason codes.
 - The signed provider values remain available as `source_amount` and `source_units` for direction validation and transaction identity.
-- A net-withholding basis is valid only for a redemption or switch-out with explicit, non-negated TDS, tax-deducted-at-source, or withholding wording and a positive residual beyond normal accounting tolerance.
+- A net-withholding basis is valid only for a redemption or switch-out with explicit, non-negated TDS, tax-deducted-at-source, or withholding wording, a positive reported tax amount, and a residual that matches that amount within normal accounting tolerance.
 - Price multiplied by Units is the only independent gross evidence used for these rows.
 - No production deployment is authorized by this implementation milestone.
 
@@ -37,7 +36,8 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 - Normalize an explicitly supplied gross amount to a positive magnitude at the standard-provider adapter boundary.
 - When gross is absent, derive ordinary gross cash from the positive magnitude of source cash.
-- For an explicitly narrated, non-negated TDS/withholding redemption or switch-out with a positive residual, derive gross cash from the positive magnitude of Price multiplied by signed Units and set `cash_basis` to `net_of_withholding`.
+- For an explicitly narrated, non-negated TDS/withholding redemption or switch-out with a corroborated tax amount, derive gross cash from the positive magnitude of Price multiplied by signed Units and set `cash_basis` to `net_of_withholding` only when gross minus source cash matches the reported tax.
+- Accept a reported tax only from a structured tax field or a currency amount explicitly attached to the withholding term; never infer it from the residual or treat a percentage as an amount.
 - Share the narration, transaction-type, negation, and residual gate across standard and depository parser families.
 - Preserve signed source cash and source units.
 - Add synthetic regression tests for the accepted KFintech shape, ordinary signed outflows, inflow counterexamples, and excessive-withholding rejection.
@@ -46,7 +46,7 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 ## Out Of Scope
 
-- Weakening or changing Python or TypeScript preflight tolerances, reason codes, reconciliation, or mutation behavior.
+- Weakening Python or TypeScript preflight tolerances, privacy-safe reason codes, or mutation behavior.
 - Accepting generic tax wording as withholding evidence.
 - Changes to CDSL/NSDL extraction, header mapping, financial fields, or preflight. C11 may route both parser families through the same narration classifier so the safety rule cannot drift.
 - Client password behavior, inbound email behavior, database repair, deletion, rollback, hydration, NAV work, or production deployment.
@@ -54,14 +54,14 @@ A local, read-only reproduction against the owner-supplied statement confirmed t
 
 ## Approach
 
-Add a shared classifier in `api/_cas_withholding.py` and call it from both parser families. The classifier requires a supported outflow type, explicit positive withholding narration, no nil/zero/not-applicable negation, and an independently supported gross value that exceeds source cash by more than normal accounting tolerance.
+Add a shared classifier in `api/_cas_withholding.py` and call it from both parser families. The classifier requires a supported outflow type, explicit positive withholding narration, no nil/zero/not-applicable negation, independently supported gross cash, and a separately reported withholding amount that reconciles to gross minus source cash. A strict extractor recognizes only a currency amount explicitly attached to the withholding term; structured tax fields take precedence, and bare wording or rates are not accepted as amounts.
 
 The standard transaction-normalization helper in `api/_cas_parser.py` reads source amount, source units, NAV, Price, type, and description once. It preserves the source signs, converts explicit gross to a magnitude, and otherwise selects one of two fixed gross derivations:
 
 1. For an explicitly narrated withholding outflow, use the magnitude of Price multiplied by Units and mark `cash_basis` as `net_of_withholding`.
 2. For every other transaction, use the magnitude of source cash and keep `cash_basis` as `source`.
 
-The helper does not decide whether the row is valid. It passes the normalized row into the unchanged `validate_and_canonicalize_cas()` function. That function still verifies positive amounts, direction, Price and NAV, Price multiplied by Units, charge relationships, and the existing withholding anomaly ceiling. The Supabase Edge Function repeats the equivalent TypeScript contract before any shared-domain I/O.
+The helper does not decide whether the row is valid. It passes the normalized row into `validate_and_canonicalize_cas()`, which independently requires `charges.taxes` to match the gross-versus-source residual in addition to positive amounts, direction, Price and NAV, Price multiplied by Units, and the existing withholding anomaly ceiling. The Supabase Edge Function repeats the same reported-tax equation in TypeScript before any shared-domain I/O.
 
 ## Alternatives Considered
 
@@ -76,9 +76,9 @@ The helper does not decide whether the row is valid. It passes the normalized ro
 
 Edit `api/_cas_parser.py` to preserve signed source fields, emit positive gross, and use the existing explicit-withholding model only for supported outflow types.
 
-Expected outcome: a synthetic KFintech TDS switch-out reaches the unchanged preflight with independent gross evidence, while ordinary outflows remain on the source-cash basis.
+Expected outcome: a synthetic KFintech TDS switch-out with an explicitly reported amount reaches preflight with independent gross evidence, while bare narration and ordinary outflows remain on the source-cash basis.
 
-Acceptance criteria: focused adapter/preflight tests pass and no preflight or import contract code changes.
+Acceptance criteria: focused adapter and twin-preflight tests pass, and both preflights require the reported tax to reconcile to the residual.
 
 ### Milestone 2: Pin accepted and rejected shapes
 
@@ -116,15 +116,15 @@ Run from the repository root:
     npm run lint
     git diff --check
 
-Expected: all commands exit zero. The focused Python tests prove the standard adapter emits positive gross cash, preserves signed source fields, applies net-withholding only with explicit supported narration, and leaves the anomaly ceiling active. The TypeScript contract test confirms defence in depth remains aligned even though C11 does not modify it.
+Expected: all commands exit zero. The focused Python tests prove the standard adapter emits positive gross cash, preserves signed source fields, and applies net-withholding only when explicit narration, independent gross, and a matching reported tax are all present. The TypeScript contract test proves the same corroboration and anomaly ceiling remain aligned at the shared-domain boundary.
 
 Review the diff for any literal password, document name, holder data, PAN, folio, account identifier, private path, raw parser response, extracted row, or exact personal financial value. None may be present.
 
 ## Risks And Mitigations
 
-- Explicit tax wording could be too broad. The regular expression matches only TDS, the expanded phrase tax deducted at source, or withholding wording, and only on redemption or switch-out types.
+- Explicit tax wording could be too broad. Narration is only a permission signal; the reported amount must be structured or explicitly currency-valued and must reconcile to the residual in both preflights.
 - Signed outflows could lose direction evidence. The helper retains the original signs in `source_amount` and `source_units`; only gross is a positive magnitude.
-- A suspicious residual could be accepted as withholding. The unchanged preflight requires Price multiplied by Units to match gross and caps withholding at the existing anomaly ceiling.
+- A suspicious residual could be accepted as withholding. Both preflights require Price multiplied by Units to match gross, the reported tax to match the residual, and withholding to remain below the existing anomaly ceiling.
 - Standard-provider behavior could drift from depository behavior. The matcher and accounting semantics mirror the reviewed depository boundary, and the common preflight enforces the same canonical contract.
 - Private evidence could leak into review. All committed fixtures are synthetic, local proof emits only buckets and safe status, and the final diff receives a privacy scan.
 
@@ -138,6 +138,9 @@ Review the diff for any literal password, document name, holder data, PAN, folio
 - 2026-10-01: Accept Claude round-one P1 and P2. Centralize the net-withholding gate, reject negated narration, require a positive residual beyond tolerance, and add standard plus depository counterexamples in one correction.
 - 2026-10-01: The owner explicitly ended Codex review for this and subsequent CAS program rounds. Claude is the sole independent reviewer; the legacy Dual-review convergence check is an acknowledged administrative override rather than a gate to satisfy artificially.
 - 2026-10-01: Correction validation passed 263 focused Python tests, 417 complete API Python tests plus 3 subtests, 88 shared-contract tests, 123 Jest suites / 2,405 tests, typecheck, zero-warning lint, syntax, and diff checks. The read-only private proof still passed complete KFintech preflight with zero rejected rows using bucketed output only.
+- 2026-10-03: Accept Claude round-two P1. Narration is no longer sufficient to select the wider equation. Require a positive reported tax amount, reconcile it to gross minus source cash in the shared classifier and both preflights, reject bare or zero/negated wording, and retain the existing anomaly ceiling as a secondary guard.
+- 2026-10-03: Round-two correction validation passed 284 focused Python tests, 438 complete API Python tests plus 3 subtests, 90 focused shared-contract tests, 123 Jest suites / 2,407 tests, typecheck, zero-warning lint, syntax, and diff checks. One unrelated timing-sensitive repair-transport assertion passed its exact rerun and the subsequent complete Jest run. No new PostHog event is needed because the existing privacy-safe preflight outcome and reason telemetry already covers this fail-closed boundary without adding identifiers or financial values.
+- 2026-10-03: Do not substitute the earlier private proof for the strengthened corroboration rule. The final owner-supplied statement proof remains a post-merge dev direct-upload task so it exercises the exact reviewed and deployed revision; until then, only synthetic aggregate evidence is claimed.
 
 ## Progress
 
@@ -153,5 +156,9 @@ Review the diff for any literal password, document name, holder data, PAN, folio
 - [x] Implement one batched correction for all accepted round-one findings.
 - [x] Complete correction validation.
 - [x] Push the single correction and open exact-SHA Claude re-review.
+- [x] Receive and triage Claude round-two review.
+- [x] Implement the round-two corroboration correction in both parser and preflight families.
+- [x] Complete round-two correction validation and final privacy scan.
+- [ ] Push the round-two correction and open exact-SHA Claude re-review.
 - [ ] Complete exact-SHA Claude convergence before merge.
 - [ ] Merge, deploy to dev only, and complete the privacy-safe direct-upload field proof.
