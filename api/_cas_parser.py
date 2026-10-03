@@ -14,6 +14,10 @@ from api._cdsl_nsdl_parser import (
     parse_cdsl_nsdl,
 )
 from api._cas_preflight import detect_standard_dialect, validate_and_canonicalize_cas
+from api._cas_withholding import (
+    cash_basis_for_transaction,
+    reported_withholding_from_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,62 @@ def _title_scheme_type(value: str | None) -> str | None:
     return value.title()
 
 
+def _normalize_standard_transaction(tx: dict[str, Any]) -> dict[str, Any]:
+    source_amount = _to_float(tx.get("source_amount", tx.get("amount")))
+    source_units = _to_float(tx.get("source_units", tx.get("units")))
+    nav = _to_float(tx.get("nav"))
+    price = _to_float(tx.get("price", tx.get("nav")))
+    tx_type = str(tx.get("type") or "").upper().strip()
+    description = str(tx.get("description") or "")
+    raw_charges = tx.get("charges")
+    charges = dict(raw_charges) if isinstance(raw_charges, dict) else {}
+    reported_withholding = _to_float(charges.get("taxes"))
+    if reported_withholding is None:
+        reported_withholding = reported_withholding_from_description(description)
+        if reported_withholding is not None:
+            charges["taxes"] = reported_withholding
+    independent_gross = (
+        abs(price * source_units)
+        if price is not None and source_units is not None
+        else None
+    )
+    cash_basis = cash_basis_for_transaction(
+        tx_type,
+        description,
+        source_amount,
+        independent_gross,
+        reported_withholding,
+    )
+
+    explicit_gross_amount = _to_float(tx.get("gross_amount"))
+    if explicit_gross_amount is not None:
+        gross_amount = abs(explicit_gross_amount)
+    elif (
+        cash_basis == "net_of_withholding"
+        and independent_gross is not None
+    ):
+        gross_amount = independent_gross
+    else:
+        gross_amount = abs(source_amount) if source_amount is not None else None
+
+    return {
+        "date": tx.get("date"),
+        "type": tx.get("type"),
+        "description": tx.get("description"),
+        "amount": _to_float(tx.get("amount")),
+        "source_amount": source_amount,
+        "gross_amount": gross_amount,
+        "units": _to_float(tx.get("units")),
+        "source_units": source_units,
+        "nav": nav,
+        "price": price,
+        "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
+        "charges": charges,
+        "cash_basis": cash_basis,
+        "balance": _to_float(tx.get("balance")),
+    }
+
+
 def normalize_casparser_result(
     raw: dict[str, Any],
     source_dialect: str = "unknown_standard",
@@ -49,21 +109,7 @@ def normalize_casparser_result(
         schemes: list[dict[str, Any]] = []
         for scheme in folio.get("schemes", []):
             transactions = [
-                {
-                    "date": tx.get("date"),
-                    "type": tx.get("type"),
-                    "description": tx.get("description"),
-                    "amount": _to_float(tx.get("amount")),
-                    "source_amount": _to_float(tx.get("source_amount", tx.get("amount"))),
-                    "gross_amount": _to_float(tx.get("gross_amount", tx.get("amount"))),
-                    "units": _to_float(tx.get("units")),
-                    "source_units": _to_float(tx.get("source_units", tx.get("units"))),
-                    "nav": _to_float(tx.get("nav")),
-                    "price": _to_float(tx.get("price", tx.get("nav"))),
-                    "stamp_duty": _to_float(tx.get("stamp_duty")) or 0.0,
-                    "charges": tx.get("charges") if isinstance(tx.get("charges"), dict) else {},
-                    "balance": _to_float(tx.get("balance")),
-                }
+                _normalize_standard_transaction(tx)
                 for tx in scheme.get("transactions", [])
             ]
 

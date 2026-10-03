@@ -258,9 +258,10 @@ export const PLACEHOLDER_FOLIOS = new Set([
 ]);
 const MAX_POSTGRES_INTEGER = '2147483647';
 const CASH_BASES = new Set<CASCashBasis>(['source', 'net_of_withholding']);
-// Explicit TDS/withholding narration plus independently reported Price x Units
-// is the primary safety proof. The ceiling is only an anomaly guard and must
-// cover ordinary NRI statutory bands (including rates above 30%).
+// Explicit narration, independently reported Price x Units, and an exactly
+// reconciled reported tax amount are the primary safety proof. The ceiling is
+// only an anomaly guard and must cover ordinary NRI statutory bands (including
+// rates above 30%).
 const MAX_WITHHOLDING_RATIO = 0.50;
 
 const IGNORED_TRANSACTION_TYPES = new Set([
@@ -404,6 +405,10 @@ function canonicalTransaction(input: Record<string, unknown>): {
   const cashBasis = CASH_BASES.has(cashBasisValue as CASCashBasis)
     ? cashBasisValue as CASCashBasis
     : 'source';
+  const rawTaxes = finiteNumber(charges.taxes);
+  const taxes = cashBasis === 'net_of_withholding'
+    ? rawTaxes ?? 0
+    : Math.abs(rawTaxes ?? 0);
 
   return {
     malformed,
@@ -423,7 +428,7 @@ function canonicalTransaction(input: Record<string, unknown>): {
       stamp_duty: stampDuty,
       charges: {
         stamp_duty: stampDuty,
-        taxes: absoluteNumber(charges.taxes) ?? 0,
+        taxes,
         exit_load: absoluteNumber(charges.exit_load) ?? 0,
         other: absoluteNumber(charges.other) ?? 0,
       },
@@ -576,10 +581,13 @@ function accountingMatches(transaction: CanonicalCASTransaction): boolean {
   const grossCash = transaction.gross_amount;
   if (transaction.cash_basis === 'net_of_withholding') {
     const withheld = grossCash - sourceCash;
+    const reportedWithholding = transaction.charges.taxes;
     return transaction.direction === 'out'
       && sourceCash > 0
       && Math.abs(grossCash - base) <= tolerance
-      && withheld >= -tolerance
+      && reportedWithholding > tolerance
+      && withheld > tolerance
+      && Math.abs(withheld - reportedWithholding) <= tolerance
       && withheld <= Math.max(tolerance, grossCash * MAX_WITHHOLDING_RATIO);
   }
   const sourceMatches = expectedCandidates.some(

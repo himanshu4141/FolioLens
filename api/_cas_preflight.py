@@ -82,9 +82,10 @@ _ISIN_RE = re.compile(r"^INF[A-Z0-9]{9}$")
 _AMFI_RE = re.compile(r"^\d+$")
 _MAX_POSTGRES_INTEGER = "2147483647"
 _CASH_BASES = {"source", "net_of_withholding"}
-# Explicit TDS/withholding narration plus independently reported Price x Units
-# is the primary proof. This ceiling is an anomaly guard that still covers
-# ordinary NRI statutory bands, including rates above 30%.
+# Explicit TDS/withholding narration, independently reported Price x Units, and
+# an exactly reconciled reported tax amount are the primary proof. This ceiling
+# is an anomaly guard that still covers ordinary NRI statutory bands, including
+# rates above 30%.
 _MAX_WITHHOLDING_RATIO = 0.50
 
 
@@ -227,6 +228,11 @@ def _canonical_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw_cash_basis, str) and raw_cash_basis in _CASH_BASES
         else "source"
     )
+    raw_taxes = _number(charges.get("taxes"))
+    if cash_basis == "net_of_withholding":
+        taxes = raw_taxes if raw_taxes is not None else 0.0
+    else:
+        taxes = abs(raw_taxes) if raw_taxes is not None else 0.0
 
     # Descriptions can contain provider text or reference identifiers and are
     # not needed after type normalization.
@@ -247,7 +253,7 @@ def _canonical_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
             "stamp_duty": stamp_duty,
             "charges": {
                 "stamp_duty": stamp_duty,
-                "taxes": _absolute(charges.get("taxes")) or 0.0,
+                "taxes": taxes,
                 "exit_load": _absolute(charges.get("exit_load")) or 0.0,
                 "other": _absolute(charges.get("other")) or 0.0,
             },
@@ -390,11 +396,14 @@ def _accounting_matches(transaction: dict[str, Any]) -> bool:
     gross_cash = transaction["gross_amount"]
     if transaction["cash_basis"] == "net_of_withholding":
         withheld = gross_cash - source_cash
+        reported_withholding = transaction["charges"]["taxes"]
         return (
             transaction["direction"] == "out"
             and source_cash > 0
             and abs(gross_cash - base) <= tolerance
-            and withheld >= -tolerance
+            and reported_withholding > tolerance
+            and withheld > tolerance
+            and abs(withheld - reported_withholding) <= tolerance
             and withheld <= max(tolerance, gross_cash * _MAX_WITHHOLDING_RATIO)
         )
     source_matches = any(
