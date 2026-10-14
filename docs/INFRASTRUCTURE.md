@@ -366,6 +366,11 @@ All pruned NAV data is fully regenerable from the OpenFolio API (`/v1/nav/{schem
 
 ## Runbook: Freshness check (daily silent-failure audit)
 
+OpenFolio requests made by `freshness-check` have a 60-second timeout, allowing
+scale-to-zero API instances time to start. This bound applies to daily `/health`
+and monthly health, metadata, and composition requests. Requests still abort
+and report a failed check if the upstream does not respond within the bound.
+
 
 **What it is.** A daily cron job (`freshness-check-daily`) that runs at 08:00 UTC and audits the pipeline for silent failures that went unnoticed in past incidents. Prior to this, sync-nav-hourly failed 18× per day for 5 days unnoticed; universe-backfill runs were cancelled with 69 row-failures recorded in a cursor nobody read; a monthly composition job no-opped; and OpenFolio's own AMFI parser froze silently for three weeks in 2026-09 while `/health` kept reporting `status='ok'`. The freshness check would have caught all four.
 
