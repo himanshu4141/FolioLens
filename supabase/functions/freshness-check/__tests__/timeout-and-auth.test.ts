@@ -2,7 +2,7 @@
  * Unit tests for timeout and authentication fixes.
  *
  * Tests the following scenarios:
- * 1. Timeout protection: fetch hangs > 15s, timeout aborts, check fails with others passing
+ * 1. Timeout protection: fetch hangs > 60s, timeout aborts, check fails with others passing
  * 2. Auth header: 401 when using wrong Authorization header, passes with X-API-Key
  * 3. Happy path: successful fetches with correct headers
  */

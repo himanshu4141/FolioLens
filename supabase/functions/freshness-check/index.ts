@@ -43,7 +43,8 @@ const FOLIOLENS_INBOUND_ROUTER_SECRET = Deno.env.get('FOLIOLENS_INBOUND_ROUTER_S
 const ROUTER_FRESHNESS_ALERT_URL =
   Deno.env.get('ROUTER_FRESHNESS_ALERT_URL') ?? 'https://app.foliolens.in/api/freshness-alert';
 const NOTIFY_ENVIRONMENT = Deno.env.get('NOTIFY_ENVIRONMENT') ?? 'dev';
-const OPENFOLIO_FETCH_TIMEOUT_MS = 15_000; // 15 seconds
+// Allow scale-to-zero OpenFolio instances time to start before failing the check.
+const OPENFOLIO_FETCH_TIMEOUT_MS = 60_000; // 60 seconds
 
 // Logged once at cold start so a misconfigured/unreachable alert route shows
 // up in Supabase logs without waiting for a failure to occur first.
